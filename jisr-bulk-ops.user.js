@@ -3,8 +3,8 @@
 // @namespace    jisr-bulk-ops
 // @version      2.1.0
 // @description  One tool for all Jisr bulk operations - pick a module from the dropdown (Departments now, more added over time). Direct API calls, Dry Run required before any live write.
-// @updateURL    https://github.com/esam-almithali/jisr-bulk-ops/edit/main/jisr-bulk-ops.user.js
-// @downloadURL  https://raw.githubusercontent.com/REPLACE-ME-github-user/REPLACE-ME-repo/main/jisr-bulk-ops.user.js
+// @updateURL    https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
+// @downloadURL  https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
 // @match        https://*.jisr.net/*
 // @match        https://*.jisr.net.sa/*
 // @grant        GM_setValue
