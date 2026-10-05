@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      3.9.2
-// @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Flight Tickets, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
+// @version      4.3.0
+// @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @updateURL    https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
 // @downloadURL  https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
 // @match        https://*.jisr.net/*
@@ -25,7 +25,7 @@
 // ==/UserScript==
 
 /**
- * JISR BULK OPS - ALL-IN-ONE  v3.9.2
+ * JISR BULK OPS - ALL-IN-ONE  v4.3.0
  * ======================================
  * One install instead of eleven. This file is the old per-module toolkit
  * (modules 01-05, 07-12, each at its latest version) placed back to back,
@@ -60,13 +60,13 @@
  *   12 Departments  v1.0.3
  *   14 Employee Groups & Business Units + Export Everything  v3.0.0
  *   15 Attendance Log Converter  v3.1.0
- *   16 GOSI Compliance — Export & Salary Check  v3.9.2
- *    0 Language follows the Jisr page (EN/AR)  v3.9.2
+ *   16 GOSI Compliance — Export & Salary Check  v4.3.0
+ *    0 Language follows the Jisr page (EN/AR)  v4.3.0
  */
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v3.9.2
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.3.0
 // ###########################################################################
 
 /*
@@ -517,6 +517,7 @@
 "paste a Google Maps link…": "الصق رابط خرائط Google…",
 "(unchanged; or use Months)": "(بدون تغيير؛ أو استخدم الأشهر)",
 "Bulk Suspend Payrun Salary": "إيقاف الرواتب الجماعي من المسير",
+"Bulk Suspend / Unsuspend Payrun Salary": "إيقاف / إلغاء إيقاف الرواتب الجماعي من المسير",
 "Could not load employees: ": "تعذّر تحميل الموظفين: ",
 "Could not re-verify count.": "تعذّر التحقق من العدد مجددًا.",
 "Longitude must be a number": "يجب أن يكون خط الطول رقمًا",
@@ -1068,7 +1069,231 @@
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v3.9.2
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.3.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 0c — Google sign-in (company accounts only) — v4.0.0
+ * ---------------------------------------------------------------------------
+ * Every tool is locked until the person signs in with their company Google
+ * account. The check itself happens on the separate sign-in Worker
+ * (auth-worker/): it verifies Google's signed ID token, the company domain
+ * and a one-time nonce, then hands back a session token (default 7 days).
+ *
+ *   - J menu: shows only "Sign in with Google" until signed in; afterwards a
+ *     "Signed in as … · Sign out" line.
+ *   - Any tool opened directly is refused while signed out.
+ *   - The Google name/email become the activity-log identity (replaces the
+ *     typed name prompt and the typed email prompt).
+ *   - The session is re-checked with the Worker (/me) on page load; if the
+ *     Worker says it is no longer valid (expired, secret rotated, domain
+ *     removed) the tools lock again. A network hiccup does not lock anyone
+ *     out while the session's own expiry hasn't passed.
+ *
+ * This is an identity gate inside the userscript, not server-side security:
+ * Jisr data access is still governed by each person's own Jisr login.
+ *
+ * AUTH_URL is set at build time (build.py). While it is empty the gate is
+ * OFF (nothing changes for anyone) — so the script can be shared before the
+ * Worker is deployed. For testing/setup only, a GM value 'authUrl' can point
+ * at a Worker when AUTH_URL is empty; it can never override a built-in URL.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+
+  const AUTH_URL_BUILTIN = "";
+  const GM_PREFIX = 'jisrBulkOps_';
+  const W = unsafeWindow;
+  const I = W.__jisrBulkOpsI18n || { t: (en) => en, isAr: () => false };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
+  function gmDel_(k) { try { GM_deleteValue(GM_PREFIX + k); } catch (e) { /* ignore */ } }
+  const authUrl_ = () => String(AUTH_URL_BUILTIN || gmGet_('authUrl', '') || '').replace(/\/+$/, '');
+  const enabled = () => !!authUrl_();
+  const nowS = () => Math.floor(Date.now() / 1000);
+  const listeners = new Set();
+  const emit_ = () => listeners.forEach((f) => { try { f(); } catch (e) { /* ignore */ } });
+
+  // ---------------------------------------------------------------- session
+  let session = null; // {token, email, name, picture, exp}
+  (function restore_() {
+    const s = gmGet_('authSession', null);
+    if (s && s.token && s.exp > nowS()) session = s; else if (s) gmDel_('authSession');
+  })();
+  function applyIdentity_(s) {
+    // the Google identity replaces the typed name (older tools) and typed email (ported tools)
+    try { W.localStorage.setItem(GM_PREFIX + 'ownerLabel', s.name || s.email); } catch (e) { /* ignore */ }
+    gmSet_('userEmail', s.email);
+  }
+  if (session) applyIdentity_(session);
+  const current = () => (enabled() && session && session.exp > nowS() ? session : null);
+
+  function gmRequest_(method, url, headers) {
+    return new Promise((resolve) => {
+      try {
+        GM_xmlhttpRequest({
+          method, url, headers: Object.assign({ accept: 'application/json' }, headers || {}), timeout: 15000,
+          onload: (r) => { let d = null; try { d = JSON.parse(r.responseText); } catch (e) { /* ignore */ } resolve({ status: r.status, data: d }); },
+          onerror: () => resolve({ status: 0, data: null }), ontimeout: () => resolve({ status: 0, data: null }),
+        });
+      } catch (e) { resolve({ status: 0, data: null }); }
+    });
+  }
+  /** Re-checks the stored session with the Worker. 401 -> signed out; network error -> keep (until its own expiry). */
+  let checked = null;
+  function revalidate() {
+    if (!enabled() || !session) return Promise.resolve(current());
+    if (checked) return checked;
+    checked = gmRequest_('GET', authUrl_() + '/me', { authorization: 'Bearer ' + session.token }).then((r) => {
+      if (r.status === 401 || r.status === 403) { signOut(); }
+      else if (r.status === 200 && r.data && r.data.ok) { session.name = r.data.name || session.name; session.exp = r.data.exp || session.exp; gmSet_('authSession', session); applyIdentity_(session); }
+      return current();
+    });
+    return checked;
+  }
+  function signOut() {
+    session = null; checked = null;
+    gmDel_('authSession');
+    try { W.localStorage.removeItem(GM_PREFIX + 'ownerLabel'); } catch (e) { /* ignore */ }
+    gmDel_('userEmail');
+    emit_();
+  }
+
+  // ---------------------------------------------------------------- sign-in (popup + one-time hand-off)
+  let pending = null; // {nonce, stop}
+  function randomNonce_() {
+    const b = new Uint8Array(24); crypto.getRandomValues(b);
+    return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  }
+  /**
+   * Opens the Worker's sign-in page and waits for the result.
+   * @param {(state:{phase:'waiting'|'ok'|'error'|'cancelled', message?:string})=>void} onState
+   */
+  function signIn(onState) {
+    if (!enabled()) return;
+    if (pending) pending.stop('cancelled');
+    const nonce = randomNonce_();
+    const popup = window.open(authUrl_() + '/login?nonce=' + nonce, 'jisrBulkOpsSignIn', 'width=480,height=640,menubar=no,toolbar=no');
+    if (!popup) { onState({ phase: 'error', message: T('The sign-in window was blocked - allow pop-ups for this site and try again.', 'تم حظر نافذة الدخول - اسمح بالنوافذ المنبثقة لهذا الموقع ثم حاول مجددًا.') }); return; }
+    let done = false, timer = null;
+    const started = Date.now();
+    const finish = (state) => {
+      if (done) return; done = true;
+      clearTimeout(timer); window.removeEventListener('message', onMsg); pending = null;
+      onState(state);
+    };
+    const poll = async () => {
+      if (done) return;
+      const r = await gmRequest_('GET', authUrl_() + '/poll?nonce=' + nonce);
+      if (done) return;
+      const d = r.data || {};
+      if (d.status === 'ok' && d.token) {
+        session = { token: d.token, email: d.email, name: d.name, picture: d.picture || '', exp: d.exp || nowS() + 7 * 86400 };
+        gmSet_('authSession', session); checked = Promise.resolve(session); applyIdentity_(session);
+        finish({ phase: 'ok' }); emit_(); return;
+      }
+      if (d.status === 'denied') { finish({ phase: 'error', message: d.reason || T('Sign-in refused.', 'تم رفض الدخول.') }); return; }
+      if (Date.now() - started > 5 * 60 * 1000) { finish({ phase: 'error', message: T('Sign-in timed out - try again.', 'انتهت مهلة الدخول - حاول مجددًا.') }); return; }
+      timer = setTimeout(poll, 1500);
+    };
+    // fast path: the sign-in page pings us (no token in the message - the session is only ever fetched by poll)
+    const authOrigin = new URL(authUrl_()).origin;
+    const onMsg = (ev) => { if (ev.origin === authOrigin && ev.data && ev.data.type === 'jisr-bulk-ops-auth' && ev.data.nonce === nonce) { clearTimeout(timer); poll(); } };
+    window.addEventListener('message', onMsg);
+    pending = { nonce, stop: (phase) => finish({ phase }) };
+    onState({ phase: 'waiting' });
+    timer = setTimeout(poll, 1500);
+  }
+  const cancel = () => { if (pending) pending.stop('cancelled'); };
+
+  // ---------------------------------------------------------------- UI pieces used by the hub (section 0b)
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => { if (v === undefined || v === null || v === false) return; if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v; else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v); });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectStyles_() {
+    if (document.getElementById('jisr-bulk-ops-style-auth')) return;
+    const st = document.createElement('style');
+    st.id = 'jisr-bulk-ops-style-auth';
+    st.textContent = `
+      .jba-gate { padding: 16px 14px 14px; display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+      .jba-gate p { margin: 0; font-size: 12.5px; color: #5f6368; line-height: 1.5; }
+      .jba-gate b { font-size: 13.5px; }
+      .jba-google { display: flex; align-items: center; justify-content: center; gap: 10px; border: 1px solid #dadce0; background: #fff; color: #1f1f1f; border-radius: 999px; padding: 9px 14px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+      .jba-google:hover { background: #f8f9fa; } .jba-google[disabled] { opacity: .6; cursor: default; }
+      .jba-g { width: 18px; height: 18px; }
+      .jba-msg { font-size: 12px; } .jba-err { color: #c5221f; } .jba-wait { color: #5f6368; }
+      .jba-link { background: none; border: none; color: #1a73e8; cursor: pointer; font-size: 11.5px; padding: 0; }
+      .jba-who { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11.5px; color: #5f6368; padding: 6px 14px; border-bottom: 1px solid #f1f1f1; }
+      .jba-who span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    `;
+    document.head.appendChild(st);
+  }
+  const G_LOGO = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.6 5.4 2.7 13.3l7.9 6.1C12.5 13.6 17.8 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.1 5.3-4.6 7l7.2 5.6c4.2-3.9 7.1-9.6 7.1-17.1z"/><path fill="#FBBC05" d="M10.6 28.6c-.5-1.4-.8-3-.8-4.6s.3-3.2.8-4.6l-7.9-6.1C1 16.6 0 20.2 0 24s1 7.4 2.7 10.7l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.8-5.8l-7.2-5.6c-2 1.4-4.6 2.2-8.6 2.2-6.2 0-11.5-4.1-13.4-9.9l-7.9 6.1C6.6 42.6 14.6 48 24 48z"/></svg>');
+  /** The whole J menu body while signed out. */
+  function renderGate(container, onSignedIn) {
+    injectStyles_();
+    const msg = el('div', { class: 'jba-msg' });
+    const btn = el('button', { class: 'jba-google', type: 'button' }, [el('img', { class: 'jba-g', src: G_LOGO, alt: '' }), T('Sign in with Google', 'تسجيل الدخول باستخدام Google')]);
+    const cancelBtn = el('button', { class: 'jba-link', type: 'button', text: T('Cancel', 'إلغاء'), style: { display: 'none' } });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      btn.setAttribute('disabled', '');
+      signIn((s) => {
+        if (s.phase === 'waiting') { msg.className = 'jba-msg jba-wait'; msg.textContent = T('Finish signing in in the window that opened…', 'أكمل تسجيل الدخول في النافذة التي فُتحت…'); cancelBtn.style.display = ''; return; }
+        btn.removeAttribute('disabled'); cancelBtn.style.display = 'none';
+        if (s.phase === 'ok') { msg.textContent = ''; if (onSignedIn) onSignedIn(); return; }
+        msg.className = 'jba-msg jba-err';
+        msg.textContent = s.phase === 'cancelled' ? '' : '❌ ' + (s.message || T('Sign-in failed.', 'فشل تسجيل الدخول.'));
+      });
+    });
+    cancelBtn.addEventListener('click', (e) => { e.stopPropagation(); cancel(); });
+    container.appendChild(el('div', { class: 'jba-gate' }, [
+      el('b', { text: T('Sign in to use the Jisr tools', 'سجّل الدخول لاستخدام أدوات جسر') }),
+      el('p', { text: T('Use your company Google account. Your name and email are recorded with every change you make.', 'استخدم حساب Google الخاص بالشركة. يُسجَّل اسمك وبريدك مع كل تغيير تقوم به.') }),
+      btn, msg, cancelBtn,
+    ]));
+  }
+  /** "Signed in as … · Sign out" line for the J menu. */
+  function renderWho(container, onSignedOut) {
+    const s = current();
+    if (!s) return;
+    injectStyles_();
+    const out = el('button', { class: 'jba-link', type: 'button', text: T('Sign out', 'تسجيل الخروج') });
+    out.addEventListener('click', (e) => { e.stopPropagation(); signOut(); if (onSignedOut) onSignedOut(); });
+    container.appendChild(el('div', { class: 'jba-who', 'data-no-i18n': '' }, [el('span', { text: '🔒 ' + (s.name ? s.name + ' · ' : '') + s.email, title: s.email }), out]));
+  }
+  /** Wraps every registered tool's open(): refused while signed out. Called once all sections have registered. */
+  function wrapModules() {
+    const g = W.__jisrBulkOps;
+    if (!g || !g.modules) return;
+    Object.keys(g.modules).forEach((id) => {
+      const m = g.modules[id];
+      if (!m || m.__authWrapped) return;
+      const orig = m.open;
+      m.open = function () {
+        if (enabled() && !current()) {
+          alert(T('Please sign in with your company Google account first: click the J button.', 'يرجى تسجيل الدخول بحساب Google الخاص بالشركة أولًا: اضغط زر J.'));
+          return undefined;
+        }
+        return orig.apply(this, arguments);
+      };
+      m.__authWrapped = true;
+    });
+  }
+
+  W.__jisrBulkOpsAuth = { enabled, session: current, signIn, signOut, cancel, revalidate, renderGate, renderWho, wrapModules, onChange: (f) => { listeners.add(f); return () => listeners.delete(f); } };
+  if (enabled() && session) revalidate();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.3.0
 // ###########################################################################
 
 /*
@@ -1381,6 +1606,11 @@
       el('div', { class: 'jbo-hub-header-left' }, [el('div', { class: 'jbo-hub-logo', text: 'J' }), el('div', { class: 'jbo-hub-title', text: 'Jisr Bulk Ops' })]),
       el('div', { class: 'jbo-hub-header-right' }, [el('span', { class: 'jbo-hub-dot' }), el('span', { class: 'jbo-hub-pill', text: ids.length + T(ids.length === 1 ? ' tool' : ' tools', ' أداة') })]),
     ]));
+    // v4.0: Google sign-in gate (section 0c) - nothing but the sign-in button until signed in
+    const AUTH = unsafeWindow.__jisrBulkOpsAuth;
+    const rerender_ = () => { if (!menuEl.isConnected) return; menuEl.innerHTML = ''; render(g, menuEl); };
+    if (AUTH && AUTH.enabled() && !AUTH.session()) { AUTH.renderGate(menuEl, rerender_); return; }
+    if (AUTH && AUTH.enabled()) AUTH.renderWho(menuEl, rerender_);
 
     // search + dropdown + employees
     const search = el('input', { class: 'jbo-hub-search', type: 'search', placeholder: T('Search tools…', 'ابحث عن أداة…'), value: '', 'data-no-i18n': '' }); // always opens compact
@@ -2006,6 +2236,7 @@
    * deliberately not closeable without entering a name.
    */
   function ensureOwnerRegistered_(onReady) {
+    { const __A = unsafeWindow.__jisrBulkOpsAuth; if (__A && __A.enabled()) { onReady(); return; } } // v4.0: identity comes from Google sign-in
     const existing = sharedGet_('ownerLabel', '');
     if (existing) { onReady(); return; }
     injectStylesOnce_();
@@ -4049,6 +4280,7 @@
    * deliberately not closeable without entering a name.
    */
   function ensureOwnerRegistered_(onReady) {
+    { const __A = unsafeWindow.__jisrBulkOpsAuth; if (__A && __A.enabled()) { onReady(); return; } } // v4.0: identity comes from Google sign-in
     const existing = sharedGet_('ownerLabel', '');
     if (existing) { onReady(); return; }
     injectStylesOnce_();
@@ -6358,6 +6590,7 @@
    * deliberately not closeable without entering a name.
    */
   function ensureOwnerRegistered_(onReady) {
+    { const __A = unsafeWindow.__jisrBulkOpsAuth; if (__A && __A.enabled()) { onReady(); return; } } // v4.0: identity comes from Google sign-in
     const existing = sharedGet_('ownerLabel', '');
     if (existing) { onReady(); return; }
     injectStylesOnce_();
@@ -8409,7 +8642,7 @@
   // ===========================================================================
 
   const MODULE_ID = 'suspend-payrun-bulk';
-  const MODULE_TITLE = 'Bulk Suspend Payrun Salary';
+  const MODULE_TITLE = 'Bulk Suspend / Unsuspend Payrun Salary';
   const GM_PREFIX = 'jisrBulkOps_';
 
   function gmGet_(key, fallback) {
@@ -8628,6 +8861,7 @@
    * deliberately not closeable without entering a name.
    */
   function ensureOwnerRegistered_(onReady) {
+    { const __A = unsafeWindow.__jisrBulkOpsAuth; if (__A && __A.enabled()) { onReady(); return; } } // v4.0: identity comes from Google sign-in
     const existing = sharedGet_('ownerLabel', '');
     if (existing) { onReady(); return; }
     injectStylesOnce_();
@@ -9800,7 +10034,7 @@
     }
     loadEmpBtn.addEventListener('click', () => loadEmployees(true));
 
-    const slugInput = el('input', { class: 'jbo-input', value: gmGet_('suspendSlug', 'onboardingteam') });
+    const slugInput = el('input', { class: 'jbo-input', value: (location.hostname.split('.').length >= 3 ? location.hostname.split('.')[0] : gmGet_('suspendSlug', 'onboardingteam')) });
 
     const dryRunBtn = el('button', { class: 'jbo-btn', text: 'Dry Run' });
     const runLiveBtn = el('button', { class: 'jbo-btn jbo-btn-danger', text: 'Start Bulk Suspension' });
@@ -9954,6 +10188,7 @@
     foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryRunBtn, runLiveBtn]));
 
     loadEmployees(false);
+    if (unsafeWindow.__jisrUnsuspend) unsafeWindow.__jisrUnsuspend.mount(body, foot);
   }
 
   registerModule_(MODULE_ID, MODULE_TITLE, openSuspendModal_, '2.5.2');
@@ -10431,6 +10666,7 @@
    * deliberately not closeable without entering a name.
    */
   function ensureOwnerRegistered_(onReady) {
+    { const __A = unsafeWindow.__jisrBulkOpsAuth; if (__A && __A.enabled()) { onReady(); return; } } // v4.0: identity comes from Google sign-in
     const existing = sharedGet_('ownerLabel', '');
     if (existing) { onReady(); return; }
     injectStylesOnce_();
@@ -12140,6 +12376,7 @@
    * deliberately not closeable without entering a name.
    */
   function ensureOwnerRegistered_(onReady) {
+    { const __A = unsafeWindow.__jisrBulkOpsAuth; if (__A && __A.enabled()) { onReady(); return; } } // v4.0: identity comes from Google sign-in
     const existing = sharedGet_('ownerLabel', '');
     if (existing) { onReady(); return; }
     injectStylesOnce_();
@@ -14825,6 +15062,7 @@
    * deliberately not closeable without entering a name.
    */
   function ensureOwnerRegistered_(onReady) {
+    { const __A = unsafeWindow.__jisrBulkOpsAuth; if (__A && __A.enabled()) { onReady(); return; } } // v4.0: identity comes from Google sign-in
     const existing = sharedGet_('ownerLabel', '');
     if (existing) { onReady(); return; }
     injectStylesOnce_();
@@ -17619,6 +17857,7 @@
    * without entering a name.
    */
   function ensureOwnerRegistered_(onReady) {
+    { const __A = unsafeWindow.__jisrBulkOpsAuth; if (__A && __A.enabled()) { onReady(); return; } } // v4.0: identity comes from Google sign-in
     const existing = sharedGet_('ownerLabel', '');
     if (existing) { onReady(); return; }
     injectHubStylesOnce_();
@@ -19786,6 +20025,7 @@
    * deliberately not closeable without entering a name.
    */
   function ensureOwnerRegistered_(onReady) {
+    { const __A = unsafeWindow.__jisrBulkOpsAuth; if (__A && __A.enabled()) { onReady(); return; } } // v4.0: identity comes from Google sign-in
     const existing = sharedGet_('ownerLabel', '');
     if (existing) { onReady(); return; }
     injectStylesOnce_();
@@ -21481,6 +21721,7 @@
    * deliberately not closeable without entering a name.
    */
   function ensureOwnerRegistered_(onReady) {
+    { const __A = unsafeWindow.__jisrBulkOpsAuth; if (__A && __A.enabled()) { onReady(); return; } } // v4.0: identity comes from Google sign-in
     const existing = sharedGet_('ownerLabel', '');
     if (existing) { onReady(); return; }
     injectStylesOnce_();
@@ -24007,6 +24248,7 @@
    * deliberately not closeable without entering a name.
    */
   function ensureOwnerRegistered_(onReady) {
+    { const __A = unsafeWindow.__jisrBulkOpsAuth; if (__A && __A.enabled()) { onReady(); return; } } // v4.0: identity comes from Google sign-in
     const existing = sharedGet_('ownerLabel', '');
     if (existing) { onReady(); return; }
     injectStylesOnce_();
@@ -26733,7 +26975,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v3.9.2
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.3.0
 // ###########################################################################
 
 /*
@@ -26758,6 +27000,15 @@
  *   - where inside the response the two ids sit (array positions generalised).
  * Every later lookup must find exactly ONE matching record for that employee
  * and day, or the row is skipped with a reason - never guessed.
+ *
+ * v4.1 (2026-10-05, after the first recording did not take): the sniffer now
+ * watches every Jisr API read, not only /attendance/ addresses, and also uses
+ * the browser's own request list (Resource Timing), so Jisr's save is seen even
+ * when Jisr's page grabbed fetch/XHR before this script loaded. If the save's
+ * body was not seen, the shift id is taken from the field next to the record
+ * id by name (employee_shift_id / employee_shift.id). "Find setup" re-reads
+ * (GET only) the dated Jisr addresses the attendance screen loaded, and a
+ * copyable report lists what was looked at (addresses only - no cookies).
  *
  * Only first IN and last OUT of each employee-day are sent (that is all the
  * endpoint takes); days with a single punch are not sent. The write
@@ -26832,79 +27083,164 @@
     return nodes;
   }
 
+  const DATE_RX_ = /^(\d{4})-(\d{2})-(\d{2})$|^(\d{2})-(\d{2})-(\d{4})$|^(\d{2})\/(\d{2})\/(\d{4})$|^(\d{4})\/(\d{2})\/(\d{2})$/;
+  /** "05-10-2026" / "2026-10-05" / ... -> "2026-10-05" (null when not a date). */
+  function ymdOf_(v) {
+    const m = String(v || '').match(DATE_RX_);
+    if (!m) return null;
+    if (m[1]) return m[1] + '-' + m[2] + '-' + m[3];
+    if (m[4]) return m[6] + '-' + m[5] + '-' + m[4];
+    if (m[7]) return m[9] + '-' + m[8] + '-' + m[7];
+    return m[10] + '-' + m[11] + '-' + m[12];
+  }
+  /** Every date that appears as a query value or path segment of a URL. */
+  function datesInUrl_(url) {
+    const out = [];
+    try {
+      const u = new URL(url);
+      u.searchParams.forEach((v) => { const y = ymdOf_(v); if (y && out.indexOf(y) < 0) out.push(y); });
+      u.pathname.split('/').forEach((sg) => { const y = ymdOf_(decodeURIComponent(sg)); if (y && out.indexOf(y) < 0) out.push(y); });
+    } catch (e) { /* ignore */ }
+    return out;
+  }
+  /** True when the URL itself points at this one record (learning from it would only ever find that record). */
+  function urlNamesRecord_(url, recordId) {
+    try {
+      const u = new URL(url); const r = String(recordId);
+      if (u.pathname.split('/').indexOf(r) >= 0) return true;
+      let hit = false; u.searchParams.forEach((v) => { if (v === r) hit = true; });
+      return hit;
+    } catch (e) { return false; }
+  }
+  /**
+   * When only the record id is known (Jisr's save was seen by address only, not its body),
+   * find the shift id next to it by name - employee_shift_id first, then employee_shift.id, then *shift*id.
+   */
+  function shiftPathsNear_(json, recPath, recordId) {
+    const rank = (p) => {
+      const last = String(p[p.length - 1]), joined = p.join('.');
+      if (last === 'employee_shift_id') return 0;
+      if (/employee_?shifts?\.id$/i.test(joined)) return 1;
+      if (/shift/i.test(joined) && /(^|_)id$/i.test(last)) return 2;
+      return 9;
+    };
+    for (let up = 1; up <= 3 && up <= recPath.length; up++) {
+      const anc = recPath.slice(0, recPath.length - up);
+      const node = getAt_(json, anc);
+      if (!node || typeof node !== 'object') continue;
+      const found = [];
+      (function walk(v, path, d) {
+        if (d > 3 || !v || typeof v !== 'object') return;
+        Object.keys(v).forEach((k) => {
+          const x = v[k], pth = path.concat([k]);
+          if (x && typeof x === 'object') { if (!Array.isArray(x)) walk(x, pth, d + 1); return; }
+          if (x === null || x === undefined || !/^\d+$/.test(String(x)) || String(x) === String(recordId)) return;
+          const r = rank(pth); if (r < 9) found.push({ p: anc.concat(pth), r });
+        });
+      })(node, [], 0);
+      if (found.length) { found.sort((a, b) => a.r - b.r); return found.filter((f) => f.r === found[0].r).map((f) => f.p); }
+    }
+    return [];
+  }
+
   /**
    * Learns how to look up (record_id, employee_shift_id) from one real edit.
-   * @param {{url:string, json:any}[]} responses  recent attendance GET responses, newest first
-   * @param {{recordId, shiftId, ymd}} edit         what the captured update_logs PUT sent
+   * @param {{url:string, json:any}[]} responses  recent Jisr GET responses, newest first
+   * @param {{recordId, shiftId?, ymd?}} edit       what the captured update_logs PUT sent (shiftId/ymd may be unknown)
    * @param {{id, code}[]} employees                shared employee list (to recognise the employee in the URL / records)
+   * @returns config, or { ok:false, reason, report:[...] } describing what was looked at
    */
   function learn_(responses, edit, employees) {
     const empIds = new Set(employees.map((e) => String(e.id)));
     const empCodes = new Set(employees.map((e) => String(e.code || '')).filter(Boolean));
+    const report = [];
     for (const resp of responses) {
       const pr = findPaths_(resp.json, edit.recordId);
-      const ps = findPaths_(resp.json, edit.shiftId);
-      if (!pr.length || !ps.length) continue;
+      const line = { url: resp.url, record: pr.length > 0, shift: false, date: false, employee: false, why: '' };
+      report.push(line);
+      if (!pr.length) { line.why = 'record id not in response'; continue; }
+      if (urlNamesRecord_(resp.url, edit.recordId)) { line.why = 'address is for this one record only'; continue; }
+      const shiftKnown = edit.shiftId !== undefined && edit.shiftId !== null && edit.shiftId !== '';
+      let pairs = [];
+      if (shiftKnown) {
+        const ps = findPaths_(resp.json, edit.shiftId);
+        pr.forEach((a) => ps.forEach((b) => pairs.push([a, b])));
+      } else {
+        pr.forEach((a) => shiftPathsNear_(resp.json, a, edit.recordId).forEach((b) => pairs.push([a, b])));
+      }
+      if (!pairs.length) { line.why = shiftKnown ? 'shift id ' + edit.shiftId + ' not in response' : 'no shift id next to the record'; continue; }
+      line.shift = true;
       // pick the pair sharing the longest prefix (same element)
       let best = null;
-      pr.forEach((a) => ps.forEach((b) => {
+      pairs.forEach(([a, b]) => {
         let n = 0; while (n < a.length - 1 && n < b.length - 1 && a[n] === b[n]) n++;
         if (!best || n > best.n) best = { a, b, n };
-      }));
+      });
       const prefix = best.a.slice(0, best.n);
       const base = prefix.map((k) => (typeof k === 'number' ? '*' : k));
       const element = getAt_(resp.json, prefix);
       const recRel = best.a.slice(best.n), shiftRel = best.b.slice(best.n);
-      // URL template: date + employee placeholders
-      const u = new URL(resp.url);
-      const forms = dateForms_(edit.ymd);
-      let dateFmt = null, empKind = null, empParam = null, empInPath = null;
-      const params = [];
-      u.searchParams.forEach((v, k) => {
-        if (k === 'slug') return;
-        const fmt = Object.keys(forms).find((f) => forms[f] === v);
-        if (fmt && !dateFmt) { dateFmt = fmt; params.push([k, '{date}']); return; }
-        if (!empKind && empIds.has(v)) { empKind = 'id'; empParam = k; params.push([k, '{emp}']); return; }
-        if (!empKind && empCodes.has(v)) { empKind = 'code'; empParam = k; params.push([k, '{emp}']); return; }
-        params.push([k, v]);
-      });
-      let pathTpl = u.pathname.replace(/^\/api/, '');
-      if (!empKind) {
-        const segs = pathTpl.split('/');
-        const idx = segs.findIndex((s) => empIds.has(s) && s !== String(edit.recordId));
-        if (idx >= 0) { empKind = 'id'; empInPath = true; segs[idx] = '{emp}'; pathTpl = segs.join('/'); }
-      }
-      if (!dateFmt) {
-        const segs = pathTpl.split('/');
-        const idx = segs.findIndex((s) => Object.values(forms).includes(s));
-        if (idx >= 0) { dateFmt = Object.keys(forms).find((f) => forms[f] === segs[idx]); segs[idx] = '{date}'; pathTpl = segs.join('/'); }
-      }
-      if (!dateFmt) continue; // this response isn't a per-day read
-      // inside the element: where the date and (for company-wide lists) the employee sit
-      let dateRel = null, empRel = null, empRelKind = null;
-      if (element && typeof element === 'object') {
-        for (const f of Object.keys(forms)) { const p = findPaths_(element, forms[f]); if (p.length) { dateRel = p[0]; break; } }
+      const ymds = edit.ymd ? [edit.ymd] : datesInUrl_(resp.url);
+      for (const ymd of ymds) {
+        // URL template: date + employee placeholders
+        const u = new URL(resp.url);
+        const forms = dateForms_(ymd);
+        let dateFmt = null, empKind = null, empParam = null, empInPath = null;
+        const params = [];
+        u.searchParams.forEach((v, k) => {
+          if (k === 'slug') return;
+          const fmt = Object.keys(forms).find((f) => forms[f] === v);
+          if (fmt && !dateFmt) { dateFmt = fmt; params.push([k, '{date}']); return; }
+          if (!empKind && empIds.has(v)) { empKind = 'id'; empParam = k; params.push([k, '{emp}']); return; }
+          if (!empKind && empCodes.has(v)) { empKind = 'code'; empParam = k; params.push([k, '{emp}']); return; }
+          params.push([k, v]);
+        });
+        let pathTpl = u.pathname.replace(/^\/api/, '');
         if (!empKind) {
-          const cands = [];
-          (function walk(v, path, d) {
-            if (d > 6) return;
-            if (v && typeof v === 'object') { Object.keys(v).forEach((k) => walk(v[k], path.concat([k]), d + 1)); return; }
-            if (v !== null && v !== undefined && empIds.has(String(v)) && String(v) !== String(edit.recordId) && String(v) !== String(edit.shiftId)) cands.push(path);
-          })(element, [], 0);
-          const byName = cands.find((p) => /employee/i.test(p.join('.'))) || cands[0];
-          if (byName) { empRel = byName; empRelKind = 'id'; }
+          const segs = pathTpl.split('/');
+          let idx = segs.findIndex((sg) => empIds.has(sg) && sg !== String(edit.recordId));
+          if (idx >= 0) { empKind = 'id'; empInPath = true; segs[idx] = '{emp}'; pathTpl = segs.join('/'); }
+          else {
+            idx = segs.findIndex((sg) => empCodes.has(decodeURIComponent(sg)));
+            if (idx >= 0) { empKind = 'code'; empInPath = true; segs[idx] = '{emp}'; pathTpl = segs.join('/'); }
+          }
         }
+        if (!dateFmt) {
+          const segs = pathTpl.split('/');
+          const idx = segs.findIndex((sg) => Object.values(forms).includes(sg));
+          if (idx >= 0) { dateFmt = Object.keys(forms).find((f) => forms[f] === segs[idx]); segs[idx] = '{date}'; pathTpl = segs.join('/'); }
+        }
+        if (!dateFmt) continue; // this response isn't a per-day read
+        line.date = true;
+        // inside the element: where the date and (for company-wide lists) the employee sit
+        let dateRel = null, empRel = null, empRelKind = null;
+        if (element && typeof element === 'object') {
+          for (const f of Object.keys(forms)) { const p = findPaths_(element, forms[f]); if (p.length) { dateRel = p[0]; break; } }
+          if (!empKind) {
+            const sidVal = String(getAt_(resp.json, best.b));
+            const cands = [];
+            (function walk(v, path, d) {
+              if (d > 6) return;
+              if (v && typeof v === 'object') { Object.keys(v).forEach((k) => walk(v[k], path.concat([k]), d + 1)); return; }
+              if (v !== null && v !== undefined && empIds.has(String(v)) && String(v) !== String(edit.recordId) && String(v) !== sidVal) cands.push(path);
+            })(element, [], 0);
+            const byName = cands.find((p) => /employee/i.test(p.join('.'))) || cands[0];
+            if (byName) { empRel = byName; empRelKind = 'id'; }
+          }
+        }
+        if (!empKind && !empRel) { line.why = 'cannot tell which employee a record belongs to'; continue; }
+        line.employee = true;
+        return {
+          ok: true, learnedAt: Date.now(), sourceUrl: resp.url,
+          pathTpl, params, dateFmt, empKind: empKind || null, empParam, empInPath: !!empInPath,
+          base, recRel, shiftRel, dateRel, empRel, empRelKind,
+          mode: empKind ? 'perEmployee' : 'perDate', shiftByName: !shiftKnown,
+          example: { recordId: edit.recordId, shiftId: shiftKnown ? edit.shiftId : getAt_(resp.json, best.b), ymd },
+        };
       }
-      if (!empKind && !empRel) continue; // can't tell which employee a record belongs to - don't learn from this one
-      return {
-        ok: true, learnedAt: Date.now(), sourceUrl: resp.url,
-        pathTpl, params, dateFmt, empKind: empKind || null, empParam, empInPath: !!empInPath,
-        base, recRel, shiftRel, dateRel, empRel, empRelKind,
-        mode: empKind ? 'perEmployee' : 'perDate',
-        example: { recordId: edit.recordId, shiftId: edit.shiftId, ymd: edit.ymd },
-      };
+      if (!line.why) line.why = 'no date in the address';
     }
-    return { ok: false, reason: 'none of the attendance responses Jisr loaded before the save contained both the record id ' + edit.recordId + ' and the shift id ' + edit.shiftId + ' together with the date' };
+    return { ok: false, report, reason: 'none of the ' + responses.length + ' Jisr responses checked contained record ' + edit.recordId + (edit.shiftId ? ' and shift ' + edit.shiftId : '') + ' together with the day and the employee' };
   }
 
   function buildUrl_(cfg, emp, ymd, page) {
@@ -26914,6 +27250,7 @@
     cfg.params.forEach(([k, v]) => {
       let val = v === '{date}' ? formatDate_(ymd, cfg.dateFmt) : v === '{emp}' ? empVal : v;
       if (page && k === 'page') val = String(page);
+      if (page && k === 'per_page' && Number(val) < 50) val = '50';
       qs.append(k, val);
     });
     qs.set('slug', slug_());
@@ -26964,45 +27301,78 @@
   }
 
   // ======================================================================= sniffer: learn from one real edit in Jisr
+  // v4.1: watches EVERY Jisr API read (not only /attendance/ addresses - the screen that loads a
+  // day may live elsewhere), and also keeps the browser's own list of requests (Resource Timing),
+  // which sees Jisr's save even when Jisr's page grabbed fetch/XHR before this script loaded.
+  const API_RX_ = /^https:\/\/(apis\.jisr\.net|api\.jisr\.net\.sa)\/api\//i;
+  const isApi_ = (url) => API_RX_.test(String(url || ''));
   const recent = []; // newest first: { url, json, at }
+  const seenUrls = []; // newest last: { url, at } - from Resource Timing
   const listeners = [];
-  let lastLearn = null; // { ok, reason, at }
-  function remember_(url, json) {
-    if (!/\/attendance\//i.test(url) || /update_logs/.test(url) || !json || typeof json !== 'object') return;
+  let lastLearn = null; // { ok, reason, at, report }
+  let lastEdit = null; // { recordId, shiftId, ymd, at }
+  let learning = null;
+  function remember_(url, json, size) {
+    if (!isApi_(url) || /update_logs/.test(url) || !json || typeof json !== 'object') return;
+    if (size && size > 4e6) return;
+    for (let i = recent.length - 1; i >= 0; i--) if (recent[i].url === url) recent.splice(i, 1);
     recent.unshift({ url, json, at: Date.now() });
-    if (recent.length > 40) recent.length = 40;
+    if (recent.length > 60) recent.length = 60;
   }
+  function notify_() { listeners.slice().forEach((fn) => { try { fn(); } catch (e) { /* ignore */ } }); }
   async function onUpdateLogs_(url, bodyText) {
     const m = String(url).match(/\/attendance\/records\/(\d+)\/update_logs/);
     if (!m) return;
     let body = null;
-    try { body = typeof bodyText === 'string' ? JSON.parse(bodyText) : bodyText; } catch (e) { return; }
-    if (!body || body.employee_shift_id === undefined) return;
-    const ymd = ymdFromJisrTime_(body.in_time) || ymdFromJisrTime_(body.out_time);
-    if (!ymd) return;
-    let employees = [];
-    try { employees = await unsafeWindow.__jisrBulkOpsEmployees.get(false); } catch (e) { /* learn may still work via path */ }
-    const res = learn_(recent, { recordId: m[1], shiftId: body.employee_shift_id, ymd }, employees);
-    lastLearn = { ok: res.ok, reason: res.reason || '', at: Date.now() };
-    if (res.ok) gmSet_(CONFIG_KEY(), res);
-    listeners.slice().forEach((fn) => { try { fn(); } catch (e) { /* ignore */ } });
+    try { body = typeof bodyText === 'string' ? JSON.parse(bodyText) : bodyText; } catch (e) { body = null; }
+    const shiftId = body && body.employee_shift_id !== undefined ? body.employee_shift_id : null;
+    const ymd = body ? (ymdFromJisrTime_(body.in_time) || ymdFromJisrTime_(body.out_time)) : null;
+    lastEdit = { recordId: m[1], shiftId, ymd, at: Date.now() };
+    if (gmGet_(CONFIG_KEY(), null)) return; // already set up - a normal edit in Jisr changes nothing here
+    await discover_();
+  }
+  function noteEntry_(e) {
+    if (!e || !isApi_(e.name)) return;
+    const at = (performance.timeOrigin || 0) + e.startTime;
+    if (seenUrls.some((x) => x.url === e.name && Math.abs(x.at - at) < 1)) return;
+    seenUrls.push({ url: e.name, at });
+    if (seenUrls.length > 600) seenUrls.splice(0, seenUrls.length - 600);
+    if (/\/attendance\/records\/\d+\/update_logs/.test(e.name) && !gmGet_(CONFIG_KEY(), null)) {
+      // the save fired outside our hooks - wait a moment for a hooked copy, then learn from the address alone
+      setTimeout(() => {
+        const rid = (e.name.match(/records\/(\d+)\//) || [])[1];
+        if (lastEdit && String(lastEdit.recordId) === rid && Date.now() - lastEdit.at < 5000) return;
+        lastEdit = { recordId: rid, shiftId: null, ymd: null, at: Date.now() };
+        discover_();
+      }, 1500);
+    }
   }
   (function install_() {
     const W = unsafeWindow;
     if (W.__jisrAttendanceSniffer) return;
     W.__jisrAttendanceSniffer = true;
+    const perf = W.performance || performance;
+    try { perf.setResourceTimingBufferSize(5000); } catch (e) { /* ignore */ }
+    try { perf.getEntriesByType('resource').forEach(noteEntry_); } catch (e) { /* ignore */ }
+    try { new W.PerformanceObserver((l) => l.getEntries().forEach(noteEntry_)).observe({ type: 'resource' }); } catch (e) { /* ignore */ }
     const XO = W.XMLHttpRequest && W.XMLHttpRequest.prototype;
     if (XO) {
       const open = XO.open, send = XO.send;
       XO.open = function (method, url) { this.__jboMethod = String(method || '').toUpperCase(); this.__jboUrl = String(url || ''); return open.apply(this, arguments); };
       XO.send = function (body) {
         const xhr = this;
-        if (/attendance/i.test(xhr.__jboUrl || '')) {
+        if (/jisr|^\//i.test(xhr.__jboUrl || '')) {
           if (xhr.__jboMethod === 'PUT' && /update_logs/.test(xhr.__jboUrl)) {
             xhr.addEventListener('load', () => { if (xhr.status >= 200 && xhr.status < 300) onUpdateLogs_(xhr.responseURL || xhr.__jboUrl, body); });
           } else if (xhr.__jboMethod === 'GET') {
             xhr.addEventListener('load', () => {
-              try { if (xhr.status >= 200 && xhr.status < 300) remember_(xhr.responseURL || xhr.__jboUrl, JSON.parse(xhr.responseText)); } catch (e) { /* not JSON */ }
+              try {
+                if (xhr.status < 200 || xhr.status >= 300) return;
+                const u = xhr.responseURL || xhr.__jboUrl;
+                if (!isApi_(u)) return;
+                if (xhr.responseType === 'json') remember_(u, xhr.response);
+                else if (!xhr.responseType || xhr.responseType === 'text') remember_(u, JSON.parse(xhr.responseText), xhr.responseText.length);
+              } catch (e) { /* not JSON */ }
             });
           }
         }
@@ -27015,17 +27385,90 @@
         const url = typeof input === 'string' ? input : (input && input.url) || '';
         const method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
         const p = f.apply(this, arguments);
-        if (/attendance/i.test(url) && !(init && init.__jboOwn)) {
+        if (/jisr/i.test(url) && !(init && init.__jboOwn)) {
           p.then((res) => {
             if (!res || !res.ok) return;
             if (method === 'PUT' && /update_logs/.test(url)) onUpdateLogs_(res.url || url, init && init.body);
-            else if (method === 'GET') res.clone().json().then((j) => remember_(res.url || url, j)).catch(() => {});
+            else if (method === 'GET' && isApi_(res.url || url)) res.clone().text().then((t) => remember_(res.url || url, JSON.parse(t), t.length)).catch(() => {});
           }).catch(() => {});
         }
         return p;
       };
     }
   })();
+
+  /** Addresses worth re-reading: Jisr API GETs that carry a date, newest first, never exports/downloads. */
+  function candidateUrls_(edit) {
+    const have = new Set(recent.map((r) => r.url));
+    const out = [];
+    for (let i = seenUrls.length - 1; i >= 0 && out.length < 40; i--) {
+      const u = seenUrls[i].url;
+      if (have.has(u) || out.indexOf(u) >= 0) continue;
+      if (/update_logs|export|download|print|report|\/i\?batch/i.test(u)) continue;
+      if (!datesInUrl_(u).length) continue;
+      if (edit && edit.ymd && datesInUrl_(u).indexOf(edit.ymd) < 0) continue;
+      out.push(u);
+    }
+    return out;
+  }
+  /**
+   * Works out the setup from the last Jisr save of a clock in/out in this tab:
+   * first from what was already seen, then by re-reading (GET only) the dated
+   * Jisr addresses the attendance screen loaded.
+   */
+  function discover_() {
+    if (learning) return learning;
+    const run = (async () => {
+      await Promise.resolve();
+      try {
+        let edit = lastEdit;
+        if (!edit) {
+          const hit = seenUrls.slice().reverse().find((x) => /\/attendance\/records\/\d+\/update_logs/.test(x.url));
+          if (hit) edit = lastEdit = { recordId: hit.url.match(/records\/(\d+)\//)[1], shiftId: null, ymd: null, at: hit.at };
+        }
+        if (!edit) {
+          lastLearn = { ok: false, code: 'noedit', at: Date.now(), reason: T('No clock in/out save seen in this tab yet.', 'لم يُرصد حفظ لدخول/خروج في هذا التبويب بعد.'), report: [] };
+          return lastLearn;
+        }
+        let employees = [];
+        try { employees = await unsafeWindow.__jisrBulkOpsEmployees.get(false); } catch (e) { /* learn may still work via path */ }
+        let res = learn_(recent, edit, employees);
+        let report = res.report || [];
+        if (!res.ok) {
+          const extra = [];
+          const urls = candidateUrls_(edit);
+          await pool_(urls, 4, async (u) => {
+            try { const r = await request_('GET', u); if (r.ok && r.json && typeof r.json === 'object') extra.push({ url: u, json: r.json }); else report.push({ url: u, why: 'HTTP ' + r.status }); } catch (e) { report.push({ url: u, why: e.message }); }
+          });
+          extra.sort((a, b) => urls.indexOf(a.url) - urls.indexOf(b.url));
+          const res2 = learn_(extra, edit, employees);
+          if (res2.ok) res = res2;
+          else {
+            report = report.concat(res2.report || []);
+            res = { ok: false, reason: T('none of the ', 'لم تحتوِ أيٌّ من ') + (recent.length + extra.length) + T(' Jisr responses checked had record ', ' استجابات جسر المفحوصة على السجل ') + edit.recordId + (edit.shiftId ? T(' and shift ', ' والوردية ') + edit.shiftId : '') + T(' together with the day and the employee', ' مع اليوم والموظف') };
+          }
+        }
+        if (res.ok) { gmSet_(CONFIG_KEY(), res); lastLearn = { ok: true, at: Date.now() }; }
+        else lastLearn = { ok: false, code: 'nomatch', at: Date.now(), reason: res.reason, report, edit };
+        return lastLearn;
+      } finally { if (learning === run) learning = null; notify_(); }
+    })();
+    learning = run;
+    notify_();
+    return run;
+  }
+  /** Plain-text summary for support: addresses (no cookies/tokens) and what was found in each. */
+  function diagnostics_() {
+    const ll = lastLearn || {};
+    const clean = (u) => { try { const x = new URL(u); ['token', 'access_token', 'auth'].forEach((k) => x.searchParams.delete(k)); return x.pathname + (x.search || ''); } catch (e) { return String(u); } };
+    const lines = ['Jisr Bulk Ops attendance setup report', 'company: ' + slug_(), 'when: ' + new Date().toISOString(),
+      'save seen: ' + (lastEdit ? 'record ' + lastEdit.recordId + ', shift ' + (lastEdit.shiftId === null ? '(body not seen)' : lastEdit.shiftId) + ', day ' + (lastEdit.ymd || '?') : 'none'),
+      'result: ' + (ll.ok ? 'learned' : (ll.reason || 'not tried')), 'responses kept: ' + recent.length + ', addresses seen: ' + seenUrls.length, ''];
+    (ll.report || []).slice(0, 60).forEach((r) => lines.push((r.record ? 'R' : '-') + (r.shift ? 'S' : '-') + (r.date ? 'D' : '-') + (r.employee ? 'E' : '-') + '  ' + clean(r.url) + (r.why ? '  [' + r.why + ']' : '')));
+    lines.push('', 'recent dated API addresses:');
+    seenUrls.slice(-300).filter((x) => datesInUrl_(x.url).length || /update_logs/.test(x.url)).slice(-25).forEach((x) => lines.push('  ' + clean(x.url)));
+    return lines.join('\n');
+  }
 
   // ======================================================================= network (our own calls are excluded from the sniffer)
   async function request_(method, url, body) {
@@ -27062,7 +27505,7 @@
         if (!emp) { r.problem = T('Employee ID not found in Jisr', 'الرقم الوظيفي غير موجود في جسر'); return; }
         r.emp = emp;
         if (!r.outTime) { r.problem = T('Only one punch this day — not sent', 'بصمة واحدة فقط في هذا اليوم — لن تُرسل'); return; }
-        const pages = cfg.params.some(([k]) => k === 'page') && cfg.mode === 'perDate' ? 20 : 1;
+        const pages = cfg.params.some(([k]) => k === 'page') && cfg.mode === 'perDate' ? 50 : 1;
         let matches = [];
         for (let pg = 1; pg <= pages; pg++) {
           const url = buildUrl_(cfg, emp, r.ymd, pages > 1 ? pg : 0);
@@ -27090,11 +27533,15 @@
 
   unsafeWindow.__jisrAttendancePush = {
     // pure (tests)
-    findPaths_, learn_, buildUrl_, extractMatches_, dayPlan_, jisrTime_,
+    findPaths_, learn_, buildUrl_, extractMatches_, dayPlan_, jisrTime_, ymdOf_, datesInUrl_,
     // runtime
     config: () => gmGet_(CONFIG_KEY(), null),
     forget: () => gmSet_(CONFIG_KEY(), null),
     lastLearn: () => lastLearn,
+    lastEdit: () => lastEdit,
+    isLearning: () => !!learning,
+    discover: () => discover_(),
+    diagnostics: () => diagnostics_(),
     onLearn: (fn) => { listeners.push(fn); return () => { const i = listeners.indexOf(fn); if (i >= 0) listeners.splice(i, 1); }; },
     lookupAll_, pushOne_, pool_,
   };
@@ -27267,8 +27714,12 @@
     return { s, n: isNum ? c.v : null, isDate };
   }
   async function readSpreadsheet_(file) {
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: 'array', cellDates: false, cellNF: true, raw: false });
+    // v4.3: CSV is read as plain text. SheetJS otherwise turns "01/09/2026" into a US date (9 Jan) with a
+    // stray time fraction - which gave wrong days and phantom 00:00 punches - while "13/09/2026" stayed text.
+    const isCsv = /\.(csv|txt|tsv)$/i.test(file.name || '') || /text\/(csv|plain|tab-separated-values)/i.test(file.type || '');
+    const wb = isCsv
+      ? XLSX.read((await file.text()).replace(/^\uFEFF/, ''), { type: 'string', raw: true, cellNF: true })
+      : XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: false, cellNF: true, raw: false });
     const sheets = wb.SheetNames.map((name) => {
       const ws = wb.Sheets[name];
       if (!ws['!ref']) return { name, rows: [] };
@@ -27817,20 +28268,44 @@
     function paintProgress_() { if (progressEl) progressEl.textContent = S.push.progress; }
     function renderPush_() {
       const box = el('div', { style: { border: '1px solid #e8eaed', borderRadius: '10px', padding: '12px', marginTop: '14px' } });
-      box.appendChild(el('div', { class: 'jac-h', style: { marginTop: '0' }, text: T('4. Push into Jisr (optional — instead of downloading)', '4. الإرسال إلى جسر مباشرة (اختياري — بدلًا من التنزيل)') }));
+      box.appendChild(el('div', { class: 'jac-h', style: { marginTop: '0' }, text: T('4. Publish straight into Jisr (no Excel needed)', '4. النشر مباشرة في جسر (بدون ملف Excel)') }));
       const cfg = P.config();
       if (!cfg) {
         const ll = P.lastLearn();
-        box.appendChild(el('div', { class: 'jbo-muted', text: T(
-          'One-time setup for this company: open Jisr\'s Attendance screen, pick any employee and day, edit its clock in/out and save — exactly as you would by hand (you can set it back afterwards). The tool watches that save and learns how Jisr finds each employee\'s day. Keep this window open or come back to it; it updates by itself.',
-          'إعداد لمرة واحدة لهذه الشركة: افتح شاشة الحضور في جسر، واختر أي موظف ويوم، وعدّل الدخول/الخروج واحفظ — كما تفعل يدويًا (يمكنك إرجاعه بعدها). تراقب الأداة هذا الحفظ وتتعلم كيف يجد جسر يوم كل موظف. أبقِ هذه النافذة مفتوحة أو عد إليها؛ ستتحدث تلقائيًا.') }));
-        if (ll && !ll.ok) box.appendChild(el('div', { class: 'jbo-status-err', style: { marginTop: '6px' }, text: T('Saw a save but could not learn from it: ', 'تم رصد حفظ لكن تعذّر التعلم منه: ') + ll.reason + T('. Try once more after the day\'s details have fully loaded.', '. حاول مرة أخرى بعد اكتمال تحميل تفاصيل اليوم.') }));
+        const steps = el('ol', { class: 'jbo-muted', style: { margin: '4px 0 8px', paddingInlineStart: '20px', lineHeight: '1.6' } });
+        [
+          T('One-time setup for this company: in another tab of this Jisr site, open Attendance and click any employee so the day\'s details load.', 'إعداد لمرة واحدة لهذه الشركة: في تبويب آخر من موقع جسر هذا، افتح الحضور واضغط على أي موظف حتى تظهر تفاصيل اليوم.'),
+          T('Edit that day\'s clock in/out and save — exactly as you would by hand (you can set it back afterwards).', 'عدّل الدخول/الخروج لذلك اليوم واحفظ — كما تفعل يدويًا (يمكنك إرجاعه بعدها).'),
+          T('Come back here. It usually sets itself up straight away; if not, click "Find setup".', 'عد إلى هنا. غالبًا يكتمل الإعداد تلقائيًا؛ وإن لم يكتمل اضغط «البحث عن الإعداد».'),
+        ].forEach((t) => steps.appendChild(el('li', { text: t })));
+        box.appendChild(steps);
+        box.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', marginBottom: '8px' }, text: T('Do steps 1–2 in the same browser window with this script running (any Jisr tab works, including this one — close this window first if you like; your converted file stays here).', 'نفّذ الخطوتين 1–2 في نفس نافذة المتصفح مع تشغيل هذا السكربت (أي تبويب من جسر يعمل، بما فيه هذا — يمكنك إغلاق هذه النافذة أولًا؛ يبقى ملفك المحوّل هنا).') }));
+        const findB = el('button', { class: 'jbo-btn jbo-btn-primary', text: P.isLearning && P.isLearning() ? T('Looking…', 'جارٍ البحث…') : T('🔎 Find setup', '🔎 البحث عن الإعداد') });
+        if (P.isLearning && P.isLearning()) findB.setAttribute('disabled', 'disabled');
+        findB.addEventListener('click', async () => { findB.setAttribute('disabled', 'disabled'); findB.textContent = T('Looking…', 'جارٍ البحث…'); await P.discover(); render_(); });
+        const row = el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, [findB]);
+        box.appendChild(row);
+        if (ll && !ll.ok) {
+          const msg = ll.code === 'noedit'
+            ? T('No clock in/out save seen yet. Do steps 1–2 above, then click "Find setup".', 'لم يُرصد حفظ للدخول/الخروج بعد. نفّذ الخطوتين 1–2 أعلاه ثم اضغط «البحث عن الإعداد».')
+            : T('Saw your save in Jisr but could not work out the setup: ', 'تم رصد حفظك في جسر لكن تعذّر تحديد الإعداد: ') + ll.reason + T('. Open the employee\'s day in Jisr again so it fully loads, then click "Find setup". If it still fails, copy the report and send it over.', '. افتح يوم الموظف في جسر مرة أخرى حتى يكتمل التحميل ثم اضغط «البحث عن الإعداد». إن استمر الفشل انسخ التقرير وأرسله.');
+          box.appendChild(el('div', { class: 'jbo-status-err', style: { marginTop: '6px', fontWeight: '400' }, text: msg }));
+          if (ll.code !== 'noedit') {
+            const copyB = el('button', { class: 'jbo-btn', text: T('📋 Copy report', '📋 نسخ التقرير') });
+            copyB.addEventListener('click', async () => {
+              const txt = P.diagnostics();
+              try { await navigator.clipboard.writeText(txt); copyB.textContent = T('✓ Copied', '✓ تم النسخ'); }
+              catch (e) { const ta = el('textarea', { 'data-no-i18n': '', style: { width: '100%', height: '160px', marginTop: '6px', fontFamily: 'monospace', fontSize: '11px' } }); ta.value = txt; box.appendChild(ta); ta.select(); }
+            });
+            row.appendChild(copyB);
+          }
+        }
         return box;
       }
       const forget = el('a', { href: 'javascript:void 0', style: { fontSize: '11.5px', marginInlineStart: '8px' }, text: T('forget', 'نسيان') });
       forget.addEventListener('click', () => { if (confirm(T('Forget the learned setup? You will need to edit one day in Jisr again.', 'نسيان الإعداد المُتعلَّم؟ ستحتاج إلى تعديل يوم واحد في جسر مرة أخرى.'))) { P.forget(); S.push.phase = 'idle'; S.push.rows = null; render_(); } });
       box.appendChild(el('div', { class: 'jbo-status-ok', style: { fontWeight: '400' } }, [T('✓ Ready — learned from your Jisr attendance screen on ', '✓ جاهز — تم التعلم من شاشة الحضور في جسر بتاريخ ') + new Date(cfg.learnedAt).toLocaleString(), forget]));
-      box.appendChild(el('div', { class: 'jbo-muted', style: { margin: '6px 0' }, text: T('Sends one update per employee per day: first punch = clock in, last punch = clock out. It replaces that day\'s clock in/out in Jisr. Days with only one punch are not sent. Check first — nothing is sent until you click Push.', 'يرسل تحديثًا واحدًا لكل موظف في كل يوم: أول بصمة = دخول، وآخر بصمة = خروج. يستبدل الدخول/الخروج لذلك اليوم في جسر. الأيام ذات البصمة الواحدة لا تُرسل. افحص أولًا — لا يُرسل شيء حتى تضغط إرسال.') }));
+      box.appendChild(el('div', { class: 'jbo-muted', style: { margin: '6px 0' }, text: T('Sends one update per employee per day: first punch = clock in, last punch = clock out. It replaces that day\'s clock in/out in Jisr. Days with only one punch are not sent. Check first — nothing is sent until you click Publish.', 'يرسل تحديثًا واحدًا لكل موظف في كل يوم: أول بصمة = دخول، وآخر بصمة = خروج. يستبدل الدخول/الخروج لذلك اليوم في جسر. الأيام ذات البصمة الواحدة لا تُرسل. افحص أولًا — لا يُرسل شيء حتى تضغط نشر.') }));
 
       const rowsHere = S.push.rows;
       const ctl = el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } });
@@ -27841,7 +28316,7 @@
       speedSel.value = String(S.push.speed);
       speedSel.addEventListener('change', () => { S.push.speed = Number(speedSel.value) || 1; gmSet_('attendancePushSpeed', S.push.speed); });
       const ready = rowsHere ? rowsHere.filter((x) => x.recordId && !x.pushed).length : 0;
-      const pushB = el('button', { class: 'jbo-btn jbo-btn-danger', text: T('⬆ Push ', '⬆ إرسال ') + ready + T(' day(s) to Jisr', ' يوم إلى جسر') });
+      const pushB = el('button', { class: 'jbo-btn jbo-btn-danger', text: T('⬆ Publish ', '⬆ نشر ') + ready + T(' day(s) to Jisr', ' يوم إلى جسر') });
       if (S.push.phase !== 'checked' || !ready) pushB.setAttribute('disabled', 'disabled');
       pushB.addEventListener('click', pushRun_);
       const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
@@ -27927,7 +28402,7 @@
       const closeFoot = el('button', { class: 'jbo-btn', text: T('Close', 'إغلاق') });
       closeFoot.addEventListener('click', close);
       if (!S.source || !S.rows.length || !S.map || !S.result) {
-        foot.appendChild(el('div', { class: 'jbo-muted', text: T('Nothing is sent to Jisr — this only builds the upload file.', 'لا يتم إرسال أي شيء إلى جسر — هذه الأداة تُنشئ ملف الرفع فقط.') }));
+        foot.appendChild(el('div', { class: 'jbo-muted', text: T('Nothing is sent to Jisr until you click Publish in step 4.', 'لا يُرسل شيء إلى جسر حتى تضغط «إرسال» في الخطوة 4.') }));
         foot.appendChild(closeFoot);
         return;
       }
@@ -28049,7 +28524,7 @@
       const dl = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('⬇ Download Jisr file (.xls)', '⬇ تنزيل ملف جسر (‎.xls)') });
       if (!r.punches.length) dl.setAttribute('disabled', 'disabled');
       dl.addEventListener('click', download_);
-      foot.appendChild(el('div', { class: 'jbo-muted', text: T('Headers follow the page language, like Jisr\'s own template. Nothing is sent to Jisr.', 'عناوين الأعمدة تتبع لغة الصفحة مثل قالب جسر. لا يتم إرسال أي شيء إلى جسر.') }));
+      foot.appendChild(el('div', { class: 'jbo-muted', text: T('Download the file, or skip it and publish straight into Jisr in step 4.', 'نزّل الملف، أو تخطّه وانشر مباشرة في جسر من الخطوة 4.') }));
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [checkBtn, dl]));
     }
     function fromKey(k) { const [y, m, d] = k.split('-').map(Number); return { y, m, d }; }
@@ -28075,7 +28550,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v3.9.2
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.3.0
 // ###########################################################################
 
 /*
@@ -28724,7 +29199,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v3.9.2
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.3.0
 // ###########################################################################
 
 /*
@@ -29592,7 +30067,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v3.9.2
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.3.0
 // ###########################################################################
 
 /*
@@ -31024,3 +31499,487 @@
   register_();
   if (gmGet_('userEmail', '')) { try { ensureRegistered_(); } catch (e) { /* ignore */ } } // the script registered on every page load
 })();
+
+
+// ###########################################################################
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.3.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 19 — Bulk UNSUSPEND payrun salary (inside the Suspend Payrun tool)
+ * ---------------------------------------------------------------------------
+ * CONFIRMED write (user capture, 2026-10-05, almithalico):
+ *   PUT /v2/finance/employees/suspended_payruns/unsuspend?slug=
+ *   body { employees_ids: [1039761], paygroup_id: 12516 }
+ *   -> { success: true, message: "Suspended payrolls of selected employees are unsuspended successfully", data: null }
+ * One call takes MANY employees of ONE paygroup, so rows are sent per paygroup
+ * (chunks of 50). If a chunk is refused, its employees are retried one by one
+ * so a single bad row can't block the rest.
+ *
+ * READS
+ *   paygroups (confirmed, Payroll Reconciliation):
+ *     GET /v2/finance/paygroups/landing_page?page=&rpp=50&payrun_month=YYYY-MM-01&search=
+ *   who is suspended (seen in the same capture, Jisr's payrun screen):
+ *     GET /v2/finance/payruns/excluded_employees?pay_period_start=YYYY-MM-DD&pay_period_end=YYYY-MM-DD&paygroup_id=
+ *     Its response shape was not captured, so it is read leniently: any object
+ *     carrying an employee id / employee.id / id or an employee code that is in
+ *     this company's employee list counts; bare employee-id arrays count too.
+ *   The pay period comes from the paygroup's payrun for that month when it
+ *   carries two dates, otherwise the calendar month (as in the capture:
+ *   2026-02-01 .. 2026-02-28).
+ *
+ * After a run the excluded list of every touched paygroup is read again, so a
+ * row only shows "✓ confirmed" when Jisr no longer lists that employee.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function slug_() {
+    const o = gmGet_('slugOverride', '');
+    if (o) return o;
+    const p = location.hostname.split('.');
+    return p.length >= 3 ? p[0] : '';
+  }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const CHUNK = 50;
+
+  // ======================================================================= pure helpers (exported for tests)
+  const MONTHS_ = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+  /** Every date in a string, as YYYY-MM-DD (ISO, DD/MM/YYYY, DD-MM-YYYY, "01 Feb 2026"). */
+  function datesIn_(s) {
+    const out = [];
+    const str = String(s || '');
+    const re = /(\d{4})-(\d{2})-(\d{2})|(\d{1,2})[/-](\d{1,2})[/-](\d{4})|(\d{1,2})\s+([A-Za-z]{3})[a-z]*\.?,?\s+(\d{4})/g;
+    let m;
+    while ((m = re.exec(str))) {
+      if (m[1]) out.push(m[1] + '-' + m[2] + '-' + m[3]);
+      else if (m[4]) out.push(m[6] + '-' + pad2(m[5]) + '-' + pad2(m[4]));
+      else if (MONTHS_[m[8].toLowerCase()]) out.push(m[9] + '-' + pad2(MONTHS_[m[8].toLowerCase()]) + '-' + pad2(m[7]));
+    }
+    return out;
+  }
+  /** Pay period for one paygroup in a month: from its payrun when it names two dates, else the calendar month. */
+  function periodFor_(paygroup, ym) {
+    const pr = paygroup && paygroup.payrun;
+    const cands = [];
+    if (pr) {
+      [pr.period, pr.start_date && pr.end_date ? pr.start_date + ' ' + pr.end_date : '', pr.pay_period_start && pr.pay_period_end ? pr.pay_period_start + ' ' + pr.pay_period_end : '']
+        .forEach((v) => { if (v) cands.push(typeof v === 'object' ? JSON.stringify(v) : String(v)); });
+    }
+    for (const c of cands) {
+      const d = datesIn_(c);
+      if (d.length >= 2 && d[0] <= d[1]) return { start: d[0], end: d[1], from: 'payrun' };
+    }
+    const [y, m] = ym.split('-').map(Number);
+    const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    return { start: y + '-' + pad2(m) + '-01', end: y + '-' + pad2(m) + '-' + pad2(last), from: 'month' };
+  }
+  /**
+   * Suspended employees in an excluded_employees response. Only ids/codes that belong to this
+   * company's employee list are accepted.
+   * CONFIRMED shape (almithalico, 2026-10-05):
+   *   { data: { count, exclusion_types: [{ type: 3, type_text: "suspended", type_i18n: "Suspended", count }, ...],
+   *             employees: [{ id, code, name_i18n, job_title_i18n, type: 3, type_text: "suspended", type_i18n: "Suspended",
+   *                           reason_key: "suspended", reason_text: "He was Suspended", remarks }, ...] } }
+   * The list ALSO holds employees excluded for other reasons (e.g. type 5 "without_salary_setting") -
+   * those can't be unsuspended, so they are counted in `.others` and left out.
+   */
+  function extractSuspended_(json, employees) {
+    const byId = new Map(), byCode = new Map();
+    employees.forEach((e) => { byId.set(String(e.id), e); if (e.code) byCode.set(String(e.code).toLowerCase(), e); });
+    const found = new Map(); // empId -> { emp, reason }
+    const str = (v) => (v === null || v === undefined || typeof v === 'object' ? '' : String(v));
+    const reasonOf = (o) => {
+      for (const k of ['type_i18n', 'reason_text', 'type_text', 'reason', 'exclusion_reason', 'excluded_reason', 'suspension_reason', 'exclusion_type', 'status_i18n', 'status', 'type']) {
+        const v = o[k];
+        if (v && typeof v === 'object') { const s = str(v.name || v.label || v.value); if (s && !/^\d+$/.test(s)) return s; }
+        else if (str(v) && !/^\d+$/.test(str(v))) return str(v);
+      }
+      return '';
+    };
+    // excluded for a reason other than suspension (e.g. "without_salary_setting") -> not unsuspendable
+    const kindOf = (o) => str(o.type_text || o.reason_key || o.exclusion_type || '');
+    const others = new Map(); // label -> count
+    (function walk(v, key, depth) {
+      if (v === null || v === undefined || depth > 8) return;
+      if (Array.isArray(v)) {
+        if (/employees?_ids?$/i.test(key || '') && v.every((x) => typeof x === 'number' || /^\d+$/.test(String(x)))) {
+          v.forEach((x) => { const e = byId.get(String(x)); if (e && !found.has(String(e.id))) found.set(String(e.id), { emp: e, reason: '' }); });
+          return;
+        }
+        v.forEach((x) => walk(x, key, depth + 1));
+        return;
+      }
+      if (typeof v !== 'object') return;
+      const nested = v.employee && typeof v.employee === 'object' ? v.employee : null;
+      const idCands = [v.employee_id, nested && nested.id, v.id];
+      const codeCands = [v.employee_code, v.code, nested && nested.code, nested && nested.employee_code];
+      let emp = null;
+      for (const c of idCands) { if (c !== undefined && c !== null && byId.has(String(c))) { emp = byId.get(String(c)); break; } }
+      if (!emp) for (const c of codeCands) { if (c && byCode.has(String(c).toLowerCase())) { emp = byCode.get(String(c).toLowerCase()); break; } }
+      // a bare `id` only counts on something that looks like an employee (not e.g. a paygroup whose id happens to match)
+      const personish = /(^|,)(full_name|employee_name|name_en|name_ar|first_name|code|employee_code|employee_number|job_title)(,|$)/i.test(Object.keys(v).join(','));
+      if (emp && (v.employee_id !== undefined || nested || v.employee_code !== undefined || personish)) {
+        const kind = kindOf(v) || (nested ? kindOf(nested) : '');
+        if (kind && !/suspend/i.test(kind)) { const l = reasonOf(v) || kind; others.set(l, (others.get(l) || 0) + 1); return; }
+        if (!found.has(String(emp.id))) found.set(String(emp.id), { emp, reason: reasonOf(v) || (nested ? reasonOf(nested) : '') });
+        return;
+      }
+      Object.keys(v).forEach((k) => walk(v[k], k, depth + 1));
+    })(json, '', 0);
+    const out = Array.from(found.values());
+    out.others = Array.from(others.entries()).map(([label, n]) => ({ label, n }));
+    return out;
+  }
+  /** Rows to send, grouped by paygroup, in chunks. */
+  function plan_(rows) {
+    const groups = new Map();
+    rows.forEach((r) => { if (!groups.has(r.paygroupId)) groups.set(r.paygroupId, []); groups.get(r.paygroupId).push(r); });
+    const out = [];
+    groups.forEach((list, pg) => { for (let i = 0; i < list.length; i += CHUNK) out.push({ paygroupId: pg, rows: list.slice(i, i + CHUNK) }); });
+    return out;
+  }
+  const isYes_ = (v) => /^(yes|y|true|1|✓|x|نعم)$/i.test(String(v === null || v === undefined ? '' : v).trim());
+
+  // ======================================================================= network
+  async function request_(method, path, query, body) {
+    const qs = new URLSearchParams(Object.assign({}, query || {}, { slug: slug_() }));
+    const url = apiBase_() + path + '?' + qs.toString();
+    for (let a = 0; a < 4; a++) {
+      let res;
+      try {
+        res = await fetch(url, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
+      } catch (e) {
+        if (method !== 'GET') { const err = new Error(T('No answer from Jisr — the result will be checked against Jisr', 'لا رد من جسر — سيتم التحقق من النتيجة في جسر')); err.unknown = true; throw err; }
+        await sleep_(800 * (a + 1)); continue;
+      }
+      if (res.status === 401 || res.status === 403) throw new Error(T('Not logged in to Jisr in this tab (HTTP ', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP ') + res.status + ').');
+      if (res.status === 429 || (method === 'GET' && res.status >= 500)) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
+      const json = await res.json().catch(() => null);
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+    }
+    throw new Error('Request failed after retries');
+  }
+  async function fetchPaygroups_(ym) {
+    const out = [];
+    for (let page = 1; page <= 50; page++) {
+      const r = await request_('GET', '/v2/finance/paygroups/landing_page', { page, rpp: 50, payrun_month: ym + '-01', search: '' });
+      if (!r.ok) throw new Error(T('Could not load paygroups (HTTP ', 'تعذّر تحميل مجموعات الرواتب (HTTP ') + r.status + ')');
+      const d = (r.json && r.json.data) || {};
+      if (!Array.isArray(d.paygroups)) throw new Error(T('Unexpected paygroups response', 'استجابة غير متوقعة لمجموعات الرواتب'));
+      out.push(...d.paygroups);
+      const tp = d.pagination && d.pagination.total_pages;
+      if (!tp || page >= tp) break;
+    }
+    return out;
+  }
+  async function fetchExcluded_(pg, period) {
+    const r = await request_('GET', '/v2/finance/payruns/excluded_employees', { pay_period_start: period.start, pay_period_end: period.end, paygroup_id: pg.id });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json;
+  }
+  async function unsuspend_(paygroupId, empIds) {
+    const r = await request_('PUT', '/v2/finance/employees/suspended_payruns/unsuspend', null, { employees_ids: empIds.map(Number), paygroup_id: Number(paygroupId) });
+    if (!r.ok) throw new Error((r.json && (r.json.message || r.json.error)) || ('HTTP ' + r.status));
+    return (r.json && r.json.message) || 'unsuspended';
+  }
+  async function pool_(items, n, fn) {
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(n, items.length)) }, async () => { while (next < items.length) { const i = next++; await fn(items[i], i); } }));
+  }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v;
+      else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v);
+      else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-unsuspend-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-unsuspend-css', text: `
+      .jbo-us-tabs { display: flex; gap: 0; margin-bottom: 12px; border: 1px solid #dadce0; border-radius: 9px; overflow: hidden; width: max-content; }
+      .jbo-us-tab { padding: 7px 16px; font-size: 13px; background: #fff; border: 0; cursor: pointer; color: #3c4043; font-family: inherit; }
+      .jbo-us-tab + .jbo-us-tab { border-inline-start: 1px solid #dadce0; }
+      .jbo-us-tab[aria-selected="true"] { background: #000; color: #fff; font-weight: 600; }
+      .jbo-us-bar { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 10px; }
+      .jbo-us-bar label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: #5f6368; }
+      .jbo-us-wrap { max-height: 46vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jbo-us-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jbo-us-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jbo-us-wrap td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; }
+      .jbo-us-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jbo-us-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+    ` }));
+  }
+
+  /**
+   * Called by the Suspend Payrun tool when its window opens: moves the existing
+   * suspend screen into a "Suspend" tab and adds the "Unsuspend" tab next to it.
+   */
+  function mount(body, foot) {
+    injectCss_();
+    const suspendBody = el('div'); const suspendFoot = el('div', { style: { display: 'contents' } });
+    while (body.firstChild) suspendBody.appendChild(body.firstChild);
+    while (foot.firstChild) suspendFoot.appendChild(foot.firstChild);
+    const unBody = el('div', { style: { display: 'none' } });
+    const unFoot = el('div', { style: { display: 'none', width: '100%', justifyContent: 'space-between', alignItems: 'center', gap: '8px' } });
+    const tabS = el('button', { class: 'jbo-us-tab', 'aria-selected': 'true', text: T('⏸ Suspend', '⏸ إيقاف') });
+    const tabU = el('button', { class: 'jbo-us-tab', 'aria-selected': 'false', text: T('▶ Unsuspend', '▶ إلغاء الإيقاف') });
+    const show = (u) => {
+      tabS.setAttribute('aria-selected', u ? 'false' : 'true'); tabU.setAttribute('aria-selected', u ? 'true' : 'false');
+      suspendBody.style.display = u ? 'none' : ''; suspendFoot.style.display = u ? 'none' : 'contents';
+      unBody.style.display = u ? '' : 'none'; unFoot.style.display = u ? 'flex' : 'none';
+    };
+    tabS.addEventListener('click', () => show(false));
+    tabU.addEventListener('click', () => show(true));
+    body.appendChild(el('div', { class: 'jbo-us-tabs', role: 'tablist' }, [tabS, tabU]));
+    body.appendChild(suspendBody); body.appendChild(unBody);
+    foot.appendChild(suspendFoot); foot.appendChild(unFoot);
+    buildUnsuspend_(unBody, unFoot);
+    return { show };
+  }
+
+  function buildUnsuspend_(box, foot) {
+    const now = new Date();
+    const S = { ym: now.getFullYear() + '-' + pad2(now.getMonth() + 1), rows: [], loaded: false, busy: '', note: '', filter: '', phase: 'idle', paygroups: [] };
+    const X = W.__jisrBulkOpsXlsx;
+
+    const monthIn = el('input', { class: 'jbo-input', type: 'month', value: S.ym, style: { width: '170px' } });
+    const findB = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('🔎 Find suspended employees', '🔎 البحث عن الموظفين الموقوفين') });
+    const searchIn = el('input', { class: 'jbo-input', type: 'search', placeholder: T('Filter by name, code or paygroup…', 'تصفية بالاسم أو الرقم أو المجموعة…'), style: { width: '240px' } });
+    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px' } });
+    const statsEl = el('div', { class: 'jbo-us-stats' });
+    const wrap = el('div', { class: 'jbo-us-wrap' });
+    const dlB = el('button', { class: 'jbo-btn', text: T('⬇ List (.xlsx)', '⬇ القائمة (‎.xlsx)') });
+    const upB = el('button', { class: 'jbo-btn', text: T('⬆ Upload filled list', '⬆ رفع القائمة المعبأة') });
+    const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
+    const resB = el('button', { class: 'jbo-btn', text: T('⬇ Results (.xlsx)', '⬇ النتائج (‎.xlsx)') });
+    const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
+
+    box.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
+      'Pick the payroll month and click Find. Every paygroup\'s suspended employees for that month are listed. Tick who should be paid again (or use the Excel list), then Unsuspend. One request per paygroup, and afterwards each paygroup is read again to confirm.',
+      'اختر شهر الرواتب واضغط بحث. ستظهر قائمة الموظفين الموقوفين في كل مجموعة رواتب لذلك الشهر. حدّد من يجب صرف راتبه مجددًا (أو استخدم قائمة Excel)، ثم ألغِ الإيقاف. طلب واحد لكل مجموعة، ثم تُقرأ كل مجموعة مجددًا للتأكيد.') }));
+    box.appendChild(el('div', { class: 'jbo-us-bar' }, [el('label', {}, [T('Payroll month', 'شهر الرواتب'), monthIn]), findB, searchIn]));
+    box.appendChild(statusEl); box.appendChild(statsEl); box.appendChild(wrap);
+    box.appendChild(fileIn);
+    foot.appendChild(el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [dlB, upB, resB]));
+    foot.appendChild(runB);
+
+    monthIn.addEventListener('change', () => { S.ym = monthIn.value || S.ym; });
+    searchIn.addEventListener('input', () => { S.filter = searchIn.value.trim().toLowerCase(); paint_(); });
+
+    const visible_ = () => S.rows.filter((r) => !S.filter || (r.name + ' ' + r.code + ' ' + r.empId + ' ' + r.paygroupName).toLowerCase().includes(S.filter));
+    function paint_() {
+      statusEl.textContent = S.busy || S.note;
+      statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      statsEl.innerHTML = '';
+      if (S.loaded) {
+        const sel = S.rows.filter((r) => r.sel).length, done = S.rows.filter((r) => r.state === 'confirmed').length;
+        const warn = S.rows.filter((r) => r.state === 'still' || r.state === 'failed' || r.state === 'unknown').length;
+        [[S.rows.length, T('suspended', 'موقوف')], [new Set(S.rows.map((r) => r.paygroupId)).size, T('paygroups', 'مجموعة')], [sel, T('ticked', 'محدد')]]
+          .concat(done ? [[done, T('unsuspended ✓', 'أُلغي إيقافه ✓')]] : []).concat(warn ? [[warn, T('need a look', 'تحتاج مراجعة')]] : [])
+          .forEach(([n, l]) => statsEl.appendChild(el('span', {}, [el('b', { text: String(n) }), ' ' + l])));
+      }
+      wrap.innerHTML = '';
+      if (S.loaded) {
+        const t = el('table');
+        const all = el('input', { type: 'checkbox' });
+        const vis = visible_();
+        const pend = vis.filter((r) => r.state !== 'confirmed');
+        all.checked = pend.length > 0 && pend.every((r) => r.sel);
+        all.addEventListener('change', () => { pend.forEach((r) => { r.sel = all.checked; }); paint_(); });
+        t.appendChild(el('tr', {}, [el('th', {}, [all])].concat([T('Employee', 'الموظف'), T('Code', 'الرقم'), T('Paygroup', 'مجموعة الرواتب'), T('Shown by Jisr as', 'يظهر في جسر كـ'), T('Status', 'الحالة')].map((h) => el('th', { text: h })))));
+        vis.slice(0, 1500).forEach((r) => {
+          const cb = el('input', { type: 'checkbox' });
+          cb.checked = !!r.sel; if (r.state === 'confirmed' || S.phase === 'running') cb.disabled = true;
+          cb.addEventListener('change', () => { r.sel = cb.checked; paint_(); });
+          const col = r.state === 'confirmed' ? '#137333' : (r.state === 'still' || r.state === 'failed' || r.state === 'unknown') ? '#c5221f' : '#5f6368';
+          t.appendChild(el('tr', {}, [el('td', {}, [cb]), el('td', { text: r.name }), el('td', { text: r.code }), el('td', { text: r.paygroupName }), el('td', { text: r.reason || '—' }), el('td', { text: r.msg || (r.sel ? T('will be unsuspended', 'سيُلغى إيقافه') : '—'), style: { color: col } })]));
+        });
+        if (!S.rows.length) t.appendChild(el('tr', {}, [el('td', { colspan: '6', text: T('Nobody is suspended in ', 'لا يوجد موظفون موقوفون في ') + S.ym + T(' (in any paygroup).', ' (في أي مجموعة).'), style: { padding: '14px', color: '#5f6368' } })]));
+        wrap.appendChild(t);
+      }
+      const n = S.rows.filter((r) => r.sel && r.state !== 'confirmed').length;
+      runB.textContent = T('▶ Unsuspend ', '▶ إلغاء إيقاف ') + n + T(' employee(s)', ' موظف');
+      runB.disabled = !n || !!S.busy;
+      findB.disabled = !!S.busy;
+      dlB.disabled = !S.rows.length || !!S.busy; upB.disabled = !S.rows.length || !!S.busy;
+      resB.style.display = S.rows.some((r) => r.msg) ? '' : 'none';
+    }
+
+    async function readGroup_(pg, employees) {
+      const period = periodFor_(pg, S.ym);
+      const json = await fetchExcluded_(pg, period);
+      return { period, list: extractSuspended_(json, employees), raw: json };
+    }
+    async function find_() {
+      S.ym = monthIn.value || S.ym;
+      S.rows = []; S.loaded = false; S.note = ''; S.noteErr = false; S.phase = 'idle';
+      S.busy = T('Loading employees…', 'جارٍ تحميل الموظفين…'); paint_();
+      try {
+        const employees = await W.__jisrBulkOpsEmployees.get(false, (n) => { S.busy = T('Loading employees… ', 'جارٍ تحميل الموظفين… ') + n; paint_(); });
+        S.busy = T('Loading paygroups…', 'جارٍ تحميل مجموعات الرواتب…'); paint_();
+        S.paygroups = await fetchPaygroups_(S.ym);
+        let done = 0, failed = 0, nonEmpty = 0; const others = new Map();
+        await pool_(S.paygroups, 4, async (pg) => {
+          try {
+            const g = await readGroup_(pg, employees);
+            if (g.raw && JSON.stringify(g.raw).length > 60) nonEmpty++;
+            pg.__period = g.period;
+            (g.list.others || []).forEach(({ label, n }) => others.set(label, (others.get(label) || 0) + n));
+            g.list.forEach(({ emp, reason }) => S.rows.push({ key: pg.id + ':' + emp.id, empId: emp.id, name: emp.name || '', code: emp.code || '', paygroupId: pg.id, paygroupName: pg.name || ('#' + pg.id), reason, sel: false, state: '', msg: '' }));
+          } catch (e) { failed++; }
+          done++; S.busy = T('Reading paygroups… ', 'جارٍ قراءة المجموعات… ') + done + '/' + S.paygroups.length; paint_();
+        });
+        S.rows.sort((a, b) => a.paygroupName.localeCompare(b.paygroupName) || a.name.localeCompare(b.name));
+        S.loaded = true;
+        S.note = S.paygroups.length + T(' paygroup(s) checked for ', ' مجموعة رواتب تم فحصها لشهر ') + S.ym + '.' + (failed ? T(' Could not read ', ' تعذّرت قراءة ') + failed + T(' of them.', ' منها.') : '');
+        S.noteErr = !!failed;
+        if (others.size) {
+          const n = Array.from(others.values()).reduce((a, b) => a + b, 0);
+          S.note += ' ' + n + T(' other employee(s) are left out of the payroll for a different reason (', ' موظف آخر مستبعد من الرواتب لسبب مختلف (') + Array.from(others.entries()).map(([l, c]) => l + ': ' + c).join(', ') + T(') — unsuspending does not apply to them, so they are not listed.', ') — لا ينطبق عليهم إلغاء الإيقاف لذلك لا يظهرون.');
+        }
+        if (!S.rows.length && nonEmpty && !others.size) { S.note += T(' Jisr returned excluded-employee data, but no employee in it could be matched — please send a screenshot of that response from DevTools.', ' أعاد جسر بيانات الموظفين المستبعدين لكن لم تتم مطابقة أي موظف — أرسل لقطة لهذه الاستجابة من أدوات المطور.'); S.noteErr = true; }
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    }
+    findB.addEventListener('click', find_);
+
+    async function run_() {
+      const todo = S.rows.filter((r) => r.sel && r.state !== 'confirmed');
+      if (!todo.length) return;
+      const groups = new Set(todo.map((r) => r.paygroupId)).size;
+      if (!confirm(T('Unsuspend ', 'إلغاء إيقاف ') + todo.length + T(' employee(s) in ', ' موظف في ') + groups + T(' paygroup(s) now? Their salaries go back into the payroll run.', ' مجموعة رواتب الآن؟ ستعود رواتبهم إلى مسير الرواتب.'))) return;
+      S.phase = 'running';
+      todo.forEach((r) => { r.state = 'pending'; r.msg = T('sending…', 'جارٍ الإرسال…'); });
+      const chunks = plan_(todo);
+      let i = 0;
+      for (const c of chunks) {
+        i++; S.busy = T('Unsuspending… paygroup batch ', 'جارٍ إلغاء الإيقاف… دفعة ') + i + '/' + chunks.length; paint_();
+        try {
+          const msg = await unsuspend_(c.paygroupId, c.rows.map((r) => r.empId));
+          c.rows.forEach((r) => { r.state = 'sent'; r.msg = msg; });
+        } catch (e) {
+          if (e.unknown) { c.rows.forEach((r) => { r.state = 'unknown'; r.msg = e.message; }); continue; }
+          if (c.rows.length === 1) { c.rows[0].state = 'failed'; c.rows[0].msg = '✗ ' + e.message; continue; }
+          // isolate the bad row(s): one by one
+          for (const r of c.rows) {
+            try { r.msg = await unsuspend_(c.paygroupId, [r.empId]); r.state = 'sent'; }
+            catch (e2) { r.state = e2.unknown ? 'unknown' : 'failed'; r.msg = (e2.unknown ? '' : '✗ ') + e2.message; }
+            paint_();
+          }
+        }
+        paint_();
+      }
+      // confirm against Jisr: read every touched paygroup again
+      S.busy = T('Checking Jisr…', 'جارٍ التحقق في جسر…'); paint_();
+      const employees = await W.__jisrBulkOpsEmployees.get(false).catch(() => []);
+      const touched = Array.from(new Set(todo.filter((r) => r.state === 'sent' || r.state === 'unknown').map((r) => r.paygroupId)));
+      await pool_(touched, 4, async (pgId) => {
+        const pg = S.paygroups.find((p) => String(p.id) === String(pgId)) || { id: pgId };
+        let still = null;
+        try { still = new Set((await readGroup_(pg, employees)).list.map((x) => String(x.emp.id))); } catch (e) { /* leave as sent */ }
+        todo.filter((r) => String(r.paygroupId) === String(pgId) && (r.state === 'sent' || r.state === 'unknown')).forEach((r) => {
+          if (!still) { r.msg = (r.state === 'sent' ? '✓ ' + r.msg : r.msg) + T(' (could not re-check)', ' (تعذّر التحقق)'); return; }
+          if (still.has(String(r.empId))) { r.state = 'still'; r.msg = T('⚠ Jisr still lists this employee as suspended', '⚠ ما زال جسر يعرض الموظف كموقوف'); }
+          else { r.state = 'confirmed'; r.sel = false; r.msg = T('✓ unsuspended (confirmed in Jisr)', '✓ أُلغي الإيقاف (مؤكد في جسر)'); }
+        });
+      });
+      logActivity_(todo);
+      S.phase = 'done'; S.busy = '';
+      const ok = todo.filter((r) => r.state === 'confirmed').length;
+      S.note = ok + T(' of ', ' من ') + todo.length + T(' unsuspended and confirmed in Jisr.', ' أُلغي إيقافهم وتم التأكيد في جسر.'); S.noteErr = ok < todo.length;
+      paint_();
+    }
+    runB.addEventListener('click', run_);
+
+    function logActivity_(rows) {
+      try {
+        const url = W.localStorage.getItem(GM_PREFIX + 'backendUrl');
+        if (!url || typeof GM_xmlhttpRequest !== 'function') return;
+        GM_xmlhttpRequest({
+          method: 'POST', url: url + '/api/log', timeout: 8000,
+          headers: { 'Content-Type': 'application/json', 'X-Write-Key': W.localStorage.getItem(GM_PREFIX + 'backendWriteKey') || '' },
+          data: JSON.stringify({ actor: W.localStorage.getItem(GM_PREFIX + 'ownerLabel') || 'unknown', slug: slug_(), entries: rows.map((r) => ({ module: 'suspend-payrun-bulk:unsuspend', rowKey: r.empId + '@' + r.paygroupId, status: r.state === 'confirmed' ? 'ok' : 'error', message: r.msg, at: new Date().toISOString() })) }),
+          onload: () => {}, onerror: () => {}, ontimeout: () => {},
+        });
+      } catch (e) { /* ignore */ }
+    }
+
+    const UN_HEADER = 'Unsuspend? (type YES)';
+    dlB.addEventListener('click', async () => {
+      const headers = ['Employee ID', 'Employee Name', 'Employee Code', 'Paygroup', 'Paygroup ID', 'Shown by Jisr as', UN_HEADER];
+      const rows = S.rows.map((r) => [r.empId, r.name, r.code, r.paygroupName, r.paygroupId, r.reason, r.sel ? 'YES' : '']);
+      await X.downloadAoa('jisr-unsuspend-' + slug_() + '-' + S.ym + '.xlsx', headers, rows, 'Suspended');
+    });
+    upB.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
+    fileIn.addEventListener('change', async () => {
+      const f = fileIn.files && fileIn.files[0]; if (!f) return;
+      try {
+        const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames.find((n) => n !== 'Lists') || wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+        const h = (aoa[0] || []).map((x) => String(x).trim().toLowerCase());
+        const cId = h.findIndex((x) => x === 'employee id'), cCode = h.findIndex((x) => x === 'employee code');
+        const cPg = h.findIndex((x) => x === 'paygroup id'), cYes = h.findIndex((x) => /unsuspend/.test(x));
+        if (cYes < 0 || (cId < 0 && cCode < 0)) throw new Error(T('Use the list downloaded from this tab (it needs "Employee ID" and "Unsuspend?" columns).', 'استخدم القائمة المنزّلة من هذا التبويب (تحتاج عمودي "Employee ID" و "Unsuspend?").'));
+        let marked = 0; const missing = [];
+        S.rows.forEach((r) => { if (r.state !== 'confirmed') r.sel = false; });
+        aoa.slice(1).forEach((row) => {
+          if (!isYes_(row[cYes])) return;
+          const id = cId >= 0 ? String(row[cId]).trim() : '', code = cCode >= 0 ? String(row[cCode]).trim().toLowerCase() : '';
+          const pg = cPg >= 0 ? String(row[cPg]).trim() : '';
+          const hits = S.rows.filter((r) => ((id && String(r.empId) === id) || (!id && code && r.code.toLowerCase() === code)) && (!pg || String(r.paygroupId) === pg));
+          if (!hits.length) { missing.push(id || code); return; }
+          hits.forEach((r) => { if (r.state !== 'confirmed') { r.sel = true; marked++; } });
+        });
+        S.note = marked + T(' employee(s) ticked from the file.', ' موظف تم تحديدهم من الملف.') + (missing.length ? T(' Not suspended in ', ' غير موقوفين في ') + S.ym + ': ' + missing.slice(0, 15).join(', ') + (missing.length > 15 ? '…' : '') : '');
+        S.noteErr = !!missing.length;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      paint_();
+    });
+    resB.addEventListener('click', () => {
+      const aoa = [['Employee ID', 'Employee Name', 'Employee Code', 'Paygroup', 'Result']].concat(S.rows.filter((r) => r.msg).map((r) => [r.empId, r.name, r.code, r.paygroupName, r.msg]));
+      const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Unsuspend results');
+      XLSX.writeFile(wb, 'jisr-unsuspend-results-' + slug_() + '-' + S.ym + '.xlsx');
+    });
+    paint_();
+  }
+
+  W.__jisrUnsuspend = { mount, datesIn_, periodFor_, extractSuspended_, plan_, isYes_ };
+})();
+
+
+// ###########################################################################
+// ##### HIDDEN TOOLS (v4.3) — Flight Ticket Policy is hidden until it is reworked; its code stays in place
+// ###########################################################################
+
+(function () { try { if (GM_getValue('jisrBulkOps_showHiddenTools', false)) return; const H = ['flight-tickets-bulk']; const g = unsafeWindow.__jisrBulkOps; if (g && g.modules) H.forEach((id) => { delete g.modules[id]; }); } catch (e) { /* ignore */ } })();
+
+
+// ###########################################################################
+// ##### FINAL — lock every registered tool behind Google sign-in (section 0c)
+// ###########################################################################
+
+(function () { try { if (unsafeWindow.__jisrBulkOpsAuth) unsafeWindow.__jisrBulkOpsAuth.wrapModules(); } catch (e) { /* ignore */ } })();
