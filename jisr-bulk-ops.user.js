@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.3.0
+// @version      4.5.1
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @updateURL    https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
 // @downloadURL  https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
@@ -25,7 +25,7 @@
 // ==/UserScript==
 
 /**
- * JISR BULK OPS - ALL-IN-ONE  v4.3.0
+ * JISR BULK OPS - ALL-IN-ONE  v4.5.1
  * ======================================
  * One install instead of eleven. This file is the old per-module toolkit
  * (modules 01-05, 07-12, each at its latest version) placed back to back,
@@ -60,13 +60,13 @@
  *   12 Departments  v1.0.3
  *   14 Employee Groups & Business Units + Export Everything  v3.0.0
  *   15 Attendance Log Converter  v3.1.0
- *   16 GOSI Compliance — Export & Salary Check  v4.3.0
- *    0 Language follows the Jisr page (EN/AR)  v4.3.0
+ *   16 GOSI Compliance — Export & Salary Check  v4.5.1
+ *    0 Language follows the Jisr page (EN/AR)  v4.5.1
  */
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.3.0
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.5.1
 // ###########################################################################
 
 /*
@@ -1069,7 +1069,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0c — Google sign-in (company accounts only)  v4.3.0
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.5.1
 // ###########################################################################
 
 /*
@@ -1293,7 +1293,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.3.0
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.5.1
 // ###########################################################################
 
 /*
@@ -1447,7 +1447,8 @@
   // SheetJS (community) can't write data validation, so the finished .xlsx zip is patched:
   // a hidden "Employee List" sheet holds the labels and each target sheet gets <dataValidations>.
   const PICK_SHEET = 'Lists';
-  function employeeLabel(e) { return (e.name || '(no name)') + (e.code ? ' · ' + e.code : '') + ' · #' + e.id; }
+  // v4.4: Iqama / national ID in every employee dropdown label ("Name · Code · Iqama · #id"); #id at the end stays the key
+  function employeeLabel(e) { const nid = e.nid || e.national_id; return (e.name || '(no name)') + (e.code ? ' · ' + e.code : '') + (nid ? ' · ' + nid : '') + ' · #' + e.id; }
   /** "Name · Code · #123" -> "123"; anything else -> null. */
   function pickId(text) { const m = String(text == null ? '' : text).trim().match(/·\s*#(\d+)\s*$/); return m ? m[1] : null; }
   function colLetter_(c) { let s = ''; c++; while (c) { const m = (c - 1) % 26; s = String.fromCharCode(65 + m) + s; c = Math.floor((c - 1) / 26); } return s; }
@@ -1547,13 +1548,14 @@
 
   unsafeWindow.__jisrBulkOpsEmployees = {
     get, decorateTemplate, employeeRows, IQAMA_HEADER,
+    peek: () => (store.list && store.slug === slug_() ? store.list : []), // v4.4: synchronous read of the already-loaded list
     state: () => ({ count: store.list ? store.list.length : 0, at: store.at, loading: !!store.loading, progress: store.progress || 0 }),
     onChange: (fn) => { store.listeners.push(fn); return () => { const i = store.listeners.indexOf(fn); if (i >= 0) store.listeners.splice(i, 1); }; },
   };
 
   // ======================================================================= hub menu
   const CATEGORIES = [
-    ['employees', 'Employees', 'الموظفون', ['employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk']],
+    ['employees', 'Employees', 'الموظفون', ['employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents']],
     ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'gosi-compliance', 'payroll-reconciliation', 'flight-tickets-bulk', 'loans-transactions-cancel']],
     ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'org-groups-business-units']],
     ['attendance', 'Attendance', 'الحضور', ['attendance-log-converter']],
@@ -18288,6 +18290,16 @@
       });
       aoa.push(row);
     });
+    {
+      let __dir = []; try { __dir = await unsafeWindow.__jisrBulkOpsEmployees.get(false); } catch (e) { /* no Iqama column values */ }
+      const __byId = {}, __byCode = {}; __dir.forEach((e) => { __byId[String(e.id)] = e; if (e.code) __byCode[String(e.code)] = e; });
+      aoa.forEach((r, i) => {
+        if (i === 0) { r.splice(2, 0, 'Iqama / National ID'); return; }
+        const rec = records[i - 1] || {};
+        const e = __byId[String(rec.employee_id_numeric)] || __byCode[String(rec.employee_code)];
+        r.splice(2, 0, e && e.nid ? String(e.nid) : '');
+      });
+    }
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Payroll Template');
@@ -18770,7 +18782,14 @@
     // (matchMethod 'name_fuzzy') visible in the exported file too, not just
     // the on-screen modal — the exported report is often what actually
     // gets reviewed/filed after the meeting.
-    const detailHeaders = ['Employee Identifier', 'Employee Name (Jisr)', 'Match Method', 'Status', 'Client Total', 'Jisr Total', 'Total Delta',
+    const __dirL = (unsafeWindow.__jisrBulkOpsEmployees && unsafeWindow.__jisrBulkOpsEmployees.peek) ? unsafeWindow.__jisrBulkOpsEmployees.peek() : [];
+    const __nidOf = (r) => {
+      const raw = r.jisrRow && r.jisrRow.raw;
+      const keys = [raw && raw.employee_id_numeric, raw && raw.employee_code, r.clientRow && r.clientRow.idRaw].filter((k) => k !== undefined && k !== null && k !== '').map(String);
+      const e = __dirL.find((x) => keys.includes(String(x.id)) || keys.includes(String(x.code)) || keys.includes(String(x.nid)));
+      return e && e.nid ? String(e.nid) : '';
+    };
+    const detailHeaders = ['Employee Identifier', 'Employee Name (Jisr)', 'Iqama / National ID', 'Match Method', 'Status', 'Client Total', 'Jisr Total', 'Total Delta',
       'Basic Salary (Client)', 'Basic Salary (Jisr)', 'Basic Salary Δ']
       .concat(mapping.allowances.flatMap((a) => [a.label + ' (Client)', a.label + ' (Jisr)', a.label + ' Δ']));
 
@@ -18781,6 +18800,7 @@
       const base = [
         r.clientRow.idRaw,
         r.jisrRow ? r.jisrRow.name : '(not found in Jisr)',
+        __nidOf(r),
         matchMethodLabel,
         r.status,
         r.clientTotal, r.jisrTotal, r.totalDelta
@@ -26329,7 +26349,7 @@
     const hit = dir && dir.list.find((e) => e.name.toLowerCase() === s.toLowerCase() || String(e.code) === s);
     return hit ? String(hit.id) : s; // unresolved text stays as-is and is rejected at plan time
   }
-  function employeeLabel_(e) { return e.name + (e.code ? ' · ' + e.code : '') + ' · #' + e.id; }
+  function employeeLabel_(e) { const nid = e.nid || e.national_id; return e.name + (e.code ? ' · ' + e.code : '') + (nid ? ' · ' + nid : '') + ' · #' + e.id; }
 
   // ---------------------------------------------------------------- friendly headers (v3.3)
   // Templates show plain-English headers; uploads accept either those or the raw field names.
@@ -26975,7 +26995,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.3.0
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.5.1
 // ###########################################################################
 
 /*
@@ -28257,10 +28277,10 @@
       S.push.phase = 'done'; render_();
     }
     function pushLog_() {
-      const aoa = [[T('Employee ID', 'الرقم الوظيفي'), T('Employee name', 'اسم الموظف'), T('Date', 'التاريخ'), T('Clock in', 'الدخول'), T('Clock out', 'الخروج'), T('Punches', 'البصمات'), T('Result', 'النتيجة')]];
-      S.push.rows.forEach((x) => aoa.push([x.code, x.name, x.ymd, x.inTime, x.outTime || '', x.count, x.pushed ? '✓ ' + (x.result || 'updated') : x.failed ? '✗ ' + x.result : x.problem ? T('Skipped: ', 'تم التخطي: ') + x.problem : T('Not sent', 'لم يُرسل')]));
+      const aoa = [[T('Employee ID', 'الرقم الوظيفي'), T('Employee name', 'اسم الموظف'), T('Iqama / National ID', 'رقم الإقامة / الهوية'), T('Date', 'التاريخ'), T('Clock in', 'الدخول'), T('Clock out', 'الخروج'), T('Punches', 'البصمات'), T('Result', 'النتيجة')]];
+      S.push.rows.forEach((x) => aoa.push([x.code, x.name, (x.emp && x.emp.nid) || '', x.ymd, x.inTime, x.outTime || '', x.count, x.pushed ? '✓ ' + (x.result || 'updated') : x.failed ? '✗ ' + x.result : x.problem ? T('Skipped: ', 'تم التخطي: ') + x.problem : T('Not sent', 'لم يُرسل')]));
       const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = [{ wch: 12 }, { wch: 28 }, { wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 9 }, { wch: 60 }];
+      const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = [{ wch: 12 }, { wch: 28 }, { wch: 16 }, { wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 9 }, { wch: 60 }];
       XLSX.utils.book_append_sheet(wb, ws, 'Push results');
       XLSX.writeFile(wb, 'attendance-push-results-' + currentSlug_() + '.xlsx');
     }
@@ -28550,7 +28570,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.3.0
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.5.1
 // ###########################################################################
 
 /*
@@ -29199,7 +29219,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v4.3.0
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.5.1
 // ###########################################################################
 
 /*
@@ -29663,7 +29683,7 @@
   const pill_ = (label, raw) => el('span', { class: 'jlt-pill ' + (isCancelled_(raw) ? 'jlt-p-cancel' : raw ? 'jlt-p-active' : ''), text: label || '—' });
 
   const LOAN_HEADERS = ['Employee ID', 'Employee Name', 'Iqama / National ID', 'Loan ID', 'Loan Type', 'Amount', 'Monthly Deduction', 'Paid So Far', 'Pending Amount', 'Can Cancel / Delete?', 'Loan Status', 'Transaction ID', 'Transaction Status', 'Paid At', 'Action'];
-  const TXN_HEADERS = ['Transaction ID', 'Employee ID', 'Employee Name', 'Type', 'Amount', 'Date', 'Status', 'Action'];
+  const TXN_HEADERS = ['Transaction ID', 'Employee ID', 'Employee Name', 'Iqama / National ID', 'Type', 'Amount', 'Date', 'Status', 'Action'];
   const ACTION_TEXT = { cancel: 'Cancel transaction', cancel_delete: 'Cancel + delete loan' };
   const norm_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
 
@@ -29756,7 +29776,7 @@
         aoa = [LOAN_HEADERS].concat(S.loans.filter((x) => !x.deleted).map((x) => [x.code, x.name, x.nid, x.loanId, x.loanType, x.amount, x.monthly, x.paid, x.pending, x.locked ? 'No — paid in a closed payroll' : 'Yes', x.loanStatusLabel, x.txnId, x.txnStatus, x.paidAt, x.action ? ACTION_TEXT[x.action] : '']));
         name = 'Loans';
       } else {
-        aoa = [TXN_HEADERS].concat(S.txns.filter((x) => !x.loanLinked).map((x) => [x.txnId, x.code, x.name, x.type, x.amount, x.date, x.statusLabel, x.action ? ACTION_TEXT.cancel : '']));
+        aoa = [TXN_HEADERS].concat(S.txns.filter((x) => !x.loanLinked).map((x) => [x.txnId, x.code, x.name, x.nid || '', x.type, x.amount, x.date, x.statusLabel, x.action ? ACTION_TEXT.cancel : '']));
         name = 'Transactions';
       }
       const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -29856,7 +29876,7 @@
       const wb = XLSX.utils.book_new();
       const aoa = S.tab === 'loans'
         ? [['Employee ID', 'Employee Name', 'Iqama / National ID', 'Loan ID', 'Loan Type', 'Amount', 'Transaction ID', 'Action', 'Result', 'Time']].concat(rows.map((x) => [x.code, x.name, x.nid, x.loanId, x.loanType, x.amount, x.txnId, ACTION_TEXT[x.action] || '', x.result ? x.result.text : '', x.at || '']))
-        : [['Transaction ID', 'Employee ID', 'Employee Name', 'Type', 'Amount', 'Date', 'Action', 'Result', 'Time']].concat(rows.map((x) => [x.txnId, x.code, x.name, x.type, x.amount, x.date, x.action ? ACTION_TEXT.cancel : '', x.result ? x.result.text : '', x.at || '']));
+        : [['Transaction ID', 'Employee ID', 'Employee Name', 'Iqama / National ID', 'Type', 'Amount', 'Date', 'Action', 'Result', 'Time']].concat(rows.map((x) => [x.txnId, x.code, x.name, x.nid || '', x.type, x.amount, x.date, x.action ? ACTION_TEXT.cancel : '', x.result ? x.result.text : '', x.at || '']));
       const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = aoa[0].map(() => ({ wch: 20 }));
       XLSX.utils.book_append_sheet(wb, ws, 'Results');
       XLSX.writeFile(wb, (S.tab === 'loans' ? 'loans' : 'transactions') + '-results-' + slug_() + '.xlsx');
@@ -30067,7 +30087,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.3.0
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.5.1
 // ###########################################################################
 
 /*
@@ -30851,7 +30871,7 @@
     { id: 'employee-contracts-bulk', title: 'Employee Contracts & Joining Date', modules: [EmployeeContractsModule, JoiningDateModule] },
     { id: 'salary-increment-bulk', title: 'Salary Increment', modules: [SalaryIncrementModule] },
     { id: 'gosi-applicable-amount-bulk', title: 'GOSI Applicable Amount', modules: [GosiAmountModule] },
-    { id: 'payroll-reconciliation', title: 'Payroll Reconciliation (read-only)', modules: [PayrollReconciliationModule] },
+    // payroll-reconciliation: user asked (2026-10-07) to go back to the PREVIOUS tool (09, real payrun additions_deductions match); not overridden here
     { id: 'flight-tickets-bulk', title: 'Flight Ticket Policy Assignment', modules: [FlightTicketsModule] },
     { id: 'departments-bulk', title: 'Departments', modules: [DepartmentsModule] },
     { id: 'job-titles-bulk', title: 'Job Titles', modules: [JobTitlesModule] },
@@ -31502,7 +31522,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.3.0
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.5.1
 // ###########################################################################
 
 /*
@@ -31848,7 +31868,7 @@
             if (g.raw && JSON.stringify(g.raw).length > 60) nonEmpty++;
             pg.__period = g.period;
             (g.list.others || []).forEach(({ label, n }) => others.set(label, (others.get(label) || 0) + n));
-            g.list.forEach(({ emp, reason }) => S.rows.push({ key: pg.id + ':' + emp.id, empId: emp.id, name: emp.name || '', code: emp.code || '', paygroupId: pg.id, paygroupName: pg.name || ('#' + pg.id), reason, sel: false, state: '', msg: '' }));
+            g.list.forEach(({ emp, reason }) => S.rows.push({ key: pg.id + ':' + emp.id, empId: emp.id, name: emp.name || '', code: emp.code || '', nid: emp.nid || '', paygroupId: pg.id, paygroupName: pg.name || ('#' + pg.id), reason, sel: false, state: '', msg: '' }));
           } catch (e) { failed++; }
           done++; S.busy = T('Reading paygroups… ', 'جارٍ قراءة المجموعات… ') + done + '/' + S.paygroups.length; paint_();
         });
@@ -31929,8 +31949,8 @@
 
     const UN_HEADER = 'Unsuspend? (type YES)';
     dlB.addEventListener('click', async () => {
-      const headers = ['Employee ID', 'Employee Name', 'Employee Code', 'Paygroup', 'Paygroup ID', 'Shown by Jisr as', UN_HEADER];
-      const rows = S.rows.map((r) => [r.empId, r.name, r.code, r.paygroupName, r.paygroupId, r.reason, r.sel ? 'YES' : '']);
+      const headers = ['Employee ID', 'Employee Name', 'Iqama / National ID', 'Employee Code', 'Paygroup', 'Paygroup ID', 'Shown by Jisr as', UN_HEADER];
+      const rows = S.rows.map((r) => [r.empId, r.name, r.nid || '', r.code, r.paygroupName, r.paygroupId, r.reason, r.sel ? 'YES' : '']);
       await X.downloadAoa('jisr-unsuspend-' + slug_() + '-' + S.ym + '.xlsx', headers, rows, 'Suspended');
     });
     upB.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
@@ -31960,7 +31980,7 @@
       paint_();
     });
     resB.addEventListener('click', () => {
-      const aoa = [['Employee ID', 'Employee Name', 'Employee Code', 'Paygroup', 'Result']].concat(S.rows.filter((r) => r.msg).map((r) => [r.empId, r.name, r.code, r.paygroupName, r.msg]));
+      const aoa = [['Employee ID', 'Employee Name', 'Iqama / National ID', 'Employee Code', 'Paygroup', 'Result']].concat(S.rows.filter((r) => r.msg).map((r) => [r.empId, r.name, r.nid || '', r.code, r.paygroupName, r.msg]));
       const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Unsuspend results');
       XLSX.writeFile(wb, 'jisr-unsuspend-results-' + slug_() + '-' + S.ym + '.xlsx');
     });
@@ -31968,6 +31988,667 @@
   }
 
   W.__jisrUnsuspend = { mount, datesIn_, periodFor_, extractSuspended_, plan_, isYes_ };
+})();
+
+
+// ###########################################################################
+// ##### SECTION 20 — Employee Documents bulk upload  v4.5.1
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 20 — Employee Documents (bulk upload of ID / Iqama, Passport, …)
+ * ---------------------------------------------------------------------------
+ * CONFIRMED (user captures, 2026-10-07, onboardingteam):
+ *   PUT /v2/employees/{employee_id}?slug=
+ *   Iqama / National ID:
+ *     { employee: { identification_info_attributes: {
+ *         document_number: "2616501058", iqama_expiry_date: "07-12-2027", iqama_issue_date: "04-12-2024",
+ *         iqama_issue_date_hijri: "11-11-1449", iqama_issue_place: "Riyadh", iqama_expiry_date_ar: null,
+ *         identification_info_attachments_attributes: [ { category: "id_iqama", file: "data:application/pdf;base64,…", file_file_name: "x.pdf" } ] } } }
+ *   Passport:
+ *     { employee: { identification_info_attributes: {
+ *         passport_number: "1000000", passport_issue_date: "10-10-2025", passport_expiry_date: "10-10-2031", passport_issue_place: "…",
+ *         identification_info_attachments_attributes: [ { category: "passport", description: "…", file: "data:image/png;base64,…", file_file_name: "x.png" } ] } } }
+ *   -> the employee's attachments: [{ id, file_name, file_url, category: "id_iqama"|"passport", category_i18n, description, status: "active" }]
+ *   Dates are DD-MM-YYYY. The file travels inside the JSON as a data: URL (one request, no presigned upload).
+ *   Reading one employee's documents: GET /v2/employees/{id}?profile_tab=documents&slug= (seen in the captures).
+ *
+ * SAFETY (council verdict, 2026-10-07):
+ *   - Manifest first: an Excel list (one row per file) or a list built from file names like
+ *     "<Iqama or employee code>_<type>.pdf". Every row must resolve to exactly one employee
+ *     (Iqama number preferred, employee code as fallback; both given and disagreeing = blocked).
+ *   - Only the details the list fills are sent; blank = left as it is in Jisr (never blanked).
+ *   - Dry Run reads each employee first: unknown employee / unknown type / missing file / duplicate /
+ *     "already has this document" (skipped unless Replace = YES) are never uploaded.
+ *   - Run Live: 2 at a time, one employee's files one after another; after each upload the
+ *     attachment must be on the profile (new attachment id recorded), and other ID details unchanged.
+ *   - Other document types (e.g. National Address) are LEARNED from one real upload in Jisr
+ *     (category + the fields Jisr sent), never guessed.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+
+  const SECTION_VERSION = '4.5.1';
+  const MODULE_ID = 'employee-documents';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
+  function slug_() {
+    const o = gmGet_('slugOverride', '');
+    if (o) return o;
+    const p = location.hostname.split('.');
+    return p.length >= 3 ? p[0] : '';
+  }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const MAX_BYTES = 10 * 1024 * 1024;
+  const LEARN_KEY = () => 'empDocCategories_' + slug_();
+
+  // ======================================================================= document types
+  const BASE_CATS = [
+    { cat: 'id_iqama', en: 'Iqama / National ID', ar: 'الهوية / الإقامة', fields: { number: 'document_number', issue: 'iqama_issue_date', expiry: 'iqama_expiry_date', place: 'iqama_issue_place' }, words: /iqama|iqamah|^id$|\bid\b|national ?id|nid|resident|هوية|هويه|إقامة|اقامة|اقامه/i },
+    { cat: 'passport', en: 'Passport', ar: 'جواز السفر', fields: { number: 'passport_number', issue: 'passport_issue_date', expiry: 'passport_expiry_date', place: 'passport_issue_place' }, words: /passport|pass|جواز/i },
+  ];
+  /** Field roles from the keys Jisr sent with a learned category. */
+  function fieldsFromKeys_(keys) {
+    const f = {};
+    keys.forEach((k) => {
+      if (!f.number && (/_number$/.test(k) || k === 'document_number')) f.number = k;
+      else if (!f.issue && /issue_date$/.test(k) && !/hijri|_ar$/.test(k)) f.issue = k;
+      else if (!f.expiry && /expiry_date$/.test(k) && !/hijri|_ar$/.test(k)) f.expiry = k;
+      else if (!f.place && /issue_place$/.test(k)) f.place = k;
+    });
+    return f;
+  }
+  const prettify_ = (c) => String(c).replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
+  function cats_() {
+    let learned = [];
+    try { learned = JSON.parse(gmGet_(LEARN_KEY(), '[]') || '[]'); } catch (e) { learned = []; }
+    const out = BASE_CATS.slice();
+    learned.forEach((l) => {
+      if (!l || !l.cat || out.some((c) => c.cat === l.cat)) return;
+      const label = l.label || prettify_(l.cat);
+      out.push({ cat: l.cat, en: label, ar: l.labelAr || label, fields: fieldsFromKeys_(l.keys || []), learned: true, words: new RegExp(l.cat.replace(/_/g, '[ _-]?') + (/address/i.test(l.cat) ? '|address|عنوان' : ''), 'i') });
+    });
+    return out;
+  }
+  const catLabel_ = (c) => (I.isAr() ? c.ar : c.en);
+  /** A document type from free text (label, category key or a known word). */
+  function typeFromText_(s, cats) {
+    const t = String(s == null ? '' : s).trim();
+    if (!t) return null;
+    const low = t.toLowerCase();
+    return cats.find((c) => c.cat === low || c.en.toLowerCase() === low || c.ar === t) || cats.find((c) => c.words.test(t)) || null;
+  }
+
+  // ======================================================================= pure helpers (exported for tests)
+  /** Excel / typed date -> "DD-MM-YYYY" (Jisr's format). '' stays ''. null = not a date. */
+  function toDmy_(v) {
+    if (v === null || v === undefined || v === '') return '';
+    if (v instanceof Date && !isNaN(v)) return pad2(v.getDate()) + '-' + pad2(v.getMonth() + 1) + '-' + v.getFullYear();
+    const s = String(v).trim();
+    if (!s) return '';
+    let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+    if (m) return pad2(m[3]) + '-' + pad2(m[2]) + '-' + m[1];
+    m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+    if (m && +m[2] <= 12 && +m[1] <= 31) return pad2(m[1]) + '-' + pad2(m[2]) + '-' + m[3];
+    return null;
+  }
+  /** "2616501058_iqama.pdf" / "E1043 - Passport.png" -> { key: "2616501058", cat } */
+  function parseFileName_(name, cats) {
+    const base = String(name || '').replace(/\.[^.]+$/, '');
+    const tokens = base.split(/[_\-\s.()]+/).filter(Boolean);
+    let cat = null, key = null;
+    tokens.forEach((t) => { if (!cat) cat = typeFromText_(t, cats); });
+    if (!cat) cat = typeFromText_(base, cats);
+    key = tokens.find((t) => /^\d{5,}$/.test(t)) || tokens.find((t) => !typeFromText_(t, cats) && /\d/.test(t)) || null;
+    return { key, cat };
+  }
+  /** The request body for one file - only the details that were given (blank = keep). */
+  function buildBody_(cat, vals, file) {
+    const ia = {};
+    ['number', 'issue', 'expiry', 'place'].forEach((role) => {
+      const key = cat.fields[role];
+      const v = vals[role];
+      if (key && v !== undefined && v !== null && String(v).trim() !== '') ia[key] = String(v).trim();
+    });
+    const att = { category: cat.cat, file: file.dataUrl, file_file_name: file.name };
+    if (vals.description) att.description = String(vals.description).trim();
+    ia.identification_info_attachments_attributes = [att];
+    return { employee: { identification_info_attributes: ia } };
+  }
+  /** The employee's attachments list anywhere in a response. */
+  function findAttachments_(json) {
+    let out = null;
+    (function walk(v, d) {
+      if (out || !v || typeof v !== 'object' || d > 6) return;
+      if (Array.isArray(v.attachments) && v.attachments.every((a) => a && typeof a === 'object')) { out = v.attachments; return; }
+      Object.keys(v).forEach((k) => walk(v[k], d + 1));
+    })(json, 0);
+    return out;
+  }
+  /** The identification details object (has document_number or passport_number). */
+  function findIdent_(json) {
+    let out = null;
+    (function walk(v, d) {
+      if (out || !v || typeof v !== 'object' || Array.isArray(v) || d > 6) return;
+      if ('document_number' in v || 'passport_number' in v) { out = v; return; }
+      Object.keys(v).forEach((k) => walk(v[k], d + 1));
+    })(json, 0);
+    return out;
+  }
+  const activeOf_ = (atts, cat) => (atts || []).filter((a) => a && a.category === cat && (!a.status || /active/i.test(String(a.status))));
+
+  // ======================================================================= learn other types from one real upload
+  const learnListeners = new Set();
+  function learnFromBody_(bodyText) {
+    let b = null;
+    try { b = typeof bodyText === 'string' ? JSON.parse(bodyText) : bodyText; } catch (e) { return; }
+    const ia = b && b.employee && b.employee.identification_info_attributes;
+    const atts = ia && ia.identification_info_attachments_attributes;
+    if (!Array.isArray(atts)) return;
+    const keys = Object.keys(ia).filter((k) => k !== 'identification_info_attachments_attributes');
+    let learned = [];
+    try { learned = JSON.parse(gmGet_(LEARN_KEY(), '[]') || '[]'); } catch (e) { learned = []; }
+    let changed = false;
+    atts.forEach((a) => {
+      if (!a || !a.category || BASE_CATS.some((c) => c.cat === a.category)) return;
+      const ex = learned.find((l) => l.cat === a.category);
+      if (ex) { if (keys.length && !(ex.keys || []).length) { ex.keys = keys; changed = true; } return; }
+      learned.push({ cat: a.category, keys, at: Date.now() });
+      changed = true;
+    });
+    if (changed) { gmSet_(LEARN_KEY(), JSON.stringify(learned)); learnListeners.forEach((fn) => { try { fn(); } catch (e) { /* ignore */ } }); }
+  }
+  function learnLabels_(json) {
+    const atts = findAttachments_(json);
+    if (!atts) return;
+    let learned = [];
+    try { learned = JSON.parse(gmGet_(LEARN_KEY(), '[]') || '[]'); } catch (e) { return; }
+    let changed = false;
+    atts.forEach((a) => {
+      const l = learned.find((x) => x.cat === a.category);
+      if (l && a.category_i18n && l.label !== a.category_i18n) { l.label = a.category_i18n; changed = true; }
+    });
+    if (changed) gmSet_(LEARN_KEY(), JSON.stringify(learned));
+  }
+  (function hook_() {
+    if (W.__jisrEmpDocSniffer) return;
+    W.__jisrEmpDocSniffer = true;
+    const isEmpPut = (m, u) => m === 'PUT' && /\/v2\/employees\/\d+\/?(\?|$)/.test(String(u || ''));
+    const XO = W.XMLHttpRequest && W.XMLHttpRequest.prototype;
+    if (XO) {
+      const open = XO.open, send = XO.send;
+      XO.open = function (method, url) { this.__jedM = String(method || '').toUpperCase(); this.__jedU = String(url || ''); return open.apply(this, arguments); };
+      XO.send = function (body) {
+        const xhr = this;
+        if (isEmpPut(xhr.__jedM, xhr.__jedU) && !xhr.__jedOwn) {
+          xhr.addEventListener('load', () => { if (xhr.status >= 200 && xhr.status < 300) { learnFromBody_(body); try { learnLabels_(JSON.parse(xhr.responseText)); } catch (e) { /* ignore */ } } });
+        }
+        return send.apply(this, arguments);
+      };
+    }
+    if (typeof W.fetch === 'function') {
+      const f = W.fetch;
+      W.fetch = function (input, init) {
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        const method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+        const p = f.apply(this, arguments);
+        if (isEmpPut(method, url) && !(init && init.__jedOwn)) {
+          p.then((res) => { if (res && res.ok) { learnFromBody_(init && init.body); res.clone().json().then(learnLabels_).catch(() => {}); } }).catch(() => {});
+        }
+        return p;
+      };
+    }
+  })();
+
+  // ======================================================================= network
+  function jisrMsg_(j) {
+    if (!j || typeof j !== 'object') return '';
+    const m = j.message || j.error || (j.errors && (Array.isArray(j.errors) ? j.errors.join('; ') : typeof j.errors === 'object' ? Object.values(j.errors).flat().join('; ') : j.errors));
+    return m ? String(m).slice(0, 200) : '';
+  }
+  async function request_(method, path, query, body) {
+    const qs = new URLSearchParams(Object.assign({}, query || {}, { slug: slug_() }));
+    const url = apiBase_() + path + '?' + qs.toString();
+    for (let a = 0; a < 4; a++) {
+      let res;
+      try {
+        res = await fetch(url, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined, __jedOwn: true });
+      } catch (e) {
+        if (method !== 'GET') { const err = new Error(T('No answer from Jisr', 'لا رد من جسر')); err.unknown = true; throw err; }
+        await sleep_(800 * (a + 1)); continue;
+      }
+      if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول مجددًا.'));
+      if (res.status === 403) {
+        // 403 = Jisr refused this action for this user (role / permission), the session itself is fine
+        const j = await res.json().catch(() => null);
+        const why = jisrMsg_(j);
+        const err = new Error(T('Jisr refused (HTTP 403) ', 'رفض جسر الطلب (HTTP 403) ') + method + ' ' + path + (why ? ': ' + why : '') + T(' — your Jisr role may not have access to employee documents / editing this employee.', ' — قد لا يملك دورك في جسر صلاحية مستندات الموظفين أو تعديل هذا الموظف.'));
+        err.status = 403; throw err;
+      }
+      if (res.status === 429 || (method === 'GET' && res.status >= 500)) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
+      const json = await res.json().catch(() => null);
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+    }
+    throw new Error('Request failed after retries');
+  }
+  async function readEmployee_(empId) {
+    let r;
+    try { r = await request_('GET', '/v2/employees/' + encodeURIComponent(empId), { profile_tab: 'documents' }); }
+    catch (e) { if (e.status !== 403) throw e; r = null; }
+    // some roles may not open the documents tab directly: try the plain profile once
+    if (!r || !r.ok) {
+      const r2 = await request_('GET', '/v2/employees/' + encodeURIComponent(empId), null).catch((e) => { if (r) return r; throw e; });
+      if (r2 && r2.ok) r = r2; else r = r || r2;
+    }
+    if (!r.ok) throw new Error(T('Could not read the employee (HTTP ', 'تعذّرت قراءة الموظف (HTTP ') + r.status + ')' + (jisrMsg_(r.json) ? ': ' + jisrMsg_(r.json) : ''));
+    return { attachments: findAttachments_(r.json) || [], ident: findIdent_(r.json) || null, raw: r.json };
+  }
+  function dataUrl_(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => {
+        let u = String(fr.result || '');
+        if (/^data:;base64,/.test(u)) u = u.replace(/^data:;/, 'data:application/octet-stream;');
+        resolve(u);
+      };
+      fr.onerror = () => reject(new Error(T('Could not read the file', 'تعذّرت قراءة الملف')));
+      fr.readAsDataURL(file);
+    });
+  }
+  async function pool_(items, n, fn) {
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(n, items.length)) }, async () => { while (next < items.length) { const i = next++; await fn(items[i], i); } }));
+  }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v;
+      else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v);
+      else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-empdocs-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-empdocs-css', text: `
+      .jed-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; }
+      .jed-step { border: 1px solid #e8eaed; border-radius: 10px; padding: 10px 12px; }
+      .jed-step b { display: block; font-size: 12.5px; margin-bottom: 6px; }
+      .jed-step .jbo-btn { margin: 0 6px 6px 0; }
+      .jed-wrap { max-height: 44vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jed-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jed-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jed-wrap td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jed-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jed-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      @media (max-width: 760px) { .jed-steps { grid-template-columns: 1fr; } }
+    ` }));
+  }
+
+  const HEADERS = ['Employee ID', 'Employee Name', 'Iqama / National ID', 'Document', 'File name', 'Document number', 'Issue date', 'Expiry date', 'Issue place', 'Description', 'Replace existing? (type YES)'];
+  const isYes_ = (v) => /^(yes|y|true|1|نعم)$/i.test(String(v == null ? '' : v).trim());
+  const norm_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
+
+  function openTool_() {
+    injectCss_();
+    const S = { rows: [], files: new Map(), busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false };
+    const X = W.__jisrBulkOpsXlsx;
+    const body = el('div', { class: 'jbo-modal-body' });
+    const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' });
+    const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1200px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const onLearn = () => { S.note = T('Learned a new document type from your upload in Jisr.', 'تم التعرّف على نوع مستند جديد من رفعك في جسر.'); S.noteErr = false; paint_(); };
+    learnListeners.add(onLearn);
+    const close = () => { if (S.phase === 'running' && !confirm(T('Still uploading. Close anyway?', 'لا يزال الرفع جاريًا. هل تريد الإغلاق؟'))) return; S.stop = true; learnListeners.delete(onLearn); backdrop.remove(); };
+    closeBtn.addEventListener('click', close);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    const tplB = el('button', { class: 'jbo-btn', text: T('⬇ List template (.xlsx)', '⬇ قالب القائمة (‎.xlsx)') });
+    const upB = el('button', { class: 'jbo-btn', text: T('⬆ Upload filled list', '⬆ رفع القائمة المعبأة') });
+    const listIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
+    const filesB = el('button', { class: 'jbo-btn', text: T('📄 Choose files', '📄 اختر الملفات') });
+    const folderB = el('button', { class: 'jbo-btn', text: T('📁 Choose folder', '📁 اختر مجلدًا') });
+    const filesIn = el('input', { type: 'file', multiple: true, style: { display: 'none' } });
+    const folderIn = el('input', { type: 'file', multiple: true, webkitdirectory: true, style: { display: 'none' } });
+    const fromNamesB = el('button', { class: 'jbo-btn', text: T('Build the list from file names', 'إنشاء القائمة من أسماء الملفات') });
+    const filesInfo = el('div', { class: 'jbo-muted', style: { fontSize: '12px' } });
+    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const statsEl = el('div', { class: 'jed-stats' });
+    const wrap = el('div', { class: 'jed-wrap' });
+    const dryB = el('button', { class: 'jbo-btn', text: T('🔍 Dry Run', '🔍 تشغيل تجريبي') });
+    const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
+    const resB = el('button', { class: 'jbo-btn', text: T('⬇ Results (.xlsx)', '⬇ النتائج (‎.xlsx)') });
+
+    function render_() {
+      titleEl.textContent = T('Employee Documents', 'مستندات الموظفين');
+      body.innerHTML = ''; foot.innerHTML = '';
+      const cats = cats_();
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
+        'Upload ID / Iqama, passport and other employee documents in bulk. Each file is matched to one employee by Iqama number (or employee ID), checked in a Dry Run, then uploaded. Details you leave blank stay as they are in Jisr.',
+        'ارفع الهوية / الإقامة وجواز السفر ومستندات الموظفين الأخرى دفعة واحدة. يُطابَق كل ملف مع موظف واحد برقم الإقامة (أو الرقم الوظيفي)، ثم يُفحص بتشغيل تجريبي، ثم يُرفع. التفاصيل التي تتركها فارغة تبقى كما هي في جسر.') }));
+      const steps = el('div', { class: 'jed-steps' }, [
+        el('div', { class: 'jed-step' }, [el('b', { text: T('1. The list', '1. القائمة') }), tplB, upB, el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('One row per file: who, which document, which file.', 'صف لكل ملف: الموظف، والمستند، والملف.') })]),
+        el('div', { class: 'jed-step' }, [el('b', { text: T('2. The files', '2. الملفات') }), filesB, folderB, filesInfo]),
+        el('div', { class: 'jed-step' }, [el('b', { text: T('Or: no list', 'أو: بدون قائمة') }), fromNamesB, el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Files named like 2616501058_iqama.pdf or E1043_passport.png', 'ملفات بأسماء مثل 2616501058_iqama.pdf أو E1043_passport.png') })]),
+      ]);
+      body.appendChild(steps);
+      body.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px', marginBottom: '6px' }, text: T('Document types for this company: ', 'أنواع المستندات لهذه الشركة: ') + cats.map(catLabel_).join(' · ') + T('. To add another type (e.g. National Address), upload one such file by hand in Jisr with this script running; it is learned from that upload.', '. لإضافة نوع آخر (مثل العنوان الوطني) ارفع ملفًا واحدًا منه يدويًا في جسر مع تشغيل هذا السكربت، وسيُتعرَّف عليه من ذلك الرفع.') }));
+      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap);
+      body.appendChild(listIn); body.appendChild(filesIn); body.appendChild(folderIn);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
+      paint_();
+    }
+
+    function paint_() {
+      const n = S.files.size;
+      filesInfo.textContent = n ? n + T(' file(s) chosen', ' ملف مختار') : T('No files chosen yet', 'لم تُختر ملفات بعد');
+      statusEl.textContent = S.busy || S.note;
+      statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      statsEl.innerHTML = '';
+      const cnt = (st) => S.rows.filter((r) => r.state === st).length;
+      if (S.rows.length) {
+        [[S.rows.length, T('rows', 'صف')], [cnt('ready'), T('ready', 'جاهز')], [cnt('error'), T('blocked', 'محجوب')], [cnt('skip'), T('skipped', 'متخطى')], [cnt('done'), T('uploaded ✓', 'تم الرفع ✓')], [cnt('failed') + cnt('check'), T('need a look', 'تحتاج مراجعة')]]
+          .filter(([v], i) => i < 2 || v).forEach(([v, l]) => statsEl.appendChild(el('span', {}, [el('b', { text: String(v) }), ' ' + l])));
+      }
+      wrap.innerHTML = '';
+      if (S.rows.length) {
+        const t = el('table');
+        t.appendChild(el('tr', {}, ['#', T('Employee', 'الموظف'), T('Iqama / ID', 'الإقامة / الهوية'), T('Document', 'المستند'), T('File', 'الملف'), T('Details', 'التفاصيل'), T('Status', 'الحالة')].map((h) => el('th', { text: h }))));
+        S.rows.slice(0, 2000).forEach((r) => {
+          const col = r.state === 'done' ? '#137333' : (r.state === 'error' || r.state === 'failed' || r.state === 'check') ? '#c5221f' : r.state === 'skip' ? '#b06000' : '#5f6368';
+          const det = [r.number && (T('No. ', 'رقم ') + r.number), r.expiry && (T('expires ', 'ينتهي ') + r.expiry), r.issue && (T('issued ', 'صدر ') + r.issue)].filter(Boolean).join(' · ');
+          t.appendChild(el('tr', {}, [
+            el('td', { text: String(r.no) }),
+            el('td', { text: r.emp ? r.emp.name + (r.emp.code ? ' · ' + r.emp.code : '') : (r.empText || '—') }),
+            el('td', { text: (r.emp && r.emp.nid) || r.iqamaText || '—' }),
+            el('td', { text: r.cat ? catLabel_(r.cat) : (r.typeText || '—') }),
+            el('td', { text: r.fileName || '—' }),
+            el('td', { text: det || '—' }),
+            el('td', { text: r.msg || (r.state === 'ready' ? T('ready', 'جاهز') : '—'), style: { color: col, whiteSpace: 'pre-line' } }),
+          ]));
+        });
+        wrap.appendChild(t);
+      }
+      const ready = S.rows.filter((r) => r.state === 'ready').length;
+      runB.textContent = T('▶ Upload ', '▶ رفع ') + ready + T(' file(s)', ' ملف');
+      runB.disabled = !S.dryDone || !ready || !!S.busy;
+      dryB.disabled = !S.rows.length || !!S.busy;
+      stopB.style.display = S.phase === 'running' ? '' : 'none';
+      [tplB, upB, filesB, folderB, fromNamesB].forEach((b) => { b.disabled = !!S.busy; });
+      resB.style.display = S.rows.some((r) => r.state === 'done' || r.state === 'failed' || r.state === 'check') ? '' : 'none';
+    }
+    function invalidate_() { S.dryDone = false; S.rows.forEach((r) => { if (r.state !== 'done') { r.state = ''; r.msg = ''; } }); }
+
+    // ---------------- list template
+    tplB.addEventListener('click', async () => {
+      S.busy = T('Loading employees…', 'جارٍ تحميل الموظفين…'); paint_();
+      try {
+        const emps = (await W.__jisrBulkOpsEmployees.get(false)).slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+        const cats = cats_();
+        const rows = [];
+        emps.forEach((e) => cats.forEach((c) => rows.push([e.code || e.id, e.name || '', e.nid ? String(e.nid) : '', catLabel_(c), '', '', '', '', '', '', ''])));
+        X.setNextLists({ Document: { values: cats.map(catLabel_), strict: true } });
+        await X.downloadAoa('jisr-employee-documents-' + slug_() + '.xlsx', HEADERS, rows, 'Documents');
+        S.note = T('Template downloaded: one row per employee and document type. Fill "File name" only on the rows you have a file for; rows without a file are ignored.', 'تم تنزيل القالب: صف لكل موظف ونوع مستند. املأ «File name» فقط للصفوف التي لديك ملف لها؛ الصفوف بدون ملف تُتجاهل.'); S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+
+    // ---------------- read a filled list
+    upB.addEventListener('click', () => { listIn.value = ''; listIn.click(); });
+    listIn.addEventListener('change', async () => {
+      const f = listIn.files && listIn.files[0]; if (!f) return;
+      try {
+        const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array', cellDates: true });
+        const ws = wb.Sheets[wb.SheetNames.find((n) => n !== 'Lists') || wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+        const h = (aoa[0] || []).map(norm_);
+        const used = new Set();
+        const find = (...tests) => { for (const tst of tests) { const i = h.findIndex((x, k) => !used.has(k) && tst(x)); if (i >= 0) { used.add(i); return i; } } return -1; };
+        const c = {};
+        c.number = find((x) => /document number|doc number|passport number|iqama number|^number$|رقم المستند/.test(x));
+        c.issueDate = find((x) => /issue date|تاريخ الإصدار/.test(x));
+        c.expiry = find((x) => /expiry|expire|تاريخ الانتهاء/.test(x));
+        c.place = find((x) => /issue place|place|مكان/.test(x));
+        c.iqama = find((x) => /iqama|national id|هوية|إقامة|اقامة/.test(x));
+        c.emp = find((x) => /^employee id$|employee code|emp(loyee)? (id|no|code)|^code$|الرقم الوظيفي/.test(x), (x) => /^employee$|pick from list/.test(x));
+        c.name = find((x) => /employee name|^name$|الاسم/.test(x));
+        c.type = find((x) => /^document$|document type|^type$|نوع المستند|المستند/.test(x));
+        c.file = find((x) => /file/.test(x) || /الملف/.test(x));
+        c.desc = find((x) => /description|الوصف/.test(x));
+        c.replace = find((x) => /replace|استبدال/.test(x));
+        if (c.file < 0 || c.type < 0 || (c.emp < 0 && c.iqama < 0)) throw new Error(T('Use the list template from this tool (it needs Employee ID or Iqama, Document and File name columns).', 'استخدم قالب القائمة من هذه الأداة (يحتاج أعمدة الرقم الوظيفي أو الإقامة، والمستند، واسم الملف).'));
+        const get = (r, i) => (i >= 0 ? r[i] : '');
+        S.rows = [];
+        aoa.slice(1).forEach((r, k) => {
+          const fileName = String(get(r, c.file) || '').trim();
+          if (!fileName) return; // rows without a file are ignored
+          S.rows.push({ no: k + 2, empText: String(get(r, c.emp) || '').trim(), iqamaText: String(get(r, c.iqama) || '').trim(), typeText: String(get(r, c.type) || '').trim(), fileName,
+            numberRaw: get(r, c.number), issueRaw: get(r, c.issueDate), expiryRaw: get(r, c.expiry), place: String(get(r, c.place) || '').trim(), description: String(get(r, c.desc) || '').trim(), replace: isYes_(get(r, c.replace)), state: '', msg: '' });
+        });
+        S.dryDone = false;
+        S.note = S.rows.length + T(' row(s) with a file name read from the list. Choose the files, then run the Dry Run.', ' صف به اسم ملف قُرئ من القائمة. اختر الملفات ثم شغّل التشغيل التجريبي.'); S.noteErr = !S.rows.length;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      paint_();
+    });
+
+    // ---------------- files
+    const addFiles_ = (list) => { Array.from(list || []).forEach((f) => { if (f.name && !/^\./.test(f.name)) S.files.set(f.name.toLowerCase(), f); }); invalidate_(); S.note = ''; paint_(); };
+    filesB.addEventListener('click', () => { filesIn.value = ''; filesIn.click(); });
+    folderB.addEventListener('click', () => { folderIn.value = ''; folderIn.click(); });
+    filesIn.addEventListener('change', () => addFiles_(filesIn.files));
+    folderIn.addEventListener('change', () => addFiles_(folderIn.files));
+
+    // ---------------- list from file names
+    fromNamesB.addEventListener('click', async () => {
+      if (!S.files.size) { S.note = T('Choose the files first.', 'اختر الملفات أولًا.'); S.noteErr = true; paint_(); return; }
+      S.busy = T('Loading employees…', 'جارٍ تحميل الموظفين…'); paint_();
+      try {
+        await W.__jisrBulkOpsEmployees.get(false);
+        const cats = cats_();
+        const have = new Set(S.rows.map((r) => r.fileName.toLowerCase()));
+        const bad = [];
+        let k = S.rows.length;
+        Array.from(S.files.values()).forEach((f) => {
+          if (have.has(f.name.toLowerCase())) return;
+          const p = parseFileName_(f.name, cats);
+          if (!p.key || !p.cat) { bad.push(f.name); return; }
+          S.rows.push({ no: ++k, empText: /^\d{8,}$/.test(p.key) ? '' : p.key, iqamaText: /^\d{8,}$/.test(p.key) ? p.key : '', typeText: p.cat.en, fileName: f.name, numberRaw: '', issueRaw: '', expiryRaw: '', place: '', description: '', replace: false, state: '', msg: '' });
+        });
+        S.dryDone = false;
+        S.note = T('List built from file names. ', 'تم إنشاء القائمة من أسماء الملفات. ') + (bad.length ? T('Could not read who / which document from: ', 'تعذّر تحديد الموظف أو المستند من: ') + bad.slice(0, 12).join(', ') + (bad.length > 12 ? '…' : '') : '');
+        S.noteErr = !!bad.length;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+
+    // ---------------- dry run
+    async function dryRun_() {
+      S.busy = T('Checking…', 'جارٍ الفحص…'); S.note = ''; S.noteErr = false; paint_();
+      try {
+        const emps = await W.__jisrBulkOpsEmployees.get(false);
+        const byId = new Map(), byCode = new Map(), byNid = new Map();
+        emps.forEach((e) => { byId.set(String(e.id), e); if (e.code) byCode.set(String(e.code).toLowerCase(), e); if (e.nid) byNid.set(String(e.nid), e); });
+        const cats = cats_();
+        const pickId = X && X.pickId;
+        const seen = new Map();
+        S.rows.forEach((r) => {
+          if (r.state === 'done') return;
+          r.state = ''; r.msg = ''; r.emp = null; r.cat = null; r.file = null;
+          const errs = [];
+          // who
+          const fromPick = pickId && pickId(r.empText);
+          const e1 = fromPick ? byId.get(fromPick) : (r.empText ? (byCode.get(r.empText.toLowerCase()) || byNid.get(r.empText) || null) : null);
+          const e2 = r.iqamaText ? byNid.get(String(r.iqamaText).replace(/\.0+$/, '')) : null;
+          if (r.empText && !e1) errs.push(T('Employee ID not found in Jisr', 'الرقم الوظيفي غير موجود في جسر'));
+          if (r.iqamaText && !e2 && !e1) errs.push(T('Iqama / ID number not found in Jisr', 'رقم الإقامة / الهوية غير موجود في جسر'));
+          if (e1 && e2 && e1.id !== e2.id) errs.push(T('Employee ID and Iqama belong to different employees', 'الرقم الوظيفي والإقامة لموظفين مختلفين'));
+          r.emp = e1 || e2 || null;
+          // which document
+          r.cat = typeFromText_(r.typeText, cats);
+          if (!r.cat) errs.push(T('Unknown document type "', 'نوع مستند غير معروف "') + r.typeText + T('" — use one of: ', '" — استخدم أحد: ') + cats.map(catLabel_).join(' / '));
+          // which file
+          r.file = S.files.get(String(r.fileName).toLowerCase()) || null;
+          if (!r.file) errs.push(T('File not among the chosen files', 'الملف غير موجود ضمن الملفات المختارة'));
+          else if (r.file.size > MAX_BYTES) errs.push(T('File is larger than 10 MB', 'حجم الملف أكبر من 10 ميجابايت'));
+          else if (!r.file.size) errs.push(T('File is empty', 'الملف فارغ'));
+          // details
+          const num = String(r.numberRaw == null ? '' : r.numberRaw).replace(/\.0+$/, '').trim();
+          r.number = num;
+          r.issue = toDmy_(r.issueRaw); r.expiry = toDmy_(r.expiryRaw);
+          if (r.issue === null) { errs.push(T('Issue date is not a date', 'تاريخ الإصدار غير صالح')); r.issue = ''; }
+          if (r.expiry === null) { errs.push(T('Expiry date is not a date', 'تاريخ الانتهاء غير صالح')); r.expiry = ''; }
+          if (r.emp && r.cat) {
+            const key = r.emp.id + '|' + r.cat.cat;
+            if (seen.has(key)) errs.push(T('Same employee and document as row ', 'نفس الموظف والمستند في الصف ') + seen.get(key));
+            else seen.set(key, r.no);
+          }
+          if (errs.length) { r.state = 'error'; r.msg = '✗ ' + errs.join('\n✗ '); }
+        });
+        // read each matched employee once: already uploaded? current details?
+        const toRead = Array.from(new Set(S.rows.filter((r) => !r.state && r.emp).map((r) => String(r.emp.id))));
+        const info = new Map();
+        let done = 0;
+        await pool_(toRead, 4, async (id) => {
+          try { info.set(id, await readEmployee_(id)); } catch (e) { info.set(id, { error: T('Reading the employee: ', 'قراءة الموظف: ') + e.message }); }
+          done++; S.busy = T('Reading employees… ', 'جارٍ قراءة الموظفين… ') + done + '/' + toRead.length; statusEl.textContent = S.busy;
+        });
+        S.rows.forEach((r) => {
+          if (r.state) return;
+          const inf = info.get(String(r.emp.id));
+          if (!inf || inf.error) { r.state = 'error'; r.msg = '✗ ' + ((inf && inf.error) || 'read failed'); return; }
+          r.before = inf;
+          const existing = activeOf_(inf.attachments, r.cat.cat);
+          const notes = [];
+          if (existing.length && !r.replace) { r.state = 'skip'; r.msg = T('Already has a ', 'لديه بالفعل ') + catLabel_(r.cat) + T(' file (', ' (') + existing.map((a) => a.file_name).join(', ') + T(') — skipped. Type YES in "Replace existing?" to upload anyway.', ') — تم التخطي. اكتب YES في «Replace existing?» للرفع على أي حال.'); return; }
+          if (existing.length) notes.push(T('Will be added next to the existing file(s): ', 'سيُضاف بجانب الملف/الملفات الحالية: ') + existing.map((a) => a.file_name).join(', '));
+          const cur = inf.ident || {};
+          [['number', T('number', 'الرقم')], ['issue', T('issue date', 'تاريخ الإصدار')], ['expiry', T('expiry date', 'تاريخ الانتهاء')], ['place', T('issue place', 'مكان الإصدار')]].forEach(([role, label]) => {
+            const key = r.cat.fields[role]; const nv = role === 'place' ? r.place : r[role];
+            if (!key || !nv) return;
+            const ov = cur[key] == null ? '' : String(cur[key]);
+            if (ov && ov !== nv) notes.push((role === 'number' && r.cat.cat === 'id_iqama' ? '⚠ ' : '') + label + ': ' + ov + ' → ' + nv);
+            else if (!ov) notes.push(label + ': ' + nv);
+          });
+          if (r.cat.learned && !Object.keys(r.cat.fields).length && (r.number || r.expiry || r.issue)) notes.push(T('This type has no number/date fields in Jisr; only the file is sent.', 'هذا النوع بلا حقول رقم/تاريخ في جسر؛ يُرسل الملف فقط.'));
+          r.state = 'ready'; r.msg = notes.length ? T('ready — ', 'جاهز — ') + notes.join('\n') : '';
+        });
+        S.dryDone = true;
+        const rd = S.rows.filter((r) => r.state === 'ready').length;
+        S.note = T('Dry Run done — nothing was sent. ', 'انتهى التشغيل التجريبي — لم يُرسل شيء. ') + rd + T(' file(s) ready to upload.', ' ملف جاهز للرفع.');
+        S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    }
+    dryB.addEventListener('click', dryRun_);
+
+    // ---------------- run live
+    async function runLive_() {
+      const todo = S.rows.filter((r) => r.state === 'ready');
+      if (!todo.length) return;
+      const emps = new Set(todo.map((r) => r.emp.id)).size;
+      if (!confirm(T('Upload ', 'رفع ') + todo.length + T(' file(s) to ', ' ملف إلى ') + emps + T(' employee(s) in ', ' موظف في ') + slug_() + T(' now?', ' الآن؟'))) return;
+      S.phase = 'running'; S.stop = false; S.busy = ' '; paint_();
+      const groups = new Map();
+      todo.forEach((r) => { const k = String(r.emp.id); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
+      let done = 0;
+      await pool_(Array.from(groups.values()), 2, async (rows) => {
+        for (const r of rows) {
+          if (S.stop) { r.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); r.state = ''; continue; }
+          await uploadOne_(r);
+          done++; S.busy = T('Uploading… ', 'جارٍ الرفع… ') + done + '/' + todo.length; paint_();
+        }
+      });
+      S.phase = 'done'; S.busy = '';
+      const ok = todo.filter((r) => r.state === 'done').length;
+      S.note = ok + T(' of ', ' من ') + todo.length + T(' file(s) uploaded and found on the employee profile.', ' ملف تم رفعه والتحقق منه في ملف الموظف.'); S.noteErr = ok < todo.length;
+      logActivity_(todo);
+      paint_();
+    }
+    async function uploadOne_(r) {
+      try {
+        const dataUrl = await dataUrl_(r.file);
+        const bodyJ = buildBody_(r.cat, { number: r.number, issue: r.issue, expiry: r.expiry, place: r.place, description: r.description }, { dataUrl, name: r.file.name });
+        let res = null, unknown = false;
+        try { res = await request_('PUT', '/v2/employees/' + encodeURIComponent(r.emp.id), null, bodyJ); }
+        catch (e) { if (!e.unknown) throw e; unknown = true; }
+        if (res && !res.ok) { r.state = 'failed'; r.msg = '✗ ' + T('Upload: ', 'الرفع: ') + (jisrMsg_(res.json) || ('HTTP ' + res.status)); return; }
+        // confirm: the new attachment is on the profile, other ID details unchanged
+        const beforeIds = new Set((r.before.attachments || []).map((a) => String(a.id)));
+        let after = res && res.json ? { attachments: findAttachments_(res.json), ident: findIdent_(res.json) } : null;
+        if (!after || !after.attachments) after = await readEmployee_(r.emp.id);
+        const fresh = activeOf_(after.attachments, r.cat.cat).filter((a) => !beforeIds.has(String(a.id)));
+        const hit = fresh.find((a) => String(a.file_name || '') === r.file.name) || fresh[0];
+        const sentKeys = new Set(Object.keys(bodyJ.employee.identification_info_attributes));
+        const changed = [];
+        if (r.before.ident && after.ident) Object.keys(r.before.ident).forEach((k) => { if (!sentKeys.has(k) && typeof r.before.ident[k] !== 'object' && String(r.before.ident[k] == null ? '' : r.before.ident[k]) !== String(after.ident[k] == null ? '' : after.ident[k])) changed.push(k); });
+        if (hit) {
+          r.attachmentId = hit.id;
+          r.state = changed.length ? 'check' : 'done';
+          r.msg = (changed.length ? '⚠ ' : '✓ ') + T('uploaded (attachment #', 'تم الرفع (مرفق #') + hit.id + ')' + (changed.length ? T(' — other ID details changed: ', ' — تغيّرت تفاصيل أخرى: ') + changed.join(', ') : '');
+        } else {
+          r.state = 'check';
+          r.msg = unknown ? T('⚠ No answer from Jisr and the file is not on the profile — check the employee in Jisr', '⚠ لا رد من جسر والملف غير موجود في ملف الموظف — تحقّق من الموظف في جسر') : T('⚠ Jisr said OK but the file is not on the profile', '⚠ قال جسر تم، لكن الملف غير موجود في ملف الموظف');
+        }
+      } catch (e) { r.state = 'failed'; r.msg = '✗ ' + T('Upload: ', 'الرفع: ') + e.message; }
+    }
+    runB.addEventListener('click', runLive_);
+    stopB.addEventListener('click', () => { S.stop = true; });
+
+    function logActivity_(rows) {
+      try {
+        const url = W.localStorage.getItem(GM_PREFIX + 'backendUrl');
+        if (!url || typeof GM_xmlhttpRequest !== 'function') return;
+        // no ID numbers or file names in the log (personal data) - employee id + document type + result only
+        GM_xmlhttpRequest({
+          method: 'POST', url: url + '/api/log', timeout: 8000,
+          headers: { 'Content-Type': 'application/json', 'X-Write-Key': W.localStorage.getItem(GM_PREFIX + 'backendWriteKey') || '' },
+          data: JSON.stringify({ actor: W.localStorage.getItem(GM_PREFIX + 'ownerLabel') || 'unknown', slug: slug_(), entries: rows.map((r) => ({ module: MODULE_ID, rowKey: r.emp.id + ':' + r.cat.cat, status: r.state === 'done' ? 'ok' : 'error', message: r.state === 'done' ? 'uploaded #' + r.attachmentId : String(r.msg || '').slice(0, 120), at: new Date().toISOString() })) }),
+          onload: () => {}, onerror: () => {}, ontimeout: () => {},
+        });
+      } catch (e) { /* ignore */ }
+    }
+    resB.addEventListener('click', () => {
+      const aoa = [['Row', 'Employee ID', 'Employee Name', 'Iqama / National ID', 'Document', 'File name', 'Result', 'Attachment ID']].concat(S.rows.map((r) => [r.no, r.emp ? r.emp.code || r.emp.id : r.empText, r.emp ? r.emp.name : '', r.emp ? r.emp.nid || '' : r.iqamaText, r.cat ? r.cat.en : r.typeText, r.fileName, String(r.msg || '').replace(/\n/g, ' | '), r.attachmentId || '']));
+      const wb = XLSX.utils.book_new(); const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = [{ wch: 6 }, { wch: 12 }, { wch: 28 }, { wch: 16 }, { wch: 18 }, { wch: 30 }, { wch: 70 }, { wch: 14 }];
+      XLSX.utils.book_append_sheet(wb, ws, 'Upload results');
+      XLSX.writeFile(wb, 'jisr-employee-documents-results-' + slug_() + '.xlsx');
+    });
+
+    render_();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Employee Documents', open: openTool_, version: SECTION_VERSION };
+    W.__jisrEmpDocs = { toDmy_, parseFileName_, buildBody_, findAttachments_, findIdent_, typeFromText_, fieldsFromKeys_, cats_, learnFromBody_ };
+    if (g._rerender) g._rerender();
+  }
+  register_();
 })();
 
 
