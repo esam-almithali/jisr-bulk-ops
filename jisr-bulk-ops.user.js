@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.19.0
+// @version      4.21.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @updateURL    https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
 // @downloadURL  https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
@@ -27,7 +27,7 @@
 // ==/UserScript==
 
 /**
- * JISR BULK OPS - ALL-IN-ONE  v4.19.0
+ * JISR BULK OPS - ALL-IN-ONE  v4.21.0
  * ======================================
  * One install instead of eleven. This file is the old per-module toolkit
  * (modules 01-05, 07-12, each at its latest version) placed back to back,
@@ -62,13 +62,13 @@
  *   12 Departments  v1.0.3
  *   14 Employee Groups & Business Units + Export Everything  v3.0.0
  *   15 Attendance Log Converter  v3.1.0
- *   16 GOSI Compliance — Export & Salary Check  v4.19.0
- *    0 Language follows the Jisr page (EN/AR)  v4.19.0
+ *   16 GOSI Compliance — Export & Salary Check  v4.21.0
+ *    0 Language follows the Jisr page (EN/AR)  v4.21.0
  */
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.19.0
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.21.0
 // ###########################################################################
 
 /*
@@ -1084,7 +1084,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0c — Google sign-in (company accounts only)  v4.19.0
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.21.0
 // ###########################################################################
 
 /*
@@ -1308,7 +1308,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.19.0
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.21.0
 // ###########################################################################
 
 /*
@@ -1373,10 +1373,73 @@
   // ======================================================================= shared employee list
   const store = { list: null, at: 0, slug: '', loading: null, listeners: [] };
   (function restore_() {
-    const c = gmGet_('employeesShared_' + slug_(), null);
+    const c = gmGet_('employeesShared2_' + slug_(), null);
     if (c && c.at && Array.isArray(c.list) && Date.now() - c.at < FRESH_MS * 3) { store.list = c.list; store.at = c.at; store.slug = slug_(); }
   })();
 
+  // ---- Iqama / National ID: v4.20 — get_all (with the roles template) may not carry it, so look deeper,
+  //      then fall back to get_all without the template, then to each employee's profile (cached per company).
+  const NID_KEYS = /^(document_number|id_number|national_id|national_id_number|iqama_number|iqama|identity_number|identification_number|nin|id_no|identity_no)$/i;
+  function nidOf_(e) {
+    const direct = (e && (e.identification_info || e.identification_info_attributes)) || {};
+    const v0 = pick_(direct, ['document_number', 'id_number']) || pick_(e, ['national_id', 'document_number', 'iqama_number', 'identity_number']);
+    if (v0) return String(v0).replace(/\.0+$/, '').trim();
+    let out = '';
+    (function walk(v, d) {
+      if (out || !v || typeof v !== 'object' || d > 4) return;
+      for (const k of Object.keys(v)) {
+        const x = v[k];
+        if (x != null && typeof x !== 'object' && NID_KEYS.test(k)) { const t = String(x).replace(/\.0+$/, '').trim(); if (/^\d{8,15}$/.test(t) || (/^[A-Z0-9]{6,15}$/i.test(t) && /\d{5}/.test(t))) { out = t; return; } }
+      }
+      for (const k of Object.keys(v)) if (v[k] && typeof v[k] === 'object' && !/^(roles?|permissions?|modules?|line_manager|manager|parent)$/i.test(k)) walk(v[k], d + 1);
+    })(e, 0);
+    return out;
+  }
+  const nidCacheKey_ = () => 'nidCache_' + slug_();
+  async function fillNids_(out, onProgress) {
+    let missing = out.filter((e) => !e.nid);
+    if (!missing.length) return;
+    const cache = gmGet_(nidCacheKey_(), {}) || {};
+    missing.forEach((e) => { if (cache[e.id]) e.nid = cache[e.id]; });
+    missing = out.filter((e) => !e.nid);
+    if (!missing.length) return;
+    const slug = slug_();
+    const hdr = { accept: 'application/json', slug, locale: 'en' };
+    // 1) the same list without the roles template (one probe page first)
+    try {
+      const r = await fetch(apiBase_() + '/v2/employees/get_all?' + new URLSearchParams({ page: 1, per_page: 100, slug }), { credentials: 'include', headers: hdr });
+      const rows = r.ok ? records_(await r.json().catch(() => null)) : [];
+      if (rows.some((x) => nidOf_(x))) {
+        const byId = new Map(out.map((e) => [String(e.id), e]));
+        const take = (list) => list.forEach((x) => { const e = byId.get(String(pick_(x, ['id', 'employee_id']))); const n = nidOf_(x); if (e && n && !e.nid) e.nid = n; });
+        take(rows);
+        for (let page = 2; rows.length === 100 && page <= 300 && out.some((e) => !e.nid); page++) {
+          const r2 = await fetch(apiBase_() + '/v2/employees/get_all?' + new URLSearchParams({ page, per_page: 100, slug }), { credentials: 'include', headers: hdr });
+          const rr = r2.ok ? records_(await r2.json().catch(() => null)) : [];
+          take(rr); if (rr.length < 100) break;
+        }
+      }
+    } catch (e) { /* fall through */ }
+    // 2) each remaining employee's profile (the documents tool reads the same address)
+    missing = out.filter((e) => !e.nid);
+    if (missing.length && missing.length <= 5000) {
+      store.phase = 'nid';
+      let done = 0, next = 0, fails = 0;
+      await Promise.all(Array.from({ length: Math.min(6, missing.length) }, async () => {
+        while (next < missing.length && fails < 20) {
+          const e = missing[next++];
+          try {
+            const r = await fetch(apiBase_() + '/v2/employees/' + encodeURIComponent(e.id) + '?' + new URLSearchParams({ slug }), { credentials: 'include', headers: hdr });
+            if (r.status === 401 || r.status === 403) { fails += 5; } else if (r.ok) { const n = nidOf_(await r.json().catch(() => null)); if (n) e.nid = n; }
+          } catch (er) { fails++; }
+          done++; if (onProgress) onProgress(done + '/' + missing.length);
+        }
+      }));
+      store.phase = '';
+    }
+    out.forEach((e) => { if (e.nid) cache[e.id] = e.nid; });
+    gmSet_(nidCacheKey_(), cache);
+  }
   async function fetchAll_(onProgress) {
     const slug = slug_();
     const out = [];
@@ -1403,12 +1466,13 @@
           username: pick_(e, ['username', 'user_name', 'login']),
           email: pick_(e, ['email', 'business_email', 'work_email']),
           name: pick_(e, ['full_name_en', 'full_name', 'name_en', 'name']),
-          nid: pick_(ii, ['document_number', 'id_number']) || pick_(e, ['national_id', 'document_number', 'iqama_number', 'identity_number']),
+          nid: nidOf_(e) || '',
         });
       });
       if (onProgress) onProgress(out.length);
       if (rows.length < perPage) break;
     }
+    await fillNids_(out, onProgress);
     return out;
   }
   function notify_() { store.listeners.slice().forEach((fn) => { try { fn(); } catch (e) { /* ignore */ } }); }
@@ -1424,7 +1488,7 @@
       try {
         const list = await fetchAll_((n) => { store.progress = n; if (onProgress) onProgress(n); notify_(); });
         store.list = list; store.at = Date.now(); store.slug = slug_();
-        gmSet_('employeesShared_' + store.slug, { at: store.at, list });
+        gmSet_('employeesShared2_' + store.slug, { at: store.at, list });
         return list;
       } finally { store.loading = null; store.progress = 0; notify_(); }
     })();
@@ -1474,7 +1538,108 @@
    *                 values?: string[]  (a fixed choice list; omitted = every employee as "Name · Code · #id") }]
    * Short lists go inline in the rule; long ones (or values with commas) live in a hidden "Lists" sheet.
    */
+  // ======================================================================= v4.20: ID, name and Iqama in every Excel
+  // Any sheet that refers to employees (Employee ID / code / Iqama / "pick from list" column) gets the three
+  // reference columns - Employee ID, Employee Name, Iqama / National ID - added if missing, and empty ones filled
+  // from the shared employee list. Jisr's own import formats (.xls / .csv) and sheets marked wb.__noRef are left alone.
+  const REF_SKIP_SHEET = /^(lists?|employee list|help|read ?me|instructions?|summary|log|notes?|how to.*)$/i;
+  const hnorm_ = (h) => String(h == null ? '' : h).toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/[^a-z0-9\u0621-\u064a#]+/g, ' ').trim();
+  function refCols_(row) {
+    const h = row.map(hnorm_);
+    const find = (re) => h.findIndex((x) => re.test(x));
+    const c = {
+      id: find(/^(employee id|employee_id|emp id|jisr employee id|jisr id|employee id jisr)$/),
+      pick: find(/pick from list|^employee \(|^employee id code|^employee \w+ code|^employee$/),
+      code: find(/^(employee code|employee_code|emp code|employee number)$/),
+      name: find(/^(employee name|employee_name|full name|full_name|name en|name \(en\)|employee full name|اسم الموظف)$/),
+      nid: find(/iqama|national id|national_id|^nid$|رقم الهويه|الهويه|الاقامه/),
+    };
+    // bare "id" / "code" / "name" count only next to another employee-like column
+    const bareId = find(/^id$/), bareCode = find(/^code$/), nm = find(/^(name|employee)$/);
+    const other = c.code >= 0 || c.nid >= 0 || c.pick >= 0 || bareCode >= 0 || h.some((x) => /full name|employee/.test(x));
+    if (c.id < 0 && bareId >= 0 && other) c.id = bareId;
+    if (c.code < 0 && bareCode >= 0 && c.id >= 0) c.code = bareCode;
+    if (c.name < 0 && nm >= 0 && nm !== c.pick && (c.id >= 0 || c.code >= 0 || c.nid >= 0)) c.name = nm;
+    return c;
+  }
+  function shiftCols_(ws, at, n) {
+    const R = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+    for (let r = R.s.r; r <= R.e.r; r++) for (let col = R.e.c; col >= at; col--) {
+      const a = XLSX.utils.encode_cell({ r, c: col }), b = XLSX.utils.encode_cell({ r, c: col + n });
+      if (ws[a]) { ws[b] = ws[a]; delete ws[a]; } else delete ws[b];
+    }
+    R.e.c += n; ws['!ref'] = XLSX.utils.encode_range(R);
+    if (ws['!cols']) { const cols = ws['!cols']; while (cols.length < at) cols.push(undefined); cols.splice(at, 0, ...new Array(n).fill(null).map(() => ({ wch: 16 }))); }
+    if (ws['!merges']) ws['!merges'].forEach((m) => { if (m.s.c >= at) m.s.c += n; if (m.e.c >= at) m.e.c += n; });
+    if (ws['!autofilter'] && ws['!autofilter'].ref) { const A = XLSX.utils.decode_range(ws['!autofilter'].ref); if (A.e.c >= at) A.e.c += n; ws['!autofilter'].ref = XLSX.utils.encode_range(A); }
+  }
+  /** -> { [sheetName]: [{ at, n }] } so callers can move their own column indexes (dropdowns). */
+  function ensureRefCols(wb) {
+    const moved = {};
+    if (!wb || wb.__noRef || wb.__refDone || typeof XLSX === 'undefined') return moved;
+    wb.__refDone = true;
+    const list = store.list || [];
+    const byId = new Map(), byCode = new Map(), byNid = new Map();
+    list.forEach((e) => { byId.set(String(e.id), e); if (e.code) byCode.set(String(e.code).toLowerCase(), e); if (e.nid) byNid.set(String(e.nid), e); });
+    const hidden = new Set(((wb.Workbook && wb.Workbook.Sheets) || []).filter((x) => x && x.Hidden).map((x) => x.name));
+    (wb.SheetNames || []).forEach((sn) => {
+      const ws = wb.Sheets[sn]; if (!ws || !ws['!ref'] || hidden.has(sn) || REF_SKIP_SHEET.test(sn.trim())) return;
+      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true, blankrows: true });
+      let hr = -1, c = null;
+      for (let r = 0; r < Math.min(6, aoa.length); r++) { const cc = refCols_(aoa[r] || []); if (cc.id >= 0 || cc.code >= 0 || cc.nid >= 0 || cc.pick >= 0) { hr = r; c = cc; break; } }
+      if (hr < 0) return;
+      const rows = aoa.slice(hr + 1);
+      const whoOf = (row) => {
+        const v = (i) => (i >= 0 ? String(row[i] == null ? '' : row[i]).replace(/\.0+$/, '').trim() : '');
+        let e = null;
+        if (c.id >= 0 && v(c.id)) e = byId.get(v(c.id)) || null;
+        if (!e && c.pick >= 0) { const m = v(c.pick).match(/#(\d+)\s*$/); if (m) e = byId.get(m[1]) || null; }
+        if (!e && c.code >= 0 && v(c.code)) e = byCode.get(v(c.code).toLowerCase()) || null;
+        if (!e && c.nid >= 0 && v(c.nid)) e = byNid.get(v(c.nid)) || null;
+        return e;
+      };
+      const who = rows.map(whoOf);
+      // add the missing reference columns right after the existing ones
+      const need = [];
+      if (c.id < 0) need.push(['Employee ID', (e) => (e ? e.id : '')]);
+      if (c.name < 0) need.push(['Employee Name', (e) => (e ? e.name || '' : '')]);
+      if (c.nid < 0) need.push(['Iqama / National ID', (e) => (e && e.nid ? String(e.nid) : '')]);
+      const keyIdx = [c.id, c.pick, c.code, c.name, c.nid].filter((i) => i >= 0);
+      const at = need.length ? Math.min(Math.max(...keyIdx) + 1, 6) : 0;
+      if (need.length && who.some(Boolean)) {
+        shiftCols_(ws, at, need.length);
+        need.forEach(([title, fn], k) => {
+          ws[XLSX.utils.encode_cell({ r: hr, c: at + k })] = { t: 's', v: title };
+          who.forEach((e, i) => { const val = fn(e); if (val !== '' && val != null) ws[XLSX.utils.encode_cell({ r: hr + 1 + i, c: at + k })] = { t: 's', v: String(val) }; });
+        });
+        moved[sn] = [{ at, n: need.length }];
+        const sh = (i) => (i >= at ? i + need.length : i);
+        c.name = sh(c.name); c.nid = sh(c.nid);
+        if (c.name < 0 && need.some((x) => x[0] === 'Employee Name')) c.name = -1;
+      }
+      // fill empty name / Iqama cells that already exist
+      who.forEach((e, i) => {
+        if (!e) return;
+        [[c.nid, e.nid], [c.name, e.name]].forEach(([col, val]) => {
+          if (col < 0 || !val) return;
+          const a = XLSX.utils.encode_cell({ r: hr + 1 + i, c: col });
+          if (!ws[a] || ws[a].v === '' || ws[a].v == null) ws[a] = { t: 's', v: String(val) };
+        });
+      });
+    });
+    return moved;
+  }
+  (function hookWriters_() {
+    if (typeof XLSX === 'undefined' || XLSX.__jboRef) return;
+    XLSX.__jboRef = true;
+    const wf = XLSX.writeFile, wr = XLSX.write;
+    const plain = (o) => !o || !o.bookType || /^xlsx|xlsm|xlsb$/i.test(o.bookType);
+    XLSX.writeFile = function (wb, filename, opts) { try { if (plain(opts) && !/\.(xls|csv|txt)$/i.test(String(filename || ''))) ensureRefCols(wb); } catch (e) { /* never block a download */ } return wf.apply(this, arguments); };
+    XLSX.write = function (wb, opts) { try { if (plain(opts) && opts && opts.type === 'array') ensureRefCols(wb); } catch (e) { /* ignore */ } return wr.apply(this, arguments); };
+  })();
+
   async function saveWithDropdowns(wb, filename, picks) {
+    { const mv = ensureRefCols(wb); (picks || []).forEach((p) => { (mv[p && p.sheet] || []).forEach((m) => { if (p.col >= m.at) p.col += m.n; }); }); }
     picks = (picks || []).filter((p) => p && p.col >= 0 && wb.SheetNames.includes(p.sheet) && (!p.values || p.values.length));
     if (!picks.length) { XLSX.writeFile(wb, filename); return; }
     const lists = []; // columns of the hidden sheet
@@ -1559,12 +1724,12 @@
     }).filter(Boolean);
     return saveWithDropdowns(wb, filename, picks);
   }
-  unsafeWindow.__jisrBulkOpsXlsx = { employeeLabel, pickId, saveWithDropdowns, downloadAoa, PICK_SHEET, setNextLists: (l) => { pendingLists = l; } };
+  unsafeWindow.__jisrBulkOpsXlsx = { employeeLabel, pickId, saveWithDropdowns, downloadAoa, PICK_SHEET, setNextLists: (l) => { pendingLists = l; }, ensureRefCols };
 
   unsafeWindow.__jisrBulkOpsEmployees = {
     get, decorateTemplate, employeeRows, IQAMA_HEADER,
     peek: () => (store.list && store.slug === slug_() ? store.list : []), // v4.4: synchronous read of the already-loaded list
-    state: () => ({ count: store.list ? store.list.length : 0, at: store.at, loading: !!store.loading, progress: store.progress || 0 }),
+    state: () => ({ count: store.list ? store.list.length : 0, withNid: store.list ? store.list.filter((e) => e.nid).length : 0, at: store.at, loading: !!store.loading, progress: store.progress || 0, phase: store.phase || '' }),
     onChange: (fn) => { store.listeners.push(fn); return () => { const i = store.listeners.indexOf(fn); if (i >= 0) store.listeners.splice(i, 1); }; },
   };
 
@@ -1576,6 +1741,21 @@
     ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'fixed-hours-bulk', 'attendance-log-converter']],
     ['utilities', 'Utilities', 'أدوات مساعدة', ['activation-checklist', 'export-everything', 'letter-converter']],
   ];
+  // v4.20: the J panel opens on three choices; Tools is split into two colour-coded sections
+  const SECTIONS = [
+    { key: 'bulk', en: 'Bulk actions', ar: 'العمليات الجماعية', icon: 'layers', color: '#8FA8F7', groups: [
+      ['employees', 'Employees', 'الموظفون', ['employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'offboarding-bulk']],
+      ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'flight-tickets-bulk', 'final-settlement-bulk']],
+      ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'org-groups-business-units']],
+      ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'fixed-hours-bulk']],
+    ] },
+    { key: 'check', en: 'Validate, convert & reconcile', ar: 'التحقق والتحويل والمطابقة', icon: 'scale', color: '#5FD0B0', groups: [
+      ['validate', 'Validate & reconcile', 'التحقق والمطابقة', ['data-validation', 'payroll-reconciliation', 'gosi-compliance']],
+      ['convert', 'Convert & export', 'التحويل والتصدير', ['attendance-log-converter', 'letter-converter', 'export-everything']],
+    ] },
+  ];
+  const COL = { look: '#B9A2F8', tools: '#8FA8F7', check: '#E9BC62', bulk: '#8FA8F7', valid: '#5FD0B0' };
+  const NOT_A_TOOL = ['activation-checklist'];
   function el(tag, attrs, children) {
     const n = document.createElement(tag);
     Object.entries(attrs || {}).forEach(([k, v]) => {
@@ -1600,6 +1780,14 @@
     utilities: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',
     check: '<path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/>',
     other: '<circle cx="12" cy="12" r="8"/>',
+    book: '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M9 7h6"/>',
+    grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+    layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
+    scale: '<path d="M12 3v18M5 7h14M5 7l-3 7a3 3 0 0 0 6 0zM19 7l-3 7a3 3 0 0 0 6 0z"/>',
+    home: '<path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/>',
+    expand: '<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>',
+    shrink: '<path d="M10 4v6H4M14 20v-6h6M4 10l6-6M20 14l-6 6"/>',
+    back: '<path d="M15 6l-6 6 6 6"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
     close: '<path d="M6 6l12 12M18 6L6 18"/>',
     ext: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
@@ -1653,7 +1841,7 @@
       .jbo-fab416 .jbo-ring { position: absolute; inset: -5px; width: 62px; height: 62px; transform: rotate(-90deg); pointer-events: none; }
       .jbo-fab416 .jbo-fdot { position: absolute; right: 1px; top: 1px; width: 11px; height: 11px; border-radius: 50%; background: #22c55e; border: 2px solid #fff; display: none; }
       .jbo-fab416.jbo-signed .jbo-fdot { display: block; }
-      .jbo-hub-panel.jbo-ast { box-sizing: border-box; width: 384px !important; max-width: calc(100vw - 20px) !important; min-width: 0 !important; max-height: calc(100vh - 96px); display: flex; flex-direction: column;
+      .jbo-hub-panel.jbo-ast { box-sizing: border-box; width: var(--jbo-w, 384px) !important; max-width: calc(100vw - 20px) !important; min-width: 0 !important; max-height: calc(100vh - 96px); display: flex; flex-direction: column;
         background: #0E0E11 !important; color: #fff !important; border: 1px solid #2A2A30 !important; border-radius: 16px !important; box-shadow: 0 18px 50px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.2) !important;
         font-family: Onest, Inter, system-ui, -apple-system, 'Segoe UI', Tahoma, sans-serif !important; font-size: 13px; line-height: 1.35; overflow: hidden; animation: jbo-ast-in .14s ease-out; }
       @keyframes jbo-ast-in { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
@@ -1749,11 +1937,41 @@
       .jbo-ast .jba-who { background: none !important; color: #8A8A8E !important; border: 0 !important; padding: 0 16px 8px !important; font-size: 11.5px; }
       .jbo-ast .jba-link { color: #9DB4F0 !important; }
       .jbo-ast-gate { padding: 4px 16px 18px; color: #C9C9CE; }
+      .jbo-ast-grip { position: absolute; left: 0; top: 0; width: 18px; height: 18px; cursor: nwse-resize; z-index: 3; touch-action: none; }
+      .jbo-ast-grip::before { content: ''; position: absolute; left: 5px; top: 5px; width: 8px; height: 8px; border-left: 2px solid #5E5E64; border-top: 2px solid #5E5E64; border-radius: 2px 0 0 0; }
+      .jbo-ast-grip:hover::before { border-color: #fff; }
+      .jbo-ast.jbo-sized { height: var(--jbo-h) !important; }
+      .jbo-ast-tabs { margin: 0 16px 12px; }
+      .jbo-ast-tab { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 6px; }
+      .jbo-ast-tab .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+      .jbo-ast-tab.home { flex: none; width: 34px; padding: 6px 0; }
+      .jbo-ast-tab.on { box-shadow: inset 0 -2px 0 var(--c, #fff); }
+      .jbo-ast-home { display: grid; gap: 10px; margin-top: 4px; }
+      .jbo-ast-tile { border: 1px solid #2A2A30; background: #17171B; border-radius: 14px; padding: 13px 14px; cursor: pointer; display: block; text-align: start; color: inherit; font: inherit; width: 100%; position: relative; outline: none; }
+      .jbo-ast-tile:hover, .jbo-ast-tile:focus-visible { border-color: var(--c); background: #1B1B21; }
+      .jbo-ast-tile .row { display: flex; gap: 12px; align-items: center; }
+      .jbo-ast-tile .ti { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent); flex: none; }
+      .jbo-ast-tile .tt { flex: 1; min-width: 0; }
+      .jbo-ast-tile .tt b { display: block; font-size: 14px; font-weight: 600; color: var(--c); }
+      .jbo-ast-tile .tt small { display: block; color: #9A9AA0; font-size: 12px; margin-top: 2px; }
+      .jbo-ast-tile .jbo-ast-act { border: 0; background: none; padding: 8px 0 0; }
+      .jbo-ast-sec { margin: 14px 0 4px; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; background: color-mix(in srgb, var(--c) 9%, transparent); border-inline-start: 3px solid var(--c); }
+      .jbo-ast-sec b { color: var(--c); font-size: 13px; font-weight: 600; flex: 1; }
+      .jbo-ast-sec span { color: #8A8A8E; font-size: 11.5px; }
+      .jbo-ast-grp { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: #8A8A8E; font-weight: 600; margin: 12px 6px 4px; display: flex; align-items: center; gap: 6px; }
+      .jbo-ast-grp i { width: 6px; height: 6px; border-radius: 50%; background: var(--c); display: inline-block; }
+      .jbo-ast-tool { padding: 9px 8px; margin: 1px 0; }
+      .jbo-ast-tool .jbo-ast-ic { color: var(--c, #D6D6DA); background: color-mix(in srgb, var(--c, #888) 10%, #17171B); border-color: color-mix(in srgb, var(--c, #888) 25%, #2A2A30); }
+      .jbo-ast-cats { flex-wrap: wrap !important; overflow: visible !important; gap: 8px !important; margin-bottom: 4px; }
+      .jbo-ast-cats .jbo-ast-chip { padding: 6px 12px; }
+      .jbo-ast-cats .jbo-ast-chip .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c); margin-inline-end: 6px; }
+      .jbo-ast-chips { gap: 8px; }
+      .jbo-ast-lbl.c { color: var(--c); }
     `;
     document.head.appendChild(st);
   }
   const fmtTime = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
-  const UIS = { tab: 'tools', cat: 'all', query: '', lq: '', sel: 0, src: 'all' };
+  const UIS = { tab: 'home', cat: 'all', query: '', lq: '', sel: 0, src: 'all' };
   function firstName_() {
     const A = unsafeWindow.__jisrBulkOpsAuth; const s = A && A.enabled() ? A.session() : null;
     let n = (s && s.name) || ''; if (!n) { try { n = unsafeWindow.localStorage.getItem(GM_PREFIX + 'ownerLabel') || ''; } catch (e) { /* ignore */ } }
@@ -1964,7 +2182,7 @@
 
   function render(g, menuEl) {
     injectStyles_(); paintFab_();
-    if (!menuEl.__astSeen) { menuEl.__astSeen = true; UIS.query = ''; UIS.sel = 0; } // a freshly opened panel starts on the home view
+    if (!menuEl.__astSeen) { menuEl.__astSeen = true; UIS.query = ''; UIS.sel = 0; UIS.tab = 'home'; } // a freshly opened panel starts on the three choices
     menuEl.classList.add('jbo-ast'); menuEl.setAttribute('dir', I.isAr() ? 'rtl' : 'ltr');
     const ids = Object.keys(g.modules);
     const open = (id) => { pushRecent_(id); g._closeMenu(); g.modules[id].open(); };
@@ -1981,14 +2199,54 @@
     if (AUTH && AUTH.enabled() && !AUTH.session()) { const gate = el('div', { class: 'jbo-ast-gate' }); menuEl.appendChild(gate); AUTH.renderGate(gate, rerender_); requestAnimationFrame(() => anchor_(menuEl)); return; }
 
     if (AUTH && AUTH.enabled()) AUTH.renderWho(menuEl, rerender_);
-    const tabTools = el('button', { class: 'jbo-ast-tab' + (UIS.tab === 'tools' ? ' on' : ''), type: 'button', text: T('Tools', 'الأدوات') });
-    const tabLook = el('button', { class: 'jbo-ast-tab' + (UIS.tab === 'look' ? ' on' : ''), type: 'button', text: T('Look up', 'بحث المعرفة') });
-    tabTools.addEventListener('click', (e) => { e.stopPropagation(); UIS.tab = 'tools'; rerender_(); });
-    tabLook.addEventListener('click', (e) => { e.stopPropagation(); UIS.tab = 'look'; rerender_(); });
-    menuEl.appendChild(el('div', { class: 'jbo-ast-tabs' }, [tabTools, tabLook]));
+    // ---- size: drag the top corner, or the expand button; remembered in this browser
+    const SZ = gmGet_('hubSize', null);
+    const applySize_ = (sz) => {
+      if (sz && sz.w && sz.h) { menuEl.style.setProperty('--jbo-w', sz.w + 'px'); menuEl.style.setProperty('--jbo-h', sz.h + 'px'); menuEl.classList.add('jbo-sized'); }
+      else { menuEl.style.removeProperty('--jbo-w'); menuEl.style.removeProperty('--jbo-h'); menuEl.classList.remove('jbo-sized'); }
+    };
+    applySize_(SZ);
+    const grip = el('div', { class: 'jbo-ast-grip', title: T('Drag to resize · double-click to reset', 'اسحب لتغيير الحجم · انقر مرتين للإعادة') });
+    grip.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const r0 = menuEl.getBoundingClientRect(); const x0 = e.clientX, y0 = e.clientY;
+      const right = r0.right, bottom = r0.bottom;
+      try { grip.setPointerCapture(e.pointerId); } catch (er) { /* ignore */ }
+      const mv = (ev) => {
+        const w = Math.round(Math.max(340, Math.min(window.innerWidth - 20, r0.width + (x0 - ev.clientX))));
+        const h = Math.round(Math.max(380, Math.min(window.innerHeight - 20, r0.height + (y0 - ev.clientY))));
+        applySize_({ w, h });
+        Object.assign(menuEl.style, { left: Math.max(10, right - w) + 'px', top: Math.max(10, bottom - h) + 'px', maxHeight: 'none' });
+      };
+      const up = () => { grip.removeEventListener('pointermove', mv); grip.removeEventListener('pointerup', up); const r = menuEl.getBoundingClientRect(); gmSet_('hubSize', { w: Math.round(r.width), h: Math.round(r.height) }); anchor_(menuEl); };
+      grip.addEventListener('pointermove', mv); grip.addEventListener('pointerup', up);
+    });
+    grip.addEventListener('dblclick', (e) => { e.stopPropagation(); gmSet_('hubSize', null); applySize_(null); anchor_(menuEl); });
+    grip.addEventListener('click', (e) => e.stopPropagation());
+    menuEl.appendChild(grip);
+    const big = !!(SZ && SZ.w >= 520);
+    const sizeB = el('button', { class: 'jbo-ast-ib jbo-ast-size', type: 'button', title: big ? T('Smaller panel', 'لوحة أصغر') : T('Larger panel', 'لوحة أكبر') }, [svg_(big ? 'shrink' : 'expand', 15)]);
+    sizeB.addEventListener('click', (e) => { e.stopPropagation(); const nz = big ? null : { w: Math.min(620, window.innerWidth - 20), h: Math.round(Math.min(window.innerHeight * 0.82, window.innerHeight - 40)) }; gmSet_('hubSize', nz); rerender_(); });
+    const hd = menuEl.querySelector('.jbo-ast-hd'); if (hd) hd.insertBefore(sizeB, hd.lastChild);
 
-    const look = UIS.tab === 'look';
-    const search = el('input', { class: 'jbo-hub-search', type: 'search', placeholder: look ? T('Ask a question, e.g. how much is Mudad?', 'اسأل سؤالًا، مثل: كم سعر مدد؟') : T('What do you need to do?', 'ماذا تريد أن تفعل؟'), 'data-no-i18n': '', autocomplete: 'off' });
+    // ---- where am I: home (three choices), tools, look up
+    const view = UIS.tab === 'look' ? 'look' : UIS.tab === 'tools' ? 'tools' : 'home';
+    const go = (v) => { UIS.tab = v; UIS.sel = 0; rerender_(); };
+    if (view !== 'home') {
+      const tab = (k, label, c, extra) => { const b = el('button', { class: 'jbo-ast-tab' + (extra || '') + (view === k ? ' on' : ''), type: 'button', 'data-go': k, style: c ? '--c:' + c : null }, [c ? el('span', { class: 'dot', style: { background: c } }) : svg_('home', 14), label ? label : null]); return b; };
+      const tHome = tab('home', '', null, ' home'); tHome.title = T('Home', 'الرئيسية');
+      const tLook = tab('look', T('Look up', 'بحث المعرفة'), COL.look);
+      const tTools = tab('tools', T('Tools', 'الأدوات'), COL.tools);
+      const tCk = tab('check', T('Checklist', 'قائمة التفعيل'), COL.check);
+      tHome.addEventListener('click', (e) => { e.stopPropagation(); go('home'); });
+      tLook.addEventListener('click', (e) => { e.stopPropagation(); go('look'); });
+      tTools.addEventListener('click', (e) => { e.stopPropagation(); go('tools'); });
+      tCk.addEventListener('click', (e) => { e.stopPropagation(); if (g.modules['activation-checklist']) open('activation-checklist'); });
+      menuEl.appendChild(el('div', { class: 'jbo-ast-tabs' }, [tHome, tLook, tTools].concat(g.modules['activation-checklist'] ? [tCk] : [])));
+    }
+
+    const look = view === 'look';
+    const search = el('input', { class: 'jbo-hub-search', type: 'search', placeholder: look ? T('Ask a question, e.g. how much is Mudad?', 'اسأل سؤالًا، مثل: كم سعر مدد؟') : view === 'home' ? T('Search tools, or pick below', 'ابحث عن أداة أو اختر من الأسفل') : T('What do you need to do?', 'ماذا تريد أن تفعل؟'), 'data-no-i18n': '', autocomplete: 'off' });
     search.value = look ? UIS.lq : UIS.query;
     menuEl.appendChild(el('div', { class: 'jbo-ast-sr' }, [svg_('search', 15), search, el('kbd', { text: '/' })]));
     const body = el('div', { class: 'jbo-ast-body' }); menuEl.appendChild(body);
@@ -1998,9 +2256,9 @@
     const empBtn = el('button', { type: 'button' });
     function paintEmp() {
       const s = unsafeWindow.__jisrBulkOpsEmployees.state();
-      if (s.loading) { empDot.className = 'gd'; empInfo.textContent = T('Loading employees… ', 'جارٍ تحميل الموظفين… ') + (s.progress || ''); empBtn.setAttribute('disabled', ''); empBtn.textContent = '…'; return; }
+      if (s.loading) { empDot.className = 'gd'; empInfo.textContent = (s.phase === 'nid' ? T('Reading Iqama numbers… ', 'جارٍ قراءة أرقام الإقامة… ') : T('Loading employees… ', 'جارٍ تحميل الموظفين… ')) + (s.progress || ''); empBtn.setAttribute('disabled', ''); empBtn.textContent = '…'; return; }
       empBtn.removeAttribute('disabled');
-      if (s.count) { empDot.className = 'gd on'; empInfo.textContent = s.count + T(' employees loaded · ', ' موظف محمّل · ') + fmtTime(s.at); empBtn.textContent = T('↻ Refresh', '↻ تحديث'); }
+      if (s.count) { empDot.className = 'gd on'; empInfo.textContent = s.count + T(' employees loaded · ', ' موظف محمّل · ') + (s.withNid < s.count ? s.withNid + T(' with Iqama · ', ' بإقامة · ') : '') + fmtTime(s.at); empBtn.textContent = T('↻ Refresh', '↻ تحديث'); }
       else { empDot.className = 'gd'; empInfo.textContent = T('Employees not loaded yet', 'لم يتم تحميل الموظفين بعد'); empBtn.textContent = T('Load all employees', 'تحميل كل الموظفين'); }
     }
     empBtn.addEventListener('click', async (e) => {
@@ -2014,82 +2272,105 @@
     const foot = el('div', { class: 'jbo-hub-emp' }, [empDot, empInfo, empBtn]);
     menuEl.appendChild(foot);
 
-    // ---- categories
-    const cats = []; const catOf = {}; const grouped = new Set();
-    CATEGORIES.forEach(([key, en, ar, list]) => { const present = list.filter((id) => g.modules[id]); if (!present.length) return; cats.push([key, T(en, ar), present]); present.forEach((id) => { grouped.add(id); catOf[id] = key; }); });
-    const others = ids.filter((id) => !grouped.has(id)); if (others.length) { cats.push(['other', T('Other', 'أخرى'), others]); others.forEach((id) => { catOf[id] = 'other'; }); }
-    const catName = (k) => (cats.find((c) => c[0] === k) || [k, k])[1];
-    const order = cats.flatMap((c) => c[2]);
-    const iconOf = (id) => (id === 'activation-checklist' ? 'check' : catOf[id] || 'other');
+    // ---- sections and groups
+    const secs = SECTIONS.map((sc) => ({ key: sc.key, name: T(sc.en, sc.ar), color: sc.color, icon: sc.icon, groups: sc.groups.map(([k, en, ar, list]) => [k, T(en, ar), list.filter((id) => g.modules[id])]).filter((x) => x[2].length) }));
+    const placed = new Set(); secs.forEach((sc) => sc.groups.forEach((gr) => gr[2].forEach((id) => placed.add(id))));
+    const others = ids.filter((id) => !placed.has(id) && !NOT_A_TOOL.includes(id));
+    if (others.length) secs[0].groups.push(['other', T('Other', 'أخرى'), others]);
+    secs.forEach((sc) => { sc.ids = sc.groups.flatMap((gr) => gr[2]); });
+    const secOf = {}; const grpOf = {};
+    secs.forEach((sc) => sc.groups.forEach((gr) => gr[2].forEach((id) => { secOf[id] = sc; grpOf[id] = gr; })));
+    const order = secs.flatMap((sc) => sc.ids);
+    const searchable = order.concat(ids.filter((id) => NOT_A_TOOL.includes(id)));
+    const iconOf = (id) => (id === 'activation-checklist' ? 'check' : grpOf[id] && /^(employees|payroll|org|attendance)$/.test(grpOf[id][0]) ? grpOf[id][0] : secOf[id] ? (grpOf[id][0] === 'convert' ? 'utilities' : 'scale') : 'other');
+    const colorOf = (id) => (id === 'activation-checklist' ? COL.check : secOf[id] ? secOf[id].color : '#8A8A8E');
     function toolRow(id, q, selected) {
       const d = DESC[id] ? T(DESC[id][0], DESC[id][1]) : '';
       const t = el('div', {}, [highlight_(title_(g, id), q)]); if (NEW_IDS.includes(id)) t.appendChild(el('span', { class: 'jbo-ast-new', text: T('new', 'جديد') }));
-      const row = el('div', { class: 'jbo-ast-tool' + (selected ? ' sel' : ''), tabindex: '0', 'data-id': id }, [el('span', { class: 'jbo-ast-ic' }, [svg_(iconOf(id))]), el('span', { class: 'x' }, [t, el('small', {}, [highlight_(d, q)])]), el('span', { class: 'jbo-ast-ch', text: '›' })]);
+      const row = el('div', { class: 'jbo-ast-tool' + (selected ? ' sel' : ''), tabindex: '0', 'data-id': id, style: '--c:' + colorOf(id) }, [el('span', { class: 'jbo-ast-ic' }, [svg_(iconOf(id))]), el('span', { class: 'x' }, [t, el('small', {}, [highlight_(d, q)])]), el('span', { class: 'jbo-ast-ch', text: '›' })]);
       row.addEventListener('click', (e) => { e.stopPropagation(); open(id); });
       row.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(id); });
       return row;
     }
     let results = [];
-    function paintTools() {
+    function paintResults(q) {
+      const words = normQ_(q).split(/\s+/).filter(Boolean);
+      const hay = (id) => normQ_(g.modules[id].title + ' ' + title_(g, id) + ' ' + (DESC[id] ? DESC[id].join(' ') : ''));
+      const anyTitle = searchable.some((id) => words.every((w) => hay(id).includes(w)));
+      results = searchable.filter((id) => words.every((w) => (hay(id) + (anyTitle ? '' : ' ' + normQ_((grpOf[id] ? grpOf[id][1] : '') + ' ' + (secOf[id] ? secOf[id].name : '')))).includes(w)));
+      UIS.sel = Math.min(UIS.sel, Math.max(results.length - 1, 0));
+      body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: I.isAr() ? 'النتائج: ' + results.length : results.length + (results.length === 1 ? ' result' : ' results') }), el('span', { text: results.length ? T('Enter to open', 'Enter للفتح') : '' })]));
+      if (!results.length) body.appendChild(el('div', { class: 'jbo-ast-empty', text: T('No tool matches "', 'لا توجد أداة تطابق "') + q + '"' }));
+      results.forEach((id, i) => body.appendChild(toolRow(id, q, i === UIS.sel)));
+      const ask = el('button', { class: 'jbo-ast-chip', type: 'button', style: { marginTop: '8px' }, text: T('Ask Look up: "', 'اسأل بحث المعرفة: "') + q + '"' });
+      ask.addEventListener('click', (e) => { e.stopPropagation(); UIS.tab = 'look'; UIS.lq = q; rerender_(); });
+      body.appendChild(ask);
+      requestAnimationFrame(() => anchor_(menuEl));
+    }
+    function checklistCard_() {
+      const cs = checklistState_();
+      if (!cs) return null;
+      const flagged = cs.C.ALL_ITEMS.filter((it) => it.sec.blockers && cs.C.isDone_(cs.st, it)).length;
+      const card = el('div', { class: 'jbo-ast-act' }, [
+        el('div', { class: 'top' }, [el('b', { text: I.isAr() ? cs.p.done + ' من ' + cs.p.total + ' جاهز' : cs.p.done + ' of ' + cs.p.total + ' ready' }), el('span', { text: cs.p.pct + '%' + (flagged ? (I.isAr() ? ' · عوائق مُعلَّمة: ' + flagged : ' · ' + flagged + ' blocker' + (flagged === 1 ? '' : 's') + ' flagged') : '') })]),
+        el('div', { class: 'jbo-ast-bar' }, [el('i', { style: { width: cs.p.pct + '%', background: COL.check } })]),
+      ]);
+      const attn = cs.C.ALL_ITEMS.filter((it) => !it.sec.blockers && cs.st.live[it.id] && cs.st.live[it.id].ok === false && !cs.C.isDone_(cs.st, it)).slice(0, 3);
+      attn.forEach((it) => {
+        const tool = it.opt.tool && g.modules[it.opt.tool] ? it.opt.tool : 'activation-checklist';
+        const row = el('div', { class: 'jbo-ast-att', 'data-item': it.id }, [el('span', { class: 's' }), el('span', { class: 'x' }, [el('div', { text: I.isAr() ? it.ar : it.en }), el('small', { text: cs.st.live[it.id].msg || '' })]), el('span', { class: 'go', text: (tool === 'activation-checklist' ? T('Checklist', 'القائمة') : title_(g, tool)).split(/[—(]/)[0].trim() + (I.isAr() ? ' ‹' : ' ›') })]);
+        row.addEventListener('click', (e) => { e.stopPropagation(); open(tool); });
+        card.appendChild(row);
+      });
+      if (!attn.length) card.appendChild(el('div', { class: 'jbo-ast-ok', text: cs.st.checkedAt ? T('Nothing flagged by the live checks.', 'لا توجد ملاحظات من الفحص المباشر.') : T('Open the checklist once to check this client.', 'افتح القائمة مرة لفحص هذا العميل.') }));
+      return card;
+    }
+    function paintHome() {
       body.innerHTML = '';
       const q = search.value.trim(); UIS.query = search.value;
-      if (q) {
-        const words = normQ_(q).split(/\s+/).filter(Boolean);
-        const hay = (id) => normQ_(g.modules[id].title + ' ' + title_(g, id) + ' ' + (DESC[id] ? DESC[id].join(' ') : ''));
-        const anyTitle = order.some((id) => words.every((w) => hay(id).includes(w)));
-        results = order.filter((id) => words.every((w) => (hay(id) + (anyTitle ? '' : ' ' + normQ_(catName(catOf[id])))).includes(w)));
-        UIS.sel = Math.min(UIS.sel, Math.max(results.length - 1, 0));
-        body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: I.isAr() ? 'النتائج: ' + results.length : results.length + (results.length === 1 ? ' result' : ' results') }), el('span', { text: results.length ? T('Enter to open', 'Enter للفتح') : '' })]));
-        if (!results.length) {
-          body.appendChild(el('div', { class: 'jbo-ast-empty', text: T('No tool matches "', 'لا توجد أداة تطابق "') + q + '"' }));
-          const ask = el('button', { class: 'jbo-ast-chip', type: 'button', text: T('Search the help center for "', 'ابحث في مركز المساعدة عن "') + q + '"' });
-          ask.addEventListener('click', (e) => { e.stopPropagation(); UIS.tab = 'look'; UIS.lq = q; rerender_(); });
-          body.appendChild(ask);
-        }
-        results.forEach((id, i) => body.appendChild(toolRow(id, q, i === UIS.sel)));
-        requestAnimationFrame(() => anchor_(menuEl));
-        return;
-      }
+      if (q) { paintResults(q); return; }
       results = [];
-      // activation card
-      const cs = checklistState_();
-      if (cs && g.modules['activation-checklist']) {
-        const openCk = el('button', { type: 'button', text: T('Open checklist ›', 'فتح القائمة ‹') });
-        openCk.addEventListener('click', (e) => { e.stopPropagation(); open('activation-checklist'); });
-        body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: T('Activation', 'التفعيل') }), openCk]));
-        const flagged = cs.C.ALL_ITEMS.filter((it) => it.sec.blockers && cs.C.isDone_(cs.st, it)).length;
-        const card = el('div', { class: 'jbo-ast-act' }, [
-          el('div', { class: 'top' }, [el('b', { text: I.isAr() ? cs.p.done + ' من ' + cs.p.total + ' جاهز' : cs.p.done + ' of ' + cs.p.total + ' ready' }), el('span', { text: cs.p.pct + '%' + (flagged ? (I.isAr() ? ' · عوائق مُعلَّمة: ' + flagged : ' · ' + flagged + ' blocker' + (flagged === 1 ? '' : 's') + ' flagged') : '') })]),
-          el('div', { class: 'jbo-ast-bar' }, [el('i', { style: { width: cs.p.pct + '%' } })]),
-        ]);
-        const attn = cs.C.ALL_ITEMS.filter((it) => !it.sec.blockers && cs.st.live[it.id] && cs.st.live[it.id].ok === false && !cs.C.isDone_(cs.st, it)).slice(0, 3);
-        attn.forEach((it) => {
-          const tool = it.opt.tool && g.modules[it.opt.tool] ? it.opt.tool : 'activation-checklist';
-          const row = el('div', { class: 'jbo-ast-att', 'data-item': it.id }, [el('span', { class: 's' }), el('span', { class: 'x' }, [el('div', { text: I.isAr() ? it.ar : it.en }), el('small', { text: cs.st.live[it.id].msg || '' })]), el('span', { class: 'go', text: (tool === 'activation-checklist' ? T('Checklist', 'القائمة') : title_(g, tool)).split(/[—(]/)[0].trim() + (I.isAr() ? ' ‹' : ' ›') })]);
-          row.addEventListener('click', (e) => { e.stopPropagation(); open(tool); });
-          card.appendChild(row);
-        });
-        if (!attn.length) card.appendChild(el('div', { class: 'jbo-ast-ok', text: cs.st.checkedAt ? T('Nothing flagged by the live checks.', 'لا توجد ملاحظات من الفحص المباشر.') : T('Open the checklist once to check this client.', 'افتح القائمة مرة لفحص هذا العميل.') }));
-        body.appendChild(card);
-      }
-      // recent
+      const tile = (k, icon, color, title, sub, extra) => {
+        const t = el('div', { class: 'jbo-ast-tile', tabindex: '0', role: 'button', 'data-go': k, style: '--c:' + color }, [el('div', { class: 'row' }, [el('span', { class: 'ti' }, [svg_(icon, 18)]), el('span', { class: 'tt' }, [el('b', { text: title }), el('small', { text: sub })]), el('span', { class: 'jbo-ast-ch', text: '›' })])].concat(extra ? [extra] : []));
+        const act = () => (k === 'check' ? open('activation-checklist') : go(k));
+        t.addEventListener('click', (e) => { e.stopPropagation(); act(); });
+        t.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); act(); } });
+        return t;
+      };
+      const nB = secs[0].ids.length, nV = secs[1] ? secs[1].ids.length : 0;
+      const home = el('div', { class: 'jbo-ast-home' }, [
+        tile('look', 'book', COL.look, T('Look up', 'بحث المعرفة'), T('Answers from the Labor Law, the playbook and the Jisr help center', 'إجابات من نظام العمل ودليل التفعيل ومركز مساعدة جسر')),
+        tile('tools', 'grid', COL.tools, T('Tools', 'الأدوات'), I.isAr() ? 'عمليات جماعية: ' + nB + ' · تحقق وتحويل ومطابقة: ' + nV : nB + ' bulk actions · ' + nV + ' validate, convert & reconcile'),
+      ].concat(g.modules['activation-checklist'] ? [tile('check', 'check', COL.check, T('Activation checklist', 'قائمة التفعيل'), T('Playbook progress for this client', 'تقدّم دليل التفعيل لهذا العميل'), checklistCard_())] : []));
+      body.appendChild(home);
       const rec = recent_().filter((id) => g.modules[id]);
       if (rec.length) {
         body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: T('Recent', 'الأخيرة') })]));
         body.appendChild(el('div', { class: 'jbo-ast-chips' }, rec.map((id) => { const c = el('button', { class: 'jbo-ast-chip', type: 'button', text: title_(g, id) }); c.addEventListener('click', (e) => { e.stopPropagation(); open(id); }); return c; })));
       }
-      // all tools
-      body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: T('All tools', 'كل الأدوات') }), el('span', { text: I.isAr() ? ids.length + ' أداة' : ids.length + ' tools' })]));
-      const chipBox = el('div', { class: 'jbo-ast-chips scroll jbo-ast-cats' });
-      [['all', T('All', 'الكل'), order]].concat(cats).forEach(([k, name, list]) => {
-        const c = el('button', { class: 'jbo-ast-chip' + (UIS.cat === k ? ' on' : ''), type: 'button', text: name, 'data-cat': k, 'data-n': String(list.length) });
-        c.addEventListener('click', (e) => { e.stopPropagation(); UIS.cat = k; paintTools(); });
-        chipBox.appendChild(c);
+      requestAnimationFrame(() => anchor_(menuEl));
+    }
+    function paintTools() {
+      body.innerHTML = '';
+      const q = search.value.trim(); UIS.query = search.value;
+      if (q) { paintResults(q); return; }
+      results = [];
+      if (!['all'].concat(secs.map((x) => x.key)).includes(UIS.cat)) UIS.cat = 'all';
+      const chipBox = el('div', { class: 'jbo-ast-chips jbo-ast-cats' });
+      [['all', T('All', 'الكل'), order, null]].concat(secs.map((sc) => [sc.key, sc.name, sc.ids, sc.color])).forEach(([k, name, list, c]) => {
+        const b = el('button', { class: 'jbo-ast-chip' + (UIS.cat === k ? ' on' : ''), type: 'button', 'data-cat': k, 'data-n': String(list.length), style: c ? '--c:' + c : null }, [c ? el('span', { class: 'dot' }) : null, name]);
+        b.addEventListener('click', (e) => { e.stopPropagation(); UIS.cat = k; paintTools(); });
+        chipBox.appendChild(b);
       });
       body.appendChild(chipBox);
-      if (!cats.some((c) => c[0] === UIS.cat)) UIS.cat = 'all';
       const list = el('div', { class: 'jbo-ast-tl' });
-      (UIS.cat === 'all' ? order : cats.find((c) => c[0] === UIS.cat)[2]).forEach((id) => list.appendChild(toolRow(id, '', false)));
+      secs.filter((sc) => UIS.cat === 'all' || UIS.cat === sc.key).forEach((sc) => {
+        list.appendChild(el('div', { class: 'jbo-ast-sec', 'data-sec': sc.key, style: '--c:' + sc.color }, [el('b', { text: sc.name }), el('span', { text: I.isAr() ? sc.ids.length + ' أداة' : sc.ids.length + (sc.ids.length === 1 ? ' tool' : ' tools') })]));
+        sc.groups.forEach(([k, name, ids2]) => {
+          list.appendChild(el('div', { class: 'jbo-ast-grp', 'data-grp': k, style: '--c:' + sc.color }, [el('i'), name]));
+          ids2.forEach((id) => list.appendChild(toolRow(id, '', false)));
+        });
+      });
       body.appendChild(list);
       requestAnimationFrame(() => anchor_(menuEl));
     }
@@ -2225,10 +2506,10 @@
       }, 300);
     }
 
-    const paint = () => (look ? paintLook() : paintTools());
+    const paint = () => (look ? paintLook() : view === 'home' ? paintHome() : paintTools());
     search.addEventListener('input', () => { UIS.sel = 0; paint(); });
     search.addEventListener('keydown', (e) => {
-      if (!look && results.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); UIS.sel = Math.max(0, Math.min(results.length - 1, UIS.sel + (e.key === 'ArrowDown' ? 1 : -1))); paintTools(); search.focus(); return; }
+      if (!look && results.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); UIS.sel = Math.max(0, Math.min(results.length - 1, UIS.sel + (e.key === 'ArrowDown' ? 1 : -1))); paint(); search.focus(); return; }
       if (e.key === 'Enter' && !look && results.length) { e.preventDefault(); open(results[UIS.sel] || results[0]); }
       if (e.key === 'Escape') { if (search.value) { search.value = ''; paint(); } else g._closeMenu(); }
     });
@@ -27763,7 +28044,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.19.0
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.21.0
 // ###########################################################################
 
 /*
@@ -29338,7 +29619,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.19.0
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.21.0
 // ###########################################################################
 
 /*
@@ -29987,7 +30268,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v4.19.0
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.21.0
 // ###########################################################################
 
 /*
@@ -30855,7 +31136,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.19.0
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.21.0
 // ###########################################################################
 
 /*
@@ -32290,7 +32571,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.19.0
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.21.0
 // ###########################################################################
 
 /*
@@ -32760,7 +33041,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 20 — Employee Documents bulk upload  v4.19.0
+// ##### SECTION 20 — Employee Documents bulk upload  v4.21.0
 // ###########################################################################
 
 /*
@@ -33592,7 +33873,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 21 — Bulk Offboarding  v4.19.0
+// ##### SECTION 21 — Bulk Offboarding  v4.21.0
 // ###########################################################################
 
 /**
@@ -34240,7 +34521,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 22 — Bulk Final Settlement  v4.19.0
+// ##### SECTION 22 — Bulk Final Settlement  v4.21.0
 // ###########################################################################
 
 /**
@@ -34725,7 +35006,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 24 — Bulk Payroll Transactions  v4.19.0
+// ##### SECTION 24 — Bulk Payroll Transactions  v4.21.0
 // ###########################################################################
 
 /**
@@ -35180,7 +35461,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.19.0
+// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.21.0
 // ###########################################################################
 
 /**
@@ -35619,7 +35900,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.19.0
+// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.21.0
 // ###########################################################################
 
 /**
@@ -35642,13 +35923,18 @@
  *   - the list answer's array key and the shift objects inside weekday_mappings (shifts / newShifts / …)
  *   - which day weekday 0 is (a setting in the tool, default Sunday)
  *   - GET /v2/attendance/shifts for shifts not used by any schedule (optional; ignored if it fails)
+ * Repeat (v4.21, confirmed in captures 2026-10-18 — same PUT body):
+ *   Repeat forever  -> repeat_unit:"forever", repeat_value:null
+ *   For N weeks     -> repeat_unit:"week",    repeat_value:"2"
+ *   Till a date     -> repeat_unit:"date",    repeat_value:"2026-10-31"
+ *   File column "Repeat": Forever / For 2 weeks / Till 2026-10-31 (blank = keep as it is; new schedules default to Forever).
  * Shift times themselves are not edited here: a schedule uses existing shifts (by name or id).
  * ===========================================================================
  */
 (function () {
   'use strict';
 
-  const SECTION_VERSION = '4.13.0';
+  const SECTION_VERSION = '4.21.0';
   const MODULE_ID = 'fixed-hours-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -35701,6 +35987,26 @@
       days[wd] = { off: !!m.is_day_off || !ids.length, shiftIds: m.is_day_off ? [] : ids, locationId: m.location_id != null ? m.location_id : null };
     });
     return { id: t.id, nameEn: String(t.name_en || t.name_i18n || '').trim(), nameAr: String(t.name_ar || '').trim(), eff: date_(t.effective_date) || '', repeatUnit: t.repeat_unit || 'forever', repeatValue: t.repeat_value != null ? t.repeat_value : null, employeeIds: (t.employee_ids || []).map(String), days, complete: days.every(Boolean) };
+  }
+  /** "Forever" / "For 2 weeks" / "Till 2026-10-31" */
+  function repeatText_(unit, value) {
+    if (unit === 'week') { const n = Number(value); return 'For ' + n + (n === 1 ? ' week' : ' weeks'); }
+    if (unit === 'date') return 'Till ' + (date_(value) || String(value || ''));
+    return 'Forever';
+  }
+  /** File cell -> { unit, value } | null (blank = no change) | { error } */
+  function parseRepeat_(v) {
+    if (v === null || v === undefined || v === '') return null;
+    if (v instanceof Date || typeof v === 'number') { const d = date_(v); return d ? { unit: 'date', value: d } : { error: 'not understood' }; }
+    const s = String(v).trim().replace(/[٠-٩]/g, (c) => '٠١٢٣٤٥٦٧٨٩'.indexOf(c));
+    if (!s) return null;
+    if (/^(repeat\s+)?forever$|^no end( date)?$|^always$|^دائم|^للأبد|^تكرار دائم|^بدون نهاية|^بلا نهاية/i.test(s)) return { unit: 'forever', value: null };
+    let m = /^(?:for|لمدة|مدة)?\s*(\d+)\s*(?:w|wk|wks|week|weeks|أسبوع|أسابيع|اسبوع|اسابيع)?$/i.exec(s);
+    if (m) { const n = Number(m[1]); return n >= 1 && n <= 520 ? { unit: 'week', value: String(n) } : { error: 'number of weeks must be 1–520' }; }
+    m = /^(?:till|until|to|end|ends|حتى|الى|إلى)\s*:?\s*(.+)$/i.exec(s);
+    const d = date_(m ? m[1].trim() : s);
+    if (d) return { unit: 'date', value: d };
+    return { error: 'write Forever, For 2 weeks or Till 2026-10-31' };
   }
   /** Request body exactly like Jisr's own form. */
   function body_(m, catalog, confirm) {
@@ -35823,7 +36129,7 @@
       .jfh-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
     ` }));
   }
-  const SCH_HEAD = ['Schedule ID (blank = new)', 'Name (English)', 'Name (Arabic)', 'Effective date', 'Employees'].concat(DAYS.map((d) => d[0])).concat(['Action (DELETE to delete)']);
+  const SCH_HEAD = ['Schedule ID (blank = new)', 'Name (English)', 'Name (Arabic)', 'Effective date', 'Repeat (Forever / For 2 weeks / Till 2026-10-31)', 'Employees'].concat(DAYS.map((d) => d[0])).concat(['Action (DELETE to delete)']);
   const ASG_HEAD = ['Employee ID', 'Employee Name', 'Iqama / National ID', 'Current schedule', 'New schedule (name or ID, NONE = unassign)'];
   const SHIFT_HEAD = ['Shift ID', 'Shift name', 'Start', 'End', 'Next day end', 'Flexible (min)', 'Allowed delay (min)', 'Write it as'];
   const norm_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
@@ -35921,18 +36227,19 @@
         const tpls = await loadAll_();
         const emps = await W.__jisrBulkOpsEmployees.get(false);
         const dup = dupNames_();
-        const sch = tpls.map((m) => [m.id, m.nameEn, m.nameAr, m.eff, m.employeeIds.length].concat(cols_(m).map((d) => dayText_(d, S.catalog, dup))).concat(['']));
+        const sch = tpls.map((m) => [m.id, m.nameEn, m.nameAr, m.eff, repeatText_(m.repeatUnit, m.repeatValue), m.employeeIds.length].concat(cols_(m).map((d) => dayText_(d, S.catalog, dup))).concat(['']));
         const byEmp = new Map(); tpls.forEach((m) => m.employeeIds.forEach((id) => { if (!byEmp.has(id)) byEmp.set(id, []); byEmp.get(id).push(m.nameEn || '#' + m.id); }));
         const asg = emps.map((e) => [e.code || e.id, e.name || '', e.nid ? String(e.nid) : '', (byEmp.get(String(e.id)) || []).join(', '), '']);
         const shifts = Array.from(S.catalog.entries()).map(([id, s]) => { const n = shiftName_(s); return [Number(id), n, s.start_time || '', s.end_time || '', s.is_end_time_next_day ? 'Yes' : 'No', s.flexible_duration != null ? s.flexible_duration : '', s.allowed_delay != null ? s.allowed_delay : '', dup.has(n.toLowerCase()) ? n + ' #' + id : n]; });
         const wb = XLSX.utils.book_new();
         const add = (name, head, rows, widths) => { const ws = XLSX.utils.aoa_to_sheet([head].concat(rows)); ws['!cols'] = widths.map((w) => ({ wch: w })); XLSX.utils.book_append_sheet(wb, ws, name); };
-        add('Schedules', SCH_HEAD, sch, [14, 26, 26, 13, 10, 16, 16, 16, 16, 16, 16, 16, 20]);
+        add('Schedules', SCH_HEAD, sch, [14, 26, 26, 13, 22, 10, 16, 16, 16, 16, 16, 16, 16, 20]);
         add('Assignments', ASG_HEAD, asg, [12, 28, 16, 30, 34]);
         add('Shifts', SHIFT_HEAD, shifts, [10, 24, 10, 10, 12, 12, 16, 28]);
         add('How to', ['How to use this file'], [
           ['Schedules: change a name, the effective date or a day. A day is OFF or a shift name from the Shifts sheet; two shifts: "Morning + Evening".'],
           ['New schedule: add a row with an empty Schedule ID, both names, the effective date and all 7 days.'],
+          ['Repeat: "Forever" (no end date), "For 2 weeks" (a number of weeks) or "Till 2026-10-31" (until a date). Blank keeps the current setting; a new schedule without it repeats forever.'],
           ['Delete: type DELETE in the last column. Schedules that still have employees are refused by Jisr.'],
           ['Assignments: write the schedule name (or ID) in the last column. NONE removes the employee from every schedule. Leave it empty for no change.'],
           ['Days follow the tool setting “Jisr\'s first day (weekday 0)” = ' + (monday() ? 'Monday' : 'Sunday') + '. Do not change it between export and upload.'],
@@ -35940,7 +36247,7 @@
         const names = tpls.map((m) => m.nameEn).filter(Boolean).slice(0, 200).concat(['NONE']);
         const shiftVals = ['OFF'].concat(shifts.map((s) => s[7])).slice(0, 250);
         if (X && X.saveWithDropdowns) {
-          const picks = DAYS.map((_, i) => ({ sheet: 'Schedules', col: 5 + i, strict: false, title: DAYS[i][0], values: shiftVals })).concat([{ sheet: 'Schedules', col: 12, strict: false, title: 'Action', values: ['DELETE'] }, { sheet: 'Assignments', col: 4, strict: false, title: 'New schedule', values: names }]);
+          const picks = [{ sheet: 'Schedules', col: 4, strict: false, title: 'Repeat', values: ['Forever', 'For 1 week', 'For 2 weeks', 'For 3 weeks', 'For 4 weeks', 'Till ' + today_()] }].concat(DAYS.map((_, i) => ({ sheet: 'Schedules', col: 6 + i, strict: false, title: DAYS[i][0], values: shiftVals }))).concat([{ sheet: 'Schedules', col: 13, strict: false, title: 'Action', values: ['DELETE'] }, { sheet: 'Assignments', col: 4, strict: false, title: 'New schedule', values: names }]);
           await X.saveWithDropdowns(wb, 'jisr-fixed-working-hours-' + slug_() + '.xlsx', picks);
         } else XLSX.writeFile(wb, 'jisr-fixed-working-hours-' + slug_() + '.xlsx');
         S.dayMode = wdSel.value;
@@ -35962,11 +36269,11 @@
         const parsed = { schedules: [], assignments: [] };
         if (sch) {
           const h = (sch[0] || []).map(norm_); const col = (re) => h.findIndex((x) => re.test(x));
-          const c = { id: col(/^schedule id/), en: col(/^name english/), ar: col(/^name arabic/), eff: col(/^effective/), act: col(/^action/), days: DAYS.map((d) => h.indexOf(d[0].toLowerCase())) };
+          const c = { id: col(/^schedule id/), en: col(/^name english/), ar: col(/^name arabic/), eff: col(/^effective/), rep: col(/^repeat/), act: col(/^action/), days: DAYS.map((d) => h.indexOf(d[0].toLowerCase())) };
           if (c.days.some((i) => i < 0)) throw new Error(T('The Schedules sheet needs the columns Sun … Sat.', 'تحتاج ورقة Schedules الأعمدة Sun … Sat.'));
           sch.slice(1).forEach((r, k) => {
             const g = (i) => (i >= 0 ? r[i] : '');
-            const row = { no: k + 2, id: String(g(c.id) || '').trim().replace(/\.0+$/, ''), en: String(g(c.en) || '').trim(), ar: String(g(c.ar) || '').trim(), effRaw: g(c.eff), action: String(g(c.act) || '').trim().toUpperCase(), days: c.days.map((i) => r[i]) };
+            const row = { no: k + 2, id: String(g(c.id) || '').trim().replace(/\.0+$/, ''), en: String(g(c.en) || '').trim(), ar: String(g(c.ar) || '').trim(), effRaw: g(c.eff), repRaw: g(c.rep), action: String(g(c.act) || '').trim().toUpperCase(), days: c.days.map((i) => r[i]) };
             if (!row.id && !row.en && !row.ar && row.days.every((x) => String(x == null ? '' : x).trim() === '')) return;
             parsed.schedules.push(row);
           });
@@ -36013,6 +36320,12 @@
             const eff = date_(r.effRaw);
             if (eff === null) errs.push(T('Effective date not understood', 'لم يُفهم تاريخ السريان'));
             else if (eff && eff !== m.eff) { plan.push(T('Effective date: ', 'تاريخ السريان: ') + m.eff + ' → ' + eff); want.eff = eff; }
+            const rp = parseRepeat_(r.repRaw);
+            if (rp && rp.error) errs.push(T('Repeat: ', 'التكرار: ') + rp.error);
+            else if (rp && (rp.unit !== (m.repeatUnit || 'forever') || String(rp.value == null ? '' : rp.value) !== String(m.repeatValue == null ? '' : m.repeatValue))) {
+              plan.push(T('Repeat: ', 'التكرار: ') + repeatText_(m.repeatUnit, m.repeatValue) + ' → ' + repeatText_(rp.unit, rp.value)); want.repeatUnit = rp.unit; want.repeatValue = rp.value;
+            }
+            if (want.repeatUnit === 'date' && want.eff && String(want.repeatValue) <= want.eff && (rp || eff)) errs.push(T('Repeat "Till" date must be after the effective date (', 'تاريخ «حتى» يجب أن يكون بعد تاريخ السريان (') + want.eff + ')');
             const dup = dupNames_();
             DAYS.forEach((d, col) => {
               const wd = toWeekday_(col, monday()); const cur = m.days[wd];
@@ -36036,13 +36349,16 @@
             if (tpls.some((m) => nameKey(m.nameEn) === nameKey(r.en))) errs.push(T('A schedule named "', 'يوجد جدول باسم "') + r.en + T('" already exists — fill its Schedule ID to edit it', '" — املأ رقم الجدول لتعديله'));
             if (plans.has('new:' + nameKey(r.en))) errs.push(T('Same name as ', 'نفس الاسم في ') + plans.get('new:' + nameKey(r.en)).where);
             const eff = date_(r.effRaw); if (eff === null) errs.push(T('Effective date not understood', 'لم يُفهم تاريخ السريان'));
+            const rp = parseRepeat_(r.repRaw) || { unit: 'forever', value: null };
+            if (rp.error) errs.push(T('Repeat: ', 'التكرار: ') + rp.error);
+            else if (rp.unit === 'date' && rp.value <= (eff || today_())) errs.push(T('Repeat "Till" date must be after the effective date (', 'تاريخ «حتى» يجب أن يكون بعد تاريخ السريان (') + (eff || today_()) + ')');
             const days = new Array(7).fill(null); const plan = [];
             DAYS.forEach((d, col) => { const p = parseDay_(r.days[col], S.catalog); if (p.error) errs.push(d[0] + ': ' + p.error); else days[toWeekday_(col, monday())] = { off: p.off, shiftIds: p.shiftIds, locationId: null }; });
             if (days.every((x) => x && x.off)) errs.push(T('A schedule needs at least one working day', 'يحتاج الجدول يوم عمل واحدًا على الأقل'));
             if (errs.length) { err(where, r.en || '—', errs.join('\n✗ ')); continue; }
             const dup = dupNames_();
             DAYS.forEach((d, col) => plan.push(d[0] + ': ' + dayText_(days[toWeekday_(col, monday())], S.catalog, dup)));
-            plans.set('new:' + nameKey(r.en), { kind: 'create', where, want: { id: null, nameEn: r.en, nameAr: r.ar, eff: eff || today_(), repeatUnit: 'forever', repeatValue: null, employeeIds: [], days, complete: true }, plan: [T('Effective ', 'يسري ') + (eff || today_())].concat(plan), label: r.en });
+            plans.set('new:' + nameKey(r.en), { kind: 'create', where, want: { id: null, nameEn: r.en, nameAr: r.ar, eff: eff || today_(), repeatUnit: rp.unit, repeatValue: rp.value, employeeIds: [], days, complete: true }, plan: [T('Effective ', 'يسري ') + (eff || today_()) + ' · ' + repeatText_(rp.unit, rp.value)].concat(plan), label: r.en });
           }
         }
         // 2) assignments
@@ -36172,7 +36488,7 @@
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'Fixed Working Hours — Bulk', open: openTool_, version: SECTION_VERSION };
-    W.__jisrFixedHours = { readTemplate_, body_, parseDay_, dayText_, toWeekday_, date_ };
+    W.__jisrFixedHours = { readTemplate_, body_, parseDay_, dayText_, toWeekday_, date_, parseRepeat_, repeatText_ };
     if (g._rerender) g._rerender();
   }
   register_();
@@ -36180,7 +36496,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.19.0
+// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.21.0
 // ###########################################################################
 
 /**
@@ -36254,7 +36570,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.19.0
+// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.21.0
 // ###########################################################################
 
 /**
@@ -36267,7 +36583,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.19.0
+// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.21.0
 // ###########################################################################
 
 /*
@@ -36548,6 +36864,7 @@
   function exportWorkbook_(state) {
     const { rows, sum } = state.result;
     const wb = XLSX.utils.book_new();
+    wb.__noRef = true; // client files, not Jisr employees
     const yes = (b) => (b ? 'Yes' : 'No');
     const st = (r) => statusText_(r, 'en');
     const now = new Date();
@@ -36836,7 +37153,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 27 — Activation Checklist sidebar  v4.19.0
+// ##### SECTION 27 — Activation Checklist sidebar  v4.21.0
 // ###########################################################################
 
 /**
@@ -37295,7 +37612,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.19.0
+// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.21.0
 // ###########################################################################
 
 /**
