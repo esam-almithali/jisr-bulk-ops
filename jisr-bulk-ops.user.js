@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.5.1
-// @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
+// @version      4.19.0
+// @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @updateURL    https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
 // @downloadURL  https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
 // @match        https://*.jisr.net/*
@@ -16,7 +16,9 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
+// @grant        GM_setClipboard
 // @connect      workers.dev
+// @connect      jisr.zendesk.com
 // @connect      google.com
 // @connect      www.google.com
 // @connect      goo.gl
@@ -25,7 +27,7 @@
 // ==/UserScript==
 
 /**
- * JISR BULK OPS - ALL-IN-ONE  v4.5.1
+ * JISR BULK OPS - ALL-IN-ONE  v4.19.0
  * ======================================
  * One install instead of eleven. This file is the old per-module toolkit
  * (modules 01-05, 07-12, each at its latest version) placed back to back,
@@ -60,13 +62,13 @@
  *   12 Departments  v1.0.3
  *   14 Employee Groups & Business Units + Export Everything  v3.0.0
  *   15 Attendance Log Converter  v3.1.0
- *   16 GOSI Compliance — Export & Salary Check  v4.5.1
- *    0 Language follows the Jisr page (EN/AR)  v4.5.1
+ *   16 GOSI Compliance — Export & Salary Check  v4.19.0
+ *    0 Language follows the Jisr page (EN/AR)  v4.19.0
  */
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.5.1
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.19.0
 // ###########################################################################
 
 /*
@@ -794,6 +796,7 @@
 "Downloaded a blank template with one example row, plus a \"Valid Categories\" reference sheet — Category must match one of the names on that sheet exactly (this tenant's own categories, harvested live; a category no existing department uses yet can't be offered here). A department that already exists (matched by exact English name) is reused instead of duplicated.": "تم تنزيل قالب فارغ بصف مثال واحد مع ورقة \"التصنيفات المتاحة\" — يجب أن يطابق التصنيف أحد الأسماء فيها تمامًا. يُعاد استخدام القسم الموجود (بمطابقة الاسم الإنجليزي) بدلًا من تكراره.",
 "Manager and Category are required (both are required fields on Jisr's own confirmed create call). Category options come from this tenant's own departments — click \"Load Departments\" first if the dropdown is empty. A department that already exists with the exact same English name is reused instead of duplicated. If a Parent Department is chosen, creating the row is two already-confirmed API calls (create, then set-parent) — see Dry Run for the exact sequence.": "المدير والتصنيف مطلوبان. خيارات التصنيف تأتي من أقسام هذه الشركة — اضغط \"تحميل الأقسام\" أولًا إذا كانت القائمة فارغة. يُعاد استخدام القسم الموجود بنفس الاسم الإنجليزي بدلًا من تكراره. عند اختيار قسم أعلى، يتم الإنشاء على خطوتين (إنشاء ثم تعيين القسم الأعلى) — راجع التشغيل التجريبي للتفاصيل.",
 "Leave a \"New …\" field blank to keep it unchanged. To clear an existing parent (make a department a main department again), tick \"Clear Parent?\" instead of typing in New Parent Department — typing in both is flagged as an error, not guessed at. A department cannot be made a child of itself or one of its own descendants (blocked client-side using the loaded org tree). Every PUT sends the full record (name/name_ar/manager_id/category_ids/parent_id) — this endpoint has no confirmed partial-update behavior. Manager and Category changes cannot be independently verified from the response (only name/name_ar/parent_id are ever echoed back) — spot-check in the Jisr UI if in doubt.": "اترك حقل \"جديد …\" فارغًا للإبقاء على القيمة الحالية. لإزالة القسم الأعلى (جعل القسم رئيسيًا) حدّد \"إزالة القسم الأعلى؟\" بدلًا من كتابة قسم أعلى جديد. لا يمكن جعل القسم تابعًا لنفسه أو لأحد فروعه. لا يمكن التحقق من تغييرات المدير والتصنيف من الرد — تحقق منها في جسر عند الشك.",
+"Pick an existing location, then fill in only the \"New\" fields you want to change — blank means unchanged. A Google Maps link (short or long) overrides Latitude/Longitude if both are given. To move a location, pick a New Area and/or New City (cities of the location's country, as in Jisr).": "اختر موقعًا موجودًا ثم عبّئ حقول \"جديد\" التي تريد تغييرها فقط — الفارغ يعني بلا تغيير. رابط خرائط Google (قصير أو طويل) يحل محل خط العرض/خط الطول إذا أُعطي الاثنان. لنقل موقع، اختر منطقة جديدة و/أو مدينة جديدة (مدن دولة الموقع، كما في جسر).",
 "Attendance Log Converter": "محوّل سجلات الحضور",
 " ok, ": " ناجح، ",
 " (.xlsx)": " (‎.xlsx)",
@@ -869,7 +872,19 @@
 "Payroll Reconciliation (read-only)": "مطابقة الرواتب (للقراءة فقط)",
 "Flight Ticket Policy Assignment": "سياسة تذاكر الطيران",
 "Areas & Locations — Create": "المناطق والمواقع — إنشاء",
-"Cancel Transactions & Loans": "إلغاء العمليات والقروض"
+"Cancel Transactions & Loans": "إلغاء العمليات والقروض",
+"Employee Documents": "مستندات الموظفين",
+"Bulk Offboarding": "إنهاء الخدمة الجماعي",
+"Bulk Final Settlement": "التسوية النهائية الجماعية",
+"Jisr Letter Converter": "محوّل خطابات جسر",
+"Bulk Cancel Leave Requests": "إلغاء طلبات الإجازة الجماعي",
+"Bulk Payroll Transactions": "حركات الرواتب الجماعية",
+"Fixed Working Hours — Bulk": "ساعات العمل الثابتة — جماعي",
+"New Area": "المنطقة الجديدة",
+"New City": "المدينة الجديدة",
+"New: Area": "جديد: المنطقة",
+"New: City": "جديد: المدينة",
+"Activation Checklist": "قائمة التفعيل"
 };
 
   // ---------------------------------------------------------------- language detection
@@ -1069,7 +1084,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0c — Google sign-in (company accounts only)  v4.5.1
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.19.0
 // ###########################################################################
 
 /*
@@ -1293,7 +1308,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.5.1
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.19.0
 // ###########################################################################
 
 /*
@@ -1555,11 +1570,11 @@
 
   // ======================================================================= hub menu
   const CATEGORIES = [
-    ['employees', 'Employees', 'الموظفون', ['employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents']],
-    ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'gosi-compliance', 'payroll-reconciliation', 'flight-tickets-bulk', 'loans-transactions-cancel']],
+    ['employees', 'Employees', 'الموظفون', ['data-validation', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'offboarding-bulk']],
+    ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'gosi-compliance', 'payroll-reconciliation', 'flight-tickets-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk']],
     ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'org-groups-business-units']],
-    ['attendance', 'Attendance', 'الحضور', ['attendance-log-converter']],
-    ['utilities', 'Utilities', 'أدوات مساعدة', ['export-everything']],
+    ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'fixed-hours-bulk', 'attendance-log-converter']],
+    ['utilities', 'Utilities', 'أدوات مساعدة', ['activation-checklist', 'export-everything', 'letter-converter']],
   ];
   function el(tag, attrs, children) {
     const n = document.createElement(tag);
@@ -1573,132 +1588,663 @@
     (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
     return n;
   }
+  // ======================================================================= v4.16: the J panel as an assistant
+  // Matte black and white with a little dark blue. Greeting, one search, the client's activation card
+  // (from the Activation Checklist), recent tools, category chips with described tools, and a "Look up" tab
+  // that searches the public Jisr help center (Zendesk) live.
+  const ICONS = {
+    employees: '<path d="M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1"/><circle cx="9.5" cy="7.5" r="3.5"/><path d="M21 19v-1a4 4 0 0 0-3-3.87M15.5 4.13a3.5 3.5 0 0 1 0 6.75"/>',
+    payroll: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/>',
+    org: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 7h1M14 7h1M9 11h1M14 11h1M9 15h1M14 15h1"/>',
+    attendance: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+    utilities: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',
+    check: '<path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/>',
+    other: '<circle cx="12" cy="12" r="8"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
+    close: '<path d="M6 6l12 12M18 6L6 18"/>',
+    ext: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+  };
+  const DESC = {
+    'employee-id-bulk': ['Change employee IDs from a file', 'تغيير الأرقام الوظيفية من ملف'],
+    'roles-permissions-bulk': ['Assign or revoke roles in bulk', 'إسناد الأدوار أو سحبها جماعيًا'],
+    'employee-contracts-bulk': ['Contract type, period, renewal, joining date', 'نوع العقد ومدته وتجديده وتاريخ الالتحاق'],
+    'data-validation': ['Initial sheet vs Muqeem and GOSI (read-only)', 'الملف الأولي مقابل مقيم والتأمينات (قراءة فقط)'],
+    'employee-documents': ['Upload Iqama, passport and any company document type', 'رفع الإقامة والجواز وأي نوع مستند للشركة'],
+    'offboarding-bulk': ['Offboard employees in bulk', 'إنهاء خدمات الموظفين جماعيًا'],
+    'salary-increment-bulk': ['New salaries from a file', 'رواتب جديدة من ملف'],
+    'suspend-payrun-bulk': ['Hold or release salaries in a payrun', 'إيقاف الرواتب أو إطلاقها في مسير'],
+    'gosi-applicable-amount-bulk': ['Set GOSI salaries in bulk', 'ضبط رواتب التأمينات جماعيًا'],
+    'gosi-compliance': ['Export and check GOSI salaries', 'تصدير رواتب التأمينات والتحقق منها'],
+    'payroll-reconciliation': ['Compare a payrun with the client file', 'مقارنة المسير بملف العميل'],
+    'flight-tickets-bulk': ['Flight ticket policies', 'سياسات تذاكر الطيران'],
+    'payroll-transactions-bulk': ['Create transactions by type', 'إنشاء الحركات حسب النوع'],
+    'loans-transactions-cancel': ['Remove transactions and loan records', 'حذف الحركات وسجلات السلف'],
+    'final-settlement-bulk': ['Final settlements in bulk', 'المخالصات النهائية جماعيًا'],
+    'departments-bulk': ['Create, rename and nest departments', 'إنشاء الإدارات وتسميتها وترتيبها'],
+    'job-titles-bulk': ['Bulk create and edit job titles', 'إنشاء المسميات الوظيفية وتعديلها جماعيًا'],
+    'locations-bulk': ['Areas, cities, locations and map pins', 'المناطق والمدن والمواقع ودبابيس الخريطة'],
+    'org-groups-business-units': ['Employee groups and business units', 'مجموعات الموظفين ووحدات الأعمال'],
+    'leave-cancel-bulk': ['Clean up imported leaves', 'تنظيف الإجازات المستوردة'],
+    'fixed-hours-bulk': ['Weekly schedules and assignments', 'الجداول الأسبوعية والتعيينات'],
+    'attendance-log-converter': ['Device logs to Jisr, then publish', 'سجلات الأجهزة إلى جسر ثم النشر'],
+    'activation-checklist': ['Playbook progress for this client', 'تقدّم دليل التفعيل لهذا العميل'],
+    'export-everything': ['Read-only export of the whole account', 'تصدير كامل الحساب (قراءة فقط)'],
+    'letter-converter': ['Word letters to Jisr templates', 'تحويل خطابات Word إلى قوالب جسر'],
+  };
+  const NEW_IDS = ['data-validation', 'employee-documents', 'activation-checklist'];
+  const svg_ = (k, size) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('width', size || 16); s.setAttribute('height', size || 16); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.8'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round'); s.innerHTML = ICONS[k] || ICONS.other; return s; };
+  const normQ_ = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[ً-ٰٟـ]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
+  function highlight_(text, q) {
+    const out = document.createDocumentFragment(); const words = normQ_(q).split(/\s+/).filter((w) => w.length > 1);
+    const src = String(text || ''); let low = normQ_(src);
+    if (low.length !== src.length) low = src.toLowerCase().replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
+    if (!words.length || low.length !== src.length) { out.appendChild(document.createTextNode(src)); return out; }
+    const marks = new Array(src.length).fill(false);
+    words.forEach((w) => { let i = low.indexOf(w); while (i >= 0) { for (let k = i; k < i + w.length; k++) marks[k] = true; i = low.indexOf(w, i + w.length); } });
+    let i = 0; while (i < src.length) { let j = i; while (j < src.length && marks[j] === marks[i]) j++; const part = src.slice(i, j); out.appendChild(marks[i] ? el('mark', { text: part }) : document.createTextNode(part)); i = j; }
+    return out;
+  }
   function injectStyles_() {
-    if (document.getElementById('jisr-bulk-ops-style-hub')) return;
+    if (document.getElementById('jisr-bulk-ops-style-hub416')) return;
     const st = document.createElement('style');
-    st.id = 'jisr-bulk-ops-style-hub';
+    st.id = 'jisr-bulk-ops-style-hub416';
     st.textContent = `
-      .jbo-hub-panel { max-width: 360px !important; min-width: 320px !important; }
-      .jbo-hub-tools { padding: 10px 12px 6px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid #f1f1f1; }
-      .jbo-hub-search { width: 100%; box-sizing: border-box; padding: 8px 10px 8px 30px; border: 1px solid #dadce0; border-radius: 8px; font-size: 13px;
-        background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%235f6368' stroke-width='2.5'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E") no-repeat 10px center; }
-      [dir="rtl"] .jbo-hub-search, [dir="rtl"].jbo-hub-panel .jbo-hub-search { padding: 8px 30px 8px 10px; background-position: calc(100% - 10px) center; }
-      .jbo-hub-search:focus, .jbo-hub-select:focus { outline: 2px solid #000; border-color: #000; }
-      .jbo-hub-select { width: 100%; box-sizing: border-box; padding: 7px 8px; border: 1px solid #dadce0; border-radius: 8px; font-size: 13px; background: #fff; }
-      .jbo-hub-emp { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11.5px; color: #5f6368; }
-      .jbo-hub-emp button { border: 1px solid #000; background: #000; color: #fff; border-radius: 6px; padding: 4px 9px; font-size: 11.5px; cursor: pointer; white-space: nowrap; }
-      .jbo-hub-emp button[disabled] { opacity: .5; cursor: default; }
-      .jbo-hub-group { padding: 8px 14px 3px; font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: #9aa0a6; font-weight: 700; }
-      .jbo-hub-empty { padding: 12px 14px; color: #5f6368; font-size: 12.5px; }
-      .jbo-hub-list { max-height: 360px !important; }
-      .jbo-hub-item.jbo-hub-first { background: #F3F4F6; }
-      .jbo-hub-tools.jbo-hub-compact { border-bottom: 0; padding-bottom: 12px; }
+      .jbo-fab.jbo-fab416 { background: #0E0E11 !important; color: #fff !important; box-shadow: 0 6px 20px rgba(14,14,17,.28) !important; font-family: Onest, Inter, system-ui, -apple-system, 'Segoe UI', Tahoma, sans-serif !important; font-size: 19px !important; overflow: visible; }
+      .jbo-fab416 .jbo-ring { position: absolute; inset: -5px; width: 62px; height: 62px; transform: rotate(-90deg); pointer-events: none; }
+      .jbo-fab416 .jbo-fdot { position: absolute; right: 1px; top: 1px; width: 11px; height: 11px; border-radius: 50%; background: #22c55e; border: 2px solid #fff; display: none; }
+      .jbo-fab416.jbo-signed .jbo-fdot { display: block; }
+      .jbo-hub-panel.jbo-ast { box-sizing: border-box; width: 384px !important; max-width: calc(100vw - 20px) !important; min-width: 0 !important; max-height: calc(100vh - 96px); display: flex; flex-direction: column;
+        background: #0E0E11 !important; color: #fff !important; border: 1px solid #2A2A30 !important; border-radius: 16px !important; box-shadow: 0 18px 50px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.2) !important;
+        font-family: Onest, Inter, system-ui, -apple-system, 'Segoe UI', Tahoma, sans-serif !important; font-size: 13px; line-height: 1.35; overflow: hidden; animation: jbo-ast-in .14s ease-out; }
+      @keyframes jbo-ast-in { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
+      .jbo-ast * { box-sizing: border-box; }
+      .jbo-ast mark { background: rgba(54,87,184,.55); color: #fff; border-radius: 3px; padding: 0 1px; }
+      .jbo-ast-hd { display: flex; gap: 10px; align-items: center; padding: 16px 16px 12px; flex: none; }
+      .jbo-ast-av { width: 34px; height: 34px; border-radius: 10px; background: #fff; color: #0E0E11; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; flex: none; }
+      .jbo-ast-hd .t { flex: 1; min-width: 0; }
+      .jbo-ast-hd h2 { margin: 0; font-size: 15px; font-weight: 600; color: #fff; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .jbo-ast-sub { color: #8A8A8E; font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .jbo-ast-ib { width: 28px; height: 28px; border-radius: 8px; border: 0; background: none; color: #8A8A8E; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+      .jbo-ast-ib:hover { background: #1F1F24; color: #fff; }
+      .jbo-ast-tabs { display: flex; gap: 4px; margin: 0 16px 10px; background: #17171B; border: 1px solid #2A2A30; border-radius: 10px; padding: 3px; flex: none; }
+      .jbo-ast-tab { flex: 1; border: 0; background: none; color: #8A8A8E; font: inherit; font-size: 12.5px; padding: 6px; border-radius: 7px; cursor: pointer; }
+      .jbo-ast-tab.on { background: #26262C; color: #fff; font-weight: 600; }
+      .jbo-ast-sr { margin: 0 16px 10px; position: relative; flex: none; }
+      .jbo-ast .jbo-hub-search { width: 100% !important; height: 40px; border: 1px solid #2A2A30 !important; border-radius: 10px !important; padding: 0 40px 0 36px !important; font: inherit; font-size: 13.5px !important;
+        background: #17171B !important; color: #fff !important; background-image: none !important; outline: none !important; box-shadow: none !important; }
+      .jbo-ast .jbo-hub-search:focus { border-color: #3657B8 !important; }
+      .jbo-ast .jbo-hub-search::placeholder { color: #5E5E64; }
+      .jbo-ast-sr > svg { position: absolute; left: 12px; top: 12px; color: #8A8A8E; }
+      .jbo-ast-sr kbd { position: absolute; right: 10px; top: 10px; font: inherit; font-size: 11px; color: #8A8A8E; border: 1px solid #2A2A30; border-radius: 5px; padding: 1px 6px; background: #1F1F24; }
+      [dir=rtl] .jbo-ast .jbo-hub-search { padding: 0 36px 0 40px !important; }
+      [dir=rtl] .jbo-ast-sr > svg { left: auto; right: 12px; }
+      [dir=rtl] .jbo-ast-sr kbd { right: auto; left: 10px; }
+      .jbo-ast-body { overflow: auto; padding: 0 16px 10px; flex: 1; min-height: 0; scrollbar-width: thin; scrollbar-color: #2A2A30 transparent; }
+      .jbo-ast-lbl { font-size: 11px; color: #8A8A8E; font-weight: 600; letter-spacing: .04em; margin: 12px 2px 8px; display: flex; justify-content: space-between; align-items: center; text-transform: uppercase; }
+      .jbo-ast-lbl button { border: 0; background: none; color: #9DB4F0; font: inherit; font-weight: 500; letter-spacing: 0; text-transform: none; cursor: pointer; padding: 0; }
+      .jbo-ast-lbl button:hover { text-decoration: underline; }
+      .jbo-ast-act { border: 1px solid #2A2A30; background: #17171B; border-radius: 12px; padding: 12px 12px 4px; }
+      .jbo-ast-act .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+      .jbo-ast-act .top b { font-size: 13px; font-weight: 600; }
+      .jbo-ast-act .top span { font-size: 12px; color: #8A8A8E; }
+      .jbo-ast-bar { height: 6px; background: #2A2A30; border-radius: 4px; margin: 8px 0 6px; overflow: hidden; }
+      .jbo-ast-bar i { display: block; height: 100%; background: #3657B8; border-radius: 4px; }
+      .jbo-ast-att { display: flex; gap: 10px; align-items: center; padding: 8px 2px; border-top: 1px solid #2A2A30; cursor: pointer; }
+      .jbo-ast-att .s { width: 8px; height: 8px; border-radius: 50%; background: #F04438; flex: none; }
+      .jbo-ast-att .x { flex: 1; min-width: 0; }
+      .jbo-ast-att .x div { font-size: 12.5px; }
+      .jbo-ast-att .x small { color: #8A8A8E; font-size: 11.5px; display: block; }
+      .jbo-ast-att .go { color: #8A8A8E; font-size: 12px; white-space: nowrap; }
+      .jbo-ast-att:hover .go { color: #fff; }
+      .jbo-ast-ok { color: #8A8A8E; font-size: 12px; padding: 4px 2px 8px; }
+      .jbo-ast-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+      .jbo-ast-chips.scroll { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+      .jbo-ast-chip { border: 1px solid #2A2A30; border-radius: 999px; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer; background: #17171B; color: #D6D6DA; white-space: nowrap; }
+      .jbo-ast-chip:hover { border-color: #5E5E64; }
+      .jbo-ast-chip.on { background: #fff; color: #0E0E11; border-color: #fff; font-weight: 600; }
+      .jbo-ast-tl { margin-top: 8px; }
+      .jbo-ast-tool { display: flex; gap: 10px; align-items: center; padding: 8px; border-radius: 10px; cursor: pointer; outline: none; }
+      .jbo-ast-tool:hover, .jbo-ast-tool.sel, .jbo-ast-tool:focus-visible { background: #1F1F24; }
+      .jbo-ast-ic { width: 32px; height: 32px; border-radius: 9px; border: 1px solid #2A2A30; display: flex; align-items: center; justify-content: center; color: #D6D6DA; flex: none; background: #17171B; }
+      .jbo-ast-tool .x { flex: 1; min-width: 0; }
+      .jbo-ast-tool .x div { font-size: 13px; font-weight: 500; color: #fff; }
+      .jbo-ast-tool .x small { display: block; color: #8A8A8E; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .jbo-ast-new { font-size: 10px; color: #9DB4F0; background: rgba(30,58,138,.4); border-radius: 6px; padding: 1px 6px; margin-inline-start: 6px; font-weight: 500; }
+      .jbo-ast-ch { color: #5E5E64; }
+      [dir=rtl] .jbo-ast-ch { transform: scaleX(-1); }
+      .jbo-ast-empty { color: #8A8A8E; padding: 14px 4px; font-size: 12.5px; }
+      .jbo-ast-res { border: 1px solid #2A2A30; background: #17171B; border-radius: 12px; padding: 10px 12px; cursor: pointer; margin-bottom: 8px; }
+      .jbo-ast-res:hover { border-color: #3657B8; }
+      .jbo-ast-res .h { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+      .jbo-ast-res .h b { font-size: 13px; font-weight: 600; color: #fff; }
+      .jbo-ast-tag { font-size: 10px; border-radius: 6px; padding: 1px 6px; white-space: nowrap; border: 1px solid #2A2A30; color: #8A8A8E; flex: none; }
+      .jbo-ast-res p { margin: 5px 0 0; color: #C9C9CE; font-size: 12px; line-height: 1.45; }
+      .jbo-ast-more { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #2A2A30; font-size: 12px; color: #E4E4E7; line-height: 1.55; white-space: pre-line; max-height: 260px; overflow: auto; }
+      .jbo-ast-res.open .jbo-ast-more { display: block; }
+      .jbo-ast-acts { display: flex; gap: 14px; margin-top: 8px; font-size: 11.5px; }
+      .jbo-ast-acts a, .jbo-ast-acts button { color: #9DB4F0; text-decoration: none; border: 0; background: none; font: inherit; cursor: pointer; padding: 0; display: inline-flex; gap: 4px; align-items: center; }
+      .jbo-ast-acts a:hover, .jbo-ast-acts button:hover { text-decoration: underline; }
+      .jbo-ast-answer:empty { display: none; }
+      .jbo-ast-answer { border: 1px solid #3657B8; background: #141a2e; border-radius: 12px; padding: 12px; margin-bottom: 10px; }
+      .jbo-ast-anslbl { font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: #9DB4F0; font-weight: 600; margin-bottom: 6px; }
+      .jbo-ast-anstext { font-size: 13.5px; line-height: 1.5; color: #fff; }
+      .jbo-ast-anstext strong, .jbo-ast-ansalt strong { color: #fff; background: rgba(54,87,184,.45); border-radius: 4px; padding: 0 3px; font-weight: 600; }
+      .jbo-ast-anssrc { font-size: 11px; color: #8A8A8E; margin-top: 6px; }
+      .jbo-ast-ansmore { margin-top: 10px; padding-top: 8px; border-top: 1px solid #2A2A30; }
+      .jbo-ast-ansalt { font-size: 12px; color: #C9C9CE; margin-top: 6px; line-height: 1.45; }
+      .jbo-ast-tag.amd { color: #fff; background: #1E3A8A; border-color: #1E3A8A; }
+      .jbo-ast-tag.del { color: #F5A3A3; border-color: #5a2a2a; }
+      .jbo-ast-chap { font-size: 11px; color: #8A8A8E; margin-top: 2px; }
+      .jbo-ast-lawnote { display: none; margin-top: 8px; font-size: 11px; color: #9DB4F0; }
+      .jbo-ast-res.open .jbo-ast-lawnote { display: block; }
+      .jbo-ast-res .jbo-ast-lawnote[style*="none"] { display: none !important; }
+      .jbo-ast-note { font-size: 10.5px; color: #5E5E64; text-align: center; margin: 6px 0 2px; }
+      .jbo-ast .jbo-hub-emp { border-top: 1px solid #2A2A30; padding: 10px 16px; display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #8A8A8E; flex: none; justify-content: flex-start; }
+      .jbo-ast .jbo-hub-emp .gd { width: 7px; height: 7px; border-radius: 50%; background: #5E5E64; flex: none; }
+      .jbo-ast .jbo-hub-emp .gd.on { background: #22c55e; }
+      .jbo-ast .jbo-hub-emp > span.info { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .jbo-ast .jbo-hub-emp button { border: 1px solid #2A2A30 !important; background: #17171B !important; color: #fff !important; border-radius: 7px !important; padding: 4px 9px !important; font: inherit; font-size: 11.5px !important; cursor: pointer; white-space: nowrap; }
+      .jbo-ast .jbo-hub-emp button:hover { border-color: #5E5E64 !important; }
+      .jbo-ast .jbo-ast-me { width: 22px; height: 22px; border-radius: 50%; background: #26262C; color: #fff; font-weight: 600; font-size: 10.5px; display: flex; align-items: center; justify-content: center; flex: none; cursor: default; }
+      .jbo-ast .jba-who { background: none !important; color: #8A8A8E !important; border: 0 !important; padding: 0 16px 8px !important; font-size: 11.5px; }
+      .jbo-ast .jba-link { color: #9DB4F0 !important; }
+      .jbo-ast-gate { padding: 4px 16px 18px; color: #C9C9CE; }
     `;
     document.head.appendChild(st);
   }
   const fmtTime = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
-  let lastQuery = '';
+  const UIS = { tab: 'tools', cat: 'all', query: '', lq: '', sel: 0, src: 'all' };
+  function firstName_() {
+    const A = unsafeWindow.__jisrBulkOpsAuth; const s = A && A.enabled() ? A.session() : null;
+    let n = (s && s.name) || ''; if (!n) { try { n = unsafeWindow.localStorage.getItem(GM_PREFIX + 'ownerLabel') || ''; } catch (e) { /* ignore */ } }
+    n = String(n).trim(); if (/@/.test(n)) n = n.split('@')[0].split(/[._-]/)[0];
+    const w = n.split(/\s+/)[0] || ''; return w ? w.charAt(0).toUpperCase() + w.slice(1) : '';
+  }
+  function greeting_() {
+    const h = new Date().getHours(); const n = firstName_();
+    const g = h < 12 ? T('Good morning', 'صباح الخير') : h < 17 ? T('Good afternoon', 'مساء الخير') : T('Good evening', 'مساء الخير');
+    return n ? g + (I.isAr() ? ' يا ' : ', ') + n : g;
+  }
+  const recent_ = () => (gmGet_('hubRecent', []) || []).filter((x) => typeof x === 'string');
+  function pushRecent_(id) { const r = recent_().filter((x) => x !== id); r.unshift(id); gmSet_('hubRecent', r.slice(0, 3)); }
+  const title_ = (g, id) => (I.tr ? I.tr(g.modules[id].title) : g.modules[id].title);
+  function checklistState_() {
+    const C = unsafeWindow.__jisrChecklist; if (!C) return null;
+    try { const st = C.load_(); return { C, st, p: C.percent_(st) }; } catch (e) { return null; }
+  }
+  /** the J button: a thin ring with this client's checklist %, and a green dot when signed in */
+  function paintFab_() {
+    const fab = document.querySelector('.jbo-fab'); if (!fab) return;
+    injectStyles_(); fab.classList.add('jbo-fab416');
+    const cs = checklistState_(); const pct = cs ? cs.p.pct : 0;
+    let ring = fab.querySelector('.jbo-ring');
+    if (!ring) {
+      ring = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); ring.setAttribute('class', 'jbo-ring'); ring.setAttribute('viewBox', '0 0 62 62');
+      ring.innerHTML = '<circle cx="31" cy="31" r="29" fill="none" stroke="#e3e8ef" stroke-width="3"/><circle class="v" cx="31" cy="31" r="29" fill="none" stroke="#1E3A8A" stroke-width="3" stroke-linecap="round" stroke-dasharray="182.2" stroke-dashoffset="182.2"/>';
+      fab.appendChild(ring); fab.appendChild(el('span', { class: 'jbo-fdot' }));
+    }
+    ring.style.display = cs && (cs.st.checkedAt || Object.keys(cs.st.ticks || {}).length) ? '' : 'none';
+    ring.querySelector('.v').setAttribute('stroke-dashoffset', String(182.2 * (1 - pct / 100)));
+    const A = unsafeWindow.__jisrBulkOpsAuth; fab.classList.toggle('jbo-signed', !!(A && A.enabled() && A.session()));
+    fab.title = T('Bulk Ops assistant', 'مساعد Bulk Ops') + (cs && cs.st.checkedAt ? ' · ' + T('Activation ', 'التفعيل ') + pct + '%' : '');
+  }
+  setTimeout(paintFab_, 600); setTimeout(paintFab_, 2500);
+  function anchor_(menuEl) {
+    const fab = document.querySelector('.jbo-fab'); if (!fab || !menuEl.isConnected) return;
+    const fr = fab.getBoundingClientRect(); const m = 10;
+    menuEl.style.maxHeight = Math.max(260, Math.max(fr.top, window.innerHeight - fr.bottom) - 2 * m) + 'px';
+    const mr = { width: menuEl.offsetWidth, height: menuEl.offsetHeight }; // layout size (the opening animation scales the box)
+    let left = fr.right - mr.width; let top = fr.top - mr.height - m;
+    if (top < m) top = Math.min(fr.bottom + m, window.innerHeight - mr.height - m);
+    if (top < m) top = m;
+    if (left + mr.width > window.innerWidth - m) left = window.innerWidth - mr.width - m;
+    if (left < m) left = m;
+    Object.assign(menuEl.style, { position: 'fixed', left: left + 'px', top: top + 'px', right: 'auto', bottom: 'auto' });
+  }
+
+  // ---- Look up: the public Jisr help center (Zendesk), searched live
+  const ZD = 'https://jisr.zendesk.com';
+  const zdCache = new Map();
+  function zdGet_(url) {
+    return new Promise((resolve, reject) => {
+      const done = (status, text) => { if (status >= 200 && status < 300) { try { resolve(JSON.parse(text)); } catch (e) { reject(new Error('bad answer')); } } else reject(new Error('HTTP ' + status)); };
+      if (typeof GM_xmlhttpRequest === 'function') {
+        GM_xmlhttpRequest({ method: 'GET', url, headers: { accept: 'application/json' }, timeout: 15000, onload: (r) => done(r.status, r.responseText), onerror: () => reject(new Error('network')), ontimeout: () => reject(new Error('timeout')) });
+      } else fetch(url, { headers: { accept: 'application/json' } }).then((r) => r.text().then((t) => done(r.status, t))).catch(reject);
+    });
+  }
+  const zdLocale_ = () => (I.isAr() ? 'ar-sa' : 'en-sa');
+  async function zdSearch_(q) {
+    const key = zdLocale_() + '|' + q.toLowerCase();
+    if (zdCache.has(key)) return zdCache.get(key);
+    const j = await zdGet_(ZD + '/api/v2/help_center/articles/search.json?' + new URLSearchParams({ query: q, locale: zdLocale_(), per_page: 10 }));
+    const out = { count: j.count || 0, results: (j.results || []).filter((r) => r && r.id && r.title).map((r) => ({ id: r.id, title: String(r.title), url: String(r.html_url || ''), snippet: plain_(r.snippet || ''), body: r.body ? plain_(r.body) : '' })) };
+    zdCache.set(key, out); return out;
+  }
+  /** article HTML -> plain text (never inserted as HTML) */
+  function plain_(html) {
+    try {
+      const d = new DOMParser().parseFromString('<div>' + String(html).replace(/<(script|style|iframe|noscript)[\s\S]*?<\/\1>/gi, '').replace(/<\/(p|div|li|h[1-6]|tr)>/gi, '\n').replace(/<br\s*\/?>/gi, '\n').replace(/<li[^>]*>/gi, '• ') + '</div>', 'text/html');
+      return (d.body.textContent || '').replace(/ /g, ' ').replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
+    } catch (e) { return String(html).replace(/<[^>]+>/g, ''); }
+  }
+  async function clip_(text) {
+    try { if (typeof GM_setClipboard === 'function') { GM_setClipboard(text, 'text'); return true; } } catch (e) { /* next */ }
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) { return false; }
+  }
+
+  // ---- Look up: answers quoted from the sources (no AI, v4.18)
+  // The best-matching sentence across the Activation Playbook, team notes, the Labor Law and the help-center articles
+  // is shown as the answer, with its source. Nothing is generated: every answer is text from a source.
+  const QSTOP = new Set('how much many what which who whom when where why is are was were the a an of to for in on with be been do does did can could should would will shall may might i we you it its this that these those there here about and or by at from me my our us please tell give get as if any per jisr into than then so just also need needs know want like كم ما ماذا هل كيف متى اين لماذا من في على عن الى هو هي ان مع او يا لو ذلك هذا هذه يكون تكون اريد ممكن عندي لدي لنا لي جسر بكم'.split(' '));
+  const QEXP = {
+    cost: ['price', 'fee', 'sar', 'pricing', 'charge', 'annual', 'free'], price: ['cost', 'fee', 'sar', 'pricing', 'annual', 'free'], fee: ['cost', 'price', 'sar', 'annual'], pricing: ['price', 'cost', 'fee', 'sar'],
+    سعر: ['price', 'cost', 'fee', 'sar', 'رسوم', 'تكلفه'], تكلفه: ['price', 'cost', 'fee', 'sar', 'رسوم'], رسوم: ['price', 'cost', 'fee', 'sar', 'تكلفه'],
+    مدد: ['mudad', 'wps'], مقيم: ['muqeem'], تامينات: ['gosi'], التامينات: ['gosi'], بايوتايم: ['biotime', 'zkteco'], محاسبه: ['accounting', 'sap'], تكامل: ['integration'], التكامل: ['integration'], ربط: ['integration'],
+    الوضع: ['maternity'], امومه: ['maternity'], maternity: ['الوضع'], مرضيه: ['sick'], sick: ['مرضيه'], سنويه: ['annual'], السنويه: ['annual'], annual: ['السنويه'],
+    تجربه: ['probation', 'probationary'], التجربه: ['probation', 'probationary'], probation: ['التجربه', 'probationary'], استقاله: ['resignation', 'resign'], الاستقاله: ['resignation', 'resign'], resignation: ['الاستقاله', 'resign'], resign: ['resignation', 'الاستقاله'],
+    اضافي: ['overtime'], الاضافي: ['overtime'], overtime: ['الاضافي'], اشعار: ['notice'], notice: ['اشعار'], راتب: ['salary', 'wage'], salary: ['wage', 'اجر'], wage: ['salary', 'اجر'],
+    integration: ['تكامل'], gratuity: ['end', 'service', 'award'], eos: ['end', 'service', 'award', 'settlement'], payroll: ['wps', 'salary'], wps: ['mudad', 'salary'], biometric: ['biotime', 'zkteco'], device: ['zkteco', 'biotime'],
+    leave: ['vacation', 'اجازه'], vacation: ['leave'], اجازه: ['leave'], holiday: ['holidays'], holidays: ['holiday'],
+  };
+  const qStem_ = (w) => { if (/^[a-z]/.test(w)) return w.length > 4 ? w.replace(/ies$/, 'y').replace(/(?<=[^s])s$/, '') : w; w = w.replace(/^(وال|بال|كال|فال|لل|ال|و)(?=...)/, ''); return w.length > 3 ? w.replace(/ا$/, '') : w; };
+  const qTokens_ = (s) => lawNorm_(s).split(/\s+/).filter((w) => w.length > 1 && !QSTOP.has(w));
+  const NUM_RE = /(SAR\s?\d[\d.,]*\d|SAR\s?\d|\d[\d.,]*\s?(?:SAR|ريال|ريالا|ريالًا)|\(?\d+(?:\.\d+)?\)?\s?(?:days?|weeks?|months?|years?|hours?|يوم|يوما|أيام|ايام|أسبوعا|أسابيع|اسابيع|شهر|شهرا|أشهر|سنة|سنوات|ساعة|ساعات)|\((?:[a-z\- ]+|[\u0621-\u064A ]+)\)\s?(?:days?|weeks?|months?|يوما|أسبوعا|أسابيع|أيام|شهرا|أشهر)|\d+(?:\.\d+)?\s?%|%\s?\d+)/gi;
+  let kbPass = null, kbDf = null, kbN = 0;
+  function kbPassages_() {
+    if (kbPass) return kbPass;
+    const out = []; const KB = unsafeWindow.__jisrKB; const L = unsafeWindow.__jisrLaborLaw;
+    if (KB) {
+      KB.playbook.forEach((it) => out.push({ src: 'playbook', lang: 'en', text: it.text, title: it.title, label: (KB.playbookTitle || 'Activation Playbook') + ' · ' + it.sec, hay: it.sec.replace(/^\d+\.\s*/, '') + ' ' + it.title + ' ' + it.text }));
+      (KB.notes || []).forEach((it) => out.push({ src: 'notes', lang: /[\u0600-\u06FF]/.test(it.text) ? 'ar' : 'en', text: it.text, title: it.title, label: 'Team notes · ' + (it.sec || ''), hay: (it.sec || '') + ' ' + it.title + ' ' + it.text, url: it.url || '' }));
+    }
+    if (L) L.arts.forEach((a) => {
+      if (a.st === 'deleted' || a.st === 'repealed') return;
+      [['en', a.en], ['ar', a.ar]].forEach(([lang, t]) => {
+        if (!t) return;
+        String(t).split(/\n|(?<=[.;؛])\s+(?=\S)/).map((x) => x.trim()).filter((x) => x.length >= 40).forEach((sn, pos) => out.push({ src: 'law', lang, text: sn, pos, art: a.n, st: a.st, label: (lang === 'ar' ? 'نظام العمل · المادة ' + a.n.replace(' bis', ' مكرر') : 'Labor Law · Article ' + a.n), hay: sn, url: (a.st === 'amended' || a.st === 'added') && lang === 'en' ? L.sources.hrsd : L.sources.ar }));
+      });
+    });
+    out.forEach((p) => { p.toks = new Set(qTokens_(p.hay).map(qStem_)); });
+    kbDf = new Map(); out.forEach((p) => p.toks.forEach((t) => kbDf.set(t, (kbDf.get(t) || 0) + 1))); kbN = out.length;
+    kbPass = out; return out;
+  }
+  const idf_ = (t) => Math.log(1 + (kbN + 1) / ((kbDf.get(t) || 0) + 0.5));
+  /** best passages for a question; extra = help-center passages fetched live */
+  function answer_(q, extra, srcFilter) {
+    const base = kbPassages_();
+    const core = Array.from(new Set(qTokens_(q).map(qStem_))); if (!core.length) return [];
+    const extraToks = (extra || []);
+    const known = (t) => kbDf.has(t) || extraToks.some((p) => p.toks.has(t));
+    // each question word is a group: the word plus its translations / synonyms
+    const groups = core.map((t) => { const alts = (QEXP[t] || QEXP['ال' + t] || []).map((x) => qStem_(lawNorm_(x))); const mem = [t].concat(alts.filter((x) => x !== t)); const ks = mem.filter(known); return { t, mem, w: ks.length ? Math.max(...ks.map(idf_)) : 0 }; }).filter((g) => g.w > 0);
+    if (!groups.length) return [];
+    const nq = lawNorm_(q);
+    const wantCost = /how much|cost|price|fee|pricing|سعر|تكلف|رسوم|بكم/.test(nq) || (/^كم\b/.test(nq) && /(مدد|مقيم|تكامل|ربط|اشتراك)/.test(nq));
+    const wantDur = /how (many|long)|days|weeks|months|period|duration|كم (يوم|يوما|اسبوع|شهر|مده|ساعه)|مده|المده/.test(nq);
+    const wantHow = /how (do|to|can|should)|where|set ?up|configure|steps|كيف|اين|اعداد|ضبط|تفعيل/.test(nq);
+    const subject = groups.reduce((a2, b2) => (b2.w > a2.w ? b2 : a2));
+    const totalIdf = groups.reduce((s2, g) => s2 + g.w, 0) || 1;
+    const ar = I.isAr();
+    const pool = base.concat(extra || []).filter((p) => !srcFilter || srcFilter.includes(p.src));
+    const scored = [];
+    for (const p of pool) {
+      if (!subject.mem.some((t) => p.toks.has(t))) continue;
+      let m = 0;
+      for (const g of groups) if (g.mem.some((t) => p.toks.has(t))) m += g.w;
+      const cov = m / totalIdf;
+      let sc = m * (0.4 + cov);
+      if (wantCost && /\d|sar|ريال|free|مجان/i.test(p.text)) sc *= 1.6;
+      if (wantDur && /\d|\((?:[a-z\- ]+|[\u0621-\u064A ]+)\)|\b(one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|thirty|sixty|ninety|hundred)\b[^.]{0,30}\b(days?|weeks?|months?|years?)\b/i.test(p.text)) sc *= 1.35;
+      if (p.pos === 0) sc *= 1.15;
+      if (wantHow && (p.src === 'help' || /›|>|navigate|settings|الاعدادات|الإعدادات/i.test(p.text))) sc *= 1.25;
+      if (p.src === 'playbook' || p.src === 'notes') sc *= 1.15;
+      if (p.src === 'law' && p.lang !== (ar ? 'ar' : 'en')) sc *= 0.8;
+      sc /= 1 + p.text.length / 700;
+      scored.push({ p, sc, cov });
+    }
+    scored.sort((a, b) => b.sc - a.sc);
+    const seen = new Set(); const out = [];
+    for (const x of scored) { const k = x.p.src + '|' + (x.p.art || x.p.title || x.p.url) + '|' + x.p.lang; if (seen.has(k)) continue; seen.add(k); out.push(x); if (out.length >= 3) break; }
+    return out.filter((x) => x.cov >= 0.45);
+  }
+  function answerText_(text, q) {
+    const f = document.createDocumentFragment(); let last = 0; const s2 = String(text); let m; NUM_RE.lastIndex = 0;
+    while ((m = NUM_RE.exec(s2))) { if (m.index > last) f.appendChild(highlight_(s2.slice(last, m.index), q)); f.appendChild(el('strong', { text: m[0] })); last = m.index + m[0].length; }
+    if (last < s2.length) f.appendChild(highlight_(s2.slice(last), q));
+    return f;
+  }
+  function helpPassages_(r) {
+    const out = [];
+    (r.results || []).slice(0, 5).forEach((a) => {
+      const body = a.body || a.snippet || '';
+      [a.title].concat(String(body).split(/\n|(?<=[.!?؟])\s+(?=\S)/)).map((x) => x.trim()).filter((x) => x.length >= 20 && x.length <= 600).forEach((sn) => {
+        const p = { src: 'help', lang: /[\u0600-\u06FF]/.test(sn) ? 'ar' : 'en', text: sn, title: a.title, label: T('Help center · ', 'مركز المساعدة · ') + a.title, url: a.url, hay: a.title + ' ' + sn };
+        p.toks = new Set(qTokens_(p.hay).map(qStem_)); out.push(p);
+      });
+    });
+    return out;
+  }
+
+  // ---- Look up: Saudi Labor Law (embedded, searched locally)
+  const lawNorm_ = (s) => normQ_(s).replace(/[^\p{L}\p{N}\s]/gu, ' ');
+  let lawIdx = null;
+  function lawSearch_(arts, q) {
+    if (!lawIdx) lawIdx = arts.map((a) => ({ a, h: lawNorm_(a.en + ' ' + a.ar + ' ' + a.pe + ' ' + a.pa), e: lawNorm_(a.en.slice(0, 220) + ' ' + a.ar.slice(0, 220)) }));
+    const nq = lawNorm_(q).trim();
+    const m = /^(?:article|art|الماده|ماده|م)?\s*(\d{1,3})\s*(bis|مكرر)?$/.exec(nq);
+    if (m) { const key = m[1] + (m[2] ? ' bis' : ''); const hit = arts.filter((a) => a.n === key || (!m[2] && a.n === m[1] + ' bis')); if (hit.length) return hit; }
+    const words = nq.split(/\s+/).filter((w) => w.length > 1 && !/^(the|of|and|in|a|an|to|for|في|من|على|الى|إلى|عن)$/.test(w));
+    if (!words.length) return [];
+    const stem = (w) => w.replace(/^(وال|بال|لل|ال|و)(?=..)/, '');
+    const out = [];
+    const phrase = words.join(' '); const phrase2 = words.map(stem).join(' ');
+    lawIdx.forEach(({ a, h, e }) => {
+      let score = 0;
+      for (const w of words) {
+        const s = h.includes(w) ? w : (h.includes(stem(w)) ? stem(w) : null);
+        if (!s) return;
+        let c = 0, i = h.indexOf(s); while (i >= 0 && c < 20) { c++; i = h.indexOf(s, i + s.length); }
+        score += c;
+      }
+      if (words.length > 1 && (h.includes(phrase) || h.includes(phrase2))) score += 5;
+      if (e.includes(phrase) || e.includes(phrase2) || (words.length === 1 && e.includes(stem(words[0])))) score += 12;
+      if (a.st === 'deleted' || a.st === 'repealed') score *= 0.4;
+      if (a.st === 'amended' || a.st === 'added') score *= 1.2;
+      out.push({ a, score });
+    });
+    return out.sort((x, y) => y.score - x.score).map((x) => x.a);
+  }
+  function lawSnippet_(text, q) {
+    const t = String(text || '').replace(/\s+/g, ' ').trim(); const low = normQ_(t);
+    const w = lawNorm_(q).split(/\s+/).filter((x) => x.length > 1).find((x) => low.includes(x));
+    const i = w ? low.indexOf(w) : 0; const start = Math.max(0, i - 60);
+    return (start ? '…' : '') + t.slice(start, start + 220) + (t.length > start + 220 ? '…' : '');
+  }
 
   function render(g, menuEl) {
-    injectStyles_();
+    injectStyles_(); paintFab_();
+    if (!menuEl.__astSeen) { menuEl.__astSeen = true; UIS.query = ''; UIS.sel = 0; } // a freshly opened panel starts on the home view
+    menuEl.classList.add('jbo-ast'); menuEl.setAttribute('dir', I.isAr() ? 'rtl' : 'ltr');
     const ids = Object.keys(g.modules);
-    const open = (id) => { g._closeMenu(); g.modules[id].open(); };
-
-    menuEl.appendChild(el('div', { class: 'jbo-hub-header' }, [
-      el('div', { class: 'jbo-hub-header-left' }, [el('div', { class: 'jbo-hub-logo', text: 'J' }), el('div', { class: 'jbo-hub-title', text: 'Jisr Bulk Ops' })]),
-      el('div', { class: 'jbo-hub-header-right' }, [el('span', { class: 'jbo-hub-dot' }), el('span', { class: 'jbo-hub-pill', text: ids.length + T(ids.length === 1 ? ' tool' : ' tools', ' أداة') })]),
+    const open = (id) => { pushRecent_(id); g._closeMenu(); g.modules[id].open(); };
+    const rerender_ = () => { if (!menuEl.isConnected) return; menuEl.innerHTML = ''; render(g, menuEl); };
+    const closeB = el('button', { class: 'jbo-ast-ib', title: T('Close', 'إغلاق'), type: 'button' }, [svg_('close')]);
+    closeB.addEventListener('click', (e) => { e.stopPropagation(); g._closeMenu(); });
+    menuEl.appendChild(el('div', { class: 'jbo-ast-hd' }, [
+      el('div', { class: 'jbo-ast-av', text: 'J' }),
+      el('div', { class: 't' }, [el('h2', { text: greeting_() }), el('div', { class: 'jbo-ast-sub', text: (slug_() ? slug_() + ' · ' : '') + T('Bulk Ops assistant', 'مساعد Bulk Ops') })]),
+      closeB,
     ]));
     // v4.0: Google sign-in gate (section 0c) - nothing but the sign-in button until signed in
     const AUTH = unsafeWindow.__jisrBulkOpsAuth;
-    const rerender_ = () => { if (!menuEl.isConnected) return; menuEl.innerHTML = ''; render(g, menuEl); };
-    if (AUTH && AUTH.enabled() && !AUTH.session()) { AUTH.renderGate(menuEl, rerender_); return; }
+    if (AUTH && AUTH.enabled() && !AUTH.session()) { const gate = el('div', { class: 'jbo-ast-gate' }); menuEl.appendChild(gate); AUTH.renderGate(gate, rerender_); requestAnimationFrame(() => anchor_(menuEl)); return; }
+
     if (AUTH && AUTH.enabled()) AUTH.renderWho(menuEl, rerender_);
+    const tabTools = el('button', { class: 'jbo-ast-tab' + (UIS.tab === 'tools' ? ' on' : ''), type: 'button', text: T('Tools', 'الأدوات') });
+    const tabLook = el('button', { class: 'jbo-ast-tab' + (UIS.tab === 'look' ? ' on' : ''), type: 'button', text: T('Look up', 'بحث المعرفة') });
+    tabTools.addEventListener('click', (e) => { e.stopPropagation(); UIS.tab = 'tools'; rerender_(); });
+    tabLook.addEventListener('click', (e) => { e.stopPropagation(); UIS.tab = 'look'; rerender_(); });
+    menuEl.appendChild(el('div', { class: 'jbo-ast-tabs' }, [tabTools, tabLook]));
 
-    // search + dropdown + employees
-    const search = el('input', { class: 'jbo-hub-search', type: 'search', placeholder: T('Search tools…', 'ابحث عن أداة…'), value: '', 'data-no-i18n': '' }); // always opens compact
-    const select = el('select', { class: 'jbo-hub-select' });
-    select.appendChild(el('option', { value: '', text: T('— Choose a tool —', '— اختر أداة —') }));
-    const grouped = new Set();
-    const catOf = {};
-    CATEGORIES.forEach(([key, en, ar, list]) => {
-      const present = list.filter((id) => g.modules[id]);
-      if (!present.length) return;
-      const og = el('optgroup', { label: T(en, ar) });
-      present.forEach((id) => { grouped.add(id); catOf[id] = T(en, ar); og.appendChild(el('option', { value: id, text: I.tr ? I.tr(g.modules[id].title) : g.modules[id].title })); });
-      select.appendChild(og);
-    });
-    const others = ids.filter((id) => !grouped.has(id));
-    if (others.length) {
-      const og = el('optgroup', { label: T('Other', 'أخرى') });
-      others.forEach((id) => { catOf[id] = T('Other', 'أخرى'); og.appendChild(el('option', { value: id, text: I.tr ? I.tr(g.modules[id].title) : g.modules[id].title })); });
-      select.appendChild(og);
-    }
-    select.addEventListener('change', () => { if (select.value) open(select.value); });
+    const look = UIS.tab === 'look';
+    const search = el('input', { class: 'jbo-hub-search', type: 'search', placeholder: look ? T('Ask a question, e.g. how much is Mudad?', 'اسأل سؤالًا، مثل: كم سعر مدد؟') : T('What do you need to do?', 'ماذا تريد أن تفعل؟'), 'data-no-i18n': '', autocomplete: 'off' });
+    search.value = look ? UIS.lq : UIS.query;
+    menuEl.appendChild(el('div', { class: 'jbo-ast-sr' }, [svg_('search', 15), search, el('kbd', { text: '/' })]));
+    const body = el('div', { class: 'jbo-ast-body' }); menuEl.appendChild(body);
 
-    const empInfo = el('span');
+    // ---- footer: employees + who is signed in
+    const empInfo = el('span', { class: 'info' }); const empDot = el('span', { class: 'gd' });
     const empBtn = el('button', { type: 'button' });
     function paintEmp() {
       const s = unsafeWindow.__jisrBulkOpsEmployees.state();
-      if (s.loading) { empInfo.textContent = T('Loading employees… ', 'جارٍ تحميل الموظفين… ') + (s.progress || ''); empBtn.setAttribute('disabled', ''); empBtn.textContent = '…'; return; }
+      if (s.loading) { empDot.className = 'gd'; empInfo.textContent = T('Loading employees… ', 'جارٍ تحميل الموظفين… ') + (s.progress || ''); empBtn.setAttribute('disabled', ''); empBtn.textContent = '…'; return; }
       empBtn.removeAttribute('disabled');
-      if (s.count) { empInfo.textContent = '👥 ' + s.count + T(' employees loaded · ', ' موظف محمّل · ') + fmtTime(s.at); empBtn.textContent = T('↻ Refresh', '↻ تحديث'); }
-      else { empInfo.textContent = T('👥 Employees not loaded yet', '👥 لم يتم تحميل الموظفين بعد'); empBtn.textContent = T('Load all employees', 'تحميل كل الموظفين'); }
+      if (s.count) { empDot.className = 'gd on'; empInfo.textContent = s.count + T(' employees loaded · ', ' موظف محمّل · ') + fmtTime(s.at); empBtn.textContent = T('↻ Refresh', '↻ تحديث'); }
+      else { empDot.className = 'gd'; empInfo.textContent = T('Employees not loaded yet', 'لم يتم تحميل الموظفين بعد'); empBtn.textContent = T('Load all employees', 'تحميل كل الموظفين'); }
     }
     empBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      try { await unsafeWindow.__jisrBulkOpsEmployees.get(true, null, true); }
-      catch (err) { empInfo.textContent = '❌ ' + err.message; return; }
+      try { await unsafeWindow.__jisrBulkOpsEmployees.get(true, null, true); } catch (err) { empInfo.textContent = '❌ ' + err.message; return; }
       paintEmp();
     });
     const offEmp = unsafeWindow.__jisrBulkOpsEmployees.onChange(() => { if (menuEl.isConnected) paintEmp(); else offEmp(); });
     paintEmp();
     empBtn.title = T('Loads every employee (ID, name, Iqama) once — every tool and template then reuses it.', 'يحمّل كل الموظفين (الرقم، الاسم، الإقامة) مرة واحدة — وتستخدمه كل الأدوات والقوالب.');
+    const foot = el('div', { class: 'jbo-hub-emp' }, [empDot, empInfo, empBtn]);
+    menuEl.appendChild(foot);
 
-    const toolsBox = el('div', { class: 'jbo-hub-tools' }, [search, select, el('div', { class: 'jbo-hub-emp' }, [empInfo, empBtn])]);
-    menuEl.appendChild(toolsBox);
-
-    const list = el('div', { class: 'jbo-hub-list' });
-    menuEl.appendChild(list);
-    let firstMatch = null;
-    function paintList() {
-      list.innerHTML = '';
-      firstMatch = null;
-      const q = search.value.trim().toLowerCase();
-      lastQuery = search.value;
-      // compact by default: the list only appears while searching (the dropdown already lists every tool)
-      list.style.display = q ? '' : 'none';
-      toolsBox.classList.toggle('jbo-hub-compact', !q);
-      if (!q) return;
-      const order = CATEGORIES.flatMap(([, , , l]) => l).filter((id) => g.modules[id]).concat(others);
-      // titles first; only when no title matches does the group name count (so "gosi" finds the GOSI tools, "payroll" the payroll group)
-      const words = q.split(/\s+/).filter(Boolean);
-      const titleHay = (id) => (g.modules[id].title + ' ' + (I.tr ? I.tr(g.modules[id].title) : '')).toLowerCase();
-      const anyTitle = order.some((id) => words.every((w) => titleHay(id).includes(w)));
-      const matches = (id) => words.every((w) => (titleHay(id) + (anyTitle ? '' : ' ' + String(catOf[id] || '').toLowerCase())).includes(w));
-      let lastCat = null, shown = 0;
-      order.forEach((id) => {
-        const mod = g.modules[id];
-        if (q && !matches(id)) return;
-        if (catOf[id] !== lastCat) { lastCat = catOf[id]; list.appendChild(el('div', { class: 'jbo-hub-group', text: lastCat })); }
-        const item = el('div', { class: 'jbo-hub-item' + (shown === 0 && q ? ' jbo-hub-first' : ''), tabindex: '0' }, [el('span', { class: 'jbo-hub-item-title', text: mod.title })]);
-        if (mod.version) item.appendChild(el('span', { class: 'jbo-hub-badge', text: 'v' + mod.version }));
-        item.addEventListener('click', () => open(id));
-        item.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(id); });
-        list.appendChild(item);
-        if (!firstMatch) firstMatch = id;
-        shown++;
-      });
-      if (!shown) list.appendChild(el('div', { class: 'jbo-hub-empty', text: T('No tool matches "', 'لا توجد أداة تطابق "') + search.value + '"' }));
+    // ---- categories
+    const cats = []; const catOf = {}; const grouped = new Set();
+    CATEGORIES.forEach(([key, en, ar, list]) => { const present = list.filter((id) => g.modules[id]); if (!present.length) return; cats.push([key, T(en, ar), present]); present.forEach((id) => { grouped.add(id); catOf[id] = key; }); });
+    const others = ids.filter((id) => !grouped.has(id)); if (others.length) { cats.push(['other', T('Other', 'أخرى'), others]); others.forEach((id) => { catOf[id] = 'other'; }); }
+    const catName = (k) => (cats.find((c) => c[0] === k) || [k, k])[1];
+    const order = cats.flatMap((c) => c[2]);
+    const iconOf = (id) => (id === 'activation-checklist' ? 'check' : catOf[id] || 'other');
+    function toolRow(id, q, selected) {
+      const d = DESC[id] ? T(DESC[id][0], DESC[id][1]) : '';
+      const t = el('div', {}, [highlight_(title_(g, id), q)]); if (NEW_IDS.includes(id)) t.appendChild(el('span', { class: 'jbo-ast-new', text: T('new', 'جديد') }));
+      const row = el('div', { class: 'jbo-ast-tool' + (selected ? ' sel' : ''), tabindex: '0', 'data-id': id }, [el('span', { class: 'jbo-ast-ic' }, [svg_(iconOf(id))]), el('span', { class: 'x' }, [t, el('small', {}, [highlight_(d, q)])]), el('span', { class: 'jbo-ast-ch', text: '›' })]);
+      row.addEventListener('click', (e) => { e.stopPropagation(); open(id); });
+      row.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(id); });
+      return row;
     }
-    search.addEventListener('input', paintList);
+    let results = [];
+    function paintTools() {
+      body.innerHTML = '';
+      const q = search.value.trim(); UIS.query = search.value;
+      if (q) {
+        const words = normQ_(q).split(/\s+/).filter(Boolean);
+        const hay = (id) => normQ_(g.modules[id].title + ' ' + title_(g, id) + ' ' + (DESC[id] ? DESC[id].join(' ') : ''));
+        const anyTitle = order.some((id) => words.every((w) => hay(id).includes(w)));
+        results = order.filter((id) => words.every((w) => (hay(id) + (anyTitle ? '' : ' ' + normQ_(catName(catOf[id])))).includes(w)));
+        UIS.sel = Math.min(UIS.sel, Math.max(results.length - 1, 0));
+        body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: I.isAr() ? 'النتائج: ' + results.length : results.length + (results.length === 1 ? ' result' : ' results') }), el('span', { text: results.length ? T('Enter to open', 'Enter للفتح') : '' })]));
+        if (!results.length) {
+          body.appendChild(el('div', { class: 'jbo-ast-empty', text: T('No tool matches "', 'لا توجد أداة تطابق "') + q + '"' }));
+          const ask = el('button', { class: 'jbo-ast-chip', type: 'button', text: T('Search the help center for "', 'ابحث في مركز المساعدة عن "') + q + '"' });
+          ask.addEventListener('click', (e) => { e.stopPropagation(); UIS.tab = 'look'; UIS.lq = q; rerender_(); });
+          body.appendChild(ask);
+        }
+        results.forEach((id, i) => body.appendChild(toolRow(id, q, i === UIS.sel)));
+        requestAnimationFrame(() => anchor_(menuEl));
+        return;
+      }
+      results = [];
+      // activation card
+      const cs = checklistState_();
+      if (cs && g.modules['activation-checklist']) {
+        const openCk = el('button', { type: 'button', text: T('Open checklist ›', 'فتح القائمة ‹') });
+        openCk.addEventListener('click', (e) => { e.stopPropagation(); open('activation-checklist'); });
+        body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: T('Activation', 'التفعيل') }), openCk]));
+        const flagged = cs.C.ALL_ITEMS.filter((it) => it.sec.blockers && cs.C.isDone_(cs.st, it)).length;
+        const card = el('div', { class: 'jbo-ast-act' }, [
+          el('div', { class: 'top' }, [el('b', { text: I.isAr() ? cs.p.done + ' من ' + cs.p.total + ' جاهز' : cs.p.done + ' of ' + cs.p.total + ' ready' }), el('span', { text: cs.p.pct + '%' + (flagged ? (I.isAr() ? ' · عوائق مُعلَّمة: ' + flagged : ' · ' + flagged + ' blocker' + (flagged === 1 ? '' : 's') + ' flagged') : '') })]),
+          el('div', { class: 'jbo-ast-bar' }, [el('i', { style: { width: cs.p.pct + '%' } })]),
+        ]);
+        const attn = cs.C.ALL_ITEMS.filter((it) => !it.sec.blockers && cs.st.live[it.id] && cs.st.live[it.id].ok === false && !cs.C.isDone_(cs.st, it)).slice(0, 3);
+        attn.forEach((it) => {
+          const tool = it.opt.tool && g.modules[it.opt.tool] ? it.opt.tool : 'activation-checklist';
+          const row = el('div', { class: 'jbo-ast-att', 'data-item': it.id }, [el('span', { class: 's' }), el('span', { class: 'x' }, [el('div', { text: I.isAr() ? it.ar : it.en }), el('small', { text: cs.st.live[it.id].msg || '' })]), el('span', { class: 'go', text: (tool === 'activation-checklist' ? T('Checklist', 'القائمة') : title_(g, tool)).split(/[—(]/)[0].trim() + (I.isAr() ? ' ‹' : ' ›') })]);
+          row.addEventListener('click', (e) => { e.stopPropagation(); open(tool); });
+          card.appendChild(row);
+        });
+        if (!attn.length) card.appendChild(el('div', { class: 'jbo-ast-ok', text: cs.st.checkedAt ? T('Nothing flagged by the live checks.', 'لا توجد ملاحظات من الفحص المباشر.') : T('Open the checklist once to check this client.', 'افتح القائمة مرة لفحص هذا العميل.') }));
+        body.appendChild(card);
+      }
+      // recent
+      const rec = recent_().filter((id) => g.modules[id]);
+      if (rec.length) {
+        body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: T('Recent', 'الأخيرة') })]));
+        body.appendChild(el('div', { class: 'jbo-ast-chips' }, rec.map((id) => { const c = el('button', { class: 'jbo-ast-chip', type: 'button', text: title_(g, id) }); c.addEventListener('click', (e) => { e.stopPropagation(); open(id); }); return c; })));
+      }
+      // all tools
+      body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: T('All tools', 'كل الأدوات') }), el('span', { text: I.isAr() ? ids.length + ' أداة' : ids.length + ' tools' })]));
+      const chipBox = el('div', { class: 'jbo-ast-chips scroll jbo-ast-cats' });
+      [['all', T('All', 'الكل'), order]].concat(cats).forEach(([k, name, list]) => {
+        const c = el('button', { class: 'jbo-ast-chip' + (UIS.cat === k ? ' on' : ''), type: 'button', text: name, 'data-cat': k, 'data-n': String(list.length) });
+        c.addEventListener('click', (e) => { e.stopPropagation(); UIS.cat = k; paintTools(); });
+        chipBox.appendChild(c);
+      });
+      body.appendChild(chipBox);
+      if (!cats.some((c) => c[0] === UIS.cat)) UIS.cat = 'all';
+      const list = el('div', { class: 'jbo-ast-tl' });
+      (UIS.cat === 'all' ? order : cats.find((c) => c[0] === UIS.cat)[2]).forEach((id) => list.appendChild(toolRow(id, '', false)));
+      body.appendChild(list);
+      requestAnimationFrame(() => anchor_(menuEl));
+    }
+
+    let zdTimer = null, zdSeq = 0;
+    const LAW = unsafeWindow.__jisrLaborLaw;
+    function srcChips() {
+      const box = el('div', { class: 'jbo-ast-chips jbo-ast-src', style: { marginBottom: '8px' } });
+      [['all', T('All', 'الكل')], ['law', T('Labor Law', 'نظام العمل')], ['help', T('Help center', 'مركز المساعدة')]].forEach(([k, name]) => {
+        if (k === 'law' && !LAW) return;
+        const c = el('button', { class: 'jbo-ast-chip' + (UIS.src === k ? ' on' : ''), type: 'button', text: name, 'data-src': k });
+        c.addEventListener('click', (e) => { e.stopPropagation(); UIS.src = k; paintLook(); search.focus(); });
+        box.appendChild(c);
+      });
+      return box;
+    }
+    function lawCard(a, q) {
+      const ar = I.isAr(); const num = a.n.replace(' bis', ar ? ' مكرر' : ' bis');
+      const ST = { amended: [T('Amended 2025', 'معدّلة 2025'), 'amd'], added: [T('Added 2025', 'مضافة 2025'), 'amd'], deleted: [T('Deleted 2025', 'محذوفة 2025'), 'del'], repealed: [T('Repealed', 'ملغاة'), 'del'] };
+      const tag = ST[a.st];
+      let lang = ar ? (a.ar ? 'ar' : 'en') : (a.en ? 'en' : 'ar');
+      const textOf = (l) => (l === 'ar' ? a.ar : a.en) || '';
+      const more = el('div', { class: 'jbo-ast-more' });
+      const note = el('div', { class: 'jbo-ast-lawnote' });
+      const swap = el('button', { type: 'button' });
+      function paintMore() {
+        more.textContent = textOf(lang) || T('(No text in this language.)', '(لا يوجد نص بهذه اللغة.)');
+        more.setAttribute('dir', lang === 'ar' ? 'rtl' : 'ltr');
+        swap.textContent = lang === 'ar' ? T('Show English', 'عرض النص الإنجليزي') : T('Show Arabic', 'عرض النص العربي');
+        swap.style.display = a.en && a.ar ? '' : 'none';
+        let n = '';
+        if (a.st === 'deleted') n = T('Deleted by Royal Decree M/44 (in force 19 Feb 2025). The text below is the article before deletion.', 'حُذفت بموجب المرسوم الملكي م/44 (نافذ من 19 فبراير 2025). النص أدناه هو نص المادة قبل الحذف.');
+        else if ((a.st === 'amended' || a.st === 'added') && lang === 'en') n = T('Official wording from HRSD "Amendments to Labor Law Articles" (Royal Decree M/44, in force 19 Feb 2025).', 'الصياغة الرسمية من وثيقة وزارة الموارد البشرية «تعديلات مواد نظام العمل» (المرسوم الملكي م/44، نافذ من 19 فبراير 2025).');
+        else if ((a.st === 'amended' || a.st === 'added') && lang === 'ar') n = T('Arabic text extracted automatically from the updated (1447 AH) edition — it may contain spelling errors. Check the source before quoting it.', 'نص عربي مستخرج آليًا من النسخة المحدّثة (1447هـ) — قد يحتوي أخطاء إملائية. راجع المصدر قبل الاقتباس.');
+        note.textContent = n; note.style.display = n ? '' : 'none';
+      }
+      swap.addEventListener('click', (e) => { e.stopPropagation(); lang = lang === 'ar' ? 'en' : 'ar'; paintMore(); });
+      paintMore();
+      const copyB = el('button', { type: 'button', text: T('Copy text', 'نسخ النص') });
+      copyB.addEventListener('click', async (e) => { e.stopPropagation(); const head = (lang === 'ar' ? 'نظام العمل — المادة ' + a.n.replace(' bis', ' مكرر') : 'Saudi Labor Law — Article ' + a.n) + (tag ? ' (' + tag[0] + ')' : ''); copyB.textContent = (await clip_(head + '\n' + textOf(lang))) ? T('Copied', 'تم النسخ') : T('Could not copy', 'تعذّر النسخ'); });
+      const srcUrl = (a.st === 'amended' || a.st === 'added' || a.st === 'deleted') && lang === 'en' ? LAW.sources.hrsd : LAW.sources.ar;
+      const link = el('a', { href: srcUrl, target: '_blank', rel: 'noopener noreferrer' }, [T('Source', 'المصدر') + ' ', svg_('ext', 12)]);
+      link.addEventListener('click', (e) => e.stopPropagation());
+      const snippetSrc = textOf(lang) || textOf(lang === 'ar' ? 'en' : 'ar');
+      const card = el('div', { class: 'jbo-ast-res jbo-ast-law', 'data-art': a.n, 'data-no-i18n': '' }, [
+        el('div', { class: 'h' }, [el('b', { text: (ar ? 'المادة ' : 'Article ') + num }), el('span', { class: 'jbo-ast-tag' + (tag ? ' ' + tag[1] : ''), text: tag ? tag[0] : T('Labor Law', 'نظام العمل') })]),
+        el('div', { class: 'jbo-ast-chap', text: (ar ? a.pa : a.pe) || a.pe || a.pa || '' }),
+        el('p', {}, [highlight_(lawSnippet_(snippetSrc, q), q)]),
+        note, more, el('div', { class: 'jbo-ast-acts' }, [swap, copyB, link]),
+      ]);
+      card.addEventListener('click', (e) => { e.stopPropagation(); card.classList.toggle('open'); requestAnimationFrame(() => anchor_(menuEl)); });
+      return card;
+    }
+    function zdCards(r, q) {
+      return r.results.map((a) => {
+        const more = el('div', { class: 'jbo-ast-more', text: a.body ? a.body.slice(0, 2500) + (a.body.length > 2500 ? '…' : '') : a.snippet });
+        const copyB = el('button', { type: 'button', text: T('Copy link', 'نسخ الرابط') });
+        copyB.addEventListener('click', async (e) => { e.stopPropagation(); copyB.textContent = (await clip_(a.url)) ? T('Copied', 'تم النسخ') : T('Could not copy', 'تعذّر النسخ'); });
+        const link = el('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer' }, [T('Open article', 'فتح المقال') + ' ', svg_('ext', 12)]);
+        link.addEventListener('click', (e) => e.stopPropagation());
+        const card = el('div', { class: 'jbo-ast-res', 'data-id': String(a.id), 'data-no-i18n': '' }, [
+          el('div', { class: 'h' }, [el('b', {}, [highlight_(a.title, q)]), el('span', { class: 'jbo-ast-tag', text: T('Help center', 'مركز المساعدة') })]),
+          el('p', {}, [highlight_(a.snippet.slice(0, 220), q)]),
+          more, el('div', { class: 'jbo-ast-acts' }, [link, copyB]),
+        ]);
+        card.addEventListener('click', (e) => { e.stopPropagation(); card.classList.toggle('open'); requestAnimationFrame(() => anchor_(menuEl)); });
+        return card;
+      });
+    }
+    function answerCard(list, q) {
+      const box = el('div', { class: 'jbo-ast-answer', 'data-no-i18n': '' });
+      if (!list.length) return box;
+      const best = list[0].p;
+      const srcLink = best.url ? el('a', { href: best.url, target: '_blank', rel: 'noopener noreferrer' }, [T('Source', 'المصدر') + ' ', svg_('ext', 12)]) : el('span', { text: best.src === 'playbook' ? T('Source: Activation Playbook (PDF)', 'المصدر: دليل سياسات مرحلة التفعيل (PDF)') : '' });
+      if (best.url) srcLink.addEventListener('click', (e) => e.stopPropagation());
+      const copyB = el('button', { type: 'button', text: T('Copy answer', 'نسخ الإجابة') });
+      copyB.addEventListener('click', async (e) => { e.stopPropagation(); copyB.textContent = (await clip_(best.text + '\n— ' + best.label)) ? T('Copied', 'تم النسخ') : T('Could not copy', 'تعذّر النسخ'); });
+      box.append(
+        el('div', { class: 'jbo-ast-anslbl', text: T('Answer from the sources', 'إجابة من المصادر') }),
+        el('div', { class: 'jbo-ast-anstext', dir: best.lang === 'ar' ? 'rtl' : 'ltr' }, [best.title && best.src !== 'law' && best.src !== 'help' ? el('b', { text: best.title + ' — ' }) : null, answerText_(best.text, q)]),
+        el('div', { class: 'jbo-ast-anssrc', text: best.label + (best.st === 'amended' || best.st === 'added' ? T(' · Amended 2025', ' · معدّلة 2025') : '') }),
+        el('div', { class: 'jbo-ast-acts' }, [copyB, srcLink]),
+      );
+      if (list.length > 1) {
+        const more = el('div', { class: 'jbo-ast-ansmore' }, [el('div', { class: 'jbo-ast-chap', text: T('Also relevant', 'ذات صلة أيضًا') })]);
+        list.slice(1).forEach((x) => more.appendChild(el('div', { class: 'jbo-ast-ansalt', dir: x.p.lang === 'ar' ? 'rtl' : 'ltr' }, [answerText_(x.p.text.length > 200 ? x.p.text.slice(0, 200) + '…' : x.p.text, q), el('span', { class: 'jbo-ast-chap', text: ' — ' + x.p.label })])));
+        box.appendChild(more);
+      }
+      box.appendChild(el('div', { class: 'jbo-ast-note', style: { textAlign: 'start', margin: '8px 0 0' }, text: T('Quoted word for word from the source; check it before sharing with a client.', 'منقول حرفيًا من المصدر؛ تحقّق منه قبل مشاركته مع العميل.') }));
+      return box;
+    }
+    function paintLook() {
+      const q = search.value.trim(); UIS.lq = search.value;
+      body.innerHTML = '';
+      body.appendChild(srcChips());
+      if (!q) {
+        body.appendChild(el('div', { class: 'jbo-ast-empty', text: T('Ask a question or search a topic. Answers are quoted from the Activation Playbook, the Saudi Labor Law (as amended in 2025), the Jisr help center and team notes.', 'اسأل سؤالًا أو ابحث عن موضوع. الإجابات منقولة من دليل سياسات التفعيل، ونظام العمل السعودي (بتعديلات 2025)، ومركز مساعدة جسر، وملاحظات الفريق.') }));
+        const sug = el('div', { class: 'jbo-ast-chips' });
+        (I.isAr() ? ['كم سعر الربط مع مدد؟', 'كم مدة إجازة الوضع؟', 'فترة التجربة', 'المادة 77'] : ['How much is the Mudad integration?', 'How many weeks is maternity leave?', 'probation', 'article 77']).forEach((s) => { const c = el('button', { class: 'jbo-ast-chip', type: 'button', text: s }); c.addEventListener('click', (e) => { e.stopPropagation(); search.value = s; paintLook(); }); sug.appendChild(c); });
+        body.appendChild(sug);
+        body.appendChild(el('div', { class: 'jbo-ast-note', text: T('Guidance only, not legal advice.', 'للاسترشاد فقط، وليست استشارة قانونية.') }));
+        requestAnimationFrame(() => anchor_(menuEl));
+        return;
+      }
+      const srcF = UIS.src === 'law' ? ['law'] : UIS.src === 'help' ? ['help'] : null;
+      let ansBox = answerCard(answer_(q, [], srcF), q); body.appendChild(ansBox);
+      const wantLaw = LAW && UIS.src !== 'help'; const wantHelp = UIS.src !== 'law';
+      if (wantLaw) {
+        const hits = lawSearch_(LAW.arts, q);
+        const limit = UIS.src === 'law' ? 25 : 4;
+        body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: T('Labor Law', 'نظام العمل') + ' · ' + (I.isAr() ? 'المواد: ' + hits.length : hits.length + (hits.length === 1 ? ' article' : ' articles')) }), el('span', { text: hits.length > limit && UIS.src !== 'law' ? '' : '' })]));
+        if (!hits.length) body.appendChild(el('div', { class: 'jbo-ast-empty', text: T('No Labor Law article matches "', 'لا توجد مادة تطابق "') + q + '"' }));
+        hits.slice(0, limit).forEach((a) => body.appendChild(lawCard(a, q)));
+        if (hits.length > limit) { const more = el('button', { class: 'jbo-ast-chip', type: 'button', text: T('Show all ', 'عرض كل ') + hits.length + T(' articles', ' مادة') }); more.addEventListener('click', (e) => { e.stopPropagation(); UIS.src = 'law'; paintLook(); }); body.appendChild(more); }
+      }
+      if (!wantHelp) { body.appendChild(el('div', { class: 'jbo-ast-note', text: T('Saudi Labor Law as amended by Royal Decree M/44 (in force 19 Feb 2025) · guidance only, not legal advice', 'نظام العمل السعودي بتعديلات المرسوم الملكي م/44 (نافذ من 19 فبراير 2025) · للاسترشاد فقط وليست استشارة قانونية') })); requestAnimationFrame(() => anchor_(menuEl)); return; }
+      const helpBox = el('div', { class: 'jbo-ast-help' });
+      helpBox.appendChild(el('div', { class: 'jbo-ast-empty', text: T('Searching the help center…', 'جارٍ البحث في مركز المساعدة…') }));
+      body.appendChild(helpBox);
+      requestAnimationFrame(() => anchor_(menuEl));
+      clearTimeout(zdTimer); const my = ++zdSeq;
+      zdTimer = setTimeout(async () => {
+        let r;
+        try { r = await zdSearch_(q); } catch (e) { if (my !== zdSeq || !menuEl.isConnected) return; helpBox.innerHTML = ''; helpBox.appendChild(el('div', { class: 'jbo-ast-empty', text: T('Could not reach the help center (', 'تعذّر الوصول إلى مركز المساعدة (') + e.message + T('). If Tampermonkey asked to allow jisr.zendesk.com, choose "Always allow".', '). إذا طلب Tampermonkey السماح لـ jisr.zendesk.com فاختر "السماح دائمًا".') })); return; }
+        if (my !== zdSeq || !menuEl.isConnected) return;
+        helpBox.innerHTML = '';
+        helpBox.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: T('Help center', 'مركز المساعدة') + ' · ' + (I.isAr() ? 'النتائج: ' + r.count : r.count + (r.count === 1 ? ' article' : ' articles')) }), el('span', { text: T('click to expand', 'اضغط للتوسيع') })]));
+        if (!r.results.length) helpBox.appendChild(el('div', { class: 'jbo-ast-empty', text: T('No help center article matches "', 'لا يوجد مقال يطابق "') + q + '"' }));
+        zdCards(r, q).forEach((c) => helpBox.appendChild(c));
+        { const nb = answerCard(answer_(q, helpPassages_(r), srcF), q); if (ansBox.isConnected) { ansBox.replaceWith(nb); ansBox = nb; } }
+        helpBox.appendChild(el('div', { class: 'jbo-ast-note', text: (LAW ? T('Labor Law as amended in 2025 · ', 'نظام العمل بتعديلات 2025 · ') : '') + T('Help center: jisr.zendesk.com, live · guidance only, not legal advice', 'مركز المساعدة: jisr.zendesk.com مباشرة · للاسترشاد فقط وليست استشارة قانونية') }));
+        requestAnimationFrame(() => anchor_(menuEl));
+      }, 300);
+    }
+
+    const paint = () => (look ? paintLook() : paintTools());
+    search.addEventListener('input', () => { UIS.sel = 0; paint(); });
     search.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && firstMatch) { e.preventDefault(); open(firstMatch); }
-      if (e.key === 'Escape') { g._closeMenu(); }
+      if (!look && results.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); UIS.sel = Math.max(0, Math.min(results.length - 1, UIS.sel + (e.key === 'ArrowDown' ? 1 : -1))); paintTools(); search.focus(); return; }
+      if (e.key === 'Enter' && !look && results.length) { e.preventDefault(); open(results[UIS.sel] || results[0]); }
+      if (e.key === 'Escape') { if (search.value) { search.value = ''; paint(); } else g._closeMenu(); }
     });
     search.addEventListener('click', (e) => e.stopPropagation());
-    paintList();
-    setTimeout(() => { try { search.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }, 0);
+    paint();
+    setTimeout(() => { try { search.focus({ preventScroll: true }); const n = search.value.length; search.setSelectionRange(n, n); } catch (e) { /* ignore */ } }, 0);
   }
+  // "/" anywhere on the page opens the panel with the search focused (not while typing in a field)
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+    const a = document.activeElement; if (a && (/^(input|textarea|select)$/i.test(a.tagName) || a.isContentEditable)) return;
+    const fab = document.querySelector('.jbo-fab'); if (!fab) return;
+    const g = unsafeWindow.__jisrBulkOps; const m = g && g._menuEl && g._menuEl();
+    e.preventDefault();
+    if (m && m.isConnected) { const s = m.querySelector('.jbo-hub-search'); if (s) s.focus(); } else fab.click();
+  });
 
   unsafeWindow.__jisrBulkOpsHub = { render };
 })();
@@ -13028,7 +13574,7 @@
       const q = normalizeName_(query);
       if (!q) return;
       const all = itemsGetter() || [];
-      const items = all.filter((it) => normalizeName_(formatFn(it)).includes(q) || String(it.id).includes(q)).slice(0, 30);
+      const items = all.filter((it) => normalizeName_(formatFn(it)).includes(q) || String(it.id).includes(q) || (typeof it.__alt === 'function' && it.__alt(query))).slice(0, 30);
       if (!items.length) return;
       list = el('div', { class: 'jbo-autocomplete-list' });
       items.forEach((it) => {
@@ -13432,8 +13978,36 @@
 
   async function loadCities_(countryId) {
     if (cityCacheByCountry[countryId]) return cityCacheByCountry[countryId];
-    const r = await apiGet_('/v2/hr/countries/' + encodeURIComponent(countryId) + '/city_list');
-    const list = (r.json && r.json.data && r.json.data.cities) || [];
+    let r = null; try { r = await apiGet_('/v2/hr/countries/' + encodeURIComponent(countryId) + '/city_list'); } catch (e) { r = null; }
+    // v4.14.1: city_list is only a partial list for some countries (e.g. Saudi Arabia: no Riyadh / Makkah / Dammam),
+    // so ALWAYS read the full list Jisr's own location form uses (/v2/hr/cities/get_all, every page) and merge by id.
+    // v4.14.2: city_list failing no longer stops the rest; if the unfiltered list gives nothing, sweep Jisr's search A–Z
+    // (Jisr's picker itself searches with ?search=R, ?search=Ri …).
+    const list = [];
+    const diag = __cityDiag[countryId] = { cityList: 0, getAll: 0, sweep: 0, errors: [], sample: null };
+    diag.cityList = __mergeCities_(list, __citiesFrom_(r && r.json));
+    for (let page = 1; page <= 80; page++) {
+      let rr = null; try { rr = await apiGet_('/v2/hr/cities/get_all', { template: 'public', per_page: 50, country_id: countryId, search: '', page }); } catch (e) { diag.errors.push('get_all: ' + e.message); break; }
+      if (!diag.sample) diag.sample = __cityShape_(rr && rr.json);
+      const got = __citiesFrom_(rr && rr.json);
+      const added = __mergeCities_(list, got); diag.getAll += added;
+      const pg = __cityPaging_(rr && rr.json);
+      if (!got.length || !added) break;
+      if (pg && pg.pages && page >= pg.pages) break;
+    }
+    if (!diag.getAll) {
+      for (const letter of 'abcdefghijklmnopqrstuvwxyz'.split('')) {
+        for (let page = 1; page <= 20; page++) {
+          let rr = null; try { rr = await apiGet_('/v2/hr/cities/get_all', { template: 'public', per_page: 50, country_id: countryId, search: letter, page }); } catch (e) { diag.errors.push('search ' + letter + ': ' + e.message); break; }
+          if (!diag.sample) diag.sample = __cityShape_(rr && rr.json);
+          const got = __citiesFrom_(rr && rr.json); const added = __mergeCities_(list, got); diag.sweep += added;
+          const pg = __cityPaging_(rr && rr.json);
+          if (!got.length || !added || (pg && page >= pg.pages) || (!pg && got.length < 50)) break;
+        }
+        if (diag.errors.length > 3) break;
+      }
+    }
+    try { console.info('[Jisr Bulk Ops] cities for country #' + countryId + ':', list.length, JSON.stringify(diag)); } catch (e) { /* no console */ }
     cityCacheByCountry[countryId] = list;
     return list;
   }
@@ -13525,10 +14099,7 @@
     const n = normalizeName_(name);
     if (!n) return null;
     const list = cityCacheByCountry[countryId] || [];
-    let hit = list.find((c) => normalizeName_(c.name_en) === n || normalizeName_(c.name_ar) === n || normalizeName_(c.name_i18n) === n);
-    if (hit) return hit;
-    hit = list.find((c) => normalizeName_(c.name_en).indexOf(n) === 0);
-    return hit || null;
+    return __matchCity_(list, name);
   }
   function findManager_(name) {
     { const __p = unsafeWindow.__jisrBulkOpsXlsx && unsafeWindow.__jisrBulkOpsXlsx.pickId(name); if (__p) return { id: Number(__p), name: String(name).replace(/\s*·.*$/, '') }; }
@@ -13643,6 +14214,160 @@
     const n = normalizeName_(s);
     return areaRows.find((a) => normalizeName_(a.name) === n || normalizeName_(a.name_ar) === n) || null;
   }
+  /** v4.14.2: city records from city_list / get_all, whatever the wrapping -> [{id, name_en, name_ar, name_i18n}] */
+  const __cityDiag = {};
+  function __txt_(v, lang) { if (v == null) return ''; if (typeof v === 'object') return String(v[lang] || v.en || v.ar || v.name || ''); return String(v); }
+  function __cityArray_(j, depth) {
+    if (j == null || (depth || 0) > 4) return [];
+    if (Array.isArray(j)) return j.some((x) => x && typeof x === 'object' && (x.id != null || x.value != null)) ? j : [];
+    if (typeof j !== 'object') return [];
+    for (const k of ['cities', 'records', 'data', 'items', 'results', 'list', 'rows']) { const a = __cityArray_(j[k], (depth || 0) + 1); if (a.length) return a; }
+    for (const k of Object.keys(j)) { const a = __cityArray_(j[k], (depth || 0) + 1); if (a.length) return a; }
+    return [];
+  }
+  function __citiesFrom_(j) {
+    return __cityArray_(j).filter((c) => c && typeof c === 'object' && (c.id != null || c.value != null)).map((c0) => {
+      const c = Object.assign({}, c0.attributes || {}, c0);
+      const en = __txt_(c.name_en, 'en') || __txt_(c.name, 'en') || __txt_(c.label, 'en') || __txt_(c.title, 'en') || __txt_(c.city_name, 'en') || __txt_(c.name_i18n, 'en') || __txt_(c.text, 'en');
+      const ar = __txt_(c.name_ar, 'ar') || (c.name && typeof c.name === 'object' ? __txt_(c.name, 'ar') : '');
+      const id = c.id != null ? c.id : c.value;
+      return Object.assign({}, c, { id: /^[0-9]+$/.test(String(id)) ? Number(id) : id, name_en: en || ar, name_ar: ar, name_i18n: __txt_(c.name_i18n, 'en') || en || ar });
+    });
+  }
+  function __cityShape_(j) {
+    const a = __cityArray_(j); const first = a[0];
+    return { top: j && typeof j === 'object' ? Object.keys(j).slice(0, 8) : typeof j, count: a.length, keys: first ? Object.keys(first).slice(0, 12) : [] };
+  }
+  function __cityPaging_(j) {
+    const m = j && ((j.data && !Array.isArray(j.data) && (j.data.pagination || j.data.meta)) || j.pagination || j.meta);
+    if (!m) return null;
+    const pages = Number(m.total_pages || m.pages || m.last_page || (m.total_count && m.per_page ? Math.ceil(m.total_count / m.per_page) : 0)) || 0;
+    return pages ? { pages } : null;
+  }
+  function __mergeCities_(list, got) {
+    const seen = new Set(list.map((c) => String(c.id))); let n = 0;
+    __citiesFrom_({ data: got }).forEach((c) => { if (!seen.has(String(c.id))) { seen.add(String(c.id)); list.push(c); n++; } });
+    return n;
+  }
+  /** v4.14.1: spelling-tolerant city key: case, accents, Arabic letter forms, "Al"/"ال", doubled letters */
+  function __cityKey_(s) {
+    let t = String(s == null ? '' : s).toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
+      .replace(/[ً-ٰٟـ]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/ؤ/g, 'و').replace(/ئ/g, 'ي')
+      .replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
+    t = t.split(' ').filter((w) => w && !/^(al|el|ar|as|ad|an|ash|at|az|city|madinat|مدينه)$/.test(w)).map((w) => (/^ال/.test(w) && w.length > 3 ? w.slice(2) : w)).join(' ');
+    return t.replace(/([a-z؀-ۿ])\1+/g, '$1');
+  }
+  const __CITY_ALIASES = [
+    ['Riyadh', 'Riyad', 'Ar Riyadh', 'الرياض'], ['Makkah', 'Mecca', 'Makka', 'Makkah Al Mukarramah', 'Mecca Al Mukarramah', 'مكة', 'مكة المكرمة'],
+    ['Madinah', 'Medina', 'Madina', 'Medinah', 'Al Madinah Al Munawwarah', 'Madinah Al Munawwarah', 'المدينة', 'المدينة المنورة'],
+    ['Jeddah', 'Jiddah', 'Jedda', 'Jidda', 'جدة'], ['Dammam', 'Damam', 'الدمام'], ['Khobar', 'Al Khobar', 'Khubar', 'الخبر'], ['Dhahran', 'Zahran', 'الظهران'],
+    ['Taif', "Ta'if", 'الطائف'], ['Tabuk', 'Tabouk', 'تبوك'], ['Abha', 'أبها'], ['Qassim', 'Al Qassim', 'القصيم'], ['Buraidah', 'Buraydah', 'Buraida', 'بريدة'],
+    ['Unaizah', 'Unayzah', 'Onaizah', 'عنيزة'], ['Hail', "Ha'il", 'حائل'], ['Jazan', 'Jizan', 'Gizan', 'جازان'], ['Najran', 'نجران'],
+    ['Al Ahsa', 'Al Hasa', 'Ahsa', 'Hofuf', 'Al Hofuf', 'Hufuf', 'الأحساء', 'الهفوف'], ['Jubail', 'Al Jubail', 'الجبيل'], ['Yanbu', 'ينبع'],
+    ['Khamis Mushait', 'Khamis Mushayt', 'خميس مشيط'], ['Kharj', 'Al Kharj', 'الخرج'], ['Qatif', 'Al Qatif', 'القطيف'], ['Al Ula', 'AlUla', 'Ula', 'العلا'],
+    ['Abu Dhabi', 'أبوظبي', 'أبو ظبي'], ['Dubai', 'دبي'], ['Sharjah', 'الشارقة'], ['Cairo', 'القاهرة'], ['Kuwait City', 'Kuwait', 'الكويت'], ['Doha', 'الدوحة'], ['Manama', 'المنامة'], ['Muscat', 'مسقط'],
+  ].map((g) => ({ names: g, keys: g.map(__cityKey_) }));
+  function __aliasGroup_(key) { return __CITY_ALIASES.find((g) => g.keys.indexOf(key) >= 0) || null; }
+  function __lev_(a, b, max) {
+    if (Math.abs(a.length - b.length) > max) return max + 1;
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i]; let best = i;
+      for (let j = 1; j <= b.length; j++) { cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); best = Math.min(best, cur[j]); }
+      if (best > max) return max + 1; prev = cur;
+    }
+    return prev[b.length];
+  }
+  function __cityNames_(c) { return [c.name_en, c.name_ar, c.name_i18n, c.name].filter(Boolean); }
+  /** best city of `list` for `text` (exact > alias > starts-with > contains > 1-2 typos), or null */
+  function __matchCity_(list, text) {
+    const k = __cityKey_(text); if (!k) return null;
+    const keyed = list.map((c) => ({ c, ks: __cityNames_(c).map(__cityKey_) }));
+    const shortest = (arr) => arr.sort((a, b) => String(a.c.name_en || '').length - String(b.c.name_en || '').length)[0].c;
+    let hits = keyed.filter((x) => x.ks.indexOf(k) >= 0); if (hits.length) return hits[0].c;
+    const g = __aliasGroup_(k);
+    if (g) { for (const gk of g.keys) { hits = keyed.filter((x) => x.ks.indexOf(gk) >= 0); if (hits.length) return hits[0].c; } }
+    const kc = k.replace(/ /g, '');
+    hits = keyed.filter((x) => x.ks.some((y) => y.replace(/ /g, '') === kc)); if (hits.length) return hits[0].c;
+    if (kc.length >= 3) {
+      hits = keyed.filter((x) => x.ks.some((y) => y.indexOf(k) === 0)); if (hits.length) return shortest(hits);
+      if (g) { hits = keyed.filter((x) => x.ks.some((y) => g.keys.some((gk) => gk.length >= 3 && (' ' + y + ' ').indexOf(' ' + gk + ' ') >= 0))); if (hits.length) return shortest(hits); }
+      hits = keyed.filter((x) => x.ks.some((y) => (' ' + y + ' ').indexOf(' ' + k + ' ') >= 0)); if (hits.length) return shortest(hits);
+    }
+    if (kc.length >= 4) {
+      const max = kc.length >= 7 ? 2 : 1;
+      let best = null, bestD = max + 1, tie = false;
+      keyed.forEach((x) => x.ks.forEach((y) => { const yc = y.replace(/ /g, ''); const d = __lev_(kc, yc, max); if (d < bestD) { best = x.c; bestD = d; tie = false; } else if (d === bestD && best && best !== x.c) tie = true; }));
+      if (best && bestD <= max && !tie) return best;
+    }
+    return null;
+  }
+  /** v4.14.1: ask Jisr exactly like its own city picker does (get_all ?search=), merge what comes back */
+  const __citySearched = {};
+  async function searchCities_(countryId, text) {
+    const list = cityCacheByCountry[countryId] || (cityCacheByCountry[countryId] = []);
+    const k = __cityKey_(text), g = __aliasGroup_(k);
+    const terms = Array.from(new Set([String(text).replace(/\s*·.*$/, '').replace(/\s*\(#\d+\)\s*$/, '').trim()]
+      .concat(g ? g.names.slice(0, 3) : []).concat(k.replace(/ /g, '').length >= 3 && /^[a-z]/.test(k) ? [k.slice(0, 3)] : []))).filter(Boolean);
+    for (const term of terms) {
+      const key = countryId + '|' + term.toLowerCase(); if (__citySearched[key]) continue; __citySearched[key] = true;
+      for (let page = 1; page <= 10; page++) {
+        let rr = null; try { rr = await apiGet_('/v2/hr/cities/get_all', { template: 'public', per_page: 50, country_id: countryId, search: term, page }); } catch (e) { break; }
+        const got = __citiesFrom_(rr && rr.json); const added = __mergeCities_(list, got); const pg = __cityPaging_(rr && rr.json);
+        if (!got.length || !added || (pg && page >= pg.pages) || (!pg && got.length < 50)) break;
+      }
+      if (__matchCity_(list, text)) break;
+    }
+    return list;
+  }
+  /** v4.14.1: city picker that also searches Jisr as you type (only the given country's cities when known) */
+  function __cityAutocomplete_(input, countryIdOf) {
+    const wrap = attachSuggestAutocomplete_(input, () => {
+      const cid = countryIdOf(); const q = input.value;
+      return allCities_().filter((c) => cid == null || String(c.countryId) === String(cid))
+        .map((c) => Object.assign(c, { __alt: (qq) => !!__matchCity_([c], qq || q) }));
+    }, formatCityLabel_);
+    let t = null, seq = 0;
+    input.addEventListener('input', () => {
+      clearTimeout(t); const q = input.value.trim(); if (!q || input.dataset.itemId) return;
+      t = setTimeout(async () => {
+        const my = ++seq; const cid = countryIdOf(); if (cid == null) return;
+        try { if (!cityCacheByCountry[cid]) await loadCities_(cid); await searchCities_(cid, q); } catch (e) { return; }
+        if (my !== seq || document.activeElement !== input || input.value.trim() !== q) return;
+        input.dispatchEvent(new Event('focus'));
+      }, 350);
+    });
+    return wrap;
+  }
+  /** v4.14: every loaded city, for the New City pickers */
+  function allCities_() {
+    const out = [];
+    Object.keys(cityCacheByCountry).forEach((cid) => {
+      const country = (hrCountries.length ? hrCountries : orgCountries).find((c) => String(c.id) === String(cid));
+      (cityCacheByCountry[cid] || []).forEach((c) => out.push({ id: c.id, countryId: Number(cid), name: c.name_en || c.name_i18n || c.name_ar || ('#' + c.id), name_ar: c.name_ar || '', countryName: country ? (country.name_en || country.name_i18n) : '' }));
+    });
+    return out;
+  }
+  function formatCityLabel_(c) { return c.name + (c.countryName ? '  ·  ' + c.countryName : '') + '  (#' + c.id + ')'; }
+  /** v4.14: text / picked id -> city of the location's country, or {error} */
+  async function resolveCityFor_(countryId, text, pickedId) {
+    const list = cityCacheByCountry[countryId] || [];
+    const m = /#(\d+)\)?\s*$/.exec(String(text)) || /^(\d+)$/.exec(String(text).trim());
+    const id = pickedId || (m && m[1]);
+    if (id) { const c = list.find((x) => String(x.id) === String(id)); return c || { error: 'city #' + id + ' is not a city of this location\'s country' }; }
+    let c = findCity_(countryId, String(text).replace(/\s*·.*$/, ''));
+    if (!c) { try { await searchCities_(countryId, text); } catch (e) { /* offline */ } c = findCity_(countryId, String(text).replace(/\s*·.*$/, '')); }
+    if (c) return c;
+    const __d = __cityDiag[countryId] || {};
+    return { error: 'city not found in this location\'s country: "' + text + '" (checked ' + list.length + ' cities: ' + (__d.cityList || 0) + ' from city_list, ' + ((__d.getAll || 0) + (__d.sweep || 0)) + ' from Jisr\'s city search' + (__d.errors && __d.errors.length ? '; ' + __d.errors[0] : '') + ')' };
+  }
+  function resolveAreaFor_(countryId, text, pickedId) {
+    const m = /#(\d+)\)?\s*$/.exec(String(text));
+    const a = findAreaRowById_(pickedId || (m && m[1]) || String(text).replace(/\s*·.*$/, ''));
+    if (!a) return { error: 'area not found: "' + text + '"' };
+    if (String(a.countryId) !== String(countryId)) return { error: 'area "' + a.name + '" is in another country (' + a.countryName + ')' };
+    return a;
+  }
   function formatAreaLabel_(a) {
     return (a.name || a.name_ar || ('#' + a.id)) + '  ·  ' + (a.countryName || '') + '  (#' + a.id + ')';
   }
@@ -13717,7 +14442,7 @@
     const locTableWrap = el('div', { style: { maxHeight: '38vh', overflow: 'auto', border: '1px solid #e8eaed', borderRadius: '8px' } });
     const locTable = el('table', { class: 'jbo-table' });
     locTable.appendChild(el('thead', {}, [el('tr', {}, [
-      el('th', { text: 'Location' }), el('th', { text: 'New Address (EN)' }), el('th', { text: 'New Address (AR)' }),
+      el('th', { text: 'Location' }), el('th', { text: 'New Area' }), el('th', { text: 'New City' }), el('th', { text: 'New Address (EN)' }), el('th', { text: 'New Address (AR)' }),
       el('th', { text: 'New Manager' }), el('th', { text: 'New Latitude' }), el('th', { text: 'New Longitude' }),
       el('th', { text: 'New Google Maps Link' }), el('th', { text: 'New Radius (m)' }), el('th', { text: 'Status' }), el('th', { text: '' })
     ])]));
@@ -13729,6 +14454,10 @@
     function addLocRow_(prefill) {
       const locInput = el('input', { class: 'jbo-input', placeholder: 'location id or address…' });
       const locWrap = attachSuggestAutocomplete_(locInput, () => locRows, formatLocLabel_);
+      const newAreaInput = el('input', { class: 'jbo-input', placeholder: '(unchanged)', style: { minWidth: '150px' } });
+      const newAreaWrap = attachSuggestAutocomplete_(newAreaInput, () => areaRows, formatAreaLabel_);
+      const cityInput = el('input', { class: 'jbo-input', placeholder: '(unchanged)', style: { minWidth: '150px' } });
+      const cityWrap = __cityAutocomplete_(cityInput, () => { const l = locRows.find((x) => String(x.id) === String(locInput.dataset.itemId)) || findLocationRow_(locInput.value.trim()); return l ? l.countryId : null; });
       const addrEnInput = el('input', { class: 'jbo-input', placeholder: '(unchanged)' });
       const addrArInput = el('input', { class: 'jbo-input', placeholder: '(unchanged)' });
       const mgrInput = el('input', { class: 'jbo-input', placeholder: '(unchanged)' });
@@ -13741,6 +14470,8 @@
       const removeBtn = el('button', { class: 'jbo-icon-btn', text: '🗑' });
       if (prefill) {
         if (prefill.location) locInput.value = prefill.location;
+        if (prefill.area) newAreaInput.value = prefill.area;
+        if (prefill.city) cityInput.value = prefill.city;
         if (prefill.addressEn) addrEnInput.value = prefill.addressEn;
         if (prefill.addressAr) addrArInput.value = prefill.addressAr;
         if (prefill.manager) mgrInput.value = prefill.manager;
@@ -13750,12 +14481,12 @@
         if (prefill.radius) radiusInput.value = prefill.radius;
       }
       const tr = el('tr', {}, [
-        el('td', {}, [locWrap]), el('td', {}, [addrEnInput]), el('td', {}, [addrArInput]),
+        el('td', {}, [locWrap]), el('td', {}, [newAreaWrap]), el('td', {}, [cityWrap]), el('td', {}, [addrEnInput]), el('td', {}, [addrArInput]),
         el('td', {}, [mgrWrap]), el('td', {}, [latInput]), el('td', {}, [lngInput]),
         el('td', {}, [mapsInput]), el('td', {}, [radiusInput]), statusCell,
         el('td', { class: 'jbo-row-actions' }, [removeBtn])
       ]);
-      const row = { tr, locInput, addrEnInput, addrArInput, mgrInput, latInput, lngInput, mapsInput, radiusInput, statusCell };
+      const row = { tr, locInput, newAreaInput, cityInput, addrEnInput, addrArInput, mgrInput, latInput, lngInput, mapsInput, radiusInput, statusCell };
       removeBtn.addEventListener('click', () => { tr.remove(); locTableRows = locTableRows.filter((x) => x !== row); });
       locTbody.appendChild(tr);
       locTableRows.push(row);
@@ -13776,13 +14507,20 @@
         }
         if (!locRows.length) { toast_('No locations came back — nothing to put in a template.', 5000); return; }
         const headers = ['Location ID', 'Country', 'Area', 'City',
-          'Old: Address (EN)', 'New: Address (EN)', 'Old: Address (AR)', 'New: Address (AR)',
+          'New: Area', 'New: City', 'Old: Address (EN)', 'New: Address (EN)', 'Old: Address (AR)', 'New: Address (AR)',
           'Old: Manager', 'New: Manager (name or id)', 'Old: Latitude', 'New: Latitude',
           'Old: Longitude', 'New: Longitude', 'New: Google Maps Link (optional, overrides Lat/Lng)',
           'Old: Radius (m)', 'New: Radius (m)', 'Employees'];
-        const dataRows = locRows.map((l) => [l.id, l.countryName, l.areaName, cityName_(l.countryId, l.cityId),
+        const dataRows = locRows.map((l) => [l.id, l.countryName, l.areaName, cityName_(l.countryId, l.cityId), '', '',
           l.address_en, '', l.address_ar, '', l.managerName || '', '', l.latitude, '', l.longitude, '', '',
           l.radius, '', l.employees]);
+        try { // v4.14: New Area / New City dropdowns from Jisr's own lists
+          const __u = (a) => Array.from(new Set(a.filter(Boolean))).sort((x, y) => String(x).localeCompare(String(y)));
+          unsafeWindow.__jisrBulkOpsXlsx && unsafeWindow.__jisrBulkOpsXlsx.setNextLists({
+            'New: Area': { values: __u(areaRows.map((a) => a.name)), strict: false },
+            'New: City': { values: __u(allCities_().map((c) => c.name)), strict: false },
+          });
+        } catch (e) { /* no lists */ }
         downloadWorkbook_('jisr-locations-template.xlsx', headers, dataRows);
         toast_('Downloaded a template with ' + locRows.length + ' location(s). Fill only the "New: …" ' +
           'columns you want to change, leave the rest blank, then use "Upload Excel".', 8000);
@@ -13806,6 +14544,8 @@
         try { parsed = await parseWorkbookFile_(file); } catch (e) { toast_(e.message, 6000); return; }
         const fields = [
           { key: 'id', label: 'Location ID', required: true, synonyms: ['location id', 'id'] },
+          { key: 'area', label: 'New: Area', required: false, change: true, synonyms: ['new: area', 'new area'] },
+          { key: 'city', label: 'New: City', required: false, change: true, synonyms: ['new: city', 'new city'] },
           { key: 'addressEn', label: 'New: Address (EN)', required: false, change: true, synonyms: ['new: address (en)', 'new address en', 'address en'] },
           { key: 'addressAr', label: 'New: Address (AR)', required: false, change: true, synonyms: ['new: address (ar)', 'new address ar', 'address ar'] },
           { key: 'manager', label: 'New: Manager (name or id)', required: false, change: true, synonyms: ['new: manager', 'new manager', 'manager'] },
@@ -13816,7 +14556,7 @@
         ];
         openImportMappingModal_(parsed, fields, async (importedRows) => {
           await appendRowsChunked_(importedRows, (row) => addLocRow_({
-            location: row.id, addressEn: row.addressEn, addressAr: row.addressAr, manager: row.manager,
+            location: row.id, area: row.area, city: row.city, addressEn: row.addressEn, addressAr: row.addressAr, manager: row.manager,
             latitude: row.latitude, longitude: row.longitude, mapsLink: row.mapsLink, radius: row.radius
           }));
           toast_('Imported ' + importedRows.length + ' row(s). Review before running.', 5000);
@@ -13829,6 +14569,8 @@
       if (!after) return ['location missing from the org tree'];
       const mismatches = [];
       if (changes.address_en !== undefined && String(after.address_en) !== String(changes.address_en)) mismatches.push('Address (EN)');
+      if (changes.city_id !== undefined && String(after.cityId) !== String(changes.city_id)) mismatches.push('City');
+      if (changes.area_id !== undefined && String(after.areaId) !== String(changes.area_id)) mismatches.push('Area');
       if (changes.address_ar !== undefined && String(after.address_ar) !== String(changes.address_ar)) mismatches.push('Address (AR)');
       if (changes[CFG.MANAGER_FIELD] !== undefined && String(after.managerId) !== String(changes[CFG.MANAGER_FIELD])) mismatches.push('Manager');
       if (changes.latitude !== undefined && (after.latitude === '' || Math.abs(Number(after.latitude) - Number(changes.latitude)) > 0.0005)) mismatches.push('Latitude');
@@ -13849,7 +14591,8 @@
         const lng = row.lngInput.value.trim();
         const mapsLink = row.mapsInput.value.trim();
         const radius = row.radiusInput.value.trim();
-        if (!locText && !addrEn && !addrAr && !mgr && !lat && !lng && !mapsLink && !radius) continue;
+        const newArea = row.newAreaInput.value.trim(), newCity = row.cityInput.value.trim();
+        if (!locText && !newArea && !newCity && !addrEn && !addrAr && !mgr && !lat && !lng && !mapsLink && !radius) continue;
         if (!locText) { problems.push({ r: row, msg: 'pick a location first' }); continue; }
         const loc = row.locInput.dataset.itemId
           ? locRows.find((l) => String(l.id) === row.locInput.dataset.itemId)
@@ -13859,6 +14602,23 @@
         const changes = {};
         if (addrEn) changes.address_en = addrEn;
         if (addrAr) changes.address_ar = addrAr;
+        if (newArea || newCity) { // v4.14: like Jisr's own form: address EN/AR + area + city together
+          let areaId = loc.areaId, cityId = loc.cityId;
+          if (newArea) { const a = resolveAreaFor_(loc.countryId, newArea, row.newAreaInput.dataset.itemId); if (a.error) { problems.push({ r: row, msg: a.error }); continue; } areaId = a.id; }
+          if (newCity) {
+            if (!(cityCacheByCountry[loc.countryId] || []).length) { try { await loadCities_(loc.countryId); } catch (e) { /* reported below */ } }
+            const c = await resolveCityFor_(loc.countryId, newCity, row.cityInput.dataset.itemId); if (c.error) { problems.push({ r: row, msg: c.error }); continue; } cityId = c.id;
+          }
+          if (cityId == null) { problems.push({ r: row, msg: 'this location has no city yet — fill New City too' }); continue; }
+          if (String(areaId) !== String(loc.areaId)) changes.area_id = areaId;
+          if (String(cityId) !== String(loc.cityId)) changes.city_id = cityId;
+          if (changes.area_id !== undefined || changes.city_id !== undefined) {
+            const __en = changes.address_en !== undefined ? changes.address_en : loc.address_en, __ar = changes.address_ar !== undefined ? changes.address_ar : loc.address_ar;
+            ['address_en', 'address_ar', 'area_id', 'city_id'].forEach((k) => { delete changes[k]; });
+            Object.assign(changes, { address_ar: __ar, address_en: __en, area_id: areaId, city_id: cityId, id: loc.id }); // same fields and order as Jisr's form
+            changes.__moved = { area: String(areaId) !== String(loc.areaId), city: String(cityId) !== String(loc.cityId) };
+          }
+        }
         if (mgr) {
           const m = resolveManagerInput_(mgr);
           if (!m) { problems.push({ r: row, msg: 'manager not found: "' + mgr + '"' }); continue; }
@@ -13889,8 +14649,9 @@
           if (isNaN(radNum) || radNum < 0) { problems.push({ r: row, msg: 'Radius must be a non-negative number' }); continue; }
           changes.radius = radNum;
         }
-        if (!Object.keys(changes).length) { problems.push({ r: row, msg: 'location selected but no New value filled in' }); continue; }
-        ops.push({ r: row, id: loc.id, label: formatLocLabel_(loc), current: loc, changes });
+        if (!Object.keys(changes).length) { problems.push({ r: row, msg: (newArea || newCity) ? 'already in that area / city — nothing to change' : 'location selected but no New value filled in' }); continue; }
+        const __moved = changes.__moved; delete changes.__moved;
+        ops.push({ r: row, id: loc.id, label: formatLocLabel_(loc), current: loc, changes, moved: __moved });
       }
       return { ops, problems };
     }
@@ -13905,8 +14666,10 @@
       plan.problems.forEach((p) => setStatus_(p.r, 'err', p.msg));
       plan.ops.forEach((op) => {
         const parts = [];
-        if (op.changes.address_en !== undefined) parts.push('Address EN: "' + op.current.address_en + '" → "' + op.changes.address_en + '"');
-        if (op.changes.address_ar !== undefined) parts.push('Address AR: "' + op.current.address_ar + '" → "' + op.changes.address_ar + '"');
+        if (op.moved && op.moved.area) { const __a = areaRows.find((a) => a.id === op.changes.area_id); parts.push('Area: ' + (op.current.areaName || '(none)') + ' → ' + (__a ? __a.name : '#' + op.changes.area_id)); }
+        if (op.moved && op.moved.city) parts.push('City: ' + (cityName_(op.current.countryId, op.current.cityId) || '(none)') + ' → ' + (cityName_(op.current.countryId, op.changes.city_id) || '#' + op.changes.city_id));
+        if (op.changes.address_en !== undefined && op.changes.address_en !== op.current.address_en) parts.push('Address EN: "' + op.current.address_en + '" → "' + op.changes.address_en + '"');
+        if (op.changes.address_ar !== undefined && op.changes.address_ar !== op.current.address_ar) parts.push('Address AR: "' + op.current.address_ar + '" → "' + op.changes.address_ar + '"');
         if (op.changes[CFG.MANAGER_FIELD] !== undefined) parts.push('Manager: ' + (op.current.managerName || '(none)') + ' → #' + op.changes[CFG.MANAGER_FIELD]);
         if (op.changes.latitude !== undefined) parts.push('Lat/Lng: ' + op.current.latitude + ',' + op.current.longitude + ' → ' + op.changes.latitude + ',' + op.changes.longitude);
         if (op.changes.radius !== undefined) parts.push('Radius: ' + op.current.radius + ' → ' + op.changes.radius);
@@ -13993,8 +14756,8 @@
 
     paneLoc.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
       'Pick an existing location, then fill in only the "New" fields you want to change — blank means unchanged. ' +
-      'A Google Maps link (short or long) overrides Latitude/Longitude if both are given. Moving a location to a ' +
-      'different area/city isn\'t supported here — only address, manager, coordinates and radius.')]));
+      'A Google Maps link (short or long) overrides Latitude/Longitude if both are given. To move a location, ' +
+      'pick a New Area and/or New City (cities of the location\'s country, as in Jisr).')]));
     paneLoc.appendChild(locTableWrap);
     paneLoc.appendChild(el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [addLocRowBtn, templateLocBtn, uploadLocBtn]));
     paneLoc.appendChild(locRunControlsWrap);
@@ -14246,6 +15009,8 @@
       const areaMgrInput = el('input', { class: 'jbo-input', placeholder: '(optional)' });
       const areaMgrWrap = attachEmployeeAutocomplete_(areaMgrInput, managerPool_);
       const cityInput = el('input', { class: 'jbo-input', placeholder: 'city…' });
+      const cityWrap = __cityAutocomplete_(cityInput, () => { const c = findCountry_(countryInput.value.trim()); return c ? c.id : null; });
+      countryInput.addEventListener('change', () => { const c = findCountry_(countryInput.value.trim()); if (c && !cityCacheByCountry[c.id]) loadCities_(c.id).catch(() => {}); });
       const locEnInput = el('input', { class: 'jbo-input', placeholder: 'location (EN)' });
       const locArInput = el('input', { class: 'jbo-input', placeholder: 'location (AR)' });
       const locMgrInput = el('input', { class: 'jbo-input', placeholder: '(optional)' });
@@ -14268,7 +15033,7 @@
       }
       const tr = el('tr', {}, [
         el('td', {}, [countryWrap]), el('td', {}, [areaEnInput]), el('td', {}, [areaArInput]), el('td', {}, [areaMgrWrap]),
-        el('td', {}, [cityInput]), el('td', {}, [locEnInput]), el('td', {}, [locArInput]), el('td', {}, [locMgrWrap]),
+        el('td', {}, [cityWrap]), el('td', {}, [locEnInput]), el('td', {}, [locArInput]), el('td', {}, [locMgrWrap]),
         el('td', {}, [mapsInput]), el('td', {}, [radiusInput]), statusCell,
         el('td', { class: 'jbo-row-actions' }, [removeBtn])
       ]);
@@ -14356,7 +15121,10 @@
         }
         const country = findCountry_(countryText);
         if (!country) { problems.push({ r: row, msg: 'country not found: "' + countryText + '"' }); continue; }
-        const city = findCity_(country.id, cityText);
+        if (!cityCacheByCountry[country.id]) { try { await loadCities_(country.id); } catch (e) { /* searched below */ } }
+        const __pc = /#(\d+)\)?\s*$/.exec(cityText) || (row.cityInput.dataset.itemId ? [0, row.cityInput.dataset.itemId] : null);
+        let city = __pc ? (cityCacheByCountry[country.id] || []).find((c) => String(c.id) === String(__pc[1])) : findCity_(country.id, cityText);
+        if (!city && !__pc) { try { await searchCities_(country.id, cityText); } catch (e) { /* offline */ } city = findCity_(country.id, cityText); }
         if (!city) { problems.push({ r: row, msg: 'city not found for ' + countryText + ': "' + cityText + '"' }); continue; }
         let areaMgr = null;
         if (areaMgrText) {
@@ -26995,7 +27763,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.5.1
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.19.0
 // ###########################################################################
 
 /*
@@ -28570,7 +29338,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.5.1
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.19.0
 // ###########################################################################
 
 /*
@@ -29219,7 +29987,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v4.5.1
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.19.0
 // ###########################################################################
 
 /*
@@ -30087,7 +30855,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.5.1
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.19.0
 // ###########################################################################
 
 /*
@@ -31522,7 +32290,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.5.1
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.19.0
 // ###########################################################################
 
 /*
@@ -31992,7 +32760,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 20 — Employee Documents bulk upload  v4.5.1
+// ##### SECTION 20 — Employee Documents bulk upload  v4.19.0
 // ###########################################################################
 
 /*
@@ -32025,12 +32793,22 @@
  *     attachment must be on the profile (new attachment id recorded), and other ID details unchanged.
  *   - Other document types (e.g. National Address) are LEARNED from one real upload in Jisr
  *     (category + the fields Jisr sent), never guessed.
+ *
+ * v4.19 — the company's own document types (employment files):
+ *   GET /v2/employment_file_types/?filter[search]=&slug=   (confirmed in a capture, 2026-10-18)
+ *   Each type { id, name, name_ar, name_i18n } becomes a choice in the type picker and the template dropdown.
+ *   Upload = a new employment-file record:
+ *     POST /v2/employees/{id}/employment_files/  { employment_file: { category: "other", employment_file_type_id,
+ *          description, expiry_date: "YYYY-MM-DD", files: [ { data: "data:…;base64,…", filename } ] } }
+ *   The POST shape follows the confirmed PUT on an existing record. Until one upload has been confirmed for this
+ *   company (or Jisr's own request was seen while adding a document by hand), a run sends ONE file, reads it back,
+ *   and stops so it can be checked. Existing records: GET /v2/employees/{id}/employment_files/.
  * ===========================================================================
  */
 (function () {
   'use strict';
 
-  const SECTION_VERSION = '4.5.1';
+  const SECTION_VERSION = '4.19.0';
   const MODULE_ID = 'employee-documents';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -32071,6 +32849,34 @@
     });
     return f;
   }
+  // ---- the company's document types (employment files), read from Jisr
+  const FT = { slug: '', list: [], loaded: false, error: '' };
+  const escRe_ = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  /** Any array of { id, name… } objects in the response -> document types. */
+  function parseFileTypes_(json) {
+    let arr = null;
+    (function walk(v, d) {
+      if (arr || !v || typeof v !== 'object' || d > 5) return;
+      if (Array.isArray(v)) { if (v.length && v.every((x) => x && typeof x === 'object' && x.id != null && (x.name || x.name_en || x.name_i18n || x.name_ar))) { arr = v; return; } v.forEach((x) => walk(x, d + 1)); return; }
+      Object.keys(v).forEach((k) => walk(v[k], d + 1));
+    })(json, 0);
+    return (arr || []).map((x) => {
+      const en = String(x.name_en || x.name || x.name_i18n || x.name_ar).trim();
+      const ar = String(x.name_ar || x.name_i18n || x.name || en).trim();
+      const labels = Array.from(new Set([en, ar, String(x.name_i18n || '').trim()].filter(Boolean)));
+      return { cat: 'eft_' + x.id, kind: 'file', typeId: x.id, en, ar, fields: { expiry: 'expiry_date' }, isDefault: !!x.is_default, words: new RegExp('^(' + labels.map(escRe_).join('|') + ')$', 'i') };
+    });
+  }
+  async function loadFileTypes_(force) {
+    if (FT.loaded && FT.slug === slug_() && !force) return FT.list;
+    try {
+      const r = await request_('GET', '/v2/employment_file_types/', { 'filter[search]': '' });
+      if (!r.ok) throw new Error('HTTP ' + r.status + (jisrMsg_(r.json) ? ': ' + jisrMsg_(r.json) : ''));
+      FT.list = parseFileTypes_(r.json); FT.error = '';
+    } catch (e) { FT.list = []; FT.error = e.message; }
+    FT.slug = slug_(); FT.loaded = true;
+    return FT.list;
+  }
   const prettify_ = (c) => String(c).replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
   function cats_() {
     let learned = [];
@@ -32081,6 +32887,7 @@
       const label = l.label || prettify_(l.cat);
       out.push({ cat: l.cat, en: label, ar: l.labelAr || label, fields: fieldsFromKeys_(l.keys || []), learned: true, words: new RegExp(l.cat.replace(/_/g, '[ _-]?') + (/address/i.test(l.cat) ? '|address|عنوان' : ''), 'i') });
     });
+    if (FT.slug === slug_()) FT.list.forEach((c) => out.push(c));
     return out;
   }
   const catLabel_ = (c) => (I.isAr() ? c.ar : c.en);
@@ -32089,7 +32896,7 @@
     const t = String(s == null ? '' : s).trim();
     if (!t) return null;
     const low = t.toLowerCase();
-    return cats.find((c) => c.cat === low || c.en.toLowerCase() === low || c.ar === t) || cats.find((c) => c.words.test(t)) || null;
+    return cats.find((c) => c.cat === low || c.en.toLowerCase() === low || c.ar === t) || cats.find((c) => c.kind !== 'file' && c.words.test(t)) || cats.find((c) => c.kind === 'file' && c.words.test(t)) || null;
   }
 
   // ======================================================================= pure helpers (exported for tests)
@@ -32148,6 +32955,41 @@
     })(json, 0);
     return out;
   }
+  /** Body for a new employment-file record (company document type). */
+  function buildFileBody_(cat, vals, file) {
+    const ef = { category: 'other', employment_file_type_id: cat.typeId, files: [{ data: file.dataUrl, filename: file.name }] };
+    if (vals.description) ef.description = String(vals.description).trim();
+    const iso = dmyToIso_(vals.expiry);
+    if (iso) ef.expiry_date = iso;
+    return { employment_file: ef };
+  }
+  const dmyToIso_ = (d) => { const m = String(d || '').match(/^(\d{2})-(\d{2})-(\d{4})$/); return m ? m[3] + '-' + m[2] + '-' + m[1] : ''; };
+  /** The employment-file records in a response: objects with a file_type or employment_file_type_id. */
+  function findFileRecords_(json) {
+    const out = [];
+    const seen = new Set();
+    (function walk(v, d) {
+      if (!v || typeof v !== 'object' || d > 7) return;
+      if (!Array.isArray(v) && v.id != null && (v.file_type || v.employment_file_type_id != null || v.employment_file_type) && Array.isArray(v.files)) { if (!seen.has(String(v.id))) { seen.add(String(v.id)); out.push(v); } return; }
+      (Array.isArray(v) ? v : Object.values(v)).forEach((x) => walk(x, d + 1));
+    })(json, 0);
+    return out;
+  }
+  const recTypeId_ = (r) => String((r.file_type && r.file_type.id) || (r.employment_file_type && r.employment_file_type.id) || r.employment_file_type_id || '');
+  const fileCapKey_ = () => 'empFileCreate_' + slug_();
+  function fileCreatePath_(empId) {
+    let cap = null;
+    try { cap = JSON.parse(gmGet_(fileCapKey_(), 'null')); } catch (e) { cap = null; }
+    const tpl = (cap && cap.tpl) || '/v2/employees/{id}/employment_files/';
+    return tpl.replace('{id}', encodeURIComponent(empId));
+  }
+  const fileConfirmed_ = () => { try { const c = JSON.parse(gmGet_(fileCapKey_(), 'null')); return !!(c && (c.seen || c.ok)); } catch (e) { return false; } };
+  function markFileConfirmed_(how) { let c = {}; try { c = JSON.parse(gmGet_(fileCapKey_(), 'null')) || {}; } catch (e) { c = {}; } c[how] = Date.now(); gmSet_(fileCapKey_(), JSON.stringify(c)); }
+  async function readFiles_(empId) {
+    const r = await request_('GET', '/v2/employees/' + encodeURIComponent(empId) + '/employment_files/', null);
+    if (!r.ok) throw new Error(T('Could not read the employee\'s documents (HTTP ', 'تعذّرت قراءة مستندات الموظف (HTTP ') + r.status + ')' + (jisrMsg_(r.json) ? ': ' + jisrMsg_(r.json) : ''));
+    return findFileRecords_(r.json);
+  }
   const activeOf_ = (atts, cat) => (atts || []).filter((a) => a && a.category === cat && (!a.status || /active/i.test(String(a.status))));
 
   // ======================================================================= learn other types from one real upload
@@ -32187,12 +33029,24 @@
     if (W.__jisrEmpDocSniffer) return;
     W.__jisrEmpDocSniffer = true;
     const isEmpPut = (m, u) => m === 'PUT' && /\/v2\/employees\/\d+\/?(\?|$)/.test(String(u || ''));
+    // Jisr's own "add document" request (employment files): remember its address so ours matches it
+    const isFilePost = (m, u) => m === 'POST' && /employment_files/.test(String(u || ''));
+    const learnFilePost = (u) => {
+      try {
+        const path = new URL(String(u), location.href).pathname.replace(/^\/api/, '');
+        const tpl = path.replace(/\/employees\/\d+\//, '/employees/{id}/');
+        if (!/\{id\}/.test(tpl)) return;
+        let c = {}; try { c = JSON.parse(gmGet_(fileCapKey_(), 'null')) || {}; } catch (e) { c = {}; }
+        c.tpl = tpl; c.seen = Date.now(); gmSet_(fileCapKey_(), JSON.stringify(c));
+      } catch (e) { /* ignore */ }
+    };
     const XO = W.XMLHttpRequest && W.XMLHttpRequest.prototype;
     if (XO) {
       const open = XO.open, send = XO.send;
       XO.open = function (method, url) { this.__jedM = String(method || '').toUpperCase(); this.__jedU = String(url || ''); return open.apply(this, arguments); };
       XO.send = function (body) {
         const xhr = this;
+        if (isFilePost(xhr.__jedM, xhr.__jedU) && !xhr.__jedOwn) xhr.addEventListener('load', () => { if (xhr.status >= 200 && xhr.status < 300) learnFilePost(xhr.__jedU); });
         if (isEmpPut(xhr.__jedM, xhr.__jedU) && !xhr.__jedOwn) {
           xhr.addEventListener('load', () => { if (xhr.status >= 200 && xhr.status < 300) { learnFromBody_(body); try { learnLabels_(JSON.parse(xhr.responseText)); } catch (e) { /* ignore */ } } });
         }
@@ -32205,6 +33059,7 @@
         const url = typeof input === 'string' ? input : (input && input.url) || '';
         const method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
         const p = f.apply(this, arguments);
+        if (isFilePost(method, url) && !(init && init.__jedOwn)) p.then((res) => { if (res && res.ok) learnFilePost(url); }).catch(() => {});
         if (isEmpPut(method, url) && !(init && init.__jedOwn)) {
           p.then((res) => { if (res && res.ok) { learnFromBody_(init && init.body); res.clone().json().then(learnLabels_).catch(() => {}); } }).catch(() => {});
         }
@@ -32289,7 +33144,7 @@
   function injectCss_() {
     if (document.getElementById('jbo-empdocs-css')) return;
     document.head.appendChild(el('style', { id: 'jbo-empdocs-css', text: `
-      .jed-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; }
+      .jed-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; }
       .jed-step { border: 1px solid #e8eaed; border-radius: 10px; padding: 10px 12px; }
       .jed-step b { display: block; font-size: 12.5px; margin-bottom: 6px; }
       .jed-step .jbo-btn { margin: 0 6px 6px 0; }
@@ -32309,7 +33164,7 @@
 
   function openTool_() {
     injectCss_();
-    const S = { rows: [], files: new Map(), busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false };
+    const S = { rows: [], files: new Map(), busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false, pick: gmGet_('empDocPick_' + slug_(), '') };
     const X = W.__jisrBulkOpsXlsx;
     const body = el('div', { class: 'jbo-modal-body' });
     const foot = el('div', { class: 'jbo-modal-foot' });
@@ -32340,6 +33195,22 @@
     const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
     const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
     const resB = el('button', { class: 'jbo-btn', text: T('⬇ Results (.xlsx)', '⬇ النتائج (‎.xlsx)') });
+    const typeSel = el('select', { class: 'jbo-input jed-type', style: { width: '100%', margin: '0 0 6px' } });
+    const typeInfo = el('div', { class: 'jbo-muted', style: { fontSize: '12px' } });
+    const pickedCat_ = () => (S.pick ? cats_().find((c) => c.cat === S.pick) || null : null);
+    typeSel.addEventListener('change', () => { S.pick = typeSel.value; gmSet_('empDocPick_' + slug_(), S.pick); paint_(); });
+    function fillTypeSel_() {
+      const cats = cats_();
+      typeSel.innerHTML = '';
+      typeSel.appendChild(el('option', { value: '', text: T('Any type (read it from the list / file name)', 'أي نوع (من القائمة / اسم الملف)') }));
+      const g1 = el('optgroup', { label: T('ID details', 'بيانات الهوية') });
+      cats.filter((c) => c.kind !== 'file').forEach((c) => g1.appendChild(el('option', { value: c.cat, text: catLabel_(c) })));
+      typeSel.appendChild(g1);
+      const fts = cats.filter((c) => c.kind === 'file');
+      if (fts.length) { const g2 = el('optgroup', { label: T('This company\'s document types', 'أنواع مستندات هذه الشركة') }); fts.forEach((c) => g2.appendChild(el('option', { value: c.cat, text: catLabel_(c) }))); typeSel.appendChild(g2); }
+      if (S.pick && !cats.some((c) => c.cat === S.pick)) S.pick = '';
+      typeSel.value = S.pick;
+    }
 
     function render_() {
       titleEl.textContent = T('Employee Documents', 'مستندات الموظفين');
@@ -32349,14 +33220,16 @@
         'Upload ID / Iqama, passport and other employee documents in bulk. Each file is matched to one employee by Iqama number (or employee ID), checked in a Dry Run, then uploaded. Details you leave blank stay as they are in Jisr.',
         'ارفع الهوية / الإقامة وجواز السفر ومستندات الموظفين الأخرى دفعة واحدة. يُطابَق كل ملف مع موظف واحد برقم الإقامة (أو الرقم الوظيفي)، ثم يُفحص بتشغيل تجريبي، ثم يُرفع. التفاصيل التي تتركها فارغة تبقى كما هي في جسر.') }));
       const steps = el('div', { class: 'jed-steps' }, [
+        el('div', { class: 'jed-step' }, [el('b', { text: T('Document type', 'نوع المستند') }), typeSel, typeInfo]),
         el('div', { class: 'jed-step' }, [el('b', { text: T('1. The list', '1. القائمة') }), tplB, upB, el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('One row per file: who, which document, which file.', 'صف لكل ملف: الموظف، والمستند، والملف.') })]),
         el('div', { class: 'jed-step' }, [el('b', { text: T('2. The files', '2. الملفات') }), filesB, folderB, filesInfo]),
-        el('div', { class: 'jed-step' }, [el('b', { text: T('Or: no list', 'أو: بدون قائمة') }), fromNamesB, el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Files named like 2616501058_iqama.pdf or E1043_passport.png', 'ملفات بأسماء مثل 2616501058_iqama.pdf أو E1043_passport.png') })]),
+        el('div', { class: 'jed-step' }, [el('b', { text: T('Or: no list', 'أو: بدون قائمة') }), fromNamesB, el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Files named like 2616501058_iqama.pdf or E1043_passport.png. With a document type chosen, the Iqama or employee ID alone is enough (2616501058.pdf).', 'ملفات بأسماء مثل 2616501058_iqama.pdf أو E1043_passport.png. عند اختيار نوع المستند يكفي رقم الإقامة أو الرقم الوظيفي (2616501058.pdf).') })]),
       ]);
       body.appendChild(steps);
-      body.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px', marginBottom: '6px' }, text: T('Document types for this company: ', 'أنواع المستندات لهذه الشركة: ') + cats.map(catLabel_).join(' · ') + T('. To add another type (e.g. National Address), upload one such file by hand in Jisr with this script running; it is learned from that upload.', '. لإضافة نوع آخر (مثل العنوان الوطني) ارفع ملفًا واحدًا منه يدويًا في جسر مع تشغيل هذا السكربت، وسيُتعرَّف عليه من ذلك الرفع.') }));
+      body.appendChild(el('div', { class: 'jbo-muted jed-types', style: { fontSize: '12px', marginBottom: '6px' }, text: (FT.loaded ? (FT.list.length ? cats.filter((c) => c.kind === 'file').length + T(' document types read from this company\'s Jisr, plus ID / Iqama and Passport.', ' نوع مستند من جسر لهذه الشركة، إضافة إلى الهوية / الإقامة وجواز السفر.') : T('Could not read this company\'s document types from Jisr', 'تعذّرت قراءة أنواع مستندات الشركة من جسر') + (FT.error ? ' (' + FT.error + ')' : '') + T('; ID / Iqama and Passport are available.', '؛ الهوية / الإقامة وجواز السفر متاحة.')) : T('Reading this company\'s document types…', 'جارٍ قراءة أنواع مستندات الشركة…')) }));
       body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap);
       body.appendChild(listIn); body.appendChild(filesIn); body.appendChild(folderIn);
+      fillTypeSel_();
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
       paint_();
@@ -32365,6 +33238,8 @@
     function paint_() {
       const n = S.files.size;
       filesInfo.textContent = n ? n + T(' file(s) chosen', ' ملف مختار') : T('No files chosen yet', 'لم تُختر ملفات بعد');
+      const pc = pickedCat_();
+      typeInfo.textContent = !pc ? T('Each row / file name says its type.', 'كل صف / اسم ملف يحدد نوعه.') : pc.kind === 'file' ? T('Every file becomes a "', 'كل ملف يصبح مستند «') + catLabel_(pc) + T('" document on the employee (Documents tab).', '» في ملف الموظف (تبويب المستندات).') + (fileConfirmed_() ? '' : T(' First upload for this company: one file is sent and checked before the rest.', ' أول رفع لهذه الشركة: يُرسل ملف واحد ويُتحقق منه قبل البقية.')) : T('Every file is uploaded as ', 'كل ملف يُرفع كـ ') + catLabel_(pc) + '.';
       statusEl.textContent = S.busy || S.note;
       statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
       statsEl.innerHTML = '';
@@ -32397,7 +33272,7 @@
       runB.disabled = !S.dryDone || !ready || !!S.busy;
       dryB.disabled = !S.rows.length || !!S.busy;
       stopB.style.display = S.phase === 'running' ? '' : 'none';
-      [tplB, upB, filesB, folderB, fromNamesB].forEach((b) => { b.disabled = !!S.busy; });
+      [tplB, upB, filesB, folderB, fromNamesB, typeSel].forEach((b) => { b.disabled = !!S.busy; });
       resB.style.display = S.rows.some((r) => r.state === 'done' || r.state === 'failed' || r.state === 'check') ? '' : 'none';
     }
     function invalidate_() { S.dryDone = false; S.rows.forEach((r) => { if (r.state !== 'done') { r.state = ''; r.msg = ''; } }); }
@@ -32408,8 +33283,10 @@
       try {
         const emps = (await W.__jisrBulkOpsEmployees.get(false)).slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
         const cats = cats_();
+        const pc = pickedCat_();
+        const rowCats = pc ? [pc] : cats.filter((c) => c.kind !== 'file');
         const rows = [];
-        emps.forEach((e) => cats.forEach((c) => rows.push([e.code || e.id, e.name || '', e.nid ? String(e.nid) : '', catLabel_(c), '', '', '', '', '', '', ''])));
+        emps.forEach((e) => rowCats.forEach((c) => rows.push([e.code || e.id, e.name || '', e.nid ? String(e.nid) : '', catLabel_(c), '', '', '', '', '', '', ''])));
         X.setNextLists({ Document: { values: cats.map(catLabel_), strict: true } });
         await X.downloadAoa('jisr-employee-documents-' + slug_() + '.xlsx', HEADERS, rows, 'Documents');
         S.note = T('Template downloaded: one row per employee and document type. Fill "File name" only on the rows you have a file for; rows without a file are ignored.', 'تم تنزيل القالب: صف لكل موظف ونوع مستند. املأ «File name» فقط للصفوف التي لديك ملف لها؛ الصفوف بدون ملف تُتجاهل.'); S.noteErr = false;
@@ -32440,13 +33317,13 @@
         c.file = find((x) => /file/.test(x) || /الملف/.test(x));
         c.desc = find((x) => /description|الوصف/.test(x));
         c.replace = find((x) => /replace|استبدال/.test(x));
-        if (c.file < 0 || c.type < 0 || (c.emp < 0 && c.iqama < 0)) throw new Error(T('Use the list template from this tool (it needs Employee ID or Iqama, Document and File name columns).', 'استخدم قالب القائمة من هذه الأداة (يحتاج أعمدة الرقم الوظيفي أو الإقامة، والمستند، واسم الملف).'));
+        if (c.file < 0 || (c.type < 0 && !pickedCat_()) || (c.emp < 0 && c.iqama < 0)) throw new Error(T('Use the list template from this tool (it needs Employee ID or Iqama, Document and File name columns).', 'استخدم قالب القائمة من هذه الأداة (يحتاج أعمدة الرقم الوظيفي أو الإقامة، والمستند، واسم الملف).'));
         const get = (r, i) => (i >= 0 ? r[i] : '');
         S.rows = [];
         aoa.slice(1).forEach((r, k) => {
           const fileName = String(get(r, c.file) || '').trim();
           if (!fileName) return; // rows without a file are ignored
-          S.rows.push({ no: k + 2, empText: String(get(r, c.emp) || '').trim(), iqamaText: String(get(r, c.iqama) || '').trim(), typeText: String(get(r, c.type) || '').trim(), fileName,
+          S.rows.push({ no: k + 2, empText: String(get(r, c.emp) || '').trim(), iqamaText: String(get(r, c.iqama) || '').trim(), typeText: String(get(r, c.type) || '').trim() || (pickedCat_() ? pickedCat_().en : ''), fileName,
             numberRaw: get(r, c.number), issueRaw: get(r, c.issueDate), expiryRaw: get(r, c.expiry), place: String(get(r, c.place) || '').trim(), description: String(get(r, c.desc) || '').trim(), replace: isYes_(get(r, c.replace)), state: '', msg: '' });
         });
         S.dryDone = false;
@@ -32475,6 +33352,8 @@
         Array.from(S.files.values()).forEach((f) => {
           if (have.has(f.name.toLowerCase())) return;
           const p = parseFileName_(f.name, cats);
+          const pc = pickedCat_();
+          if (pc) { p.cat = pc; if (!p.key) { const base = f.name.replace(/\.[^.]+$/, '').trim(); const tk = base.split(/[_\-\s.()]+/).filter(Boolean); p.key = tk.find((t) => /^\d{5,}$/.test(t)) || (tk.length === 1 ? tk[0] : null); } }
           if (!p.key || !p.cat) { bad.push(f.name); return; }
           S.rows.push({ no: ++k, empText: /^\d{8,}$/.test(p.key) ? '' : p.key, iqamaText: /^\d{8,}$/.test(p.key) ? p.key : '', typeText: p.cat.en, fileName: f.name, numberRaw: '', issueRaw: '', expiryRaw: '', place: '', description: '', replace: false, state: '', msg: '' });
         });
@@ -32529,12 +33408,31 @@
           if (errs.length) { r.state = 'error'; r.msg = '✗ ' + errs.join('\n✗ '); }
         });
         // read each matched employee once: already uploaded? current details?
-        const toRead = Array.from(new Set(S.rows.filter((r) => !r.state && r.emp).map((r) => String(r.emp.id))));
-        const info = new Map();
+        const toRead = Array.from(new Set(S.rows.filter((r) => !r.state && r.emp && r.cat.kind !== 'file').map((r) => String(r.emp.id))));
+        const toReadF = Array.from(new Set(S.rows.filter((r) => !r.state && r.emp && r.cat.kind === 'file').map((r) => String(r.emp.id))));
+        const info = new Map(), finfo = new Map();
         let done = 0;
+        const total = toRead.length + toReadF.length;
         await pool_(toRead, 4, async (id) => {
           try { info.set(id, await readEmployee_(id)); } catch (e) { info.set(id, { error: T('Reading the employee: ', 'قراءة الموظف: ') + e.message }); }
-          done++; S.busy = T('Reading employees… ', 'جارٍ قراءة الموظفين… ') + done + '/' + toRead.length; statusEl.textContent = S.busy;
+          done++; S.busy = T('Reading employees… ', 'جارٍ قراءة الموظفين… ') + done + '/' + total; statusEl.textContent = S.busy;
+        });
+        await pool_(toReadF, 4, async (id) => {
+          try { finfo.set(id, { records: await readFiles_(id) }); } catch (e) { finfo.set(id, { error: e.message }); }
+          done++; S.busy = T('Reading employees… ', 'جارٍ قراءة الموظفين… ') + done + '/' + total; statusEl.textContent = S.busy;
+        });
+        S.rows.forEach((r) => {
+          if (r.state || r.cat.kind !== 'file') return;
+          const inf = finfo.get(String(r.emp.id));
+          if (!inf || inf.error) { r.state = 'error'; r.msg = '✗ ' + ((inf && inf.error) || 'read failed'); return; }
+          r.beforeFiles = inf.records;
+          const existing = inf.records.filter((x) => recTypeId_(x) === String(r.cat.typeId));
+          const notes = [];
+          if (existing.length && !r.replace) { r.state = 'skip'; r.msg = T('Already has a "', 'لديه بالفعل مستند «') + catLabel_(r.cat) + T('" document — skipped. Type YES in "Replace existing?" to add another one.', '» — تم التخطي. اكتب YES في «Replace existing?» لإضافة مستند آخر.'); return; }
+          if (existing.length) notes.push(T('Will be added next to the existing "', 'سيُضاف بجانب مستند «') + catLabel_(r.cat) + T('" document', '» الحالي'));
+          if (r.expiry) notes.push(T('expiry date: ', 'تاريخ الانتهاء: ') + r.expiry);
+          if (r.number || r.issue || r.place) notes.push(T('Number / issue date / place are not part of this document type; only the file, description and expiry date are sent.', 'الرقم / تاريخ الإصدار / المكان ليست ضمن هذا النوع؛ يُرسل الملف والوصف وتاريخ الانتهاء فقط.'));
+          r.state = 'ready'; r.msg = notes.length ? T('ready — ', 'جاهز — ') + notes.join('\n') : '';
         });
         S.rows.forEach((r) => {
           if (r.state) return;
@@ -32567,8 +33465,15 @@
 
     // ---------------- run live
     async function runLive_() {
-      const todo = S.rows.filter((r) => r.state === 'ready');
+      let todo = S.rows.filter((r) => r.state === 'ready');
       if (!todo.length) return;
+      // first employment-file upload for this company: one file, checked, then stop
+      let trial = false;
+      if (!fileConfirmed_() && todo.some((r) => r.cat.kind === 'file')) {
+        const first = todo.find((r) => r.cat.kind === 'file');
+        todo = todo.filter((r) => r.cat.kind !== 'file').concat([first]);
+        trial = true;
+      }
       const emps = new Set(todo.map((r) => r.emp.id)).size;
       if (!confirm(T('Upload ', 'رفع ') + todo.length + T(' file(s) to ', ' ملف إلى ') + emps + T(' employee(s) in ', ' موظف في ') + slug_() + T(' now?', ' الآن؟'))) return;
       S.phase = 'running'; S.stop = false; S.busy = ' '; paint_();
@@ -32585,10 +33490,43 @@
       S.phase = 'done'; S.busy = '';
       const ok = todo.filter((r) => r.state === 'done').length;
       S.note = ok + T(' of ', ' من ') + todo.length + T(' file(s) uploaded and found on the employee profile.', ' ملف تم رفعه والتحقق منه في ملف الموظف.'); S.noteErr = ok < todo.length;
+      if (trial) {
+        const t1 = todo[todo.length - 1];
+        const left = S.rows.filter((r) => r.state === 'ready').length;
+        if (t1.state === 'done') { markFileConfirmed_('ok'); S.note += T('\nFirst document upload for this company worked and was found on the employee. Open the employee in Jisr to look at it, then click Upload for the other ', '\nنجح أول رفع مستند لهذه الشركة ووُجد في ملف الموظف. افتح الموظف في جسر لمراجعته، ثم اضغط رفع لبقية ') + left + T(' file(s).', ' ملف.'); }
+        else { S.note += T('\nThe first document upload did not go through, so nothing else was sent. Add one document by hand in Jisr (Employee → Documents) with this script running; the tool will copy Jisr\'s request and you can try again.', '\nلم ينجح أول رفع مستند، فلم يُرسل شيء آخر. أضف مستندًا واحدًا يدويًا في جسر (الموظف ← المستندات) مع تشغيل هذا السكربت؛ ستنسخ الأداة طلب جسر ويمكنك المحاولة مجددًا.'); S.noteErr = true; }
+      }
       logActivity_(todo);
       paint_();
     }
+    async function uploadFile_(r) {
+      try {
+        const dataUrl = await dataUrl_(r.file);
+        const bodyJ = buildFileBody_(r.cat, { expiry: r.expiry, description: r.description }, { dataUrl, name: r.file.name });
+        let res = null, unknown = false;
+        try { res = await request_('POST', fileCreatePath_(r.emp.id), null, bodyJ); }
+        catch (e) { if (!e.unknown) throw e; unknown = true; }
+        if (res && !res.ok) { r.state = 'failed'; r.msg = '✗ ' + T('Upload: ', 'الرفع: ') + (jisrMsg_(res.json) || ('HTTP ' + res.status)) + (res.status === 404 || res.status === 405 ? T(' — Jisr uses a different request to add documents here. Add one document by hand in Jisr with this script running, then try again.', ' — يستخدم جسر طلبًا مختلفًا لإضافة المستندات. أضف مستندًا واحدًا يدويًا في جسر مع تشغيل هذا السكربت ثم حاول مجددًا.') : ''); return; }
+        // confirm by reading the employee's documents back
+        const beforeIds = new Set((r.beforeFiles || []).map((x) => String(x.id)));
+        const after = await readFiles_(r.emp.id).catch(() => (res && res.json ? findFileRecords_(res.json) : []));
+        const fresh = after.filter((x) => !beforeIds.has(String(x.id)) && recTypeId_(x) === String(r.cat.typeId));
+        const hit = fresh[0];
+        if (hit) {
+          r.attachmentId = hit.id;
+          const wantIso = dmyToIso_(r.expiry);
+          const gotExp = String(hit.expiry_date || '').slice(0, 10);
+          const expOk = !wantIso || gotExp === wantIso;
+          r.state = expOk ? 'done' : 'check';
+          r.msg = (expOk ? '✓ ' : '⚠ ') + T('uploaded (document #', 'تم الرفع (مستند #') + hit.id + ')' + (expOk ? '' : T(' — expiry date in Jisr is "', ' — تاريخ الانتهاء في جسر «') + (gotExp || '—') + T('", expected ', '»، المتوقع ') + wantIso);
+        } else {
+          r.state = 'check';
+          r.msg = unknown ? T('⚠ No answer from Jisr and the document is not on the profile — check the employee in Jisr', '⚠ لا رد من جسر والمستند غير موجود في ملف الموظف — تحقّق من الموظف في جسر') : T('⚠ Jisr said OK but the document is not on the profile', '⚠ قال جسر تم، لكن المستند غير موجود في ملف الموظف');
+        }
+      } catch (e) { r.state = 'failed'; r.msg = '✗ ' + T('Upload: ', 'الرفع: ') + e.message; }
+    }
     async function uploadOne_(r) {
+      if (r.cat.kind === 'file') return uploadFile_(r);
       try {
         const dataUrl = await dataUrl_(r.file);
         const bodyJ = buildBody_(r.cat, { number: r.number, issue: r.issue, expiry: r.expiry, place: r.place, description: r.description }, { dataUrl, name: r.file.name });
@@ -32640,12 +33578,13 @@
     });
 
     render_();
+    loadFileTypes_(false).then(() => { if (backdrop.isConnected && !S.busy) render_(); });
   }
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'Employee Documents', open: openTool_, version: SECTION_VERSION };
-    W.__jisrEmpDocs = { toDmy_, parseFileName_, buildBody_, findAttachments_, findIdent_, typeFromText_, fieldsFromKeys_, cats_, learnFromBody_ };
+    W.__jisrEmpDocs = { toDmy_, parseFileName_, buildBody_, buildFileBody_, parseFileTypes_, findFileRecords_, loadFileTypes_, findAttachments_, findIdent_, typeFromText_, fieldsFromKeys_, cats_, learnFromBody_ };
     if (g._rerender) g._rerender();
   }
   register_();
@@ -32653,10 +33592,3771 @@
 
 
 // ###########################################################################
-// ##### HIDDEN TOOLS (v4.3) — Flight Ticket Policy is hidden until it is reworked; its code stays in place
+// ##### SECTION 21 — Bulk Offboarding  v4.19.0
 // ###########################################################################
 
-(function () { try { if (GM_getValue('jisrBulkOps_showHiddenTools', false)) return; const H = ['flight-tickets-bulk']; const g = unsafeWindow.__jisrBulkOps; if (g && g.modules) H.forEach((id) => { delete g.modules[id]; }); } catch (e) { /* ignore */ } })();
+/**
+ * ===========================================================================
+ * Jisr Bulk Ops — Bulk Offboarding  (v4.6.0)
+ * ===========================================================================
+ * Confirmed from captures (onboardingteam, 2026-10-12):
+ *   GET  /v2/hr/offboard_records/offboarding_reasons?employee_id=&initiator=employee|employer
+ *   GET  /v2/hr/offboarding_plans/{id}
+ *        -> data.offboarding_plan { id, name, tasks: [{ id, category, name, assignee{id..}, assignee_id,
+ *           default_tasks_key, position, trigger_day, trigger_event, status }] }
+ *   GET  /v2/employees/get_all?template=offboarding_plan_assignee&default_tasks_key=<key>&per_page=100&page=n
+ *        (who may be the assignee of a task)
+ *   POST /v2/hr/offboard_records   -> 201
+ *        { offboard_record: { employee_id, initiator, offboard_type, offboarding_reason, offboard_details, comments,
+ *          communication_date "YYYY-MM-DD", last_working_day "YYYY-MM-DD", eligible_for_rehire, regrettable_departure,
+ *          payment_method, revoke_deactivation, offboarding_plan_id, excluded_offboarding_plan_task_ids: [],
+ *          offboarding_plan_tasks_attributes: [{ id, category, name, assignee_id, default_tasks_key, position,
+ *          trigger_day, trigger_event }] } }
+ * NOT captured yet: the final settlement confirmation (payroll side) - this tool stops at the offboarding record.
+ *
+ * Safety: list first, Dry Run (employee / dates / reason / plan tasks / assignees checked, nothing sent),
+ * confirm, 2 at a time, one record per employee, record id kept in the results file.
+ * Values not seen in the captures (other offboard types, payment methods ...) are LEARNED from one manual
+ * offboarding done in Jisr with the script running, never guessed.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+
+  const SECTION_VERSION = '4.6.0';
+  const MODULE_ID = 'offboarding-bulk';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
+  function slug_() {
+    const o = gmGet_('slugOverride', '');
+    if (o) return o;
+    const p = location.hostname.split('.');
+    return p.length >= 3 ? p[0] : '';
+  }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const LEARN_KEY = () => 'offboardLearned_' + slug_();
+  const PLAN_KEY = () => 'offboardPlan_' + slug_();
+
+  // ======================================================================= known values
+  const INITIATORS = [{ key: 'employer', en: 'Employer', ar: 'صاحب العمل' }, { key: 'employee', en: 'Employee', ar: 'الموظف' }];
+  const SEEN = { offboard_type: ['termination_by_employer'], payment_method: ['regular'], revoke_deactivation: ['after_submitted'] };
+  function learned_() { try { return JSON.parse(gmGet_(LEARN_KEY(), '{}') || '{}') || {}; } catch (e) { return {}; } }
+  function valuesOf_(field) {
+    const l = learned_();
+    return Array.from(new Set((SEEN[field] || []).concat(l[field] || [])));
+  }
+  function learnFromBody_(bodyText) {
+    let b = null;
+    try { b = typeof bodyText === 'string' ? JSON.parse(bodyText) : bodyText; } catch (e) { return; }
+    const r = b && b.offboard_record;
+    if (!r || typeof r !== 'object') return;
+    const l = learned_();
+    let changed = false;
+    ['offboard_type', 'payment_method', 'revoke_deactivation'].forEach((f) => {
+      const v = r[f];
+      if (v == null || v === '') return;
+      l[f] = l[f] || [];
+      if (!l[f].includes(String(v))) { l[f].push(String(v)); changed = true; }
+    });
+    if (r.offboarding_reason && r.initiator) {
+      l.reasons = l.reasons || {};
+      const k = r.initiator + ':' + r.offboarding_reason;
+      if (!l.reasons[k]) { l.reasons[k] = { initiator: r.initiator, key: String(r.offboarding_reason), type: r.offboard_type || '' }; changed = true; }
+    }
+    if (r.offboarding_plan_id && String(gmGet_(PLAN_KEY(), '')) !== String(r.offboarding_plan_id)) { gmSet_(PLAN_KEY(), String(r.offboarding_plan_id)); changed = true; }
+    if (changed) { gmSet_(LEARN_KEY(), JSON.stringify(l)); learnListeners.forEach((fn) => { try { fn(); } catch (e) { /* ignore */ } }); }
+  }
+  const learnListeners = new Set();
+  (function hook_() {
+    if (W.__jisrOffboardSniffer) return;
+    W.__jisrOffboardSniffer = true;
+    const isPost = (m, u) => m === 'POST' && /\/v2\/hr\/offboard_records\/?(\?|$)/.test(String(u || ''));
+    const isPlan = (u) => /\/v2\/hr\/offboarding_plans\/(\d+)\/?(\?|$)/.exec(String(u || ''));
+    const XO = W.XMLHttpRequest && W.XMLHttpRequest.prototype;
+    if (XO) {
+      const open = XO.open, send = XO.send;
+      XO.open = function (method, url) { this.__jofM = String(method || '').toUpperCase(); this.__jofU = String(url || ''); return open.apply(this, arguments); };
+      XO.send = function (body) {
+        const xhr = this;
+        if (isPost(xhr.__jofM, xhr.__jofU)) xhr.addEventListener('load', () => { if (xhr.status >= 200 && xhr.status < 300) learnFromBody_(body); });
+        else if (xhr.__jofM === 'GET') { const m = isPlan(xhr.__jofU); if (m) xhr.addEventListener('load', () => { if (xhr.status === 200 && !gmGet_(PLAN_KEY(), '')) gmSet_(PLAN_KEY(), m[1]); }); }
+        return send.apply(this, arguments);
+      };
+    }
+    if (typeof W.fetch === 'function') {
+      const f = W.fetch;
+      W.fetch = function (input, init) {
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        const method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+        const p = f.apply(this, arguments);
+        if (!(init && init.__jofOwn)) {
+          if (isPost(method, url)) p.then((res) => { if (res && res.ok) learnFromBody_(init && init.body); }).catch(() => {});
+          else if (method === 'GET') { const m = isPlan(url); if (m) p.then((res) => { if (res && res.ok && !gmGet_(PLAN_KEY(), '')) gmSet_(PLAN_KEY(), m[1]); }).catch(() => {}); }
+        }
+        return p;
+      };
+    }
+  })();
+
+  // ======================================================================= pure helpers (exported for tests)
+  /** Excel / typed date -> "YYYY-MM-DD". '' stays ''. null = not a date. Day-first for typed dates. */
+  function toIso_(v) {
+    if (v === null || v === undefined || v === '') return '';
+    if (v instanceof Date && !isNaN(v)) return v.getFullYear() + '-' + pad2(v.getMonth() + 1) + '-' + pad2(v.getDate());
+    if (typeof v === 'number' && v > 20000 && v < 80000) { const d = new Date(Math.round((v - 25569) * 864e5)); return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()); }
+    const s = String(v).trim();
+    if (!s) return '';
+    let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+    if (m && +m[2] <= 12 && +m[3] <= 31) return m[1] + '-' + pad2(m[2]) + '-' + pad2(m[3]);
+    m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+    if (m && +m[2] <= 12 && +m[1] <= 31) return m[3] + '-' + pad2(m[2]) + '-' + pad2(m[1]);
+    return null;
+  }
+  const yesNo_ = (v) => { const s = String(v == null ? '' : v).trim().toLowerCase(); if (!s) return null; if (/^(yes|y|true|1|نعم)$/.test(s)) return true; if (/^(no|n|false|0|لا)$/.test(s)) return false; return undefined; };
+  /** Reasons from any reasonable response shape -> [{ key, label, type }] */
+  function parseReasons_(json) {
+    const out = [];
+    const seen = new Set();
+    const push = (key, label, type) => { key = String(key == null ? '' : key).trim(); if (!key || seen.has(key)) return; seen.add(key); out.push({ key, label: String(label || key).trim(), type: type ? String(type) : '' }); };
+    (function walk(v, d, parentType) {
+      if (!v || d > 6) return;
+      if (Array.isArray(v)) { v.forEach((x) => { if (typeof x === 'string') push(x, x.replace(/_/g, ' '), parentType); else walk(x, d + 1, parentType); }); return; }
+      if (typeof v !== 'object') return;
+      const key = v.key != null ? v.key : v.value != null ? v.value : v.slug != null ? v.slug : (v.reason != null && typeof v.reason !== 'object' ? v.reason : null);
+      const label = v.name_i18n || v.label_i18n || v.label || v.name || v.text || v.title || v.reason_i18n;
+      const type = v.offboard_type || v.type || parentType || '';
+      if (key != null && (typeof key === 'string' || typeof key === 'number') && (label || typeof key === 'string')) { push(key, label, type); return; }
+      Object.keys(v).forEach((k) => {
+        const c = v[k];
+        if (/^(success|message|pagination|meta)$/.test(k)) return;
+        if (typeof c === 'string' && d >= 1 && !/^(id|type|name|label)$/.test(k) && /^[a-z0-9_]+$/.test(k)) { push(k, c, parentType); return; }
+        walk(c, d + 1, /type/i.test(k) ? parentType : (/^[a-z_]+$/.test(k) && Array.isArray(c) && !/reasons?|data|records|list|items/.test(k) ? k : parentType));
+      });
+    })(json, 0, '');
+    return out;
+  }
+  /** The plan object from GET /v2/hr/offboarding_plans/{id} */
+  function planFrom_(json) {
+    let p = null;
+    (function walk(v, d) {
+      if (p || !v || typeof v !== 'object' || d > 5) return;
+      if (!Array.isArray(v) && v.id != null && Array.isArray(v.tasks)) { p = v; return; }
+      Object.keys(v).forEach((k) => walk(v[k], d + 1));
+    })(json, 0);
+    return p;
+  }
+  /** Plan list from any list response -> [{ id, name }] */
+  function plansFrom_(json) {
+    const out = [];
+    (function walk(v, d) {
+      if (!v || typeof v !== 'object' || d > 5) return;
+      if (Array.isArray(v)) { v.forEach((x) => { if (x && typeof x === 'object' && x.id != null && (x.name || x.name_i18n)) out.push({ id: x.id, name: x.name_i18n || x.name, all: !!x.is_applicable_to_all, status: x.status || '' }); else walk(x, d + 1); }); return; }
+      Object.keys(v).forEach((k) => walk(v[k], d + 1));
+    })(json, 0);
+    return out;
+  }
+  const TASK_KEYS = ['id', 'category', 'name', 'assignee_id', 'default_tasks_key', 'position', 'trigger_day', 'trigger_event'];
+  /** The POST body for one row. */
+  function buildBody_(row, plan, opts) {
+    const skip = new Set((row.skipTaskIds || []).map(String));
+    const tasks = (plan.tasks || []).filter((t) => !skip.has(String(t.id))).map((t) => {
+      const o = {};
+      TASK_KEYS.forEach((k) => { if (t[k] !== undefined) o[k] = t[k]; });
+      o.assignee_id = row.assigneeId != null ? row.assigneeId : (t.assignee_id != null ? t.assignee_id : (t.assignee && t.assignee.id));
+      return o;
+    });
+    const rec = {
+      employee_id: row.empId,
+      initiator: row.initiator,
+      offboard_type: row.offboardType,
+      offboarding_reason: row.reasonKey,
+      offboard_details: row.details || '',
+      comments: row.comments || '',
+      communication_date: row.commDate || row.lwd,
+      last_working_day: row.lwd,
+      eligible_for_rehire: !!row.rehire,
+      regrettable_departure: !!row.regrettable,
+      payment_method: row.paymentMethod || (opts && opts.paymentMethod) || 'regular',
+      revoke_deactivation: row.revoke || (opts && opts.revoke) || 'after_submitted',
+      offboarding_plan_id: plan.id,
+      excluded_offboarding_plan_task_ids: (plan.tasks || []).filter((t) => skip.has(String(t.id))).map((t) => t.id),
+      offboarding_plan_tasks_attributes: tasks,
+    };
+    return { offboard_record: rec };
+  }
+  function recordIdFrom_(json) {
+    let id = null;
+    (function walk(v, d) {
+      if (id != null || !v || typeof v !== 'object' || d > 5) return;
+      if (v.offboard_record && typeof v.offboard_record === 'object' && v.offboard_record.id != null) { id = v.offboard_record.id; return; }
+      Object.keys(v).forEach((k) => walk(v[k], d + 1));
+    })(json, 0);
+    if (id == null && json && json.data && json.data.id != null) id = json.data.id;
+    return id;
+  }
+
+  // ======================================================================= network
+  function jisrMsg_(j) {
+    if (!j || typeof j !== 'object') return '';
+    const m = j.message || j.error || (j.errors && (Array.isArray(j.errors) ? j.errors.join('; ') : typeof j.errors === 'object' ? Object.values(j.errors).flat().join('; ') : j.errors));
+    return m ? String(m).slice(0, 240) : '';
+  }
+  async function request_(method, path, query, body) {
+    const qs = new URLSearchParams(Object.assign({}, query || {}, { slug: slug_() }));
+    const url = apiBase_() + path + '?' + qs.toString();
+    for (let a = 0; a < 4; a++) {
+      let res;
+      try {
+        res = await fetch(url, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: I.isAr() ? 'ar' : 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined, __jofOwn: true });
+      } catch (e) {
+        if (method !== 'GET') { const err = new Error(T('No answer from Jisr', 'لا رد من جسر')); err.unknown = true; throw err; }
+        await sleep_(800 * (a + 1)); continue;
+      }
+      if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول مجددًا.'));
+      if (res.status === 429 || (method === 'GET' && res.status >= 500)) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
+      const json = await res.json().catch(() => null);
+      if (res.status === 403) { const err = new Error(T('Jisr refused (HTTP 403) ', 'رفض جسر الطلب (HTTP 403) ') + method + ' ' + path + (jisrMsg_(json) ? ': ' + jisrMsg_(json) : '') + T(' — your Jisr role may not allow offboarding.', ' — قد لا يسمح دورك في جسر بإنهاء الخدمة.')); err.status = 403; throw err; }
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+    }
+    throw new Error('Request failed after retries');
+  }
+  async function getPlan_(id) {
+    const r = await request_('GET', '/v2/hr/offboarding_plans/' + encodeURIComponent(id), null);
+    const p = r.ok && planFrom_(r.json);
+    if (!p) throw new Error(T('Offboarding plan ', 'خطة إنهاء الخدمة ') + id + T(' could not be read (HTTP ', ' تعذّرت قراءتها (HTTP ') + r.status + ')' + (jisrMsg_(r.json) ? ': ' + jisrMsg_(r.json) : ''));
+    return p;
+  }
+  async function listPlans_() {
+    try {
+      const r = await request_('GET', '/v2/hr/offboarding_plans', { page: 1, per_page: 100 });
+      return r.ok ? plansFrom_(r.json) : [];
+    } catch (e) { return []; }
+  }
+  async function getReasons_(empId, initiator) {
+    const r = await request_('GET', '/v2/hr/offboard_records/offboarding_reasons', { employee_id: empId, initiator });
+    if (!r.ok) throw new Error(T('Could not read offboarding reasons (HTTP ', 'تعذّرت قراءة أسباب إنهاء الخدمة (HTTP ') + r.status + ')' + (jisrMsg_(r.json) ? ': ' + jisrMsg_(r.json) : ''));
+    return parseReasons_(r.json);
+  }
+  async function getAssignees_(taskKey) {
+    const ids = new Set();
+    for (let page = 1; page <= 50; page++) {
+      const r = await request_('GET', '/v2/employees/get_all', { template: 'offboarding_plan_assignee', per_page: 100, default_tasks_key: taskKey, page });
+      if (!r.ok) return null;
+      let list = null;
+      (function walk(v, d) { if (list || !v || typeof v !== 'object' || d > 4) return; if (Array.isArray(v.employees)) { list = v.employees; return; } if (Array.isArray(v)) { list = v; return; } Object.keys(v).forEach((k) => walk(v[k], d + 1)); })(r.json, 0);
+      if (!list || !list.length) break;
+      list.forEach((e) => { if (e && e.id != null) ids.add(String(e.id)); });
+      if (list.length < 100) break;
+    }
+    return ids;
+  }
+  async function pool_(items, n, fn) {
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(n, items.length)) }, async () => { while (next < items.length) { const i = next++; await fn(items[i], i); } }));
+  }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v;
+      else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v);
+      else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-offboard-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-offboard-css', text: `
+      .jof-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px; }
+      .jof-bar label { display: flex; flex-direction: column; font-size: 12px; gap: 3px; }
+      .jof-bar select, .jof-bar input { padding: 5px 8px; border: 1px solid #dadce0; border-radius: 6px; font: inherit; min-width: 220px; }
+      .jof-tasks { font-size: 12px; color: #5f6368; margin: 0 0 10px; }
+      .jof-wrap { max-height: 46vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jof-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jof-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jof-wrap td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jof-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jof-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      .jof-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
+    ` }));
+  }
+
+  const HEADERS = ['Employee ID', 'Employee Name', 'Iqama / National ID', 'Last working day', 'Communication date', 'Initiated by', 'Labor law article (offboarding type)', 'Reason', 'Offboarding details', 'Comments', 'Eligible for rehire? (yes or no)', 'Regrettable departure? (yes or no)', 'Task assignee (employee ID)', 'Skip tasks (names, comma separated)'];
+  const norm_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
+
+  function openTool_() {
+    injectCss_();
+    const S = { rows: [], plan: null, plans: [], reasons: {}, busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false };
+    const X = W.__jisrBulkOpsXlsx;
+    const body = el('div', { class: 'jbo-modal-body' });
+    const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' });
+    const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1250px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const onLearn = () => { S.note = T('Learned new values from an offboarding you did in Jisr.', 'تم التعرّف على قيم جديدة من إنهاء خدمة قمت به في جسر.'); S.noteErr = false; paint_(); };
+    learnListeners.add(onLearn);
+    const close = () => { if (S.phase === 'running' && !confirm(T('Still sending. Close anyway?', 'لا يزال الإرسال جاريًا. هل تريد الإغلاق؟'))) return; S.stop = true; learnListeners.delete(onLearn); backdrop.remove(); };
+    closeBtn.addEventListener('click', close);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    const planSel = el('select');
+    const planIn = el('input', { type: 'text', placeholder: T('or type the plan number, e.g. 265', 'أو اكتب رقم الخطة، مثل 265') });
+    const planB = el('button', { class: 'jbo-btn', text: T('Load plan', 'تحميل الخطة') });
+    const tasksEl = el('div', { class: 'jof-tasks' });
+    const tplB = el('button', { class: 'jbo-btn', text: T('⬇ Template (.xlsx)', '⬇ القالب (‎.xlsx)') });
+    const upB = el('button', { class: 'jbo-btn', text: T('⬆ Upload filled list', '⬆ رفع القائمة المعبأة') });
+    const listIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
+    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const statsEl = el('div', { class: 'jof-stats' });
+    const wrap = el('div', { class: 'jof-wrap' });
+    const dryB = el('button', { class: 'jbo-btn', text: T('🔍 Dry Run', '🔍 تشغيل تجريبي') });
+    const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
+    const resB = el('button', { class: 'jbo-btn', text: T('⬇ Results (.xlsx)', '⬇ النتائج (‎.xlsx)') });
+
+    function render_() {
+      titleEl.textContent = T('Bulk Offboarding', 'إنهاء الخدمة الجماعي');
+      body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
+        'Create offboarding records for many employees: last working day, reason and the offboarding plan tasks. Checked in a Dry Run first. The final settlement is the next tool (button at the bottom).',
+        'أنشئ سجلات إنهاء الخدمة لعدد كبير من الموظفين: آخر يوم عمل، والسبب، ومهام خطة إنهاء الخدمة. يُفحص كل شيء بتشغيل تجريبي أولًا. التسوية النهائية هي الأداة التالية (الزر في الأسفل).') }));
+      body.appendChild(el('div', { class: 'jof-warn', text: T(
+        'Offboarding starts the clearance tasks and, depending on "access revoked", can deactivate the employee. This tool cannot undo a record: try 1 employee first and check it in Jisr.',
+        'إنهاء الخدمة يبدأ مهام إخلاء الطرف، وقد يعطّل حساب الموظف حسب إعداد سحب الصلاحية. لا تستطيع هذه الأداة التراجع عن السجل: جرّب موظفًا واحدًا أولًا وتحقّق منه في جسر.') }));
+      body.appendChild(el('div', { class: 'jof-bar' }, [
+        el('label', {}, [T('1. Offboarding plan', '1. خطة إنهاء الخدمة'), planSel]),
+        el('label', {}, [' ', planIn]), planB,
+        el('label', {}, [T('2. The list', '2. القائمة'), el('div', { style: { display: 'flex', gap: '8px' } }, [tplB, upB])]),
+      ]));
+      body.appendChild(tasksEl);
+      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(listIn);
+      const fsB = el('button', { class: 'jbo-btn', text: T('Next: Final settlement →', 'التالي: التسوية النهائية ←') });
+      fsB.addEventListener('click', () => { const m = W.__jisrBulkOps && W.__jisrBulkOps.modules && W.__jisrBulkOps.modules['final-settlement-bulk']; if (m) { close(); m.open(); } });
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB, fsB]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
+      paint_();
+    }
+    function paintPlans_() {
+      planSel.innerHTML = '';
+      planSel.appendChild(el('option', { value: '', text: S.plans.length ? T('— choose —', '— اختر —') : T('(type the plan number →)', '(اكتب رقم الخطة ←)') }));
+      S.plans.forEach((p) => planSel.appendChild(el('option', { value: String(p.id), text: p.name + ' · #' + p.id + (p.all ? T(' (all employees)', ' (كل الموظفين)') : '') })));
+      const remembered = gmGet_(PLAN_KEY(), '');
+      if (S.plan) planSel.value = String(S.plan.id);
+      else if (remembered && S.plans.some((p) => String(p.id) === String(remembered))) planSel.value = String(remembered);
+      if (!planSel.value && remembered) planIn.value = remembered;
+    }
+    function paint_() {
+      statusEl.textContent = S.busy || S.note;
+      statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      tasksEl.textContent = S.plan ? T('Plan tasks: ', 'مهام الخطة: ') + (S.plan.tasks || []).map((t) => (t.name_i18n || t.name) + ' → ' + ((t.assignee && (t.assignee.name_i18n || t.assignee.full_name_i18n)) || (t.assignee_id ? '#' + t.assignee_id : T('no assignee', 'بلا مسؤول')))).join(' · ') : T('Load a plan to see its tasks.', 'حمّل خطة لعرض مهامها.');
+      statsEl.innerHTML = '';
+      const cnt = (st) => S.rows.filter((r) => r.state === st).length;
+      if (S.rows.length) {
+        [[S.rows.length, T('rows', 'صف')], [cnt('ready'), T('ready', 'جاهز')], [cnt('error'), T('blocked', 'محجوب')], [cnt('done'), T('offboarded ✓', 'تم ✓')], [cnt('failed'), T('failed', 'فشل')]]
+          .filter(([v], i) => i < 2 || v).forEach(([v, l]) => statsEl.appendChild(el('span', {}, [el('b', { text: String(v) }), ' ' + l])));
+      }
+      wrap.innerHTML = '';
+      if (S.rows.length) {
+        const t = el('table');
+        t.appendChild(el('tr', {}, ['#', T('Employee', 'الموظف'), T('Iqama / ID', 'الإقامة / الهوية'), T('Last working day', 'آخر يوم عمل'), T('Initiated by', 'بمبادرة من'), T('Article · reason', 'المادة · السبب'), T('Status', 'الحالة')].map((h) => el('th', { text: h }))));
+        S.rows.slice(0, 2000).forEach((r) => {
+          const col = r.state === 'done' ? '#137333' : (r.state === 'error' || r.state === 'failed') ? '#c5221f' : r.state === 'check' ? '#b06000' : '#5f6368';
+          t.appendChild(el('tr', {}, [
+            el('td', { text: String(r.no) }),
+            el('td', { text: r.emp ? r.emp.name + (r.emp.code ? ' · ' + r.emp.code : '') : (r.empText || '—') }),
+            el('td', { text: (r.emp && r.emp.nid) || r.iqamaText || '—' }),
+            el('td', { text: r.lwd || String(r.lwdRaw || '—') }),
+            el('td', { text: r.initiator || r.initiatorText || '—' }),
+            el('td', { text: [r.offboardType || r.typeText, r.reasonLabel || r.reasonText].filter(Boolean).join(' · ') || '—' }),
+            el('td', { text: r.msg || (r.state === 'ready' ? T('ready', 'جاهز') : '—'), style: { color: col, whiteSpace: 'pre-line' } }),
+          ]));
+        });
+        wrap.appendChild(t);
+      }
+      const ready = S.rows.filter((r) => r.state === 'ready').length;
+      runB.textContent = T('▶ Offboard ', '▶ إنهاء خدمة ') + ready + T(' employee(s)', ' موظف');
+      runB.disabled = !S.dryDone || !ready || !!S.busy;
+      dryB.disabled = !S.rows.length || !!S.busy;
+      stopB.style.display = S.phase === 'running' ? '' : 'none';
+      [tplB, upB, planB].forEach((b) => { b.disabled = !!S.busy; });
+      resB.style.display = S.rows.some((r) => r.state === 'done' || r.state === 'failed') ? '' : 'none';
+    }
+
+    async function loadPlan_(id) {
+      S.busy = T('Loading the plan…', 'جارٍ تحميل الخطة…'); paint_();
+      try {
+        S.plan = await getPlan_(id);
+        gmSet_(PLAN_KEY(), String(S.plan.id));
+        S.dryDone = false;
+        S.note = T('Plan loaded: ', 'تم تحميل الخطة: ') + (S.plan.name_i18n || S.plan.name || ('#' + S.plan.id)); S.noteErr = false;
+      } catch (e) { S.plan = null; S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paintPlans_(); paint_();
+    }
+    planB.addEventListener('click', () => { const id = String(planIn.value || planSel.value || '').replace(/[^\d]/g, ''); if (!id) { S.note = T('Choose a plan or type its number.', 'اختر خطة أو اكتب رقمها.'); S.noteErr = true; paint_(); return; } loadPlan_(id); });
+    planSel.addEventListener('change', () => { planIn.value = ''; if (planSel.value) loadPlan_(planSel.value); });
+
+    // ---------------- template
+    tplB.addEventListener('click', async () => {
+      S.busy = T('Loading employees and reasons…', 'جارٍ تحميل الموظفين والأسباب…'); paint_();
+      try {
+        const emps = (await W.__jisrBulkOpsEmployees.get(false)).slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+        const labels = [];
+        if (emps.length) {
+          for (const ini of INITIATORS) {
+            try { (await getReasons_(emps[0].id, ini.key)).forEach((r) => labels.push(r.label)); } catch (e) { /* the list still works without a dropdown */ }
+          }
+        }
+        Object.values(learned_().reasons || {}).forEach((r) => labels.push(r.key));
+        const rows = emps.map((e) => [e.code || e.id, e.name || '', e.nid ? String(e.nid) : '', '', '', '', '', '', '', '', '', '', '', '']);
+        X.setNextLists({
+          'Initiated by': { values: INITIATORS.map((i) => i.en), strict: true },
+          'Labor law article (offboarding type)': { values: valuesOf_('offboard_type'), strict: false },
+          Reason: { values: Array.from(new Set(labels)).slice(0, 200), strict: false },
+        });
+        await X.downloadAoa('jisr-offboarding-' + slug_() + '.xlsx', HEADERS, rows, 'Offboarding');
+        S.note = T('Template downloaded with every employee. Fill "Last working day" only for the employees to offboard; other rows are ignored.', 'تم تنزيل القالب بكل الموظفين. املأ «Last working day» فقط للموظفين المطلوب إنهاء خدمتهم؛ الصفوف الأخرى تُتجاهل.'); S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+
+    // ---------------- read the list
+    upB.addEventListener('click', () => { listIn.value = ''; listIn.click(); });
+    listIn.addEventListener('change', async () => {
+      const f = listIn.files && listIn.files[0]; if (!f) return;
+      try {
+        const isCsv = /\.csv$/i.test(f.name);
+        const wb = isCsv ? XLSX.read(await f.text(), { type: 'string', raw: true }) : XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array', cellDates: true });
+        const ws = wb.Sheets[wb.SheetNames.find((n) => n !== 'Lists') || wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+        const h = (aoa[0] || []).map(norm_);
+        const used = new Set();
+        const find = (...tests) => { for (const tst of tests) { const i = h.findIndex((x, k) => !used.has(k) && tst(x)); if (i >= 0) { used.add(i); return i; } } return -1; };
+        const c = {};
+        c.lwd = find((x) => /last working|آخر يوم/.test(x));
+        c.comm = find((x) => /communication|notice date|تاريخ الإبلاغ/.test(x));
+        c.iqama = find((x) => /iqama|national id|هوية|إقامة|اقامة/.test(x));
+        c.assignee = find((x) => /assignee|المسؤول/.test(x));
+        c.emp = find((x) => /^employee id$|employee code|emp(loyee)? (id|no|code)|^code$|الرقم الوظيفي/.test(x), (x) => /^employee$|pick from list/.test(x));
+        c.name = find((x) => /employee name|^name$|الاسم/.test(x));
+        c.initiator = find((x) => /initiat|بمبادرة/.test(x));
+        c.type = find((x) => /article|offboarding type|offboard type|^type$|نوع|المادة/.test(x));
+        c.reason = find((x) => /reason|السبب/.test(x));
+        c.details = find((x) => /details|التفاصيل/.test(x));
+        c.comments = find((x) => /comment|ملاحظ/.test(x));
+        c.rehire = find((x) => /rehire|إعادة التوظيف/.test(x));
+        c.regret = find((x) => /regret/.test(x));
+        c.skip = find((x) => /skip|exclude|استثناء/.test(x));
+        c.pay = find((x) => /payment method/.test(x));
+        c.revoke = find((x) => /revoke|access/.test(x));
+        if (c.lwd < 0 || (c.emp < 0 && c.iqama < 0)) throw new Error(T('Use the template from this tool (it needs Employee ID or Iqama and Last working day columns).', 'استخدم القالب من هذه الأداة (يحتاج أعمدة الرقم الوظيفي أو الإقامة، وآخر يوم عمل).'));
+        const get = (r, i) => (i >= 0 ? r[i] : '');
+        S.rows = [];
+        aoa.slice(1).forEach((r, k) => {
+          const lwdRaw = get(r, c.lwd);
+          if (lwdRaw === '' || lwdRaw == null) return;
+          S.rows.push({ no: k + 2, empText: String(get(r, c.emp) || '').trim(), iqamaText: String(get(r, c.iqama) || '').trim().replace(/\.0+$/, ''), lwdRaw, commRaw: get(r, c.comm),
+            initiatorText: String(get(r, c.initiator) || '').trim(), typeText: String(get(r, c.type) || '').trim(), reasonText: String(get(r, c.reason) || '').trim(),
+            details: String(get(r, c.details) || '').trim(), comments: String(get(r, c.comments) || '').trim(), rehireRaw: get(r, c.rehire), regretRaw: get(r, c.regret),
+            assigneeText: String(get(r, c.assignee) || '').trim().replace(/\.0+$/, ''), skipText: String(get(r, c.skip) || '').trim(), paymentMethod: String(get(r, c.pay) || '').trim(), revoke: String(get(r, c.revoke) || '').trim(), state: '', msg: '' });
+        });
+        S.dryDone = false;
+        S.note = S.rows.length + T(' employee(s) with a last working day read from the list. Load the plan, then run the Dry Run.', ' موظف بآخر يوم عمل قُرئ من القائمة. حمّل الخطة ثم شغّل التشغيل التجريبي.'); S.noteErr = !S.rows.length;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      paint_();
+    });
+
+    // ---------------- dry run
+    async function dryRun_() {
+      if (!S.plan) { S.note = T('Load the offboarding plan first (step 1).', 'حمّل خطة إنهاء الخدمة أولًا (الخطوة 1).'); S.noteErr = true; paint_(); return; }
+      S.busy = T('Checking…', 'جارٍ الفحص…'); S.note = ''; S.noteErr = false; paint_();
+      try {
+        const emps = await W.__jisrBulkOpsEmployees.get(false);
+        const byId = new Map(), byCode = new Map(), byNid = new Map();
+        emps.forEach((e) => { byId.set(String(e.id), e); if (e.code) byCode.set(String(e.code).toLowerCase(), e); if (e.nid) byNid.set(String(e.nid), e); });
+        const resolve = (txt) => { if (!txt) return null; const p = X && X.pickId && X.pickId(txt); return p ? byId.get(p) : (byCode.get(txt.toLowerCase()) || byNid.get(txt) || byId.get(txt) || null); };
+        const tasks = S.plan.tasks || [];
+        const types = valuesOf_('offboard_type');
+        const seen = new Map();
+        S.rows.forEach((r) => {
+          if (r.state === 'done') return;
+          r.state = ''; r.msg = ''; r.emp = null;
+          const errs = [], notes = [];
+          const e1 = r.empText ? resolve(r.empText) : null;
+          const e2 = r.iqamaText ? byNid.get(r.iqamaText) : null;
+          if (r.empText && !e1) errs.push(T('Employee ID not found in Jisr', 'الرقم الوظيفي غير موجود في جسر'));
+          if (r.iqamaText && !e2 && !e1) errs.push(T('Iqama / ID number not found in Jisr', 'رقم الإقامة / الهوية غير موجود في جسر'));
+          if (e1 && e2 && e1.id !== e2.id) errs.push(T('Employee ID and Iqama belong to different employees', 'الرقم الوظيفي والإقامة لموظفين مختلفين'));
+          r.emp = e1 || e2 || null;
+          if (r.emp) { const k = String(r.emp.id); if (seen.has(k)) errs.push(T('Same employee as row ', 'نفس الموظف في الصف ') + seen.get(k)); else seen.set(k, r.no); }
+          r.lwd = toIso_(r.lwdRaw);
+          if (!r.lwd) errs.push(T('Last working day is not a date', 'آخر يوم عمل ليس تاريخًا صالحًا'));
+          r.commDate = toIso_(r.commRaw);
+          if (r.commDate === null) { errs.push(T('Communication date is not a date', 'تاريخ الإبلاغ ليس تاريخًا صالحًا')); r.commDate = ''; }
+          if (r.lwd && r.commDate && r.commDate > r.lwd) notes.push(T('communication date is after the last working day', 'تاريخ الإبلاغ بعد آخر يوم عمل'));
+          if (!r.commDate && r.lwd) notes.push(T('communication date = last working day', 'تاريخ الإبلاغ = آخر يوم عمل'));
+          const ini = INITIATORS.find((i) => [i.key, i.en.toLowerCase(), i.ar].includes(r.initiatorText.toLowerCase()) || [i.key, i.en.toLowerCase(), i.ar].includes(r.initiatorText));
+          r.initiator = ini ? ini.key : '';
+          if (!ini) errs.push(T('"Initiated by" must be Employee or Employer', '«بمبادرة من» يجب أن يكون الموظف أو صاحب العمل'));
+          r.offboardType = r.typeText.trim();
+          if (!r.offboardType) errs.push(T('Labor law article (offboarding type) is empty', 'مادة نظام العمل (نوع إنهاء الخدمة) فارغة'));
+          else if (!types.includes(r.offboardType)) notes.push(T('⚠ type "', '⚠ النوع "') + r.offboardType + T('" not seen in Jisr yet', '" لم يُرَ في جسر بعد'));
+          r.rehire = yesNo_(r.rehireRaw); r.regrettable = yesNo_(r.regretRaw);
+          if (r.rehire === undefined) errs.push(T('Eligible for rehire must be Yes or No', 'أهلية إعادة التوظيف يجب أن تكون نعم أو لا'));
+          if (r.regrettable === undefined) errs.push(T('Regrettable departure must be Yes or No', 'المغادرة المؤسفة يجب أن تكون نعم أو لا'));
+          r.assigneeId = null;
+          if (r.assigneeText) { const a = resolve(r.assigneeText); if (!a) errs.push(T('Task assignee not found in Jisr', 'مسؤول المهام غير موجود في جسر')); else r.assigneeId = a.id; }
+          r.skipTaskIds = [];
+          if (r.skipText) {
+            r.skipText.split(/[,،;]+/).map((s) => s.trim()).filter(Boolean).forEach((nm) => {
+              const t = tasks.find((x) => [x.name, x.name_i18n, x.name_ar, x.default_tasks_key, String(x.id)].filter(Boolean).some((v) => String(v).toLowerCase() === nm.toLowerCase()));
+              if (t) r.skipTaskIds.push(t.id); else errs.push(T('Task to skip not in the plan: ', 'المهمة المراد تخطيها ليست في الخطة: ') + nm);
+            });
+          }
+          if (!r.assigneeId) {
+            const missing = tasks.filter((t) => !r.skipTaskIds.includes(t.id) && t.assignee_id == null && !(t.assignee && t.assignee.id != null));
+            if (missing.length) errs.push(T('No assignee in the plan for: ', 'لا يوجد مسؤول في الخطة لـ: ') + missing.map((t) => t.name).join(', ') + T(' — fill "Task assignee"', ' — املأ «Task assignee»'));
+          }
+          if (r.emp && r.assigneeId != null && String(r.assigneeId) === String(r.emp.id)) errs.push(T('The employee cannot be the assignee of their own offboarding tasks', 'لا يمكن أن يكون الموظف مسؤولًا عن مهام إنهاء خدمته'));
+          r.notes = notes;
+          if (errs.length) { r.state = 'error'; r.msg = '✗ ' + errs.join('\n✗ '); }
+        });
+        // reasons: per employee and initiator, as Jisr lists them
+        const todo = S.rows.filter((r) => !r.state);
+        let done = 0;
+        await pool_(todo, 4, async (r) => {
+          try {
+            const k = r.emp.id + ':' + r.initiator;
+            if (!S.reasons[k]) S.reasons[k] = await getReasons_(r.emp.id, r.initiator);
+            const list = S.reasons[k];
+            const txt = r.reasonText.toLowerCase();
+            const hit = list.find((x) => x.key.toLowerCase() === txt || x.label.toLowerCase() === txt);
+            if (!r.reasonText) { r.state = 'error'; r.msg = '✗ ' + T('Reason is empty', 'السبب فارغ'); }
+            else if (!hit) { r.state = 'error'; r.msg = '✗ ' + T('Reason "', 'السبب "') + r.reasonText + T('" is not offered by Jisr for ', '" غير متاح في جسر لمبادرة ') + r.initiator + (list.length ? T(' — use one of: ', ' — استخدم أحد: ') + list.slice(0, 12).map((x) => x.label).join(' / ') : ''); }
+            else { r.reasonKey = hit.key; r.reasonLabel = hit.label; if (hit.type && !r.offboardType) r.offboardType = hit.type; }
+          } catch (e) { r.state = 'error'; r.msg = '✗ ' + e.message; }
+          done++; statusEl.textContent = T('Reading reasons… ', 'جارٍ قراءة الأسباب… ') + done + '/' + todo.length;
+        });
+        // custom assignees: may they take these tasks?
+        const custom = S.rows.filter((r) => !r.state && r.assigneeId != null);
+        if (custom.length) {
+          const keys = Array.from(new Set(tasks.map((t) => t.default_tasks_key).filter(Boolean)));
+          const allowed = {};
+          for (const k of keys) { try { allowed[k] = await getAssignees_(k); } catch (e) { allowed[k] = null; } }
+          custom.forEach((r) => {
+            const bad = tasks.filter((t) => !r.skipTaskIds.includes(t.id) && t.default_tasks_key && allowed[t.default_tasks_key] && !allowed[t.default_tasks_key].has(String(r.assigneeId)));
+            if (bad.length) { r.state = 'error'; r.msg = '✗ ' + T('Task assignee cannot take: ', 'مسؤول المهام لا يمكنه تولّي: ') + bad.map((t) => t.name).join(', '); }
+          });
+        }
+        S.rows.forEach((r) => { if (r.state) return; r.state = 'ready'; r.msg = (r.notes.length ? T('ready — ', 'جاهز — ') + r.notes.join('\n') : '') + (r.skipTaskIds.length ? (r.notes.length ? '\n' : T('ready — ', 'جاهز — ')) + r.skipTaskIds.length + T(' task(s) skipped', ' مهمة متخطاة') : ''); });
+        S.dryDone = true;
+        const rd = S.rows.filter((r) => r.state === 'ready').length;
+        S.note = T('Dry Run done — nothing was sent. ', 'انتهى التشغيل التجريبي — لم يُرسل شيء. ') + rd + T(' employee(s) ready.', ' موظف جاهز.');
+        S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    }
+    dryB.addEventListener('click', dryRun_);
+
+    // ---------------- live
+    async function runLive_() {
+      const todo = S.rows.filter((r) => r.state === 'ready');
+      if (!todo.length) return;
+      if (!confirm(T('Offboard ', 'إنهاء خدمة ') + todo.length + T(' employee(s) in ', ' موظف في ') + slug_() + T(' with plan "', ' بالخطة "') + (S.plan.name_i18n || S.plan.name) + T('"? This cannot be undone from the tool.', '"؟ لا يمكن التراجع عن ذلك من الأداة.'))) return;
+      S.phase = 'running'; S.stop = false; S.busy = ' '; paint_();
+      let done = 0;
+      await pool_(todo, 2, async (r) => {
+        if (S.stop) { r.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); r.state = ''; return; }
+        try {
+          const res = await request_('POST', '/v2/hr/offboard_records', null, buildBody_({ empId: r.emp.id, initiator: r.initiator, offboardType: r.offboardType, reasonKey: r.reasonKey, details: r.details, comments: r.comments, commDate: r.commDate, lwd: r.lwd, rehire: r.rehire, regrettable: r.regrettable, assigneeId: r.assigneeId, skipTaskIds: r.skipTaskIds, paymentMethod: r.paymentMethod, revoke: r.revoke }, S.plan));
+          if (!res.ok) { r.state = 'failed'; r.msg = '✗ ' + (jisrMsg_(res.json) || ('HTTP ' + res.status)); }
+          else { r.recordId = recordIdFrom_(res.json); r.state = 'done'; r.msg = '✓ ' + T('offboarding created', 'تم إنشاء إنهاء الخدمة') + (r.recordId != null ? ' (#' + r.recordId + ')' : ''); }
+        } catch (e) { r.state = e.unknown ? 'check' : 'failed'; r.msg = (e.unknown ? '⚠ ' + T('No answer from Jisr — check this employee in Jisr before retrying', 'لا رد من جسر — تحقّق من الموظف في جسر قبل إعادة المحاولة') : '✗ ' + e.message); }
+        done++; S.busy = T('Offboarding… ', 'جارٍ إنهاء الخدمة… ') + done + '/' + todo.length; paint_();
+      });
+      S.phase = 'done'; S.busy = '';
+      const ok = todo.filter((r) => r.state === 'done').length;
+      S.note = ok + T(' of ', ' من ') + todo.length + T(' offboarding record(s) created. Next: complete the plan tasks, then use "Final settlement →".', ' سجل إنهاء خدمة تم إنشاؤه. التالي: أكمل مهام الخطة ثم استخدم «التسوية النهائية».'); S.noteErr = ok < todo.length;
+      logActivity_(todo);
+      paint_();
+    }
+    runB.addEventListener('click', runLive_);
+    stopB.addEventListener('click', () => { S.stop = true; });
+
+    function logActivity_(rows) {
+      try {
+        const url = W.localStorage.getItem(GM_PREFIX + 'backendUrl');
+        if (!url || typeof GM_xmlhttpRequest !== 'function') return;
+        GM_xmlhttpRequest({
+          method: 'POST', url: url + '/api/log', timeout: 8000,
+          headers: { 'Content-Type': 'application/json', 'X-Write-Key': W.localStorage.getItem(GM_PREFIX + 'backendWriteKey') || '' },
+          data: JSON.stringify({ actor: W.localStorage.getItem(GM_PREFIX + 'ownerLabel') || 'unknown', slug: slug_(), entries: rows.map((r) => ({ module: MODULE_ID, rowKey: String(r.emp.id), status: r.state === 'done' ? 'ok' : 'error', message: r.state === 'done' ? 'offboard #' + r.recordId : String(r.msg || '').slice(0, 120), at: new Date().toISOString() })) }),
+          onload: () => {}, onerror: () => {}, ontimeout: () => {},
+        });
+      } catch (e) { /* ignore */ }
+    }
+    resB.addEventListener('click', () => {
+      const aoa = [['Row', 'Employee ID', 'Employee Name', 'Iqama / National ID', 'Last working day', 'Initiated by', 'Labor law article (offboarding type)', 'Reason', 'Result', 'Offboard record ID']].concat(S.rows.map((r) => [r.no, r.emp ? r.emp.code || r.emp.id : r.empText, r.emp ? r.emp.name : '', r.emp ? r.emp.nid || '' : r.iqamaText, r.lwd || '', r.initiator || r.initiatorText, r.offboardType || r.typeText, r.reasonLabel || r.reasonText, String(r.msg || '').replace(/\n/g, ' | '), r.recordId != null ? r.recordId : '']));
+      const wb = XLSX.utils.book_new(); const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = [{ wch: 6 }, { wch: 12 }, { wch: 28 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 24 }, { wch: 26 }, { wch: 60 }, { wch: 16 }];
+      XLSX.utils.book_append_sheet(wb, ws, 'Offboarding results');
+      XLSX.writeFile(wb, 'jisr-offboarding-results-' + slug_() + '.xlsx');
+    });
+
+    render_();
+    paintPlans_();
+    listPlans_().then((p) => {
+      S.plans = p; paintPlans_();
+      const rem = gmGet_(PLAN_KEY(), '');
+      const pick = (rem && p.find((x) => String(x.id) === String(rem))) || (p.length === 1 ? p[0] : null);
+      if (pick || rem) loadPlan_(pick ? pick.id : rem);
+    });
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Bulk Offboarding', open: openTool_, version: SECTION_VERSION };
+    W.__jisrOffboarding = { toIso_, parseReasons_, planFrom_, plansFrom_, buildBody_, recordIdFrom_, yesNo_, learnFromBody_, valuesOf_ };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 22 — Bulk Final Settlement  v4.19.0
+// ###########################################################################
+
+/**
+ * ===========================================================================
+ * Jisr Bulk Ops — Bulk Final Settlement  (v4.7.0)
+ * ===========================================================================
+ * Confirmed on onboardingteam (read-only inspection + user captures, 2026-10-12):
+ *   List:     GET  /v2/finance/payruns/off_cycle?type=final_settlement&search=&page=&per_page=
+ *             -> data.off_cycles[{ id (payrun id), paygroup_id, employee{id, code, name_i18n}, last_working_day,
+ *                termination_reason, total_amount "5,661.94", payrun_status draft|under_review|changes_required|confirmed|paid,
+ *                payrun_status_i18n }], data.pagination_info{ total_pages }
+ *   Details:  GET  /v2/finance/payruns/off_cycle/{payrun}/details
+ *             -> data.payrun_info{ payrun_status, paygroup_id, pay_period_start (= effective date) },
+ *                data.payrun_approval_cycle.current_approval{ approval_id, employee_id (approver) }
+ *   Amounts:  GET  /v2/finance/payruns/{payrun}/remarks?employee_id=
+ *             -> data.net_salary, earnings.breakdown.eos_settlement / leave_settlement .total_amount and
+ *                .transactions[0].payroll_transaction_type_id (company ids, e.g. 78870 / 78869), additions, deductions
+ *   Types:    GET  /v2/finance/payroll_transaction_types?template=public&filters[category_in][]=ManualAdditionType|ManualDeductionType
+ *                  &filters[configuration_filters][scoping_rules][paygroup_id]=
+ *   Edit EOS / leave balance: POST /v2/finance/payroll_transactions?type=payrunType
+ *             { payroll_transaction:{ payrun_id:"720519", pay_type:"in_payrun", effective_date, amount:"4165.00", employee_id,
+ *               payroll_transaction_type_id, additional_data:{ body } } }   (sets the amount)
+ *   Add / deduct: POST /v2/finance/payroll_transactions?type=final_settlement
+ *             { payroll_transaction:{ additional_data:{ body }, amount: 500 | -200, employee_id, payrun_id: 720519, effective_date,
+ *               pay_type:"in_payrun", payroll_transaction_type_id, status:"initiated" } }
+ *   Send for approval: POST /v2/finance/payruns/{payrun}/review_requests (no body)
+ *   Approve:  POST /v2/requests/approvals/{approval_id}/approve { request:{ comments } }   (reject: .../reject)
+ *   Me:       GET  /v2/sessions/employee/ -> data.employee.id
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+
+  const SECTION_VERSION = '4.7.0';
+  const MODULE_ID = 'final-settlement-bulk';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function slug_() {
+    const o = gmGet_('slugOverride', '');
+    if (o) return o;
+    const p = location.hostname.split('.');
+    return p.length >= 3 ? p[0] : '';
+  }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const EDITABLE = ['draft', 'changes_required'];
+
+  // ======================================================================= pure helpers
+  /** "1,510.75" / 1510.75 / "" -> number | null (blank) | NaN (bad) */
+  function num_(v) {
+    if (v === null || v === undefined) return null;
+    if (typeof v === 'number') return isFinite(v) ? v : NaN;
+    const s = String(v).replace(/[,\s٬]/g, '').replace(/[^\d.\-]/g, (c) => (c === '٫' ? '.' : c));
+    if (s === '') return null;
+    return /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : NaN;
+  }
+  const money_ = (n) => (Math.round(n * 100) / 100).toFixed(2);
+  const fmt_ = (n) => (n == null || isNaN(n) ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const isYes_ = (v) => /^(yes|y|true|1|نعم)$/i.test(String(v == null ? '' : v).trim());
+  /** amounts out of the remarks response */
+  function readRemarks_(json) {
+    const d = (json && json.data) || {};
+    const eb = (d.earnings && d.earnings.breakdown) || {};
+    const part = (k) => {
+      const b = eb[k];
+      if (!b) return { amount: null, typeId: null };
+      const tx = (b.transactions || [])[0] || {};
+      return { amount: num_(b.total_amount), typeId: tx.payroll_transaction_type_id != null ? tx.payroll_transaction_type_id : null };
+    };
+    return { net: num_(d.net_salary), eos: part('eos_settlement'), leave: part('leave_settlement'), additions: num_(d.additions_total), deductions: num_(d.deductions_total) };
+  }
+  function editBody_(s, typeId, amount, note) {
+    return { payroll_transaction: { payrun_id: String(s.payrunId), pay_type: 'in_payrun', effective_date: s.effectiveDate, amount: money_(amount), employee_id: s.empId, payroll_transaction_type_id: typeId, additional_data: { body: note || '' } } };
+  }
+  function adjustBody_(s, typeId, amount, note) {
+    return { payroll_transaction: { additional_data: { body: note || '' }, amount: Math.round(amount * 100) / 100, employee_id: s.empId, payrun_id: Number(s.payrunId), effective_date: s.effectiveDate, pay_type: 'in_payrun', payroll_transaction_type_id: typeId, status: 'initiated' } };
+  }
+
+  // ======================================================================= network
+  function jisrMsg_(j) {
+    if (!j || typeof j !== 'object') return '';
+    const m = j.message || j.error || (j.errors && (Array.isArray(j.errors) ? j.errors.join('; ') : typeof j.errors === 'object' ? Object.values(j.errors).flat().join('; ') : j.errors));
+    return m ? String(m).slice(0, 240) : '';
+  }
+  async function request_(method, path, query, body) {
+    const qs = new URLSearchParams();
+    Object.entries(query || {}).forEach(([k, v]) => qs.append(k, v));
+    qs.append('slug', slug_());
+    const url = apiBase_() + path + '?' + qs.toString();
+    for (let a = 0; a < 4; a++) {
+      let res;
+      try {
+        res = await fetch(url, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: I.isAr() ? 'ar' : 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
+      } catch (e) {
+        if (method !== 'GET') { const err = new Error(T('No answer from Jisr', 'لا رد من جسر')); err.unknown = true; throw err; }
+        await sleep_(800 * (a + 1)); continue;
+      }
+      if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول مجددًا.'));
+      if (res.status === 429 || (method === 'GET' && res.status >= 500)) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
+      const json = await res.json().catch(() => null);
+      if (res.status === 403) { const err = new Error(T('Jisr refused (HTTP 403) ', 'رفض جسر الطلب (HTTP 403) ') + method + ' ' + path + (jisrMsg_(json) ? ': ' + jisrMsg_(json) : '')); err.status = 403; throw err; }
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+    }
+    throw new Error('Request failed after retries');
+  }
+  const must_ = (r, what) => { if (!r.ok) throw new Error(what + ' (HTTP ' + r.status + ')' + (jisrMsg_(r.json) ? ': ' + jisrMsg_(r.json) : '')); return r.json; };
+  async function listSettlements_(onPage) {
+    const out = [];
+    for (let page = 1; page <= 100; page++) {
+      const j = must_(await request_('GET', '/v2/finance/payruns/off_cycle', { search: '', page, per_page: 100, type: 'final_settlement' }), T('Could not read the final settlements', 'تعذّرت قراءة التسويات النهائية'));
+      const list = (j.data && j.data.off_cycles) || [];
+      list.forEach((o) => out.push({ payrunId: o.id, paygroupId: o.paygroup_id, empId: o.employee && o.employee.id, code: o.employee && o.employee.code, name: o.employee && (o.employee.name_i18n || o.employee.full_name_i18n), lwd: o.last_working_day, status: o.payrun_status, statusLabel: o.payrun_status_i18n || o.payrun_status, total: num_(o.total_amount) }));
+      if (onPage) onPage(out.length);
+      const pi = j.data && j.data.pagination_info;
+      if (!list.length || !pi || !pi.total_pages || page >= pi.total_pages) break;
+    }
+    return out;
+  }
+  async function readSettlement_(s) {
+    const d = must_(await request_('GET', '/v2/finance/payruns/off_cycle/' + s.payrunId + '/details', null), T('Could not read the settlement', 'تعذّرت قراءة التسوية')).data || {};
+    const pi = d.payrun_info || {};
+    const ca = (d.payrun_approval_cycle && d.payrun_approval_cycle.current_approval) || null;
+    const rm = readRemarks_(must_(await request_('GET', '/v2/finance/payruns/' + s.payrunId + '/remarks', { employee_id: s.empId }), T('Could not read the settlement amounts', 'تعذّرت قراءة مبالغ التسوية')));
+    return { status: pi.payrun_status || s.status, paygroupId: pi.paygroup_id || s.paygroupId, effectiveDate: pi.pay_period_start || '', approvalId: ca && ca.approval_id, approverId: ca && ca.employee_id, amounts: rm };
+  }
+  const typeCache = {};
+  async function types_(paygroupId, category) {
+    const k = paygroupId + ':' + category;
+    if (typeCache[k]) return typeCache[k];
+    const j = must_(await request_('GET', '/v2/finance/payroll_transaction_types', { template: 'public', 'filters[category_in][]': category, 'filters[configuration_filters][scoping_rules][paygroup_id]': paygroupId, per_page: 500 }), T('Could not read addition / deduction types', 'تعذّرت قراءة أنواع الإضافات / الخصومات'));
+    const list = ((j.data && j.data.payroll_transaction_types) || []).map((t) => ({ id: t.id, name: String(t.name_i18n || t.name || '').trim(), nameAr: String(t.name_ar || '').trim(), nameEn: String(t.name || '').trim() }));
+    typeCache[k] = list;
+    return list;
+  }
+  const findType_ = (list, txt) => { const s = String(txt || '').trim().toLowerCase(); if (!s) return null; return list.find((t) => String(t.id) === s || [t.name, t.nameAr, t.nameEn].some((n) => n && n.toLowerCase() === s)) || null; };
+  async function me_() { const j = must_(await request_('GET', '/v2/sessions/employee/', null), 'session'); return j.data && j.data.employee && j.data.employee.id; }
+  async function pool_(items, n, fn) {
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(n, items.length)) }, async () => { while (next < items.length) { const i = next++; await fn(items[i], i); } }));
+  }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v;
+      else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v);
+      else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-fs-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-fs-css', text: `
+      .jfs-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+      .jfs-bar label { font-size: 12.5px; display: flex; gap: 6px; align-items: center; }
+      .jfs-wrap { max-height: 46vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jfs-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jfs-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jfs-wrap td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jfs-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jfs-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      .jfs-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
+    ` }));
+  }
+  const HEADERS = ['Settlement ID', 'Employee ID', 'Employee Name', 'Iqama / National ID', 'Last working day', 'Status', 'Current total',
+    'Current end of service', 'New end of service amount', 'Current leave balance amount', 'New leave balance amount',
+    'Addition type', 'Addition amount', 'Addition note', 'Deduction type', 'Deduction amount', 'Deduction note',
+    'Send for approval? (type YES)', 'Approve? (type YES)', 'Approval comment'];
+  const norm_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
+
+  function openTool_() {
+    injectCss_();
+    const S = { rows: [], settlements: null, me: null, busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false };
+    const X = W.__jisrBulkOpsXlsx;
+    const body = el('div', { class: 'jbo-modal-body' });
+    const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' });
+    const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1300px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => { if (S.phase === 'running' && !confirm(T('Still sending. Close anyway?', 'لا يزال الإرسال جاريًا. هل تريد الإغلاق؟'))) return; S.stop = true; backdrop.remove(); };
+    closeBtn.addEventListener('click', close);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    const inclAll = el('input', { type: 'checkbox' });
+    const tplB = el('button', { class: 'jbo-btn', text: T('⬇ Settlements list (.xlsx)', '⬇ قائمة التسويات (‎.xlsx)') });
+    const upB = el('button', { class: 'jbo-btn', text: T('⬆ Upload filled list', '⬆ رفع القائمة المعبأة') });
+    const listIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
+    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const statsEl = el('div', { class: 'jfs-stats' });
+    const wrap = el('div', { class: 'jfs-wrap' });
+    const dryB = el('button', { class: 'jbo-btn', text: T('🔍 Dry Run', '🔍 تشغيل تجريبي') });
+    const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
+    const resB = el('button', { class: 'jbo-btn', text: T('⬇ Results (.xlsx)', '⬇ النتائج (‎.xlsx)') });
+
+    function render_() {
+      titleEl.textContent = T('Bulk Final Settlement', 'التسوية النهائية الجماعية');
+      body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
+        'For employees already offboarded: set the end of service and leave balance amounts, add or deduct an amount, send the settlement for approval and approve it. Loans cannot be changed here (as in Jisr).',
+        'للموظفين الذين أُنهيت خدمتهم: عدّل مكافأة نهاية الخدمة ومبلغ رصيد الإجازات، وأضف أو اخصم مبلغًا، وأرسل التسوية للاعتماد ثم اعتمدها. لا يمكن تعديل القروض هنا (كما في جسر).') }));
+      body.appendChild(el('div', { class: 'jfs-warn', text: T(
+        'These are payroll amounts. Check the Dry Run totals before running. Approving cannot be undone from the tool; additions and deductions can be deleted in Jisr.',
+        'هذه مبالغ رواتب. راجع الإجماليات في التشغيل التجريبي قبل التنفيذ. لا يمكن التراجع عن الاعتماد من الأداة؛ ويمكن حذف الإضافات والخصومات من جسر.') }));
+      body.appendChild(el('div', { class: 'jfs-bar' }, [tplB, el('label', {}, [inclAll, T('include approved / paid', 'تضمين المعتمدة / المدفوعة')]), upB]));
+      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(listIn);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
+      paint_();
+    }
+    function paint_() {
+      statusEl.textContent = S.busy || S.note;
+      statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      statsEl.innerHTML = '';
+      const cnt = (st) => S.rows.filter((r) => r.state === st).length;
+      if (S.rows.length) {
+        [[S.rows.length, T('rows', 'صف')], [cnt('ready'), T('ready', 'جاهز')], [cnt('error'), T('blocked', 'محجوب')], [cnt('done'), T('done ✓', 'تم ✓')], [cnt('partial'), T('partly done', 'تم جزئيًا')], [cnt('failed'), T('failed', 'فشل')]]
+          .filter(([v], i) => i < 2 || v).forEach(([v, l]) => statsEl.appendChild(el('span', {}, [el('b', { text: String(v) }), ' ' + l])));
+      }
+      wrap.innerHTML = '';
+      if (S.rows.length) {
+        const t = el('table');
+        t.appendChild(el('tr', {}, ['#', T('Employee', 'الموظف'), T('Settlement', 'التسوية'), T('Status', 'الحالة'), T('Changes', 'التغييرات'), T('Total', 'الإجمالي'), T('Result', 'النتيجة')].map((h) => el('th', { text: h }))));
+        S.rows.slice(0, 2000).forEach((r) => {
+          const col = r.state === 'done' ? '#137333' : (r.state === 'error' || r.state === 'failed') ? '#c5221f' : r.state === 'partial' ? '#b06000' : '#5f6368';
+          t.appendChild(el('tr', {}, [
+            el('td', { text: String(r.no) }),
+            el('td', { text: r.s ? (r.s.name || '') + (r.s.code ? ' · ' + r.s.code : '') : (r.empText || r.iqamaText || '—') }),
+            el('td', { text: r.s ? '#' + r.s.payrunId : (r.sidText || '—') }),
+            el('td', { text: r.s ? r.s.statusLabel : '—' }),
+            el('td', { text: (r.plan || []).join('\n') || '—', style: { whiteSpace: 'pre-line' } }),
+            el('td', { text: r.cur ? fmt_(r.cur.amounts.net) + (r.estTotal != null ? ' → ' + fmt_(r.estTotal) : '') : '—' }),
+            el('td', { text: r.msg || (r.state === 'ready' ? T('ready', 'جاهز') : '—'), style: { color: col, whiteSpace: 'pre-line' } }),
+          ]));
+        });
+        wrap.appendChild(t);
+      }
+      const ready = S.rows.filter((r) => r.state === 'ready').length;
+      runB.textContent = T('▶ Apply to ', '▶ تطبيق على ') + ready + T(' settlement(s)', ' تسوية');
+      runB.disabled = !S.dryDone || !ready || !!S.busy;
+      dryB.disabled = !S.rows.length || !!S.busy;
+      stopB.style.display = S.phase === 'running' ? '' : 'none';
+      [tplB, upB].forEach((b) => { b.disabled = !!S.busy; });
+      resB.style.display = S.rows.some((r) => ['done', 'failed', 'partial'].includes(r.state)) ? '' : 'none';
+    }
+    async function settlements_(force) {
+      if (!S.settlements || force) S.settlements = await listSettlements_((n) => { statusEl.textContent = T('Reading settlements… ', 'جارٍ قراءة التسويات… ') + n; });
+      return S.settlements;
+    }
+
+    // ---------------- template: current settlements with their amounts
+    tplB.addEventListener('click', async () => {
+      S.busy = T('Reading settlements…', 'جارٍ قراءة التسويات…'); paint_();
+      try {
+        const all = (await settlements_(true)).filter((s) => inclAll.checked || !['confirmed', 'paid'].includes(s.status));
+        const emps = await W.__jisrBulkOpsEmployees.get(false).catch(() => []);
+        const nidOf = new Map((emps || []).map((e) => [String(e.id), e.nid]));
+        let done = 0;
+        const rows = new Array(all.length);
+        const paygroups = new Set();
+        await pool_(all, 4, async (s, i) => {
+          let a = null;
+          try { a = (await readSettlement_(s)).amounts; } catch (e) { a = null; }
+          paygroups.add(s.paygroupId);
+          rows[i] = [s.payrunId, s.code || s.empId, s.name || '', nidOf.get(String(s.empId)) ? String(nidOf.get(String(s.empId))) : '', s.lwd || '', s.statusLabel, a ? a.net : s.total, a ? a.eos.amount : '', '', a ? a.leave.amount : '', '', '', '', '', '', '', '', '', '', ''];
+          done++; S.busy = T('Reading amounts… ', 'جارٍ قراءة المبالغ… ') + done + '/' + all.length; statusEl.textContent = S.busy;
+        });
+        const addNames = new Set(), dedNames = new Set();
+        for (const pg of paygroups) {
+          try { (await types_(pg, 'ManualAdditionType')).forEach((t) => addNames.add(t.name)); } catch (e) { /* dropdown optional */ }
+          try { (await types_(pg, 'ManualDeductionType')).forEach((t) => dedNames.add(t.name)); } catch (e) { /* dropdown optional */ }
+        }
+        X.setNextLists({ 'Addition type': { values: Array.from(addNames).slice(0, 250), strict: false }, 'Deduction type': { values: Array.from(dedNames).slice(0, 250), strict: false } });
+        await X.downloadAoa('jisr-final-settlements-' + slug_() + '.xlsx', HEADERS, rows, 'Final settlements');
+        S.note = all.length + T(' settlement(s) exported with current amounts. Fill only what should change; leave the rest blank.', ' تسوية صُدّرت بمبالغها الحالية. املأ ما يجب تغييره فقط واترك الباقي فارغًا.'); S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+
+    // ---------------- read the list
+    upB.addEventListener('click', () => { listIn.value = ''; listIn.click(); });
+    listIn.addEventListener('change', async () => {
+      const f = listIn.files && listIn.files[0]; if (!f) return;
+      try {
+        const isCsv = /\.csv$/i.test(f.name);
+        const wb = isCsv ? XLSX.read(await f.text(), { type: 'string', raw: true }) : XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames.find((n) => n !== 'Lists') || wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+        const h = (aoa[0] || []).map(norm_);
+        const col = (re) => h.findIndex((x) => re.test(x));
+        const c = {
+          sid: col(/^settlement id$|settlement|payrun/), emp: col(/^employee id$|employee code|^code$/), iqama: col(/iqama|national id/),
+          newEos: col(/^new end of service/), newLeave: col(/^new leave/), addType: col(/^addition type/), addAmt: col(/^addition amount/), addNote: col(/^addition note/),
+          dedType: col(/^deduction type/), dedAmt: col(/^deduction amount/), dedNote: col(/^deduction note/), send: col(/send for approval/), approve: col(/^approve/), comment: col(/approval comment|comment/),
+        };
+        if (c.sid < 0 && c.emp < 0 && c.iqama < 0) throw new Error(T('Use the list exported from this tool.', 'استخدم القائمة المصدّرة من هذه الأداة.'));
+        const get = (r, i) => (i >= 0 ? r[i] : '');
+        S.rows = [];
+        aoa.slice(1).forEach((r, k) => {
+          const row = { no: k + 2, sidText: String(get(r, c.sid) || '').trim().replace(/\.0+$/, ''), empText: String(get(r, c.emp) || '').trim().replace(/\.0+$/, ''), iqamaText: String(get(r, c.iqama) || '').trim().replace(/\.0+$/, ''),
+            newEosRaw: get(r, c.newEos), newLeaveRaw: get(r, c.newLeave), addType: String(get(r, c.addType) || '').trim(), addAmtRaw: get(r, c.addAmt), addNote: String(get(r, c.addNote) || '').trim(),
+            dedType: String(get(r, c.dedType) || '').trim(), dedAmtRaw: get(r, c.dedAmt), dedNote: String(get(r, c.dedNote) || '').trim(), send: isYes_(get(r, c.send)), approve: isYes_(get(r, c.approve)), comment: String(get(r, c.comment) || '').trim(), state: '', msg: '' };
+          const any = [row.newEosRaw, row.newLeaveRaw, row.addType, row.addAmtRaw, row.dedType, row.dedAmtRaw].some((v) => String(v == null ? '' : v).trim() !== '') || row.send || row.approve;
+          if (any) S.rows.push(row);
+        });
+        S.dryDone = false;
+        S.note = S.rows.length + T(' settlement(s) with changes read from the list. Run the Dry Run next.', ' تسوية بها تغييرات قُرئت من القائمة. شغّل التشغيل التجريبي.'); S.noteErr = !S.rows.length;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      paint_();
+    });
+
+    // ---------------- dry run
+    async function dryRun_() {
+      S.busy = T('Checking…', 'جارٍ الفحص…'); S.note = ''; S.noteErr = false; paint_();
+      try {
+        const all = await settlements_(true);
+        if (S.me == null) { try { S.me = await me_(); } catch (e) { S.me = null; } }
+        const emps = await W.__jisrBulkOpsEmployees.get(false).catch(() => []);
+        const empByNid = new Map((emps || []).filter((e) => e.nid).map((e) => [String(e.nid), e]));
+        const bySid = new Map(all.map((s) => [String(s.payrunId), s]));
+        const seen = new Map();
+        S.rows.forEach((r) => {
+          if (r.state === 'done') return;
+          r.state = ''; r.msg = ''; r.s = null; r.cur = null; r.plan = []; r.estTotal = null;
+          const errs = [];
+          if (r.sidText) { r.s = bySid.get(r.sidText) || null; if (!r.s) errs.push(T('Settlement ID not found', 'رقم التسوية غير موجود')); }
+          else {
+            const e = r.iqamaText ? empByNid.get(r.iqamaText) : null;
+            const cands = all.filter((s) => (r.empText && String(s.code || '').toLowerCase() === r.empText.toLowerCase()) || (e && String(s.empId) === String(e.id)));
+            const open = cands.filter((s) => !['confirmed', 'paid'].includes(s.status));
+            if (!cands.length) errs.push(T('No final settlement for this employee', 'لا توجد تسوية نهائية لهذا الموظف'));
+            else if (open.length > 1) errs.push(T('More than one open settlement — fill "Settlement ID"', 'أكثر من تسوية مفتوحة — املأ «Settlement ID»'));
+            else r.s = open[0] || cands[0];
+          }
+          if (r.s) { const k = String(r.s.payrunId); if (seen.has(k)) errs.push(T('Same settlement as row ', 'نفس التسوية في الصف ') + seen.get(k)); else seen.set(k, r.no); }
+          r.newEos = num_(r.newEosRaw); r.newLeave = num_(r.newLeaveRaw); r.addAmt = num_(r.addAmtRaw); r.dedAmt = num_(r.dedAmtRaw);
+          [['newEos', T('New end of service amount', 'مبلغ نهاية الخدمة الجديد')], ['newLeave', T('New leave balance amount', 'مبلغ رصيد الإجازات الجديد')], ['addAmt', T('Addition amount', 'مبلغ الإضافة')], ['dedAmt', T('Deduction amount', 'مبلغ الخصم')]].forEach(([k, l]) => {
+            if (r[k] !== null && (isNaN(r[k]) || r[k] < 0)) errs.push(l + T(' must be a positive number', ' يجب أن يكون رقمًا موجبًا'));
+          });
+          if ((r.addType && r.addAmt == null) || (!r.addType && r.addAmt != null)) errs.push(T('Addition needs both a type and an amount', 'الإضافة تحتاج نوعًا ومبلغًا'));
+          if ((r.dedType && r.dedAmt == null) || (!r.dedType && r.dedAmt != null)) errs.push(T('Deduction needs both a type and an amount', 'الخصم يحتاج نوعًا ومبلغًا'));
+          if (r.approve && !r.comment) r.comment = 'Approved';
+          if (errs.length) { r.state = 'error'; r.msg = '✗ ' + errs.join('\n✗ '); }
+        });
+        const todo = S.rows.filter((r) => !r.state);
+        let done = 0;
+        await pool_(todo, 4, async (r) => {
+          try {
+            r.cur = await readSettlement_(r.s);
+            const a = r.cur.amounts;
+            const editsWanted = r.newEos != null || r.newLeave != null || r.addAmt != null || r.dedAmt != null;
+            const errs = [];
+            if (editsWanted && !EDITABLE.includes(r.cur.status)) errs.push(T('Settlement is "', 'التسوية بحالة "') + r.s.statusLabel + T('" — amounts can only change while Open or Rejected', '" — لا تتغير المبالغ إلا وهي مفتوحة أو مرفوضة'));
+            if (!r.cur.effectiveDate) errs.push(T('Settlement has no pay period start', 'لا يوجد تاريخ بداية لفترة التسوية'));
+            let est = a.net;
+            if (r.newEos != null) {
+              if (a.eos.typeId == null) errs.push(T('End of service line not found in this settlement', 'بند نهاية الخدمة غير موجود في هذه التسوية'));
+              else { r.plan.push(T('End of service ', 'نهاية الخدمة ') + fmt_(a.eos.amount) + ' → ' + fmt_(r.newEos)); if (est != null && a.eos.amount != null) est += r.newEos - a.eos.amount; }
+            }
+            if (r.newLeave != null) {
+              if (a.leave.typeId == null) errs.push(T('Leave balance line not found in this settlement', 'بند رصيد الإجازات غير موجود في هذه التسوية'));
+              else { r.plan.push(T('Leave balance ', 'رصيد الإجازات ') + fmt_(a.leave.amount) + ' → ' + fmt_(r.newLeave)); if (est != null && a.leave.amount != null) est += r.newLeave - a.leave.amount; }
+            }
+            if (r.addAmt != null) {
+              const t = findType_(await types_(r.cur.paygroupId, 'ManualAdditionType'), r.addType);
+              if (!t) errs.push(T('Addition type "', 'نوع الإضافة "') + r.addType + T('" not found for this paygroup', '" غير موجود لمجموعة الرواتب هذه'));
+              else { r.addTypeId = t.id; r.plan.push('+ ' + fmt_(r.addAmt) + ' ' + t.name); if (est != null) est += r.addAmt; }
+            }
+            if (r.dedAmt != null) {
+              const t = findType_(await types_(r.cur.paygroupId, 'ManualDeductionType'), r.dedType);
+              if (!t) errs.push(T('Deduction type "', 'نوع الخصم "') + r.dedType + T('" not found for this paygroup', '" غير موجود لمجموعة الرواتب هذه'));
+              else { r.dedTypeId = t.id; r.plan.push('− ' + fmt_(r.dedAmt) + ' ' + t.name); if (est != null) est -= r.dedAmt; }
+            }
+            const notes = [];
+            if (r.send) {
+              if (EDITABLE.includes(r.cur.status)) r.plan.push(T('Send for approval', 'إرسال للاعتماد'));
+              else if (r.cur.status === 'under_review') notes.push(T('already sent for approval', 'مرسلة للاعتماد مسبقًا'));
+              else errs.push(T('Cannot send a settlement that is "', 'لا يمكن إرسال تسوية بحالة "') + r.s.statusLabel + '"');
+            }
+            if (r.approve) {
+              if (!r.send && r.cur.status !== 'under_review') errs.push(T('Approve needs the settlement to be pending approval (or "Send for approval" = YES)', 'الاعتماد يتطلب أن تكون التسوية بانتظار الاعتماد (أو «Send for approval» = YES)'));
+              else if (r.cur.status === 'under_review' && r.cur.approverId != null && S.me != null && String(r.cur.approverId) !== String(S.me)) notes.push(T('you are not the current approver — approve will be skipped', 'لست المعتمِد الحالي — سيتم تخطي الاعتماد'));
+              else r.plan.push(T('Approve ("', 'اعتماد ("') + r.comment + '")');
+            }
+            if (!r.plan.length && !errs.length) errs.push(T('Nothing to do', 'لا يوجد ما يُنفّذ') + (notes.length ? ' — ' + notes.join('; ') : ''));
+            r.estTotal = est !== a.net ? est : null;
+            if (errs.length) { r.state = 'error'; r.msg = '✗ ' + errs.join('\n✗ '); }
+            else { r.state = 'ready'; r.msg = notes.length ? T('ready — ', 'جاهز — ') + notes.join('\n') : ''; }
+          } catch (e) { r.state = 'error'; r.msg = '✗ ' + e.message; }
+          done++; statusEl.textContent = T('Reading settlements… ', 'جارٍ قراءة التسويات… ') + done + '/' + todo.length;
+        });
+        S.dryDone = true;
+        const rd = S.rows.filter((r) => r.state === 'ready').length;
+        S.note = T('Dry Run done — nothing was sent. ', 'انتهى التشغيل التجريبي — لم يُرسل شيء. ') + rd + T(' settlement(s) ready. Totals after the arrow are estimates; Jisr recalculates.', ' تسوية جاهزة. الإجماليات بعد السهم تقديرية؛ جسر يعيد الحساب.');
+        S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    }
+    dryB.addEventListener('click', dryRun_);
+
+    // ---------------- live
+    async function runOne_(r) {
+      const s = { payrunId: r.s.payrunId, empId: r.s.empId, effectiveDate: r.cur.effectiveDate };
+      const did = [], fail = [];
+      const step = async (label, fn) => {
+        if (fail.length) return;
+        try { const res = await fn(); if (res && !res.ok) fail.push(label + ': ' + (jisrMsg_(res.json) || ('HTTP ' + res.status))); else did.push(label); }
+        catch (e) { fail.push(label + ': ' + (e.unknown ? T('no answer from Jisr — check in Jisr', 'لا رد من جسر — تحقّق في جسر') : e.message)); }
+      };
+      const a = r.cur.amounts;
+      if (r.newEos != null) await step(T('end of service', 'نهاية الخدمة'), () => request_('POST', '/v2/finance/payroll_transactions', { type: 'payrunType' }, editBody_(s, a.eos.typeId, r.newEos, '')));
+      if (r.newLeave != null) await step(T('leave balance', 'رصيد الإجازات'), () => request_('POST', '/v2/finance/payroll_transactions', { type: 'payrunType' }, editBody_(s, a.leave.typeId, r.newLeave, '')));
+      if (r.addAmt != null) await step(T('addition', 'الإضافة'), () => request_('POST', '/v2/finance/payroll_transactions', { type: 'final_settlement' }, adjustBody_(s, r.addTypeId, r.addAmt, r.addNote)));
+      if (r.dedAmt != null) await step(T('deduction', 'الخصم'), () => request_('POST', '/v2/finance/payroll_transactions', { type: 'final_settlement' }, adjustBody_(s, r.dedTypeId, -r.dedAmt, r.dedNote)));
+      if (r.send && EDITABLE.includes(r.cur.status)) await step(T('sent for approval', 'أُرسلت للاعتماد'), () => request_('POST', '/v2/finance/payruns/' + s.payrunId + '/review_requests', null, null));
+      if (r.approve && !fail.length) {
+        let after = null;
+        try { after = await readSettlement_(r.s); } catch (e) { fail.push(T('read before approve: ', 'القراءة قبل الاعتماد: ') + e.message); }
+        if (after) {
+          if (after.status !== 'under_review' || !after.approvalId) fail.push(T('approve: settlement is not pending approval', 'الاعتماد: التسوية ليست بانتظار الاعتماد'));
+          else if (S.me != null && after.approverId != null && String(after.approverId) !== String(S.me)) did.push(T('approval waits for another approver', 'الاعتماد بانتظار معتمِد آخر'));
+          else await step(T('approved', 'اعتُمدت'), () => request_('POST', '/v2/requests/approvals/' + after.approvalId + '/approve', null, { request: { comments: r.comment || 'Approved' } }));
+        }
+      }
+      try { const fin = await readSettlement_(r.s); r.finalTotal = fin.amounts.net; r.finalStatus = fin.status; } catch (e) { /* ignore */ }
+      r.state = fail.length ? (did.length ? 'partial' : 'failed') : 'done';
+      r.msg = (did.length ? '✓ ' + did.join(', ') : '') + (fail.length ? (did.length ? '\n' : '') + '✗ ' + fail.join('\n✗ ') : '') + (r.finalTotal != null ? '\n' + T('total now ', 'الإجمالي الآن ') + fmt_(r.finalTotal) : '');
+    }
+    async function runLive_() {
+      const todo = S.rows.filter((r) => r.state === 'ready');
+      if (!todo.length) return;
+      const nApprove = todo.filter((r) => r.approve).length;
+      if (!confirm(T('Apply changes to ', 'تطبيق التغييرات على ') + todo.length + T(' final settlement(s) in ', ' تسوية نهائية في ') + slug_() + (nApprove ? T(' and approve ', ' واعتماد ') + nApprove : '') + '?')) return;
+      S.phase = 'running'; S.stop = false; S.busy = ' '; paint_();
+      let done = 0;
+      await pool_(todo, 2, async (r) => {
+        if (S.stop) { r.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); r.state = ''; return; }
+        await runOne_(r);
+        done++; S.busy = T('Applying… ', 'جارٍ التطبيق… ') + done + '/' + todo.length; paint_();
+      });
+      S.phase = 'done'; S.busy = '';
+      const ok = todo.filter((r) => r.state === 'done').length;
+      S.note = ok + T(' of ', ' من ') + todo.length + T(' settlement(s) fully done.', ' تسوية اكتملت بالكامل.'); S.noteErr = ok < todo.length;
+      S.settlements = null;
+      paint_();
+    }
+    runB.addEventListener('click', runLive_);
+    stopB.addEventListener('click', () => { S.stop = true; });
+    resB.addEventListener('click', () => {
+      const aoa = [['Row', 'Settlement ID', 'Employee ID', 'Employee Name', 'Status before', 'Total before', 'Planned', 'Result', 'Status now', 'Total now']].concat(S.rows.map((r) => [r.no, r.s ? r.s.payrunId : r.sidText, r.s ? r.s.code || r.s.empId : r.empText, r.s ? r.s.name : '', r.s ? r.s.statusLabel : '', r.cur ? r.cur.amounts.net : '', (r.plan || []).join(' | '), String(r.msg || '').replace(/\n/g, ' | '), r.finalStatus || '', r.finalTotal != null ? r.finalTotal : '']));
+      const wb = XLSX.utils.book_new(); const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = [{ wch: 6 }, { wch: 12 }, { wch: 12 }, { wch: 28 }, { wch: 18 }, { wch: 12 }, { wch: 50 }, { wch: 60 }, { wch: 16 }, { wch: 12 }];
+      XLSX.utils.book_append_sheet(wb, ws, 'Final settlement results');
+      XLSX.writeFile(wb, 'jisr-final-settlement-results-' + slug_() + '.xlsx');
+    });
+
+    render_();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Bulk Final Settlement', open: openTool_, version: SECTION_VERSION };
+    W.__jisrFinalSettlement = { num_, readRemarks_, editBody_, adjustBody_, findType_ };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 24 — Bulk Payroll Transactions  v4.19.0
+// ###########################################################################
+
+/**
+ * ===========================================================================
+ * Jisr Bulk Ops — Bulk Payroll Transactions  (v4.12.0)
+ * ===========================================================================
+ * Confirmed (user captures, onboardingteam, 2026-10-13):
+ *   Types:  GET  /v2/finance/payroll_transaction_types?template=with_configurations&filters[category_in][]=ManualAdditionType
+ *                &filters[configuration_filters][scoping_rules][paygroup_id]=29408
+ *   Create: POST /v2/finance/payroll_transactions
+ *           { payroll_transaction:{ pay_type:"out_of_payrun", effective_date:"2026-10-13", amount:"500.00", employee_id,
+ *             paid_at:"2026-10-14", payroll_transaction_type_id:456065, additional_data:{ body:"test claude" } } } -> 200
+ *   List:   GET  /v2/finance/payroll_transactions?filters[employee_ids][]=&filters[from]=&filters[to]=&filters[period]=
+ *                &filters[category][]=PayType&sort_by=&sort_dir=&rpp=10&page=1
+ *           -> data.payroll_transactions[{ id, amount, effective_date, is_addition, paid_at, pay_type, status,
+ *              payroll_transaction_type{ id, name_i18n }, description }], data.pagination
+ *   Paygroups (confirmed earlier): GET /v2/finance/paygroups/landing_page?page=&rpp=50&payrun_month=YYYY-MM-01&search=
+ * Not captured yet (offered, marked, and checked on the first row before the rest are sent):
+ *   - deductions (ManualDeductionType, amount sent positive like additions)
+ *   - "In payroll" (pay_type "in_payrun", no paid_at)
+ * The first created transaction is compared with what was asked (addition / deduction, amount); on a mismatch the run stops.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+
+  const SECTION_VERSION = '4.12.0';
+  const MODULE_ID = 'payroll-transactions-bulk';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const CATS = { addition: 'ManualAdditionType', deduction: 'ManualDeductionType' };
+
+  // ======================================================================= pure helpers
+  function num_(v) {
+    if (v === null || v === undefined) return null;
+    if (typeof v === 'number') return isFinite(v) ? v : NaN;
+    const s = String(v).replace(/[,\s٬]/g, '').replace(/[٠-٩]/g, (c) => '٠١٢٣٤٥٦٧٨٩'.indexOf(c)).replace('٫', '.');
+    if (s === '') return null;
+    return /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : NaN;
+  }
+  const money_ = (n) => (Math.round(n * 100) / 100).toFixed(2);
+  const fmt_ = (n) => (n == null || isNaN(n) ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const pad_ = (n) => String(n).padStart(2, '0');
+  function date_(v) {
+    if (v === null || v === undefined || v === '') return '';
+    if (v instanceof Date) return isNaN(v) ? null : v.getFullYear() + '-' + pad_(v.getMonth() + 1) + '-' + pad_(v.getDate());
+    if (typeof v === 'number') { if (v < 20000 || v > 80000) return null; const d = new Date(Math.round((v - 25569) * 86400000)); return d.getUTCFullYear() + '-' + pad_(d.getUTCMonth() + 1) + '-' + pad_(d.getUTCDate()); }
+    const s = String(v).trim().replace(/[٠-٩]/g, (c) => '٠١٢٣٤٥٦٧٨٩'.indexOf(c));
+    if (!s) return '';
+    let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s); if (m) return m[1] + '-' + pad_(m[2]) + '-' + pad_(m[3]);
+    m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(s); if (m) return m[3] + '-' + pad_(m[2]) + '-' + pad_(m[1]);
+    if (/^\d+(\.\d+)?$/.test(s)) return date_(Number(s));
+    return null;
+  }
+  const today_ = () => date_(new Date());
+  /** POST body, exactly as Jisr's own form sends it (captured for additions, out of payroll). */
+  function txnBody_(r) {
+    const t = { pay_type: r.payType, effective_date: r.effective, amount: money_(r.amount), employee_id: r.emp.id, payroll_transaction_type_id: r.typeId, additional_data: { body: r.note || '' } };
+    if (r.payType === 'out_of_payrun') t.paid_at = r.paid;
+    return { payroll_transaction: t };
+  }
+  /** Find the payroll_transaction object in a create answer. */
+  function created_(json) {
+    const d = json && json.data;
+    if (d && d.payroll_transaction && typeof d.payroll_transaction === 'object') return d.payroll_transaction;
+    if (d && d.id != null && 'amount' in d) return d;
+    return null;
+  }
+  /** Did Jisr record what was asked? '' = yes / unknown, else the problem. */
+  function mismatch_(tx, r) {
+    if (!tx) return '';
+    if (typeof tx.is_addition === 'boolean' && tx.is_addition !== (r.category === 'addition')) return T('Jisr recorded it as ', 'سجّلها جسر كـ ') + (tx.is_addition ? T('an addition', 'إضافة') : T('a deduction', 'خصم'));
+    const a = num_(tx.amount);
+    if (a != null && !isNaN(a) && Math.abs(Math.abs(a) - r.amount) > 0.005) return T('Jisr recorded amount ', 'سجّل جسر المبلغ ') + fmt_(a);
+    return '';
+  }
+  function typesFrom_(json) {
+    const d = json && json.data;
+    let list = d && (d.payroll_transaction_types || d.types || (Array.isArray(d) ? d : null));
+    if (!Array.isArray(list)) { list = []; (function walk(v, n) { if (list.length || !v || typeof v !== 'object' || n > 4) return; if (Array.isArray(v) && v.length && v.every((x) => x && x.id != null && ('name_i18n' in x || 'name' in x))) { list = v; return; } Object.values(v).forEach((x) => walk(x, n + 1)); })(json, 0); }
+    return list.map((t) => ({ id: t.id, name: String(t.name_i18n || t.name || '').trim(), nameEn: String(t.name || t.name_en || '').trim(), nameAr: String(t.name_ar || '').trim() })).filter((t) => t.name);
+  }
+  const findType_ = (list, txt) => { const s = String(txt || '').trim().toLowerCase(); if (!s) return null; return list.find((t) => String(t.id) === s || [t.name, t.nameEn, t.nameAr].some((n) => n && n.toLowerCase() === s)) || null; };
+
+  // ======================================================================= network
+  function jisrMsg_(j) {
+    if (!j || typeof j !== 'object') return '';
+    const m = j.message || j.error || (j.errors && (Array.isArray(j.errors) ? j.errors.join('; ') : typeof j.errors === 'object' ? Object.values(j.errors).flat().join('; ') : j.errors));
+    return m ? String(m).slice(0, 240) : '';
+  }
+  async function request_(method, path, query, body) {
+    const qs = new URLSearchParams();
+    (Array.isArray(query) ? query : Object.entries(query || {})).forEach(([k, v]) => qs.append(k, v));
+    qs.append('slug', slug_());
+    const url = apiBase_() + path + '?' + qs.toString();
+    for (let a = 0; a < 4; a++) {
+      let res;
+      try {
+        res = await fetch(url, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: I.isAr() ? 'ar' : 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
+      } catch (e) {
+        if (method !== 'GET') { const err = new Error(T('No answer from Jisr — check the employee in Jisr before retrying', 'لا رد من جسر — تحقّق من الموظف في جسر قبل إعادة المحاولة')); err.unknown = true; throw err; }
+        await sleep_(800 * (a + 1)); continue;
+      }
+      if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول مجددًا.'));
+      if (res.status === 429 || (method === 'GET' && res.status >= 500)) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
+      const json = await res.json().catch(() => null);
+      if (res.status === 403) { const err = new Error(T('Jisr refused (HTTP 403)', 'رفض جسر الطلب (HTTP 403)') + (jisrMsg_(json) ? ': ' + jisrMsg_(json) : '')); err.status = 403; throw err; }
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+    }
+    throw new Error('Request failed after retries');
+  }
+  async function paygroups_() {
+    const ym = today_().slice(0, 7); const out = [];
+    for (let page = 1; page <= 20; page++) {
+      const r = await request_('GET', '/v2/finance/paygroups/landing_page', { page, rpp: 50, payrun_month: ym + '-01', search: '' });
+      if (!r.ok) break;
+      const d = (r.json && r.json.data) || {}; const list = Array.isArray(d.paygroups) ? d.paygroups : [];
+      list.forEach((p) => out.push({ id: p.id, name: String(p.name_i18n || p.name || p.id) }));
+      if (list.length < 50) break;
+    }
+    return out;
+  }
+  /** Types of one category: union over the company's paygroups (types are scoped per paygroup); unscoped call as fallback. */
+  async function loadTypes_(category, onProgress) {
+    const cat = CATS[category]; const byId = new Map();
+    const add = (list, pg) => list.forEach((t) => { if (!byId.has(String(t.id))) byId.set(String(t.id), Object.assign(t, { paygroups: [] })); if (pg) byId.get(String(t.id)).paygroups.push(pg.name); });
+    let pgs = []; try { pgs = await paygroups_(); } catch (e) { pgs = []; }
+    for (const [i, pg] of pgs.entries()) {
+      if (onProgress) onProgress(i + 1, pgs.length);
+      const r = await request_('GET', '/v2/finance/payroll_transaction_types', { template: 'with_configurations', 'filters[category_in][]': cat, 'filters[configuration_filters][scoping_rules][paygroup_id]': pg.id });
+      if (r.ok) add(typesFrom_(r.json), pg);
+    }
+    if (!byId.size) {
+      const r = await request_('GET', '/v2/finance/payroll_transaction_types', { template: 'with_configurations', 'filters[category_in][]': cat });
+      if (!r.ok) throw new Error(T('Could not read the transaction types (HTTP ', 'تعذّرت قراءة أنواع الحركات (HTTP ') + r.status + ')' + (jisrMsg_(r.json) ? ': ' + jisrMsg_(r.json) : ''));
+      add(typesFrom_(r.json), null);
+    }
+    return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }
+  async function existing_(empId) {
+    const r = await request_('GET', '/v2/finance/payroll_transactions', [['filters[employee_ids][]', empId], ['filters[from]', ''], ['filters[to]', ''], ['filters[period]', ''], ['sort_by', ''], ['sort_dir', ''], ['rpp', 100], ['page', 1]]);
+    if (!r.ok) return null;
+    const d = (r.json && r.json.data) || {};
+    return (Array.isArray(d.payroll_transactions) ? d.payroll_transactions : []).map((t) => ({ id: t.id, typeId: t.payroll_transaction_type && t.payroll_transaction_type.id, amount: num_(t.amount), effective: date_(t.effective_date), isAddition: t.is_addition, status: t.status }));
+  }
+  async function pool_(items, n, fn) {
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(n, items.length)) }, async () => { while (next < items.length) { const i = next++; await fn(items[i], i); } }));
+  }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-pt-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-pt-css', text: `
+      .jpt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px 12px; margin-bottom: 10px; }
+      .jpt-grid label { font-size: 12px; color: #5f6368; display: flex; flex-direction: column; gap: 3px; }
+      .jpt-grid select, .jpt-grid input { border: 1px solid #dadce0; border-radius: 6px; padding: 5px 7px; font: inherit; color: #202124; }
+      .jpt-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+      .jpt-bar label { font-size: 12.5px; display: flex; gap: 6px; align-items: center; }
+      .jpt-wrap { max-height: 42vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jpt-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jpt-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jpt-wrap td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jpt-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jpt-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      .jpt-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
+    ` }));
+  }
+  const HEADERS = ['Employee ID', 'Employee Name', 'Iqama / National ID', 'Amount', 'Effective date (optional)', 'Paid date (optional)', 'Note (optional)', 'Transaction type (optional, overrides the one chosen in the tool)'];
+  const norm_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
+
+  function openTool_() {
+    injectCss_();
+    const S = { rows: [], types: { addition: null, deduction: null }, busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false };
+    const X = W.__jisrBulkOpsXlsx;
+    const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1250px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => { if (S.phase === 'running' && !confirm(T('Still creating. Close anyway?', 'لا يزال الإنشاء جاريًا. هل تريد الإغلاق؟'))) return; S.stop = true; backdrop.remove(); };
+    closeBtn.addEventListener('click', close);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    const catSel = el('select', {}, [el('option', { value: 'addition', text: T('Addition (earning)', 'إضافة (استحقاق)') }), el('option', { value: 'deduction', text: T('Deduction', 'خصم') })]);
+    const typeSel = el('select', {});
+    const paySel = el('select', {}, [el('option', { value: 'out_of_payrun', text: T('Out of payroll (paid directly)', 'خارج مسير الرواتب (يُدفع مباشرة)') }), el('option', { value: 'in_payrun', text: T('In payroll (next payrun)', 'ضمن مسير الرواتب (المسير القادم)') })]);
+    const effIn = el('input', { type: 'date', value: today_() }); const paidIn = el('input', { type: 'date', value: today_() });
+    const noteIn = el('input', { type: 'text', placeholder: T('shown in Jisr as the description', 'يظهر في جسر كوصف') });
+    const paidLbl = el('label', {}, [T('Paid date', 'تاريخ الدفع'), paidIn]);
+    const dupChk = el('input', { type: 'checkbox' });
+    const tplB = el('button', { class: 'jbo-btn', text: T('⬇ Template with employees (.xlsx)', '⬇ قالب بالموظفين (‎.xlsx)') });
+    const upB = el('button', { class: 'jbo-btn', text: T('⬆ Upload filled template', '⬆ رفع القالب المعبأ') });
+    const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
+    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const statsEl = el('div', { class: 'jpt-stats' }); const wrap = el('div', { class: 'jpt-wrap' }); const notice = el('div');
+    const dryB = el('button', { class: 'jbo-btn', text: T('🔍 Dry Run', '🔍 تشغيل تجريبي') });
+    const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
+    const resB = el('button', { class: 'jbo-btn', text: T('⬇ Results (.xlsx)', '⬇ النتائج (‎.xlsx)') });
+
+    function render_() {
+      titleEl.textContent = T('Bulk Payroll Transactions', 'حركات الرواتب الجماعية');
+      body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
+        'Create the same kind of transaction (bonus, allowance, deduction…) for many employees: choose the type here, fill the amount per employee in the template, Dry Run, then create. Transactions created by mistake can be removed with “Cancel Transactions & Loans”.',
+        'أنشئ نوع الحركة نفسه (مكافأة، بدل، خصم…) لعدة موظفين: اختر النوع هنا، واملأ المبلغ لكل موظف في القالب، ثم شغّل التجريبي وأنشئ. الحركات المنشأة بالخطأ يمكن إلغاؤها بأداة «إلغاء العمليات والقروض».') }));
+      body.appendChild(el('div', { class: 'jpt-grid' }, [
+        el('label', {}, [T('Kind', 'النوع'), catSel]), el('label', { style: { gridColumn: 'span 2' } }, [T('Transaction type', 'نوع الحركة'), typeSel]),
+        el('label', {}, [T('Payment', 'طريقة الدفع'), paySel]), el('label', {}, [T('Effective date', 'تاريخ السريان'), effIn]), paidLbl,
+        el('label', { style: { gridColumn: 'span 2' } }, [T('Note (default for every row)', 'ملاحظة (افتراضية لكل صف)'), noteIn]),
+      ]));
+      body.appendChild(notice);
+      body.appendChild(el('div', { class: 'jpt-bar' }, [tplB, upB, el('label', {}, [dupChk, T('create even if the same transaction already exists', 'أنشئ حتى لو وُجدت الحركة نفسها')])]));
+      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
+      paint_();
+    }
+    function untested_() {
+      const u = [];
+      if (catSel.value === 'deduction') u.push(T('deductions', 'الخصومات'));
+      if (paySel.value === 'in_payrun') u.push(T('“In payroll”', '«ضمن المسير»'));
+      return u;
+    }
+    function paint_() {
+      paidLbl.style.display = paySel.value === 'out_of_payrun' ? '' : 'none';
+      const u = untested_();
+      notice.innerHTML = '';
+      if (u.length) notice.appendChild(el('div', { class: 'jpt-warn', text: T('Not yet confirmed with Jisr: ', 'لم يتأكد بعد مع جسر: ') + u.join(T(' and ', ' و')) + T('. The first transaction is created alone and checked; the rest are only sent if Jisr recorded it as asked. Try it on one employee first.', '. تُنشأ الحركة الأولى وحدها وتُفحص، ولا يُرسل الباقي إلا إذا سجّلها جسر كما طُلب. جرّبها على موظف واحد أولًا.') }));
+      statusEl.textContent = S.busy || S.note;
+      statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      statsEl.innerHTML = '';
+      const cnt = (st) => S.rows.filter((r) => r.state === st).length;
+      const tot = S.rows.filter((r) => r.state === 'ready').reduce((a, r) => a + r.amount, 0);
+      if (S.rows.length) [[S.rows.length, T('rows', 'صف')], [cnt('ready'), T('ready', 'جاهز')], [cnt('ready') ? fmt_(tot) : 0, T('total', 'الإجمالي')], [cnt('error'), T('blocked', 'محجوب')], [cnt('skip'), T('skipped', 'تم تخطيه')], [cnt('done'), T('created ✓', 'أُنشئ ✓')], [cnt('failed'), T('failed', 'فشل')]]
+        .filter(([v], i) => i < 2 || (v && v !== '0.00')).forEach(([v, l]) => statsEl.appendChild(el('span', {}, [el('b', { text: String(v) }), ' ' + l])));
+      wrap.innerHTML = '';
+      if (S.rows.length) {
+        const t = el('table');
+        t.appendChild(el('tr', {}, ['#', T('Employee', 'الموظف'), T('Type', 'النوع'), T('Amount', 'المبلغ'), T('Dates', 'التواريخ'), T('Note', 'ملاحظة'), T('Result', 'النتيجة')].map((h) => el('th', { text: h }))));
+        S.rows.slice(0, 3000).forEach((r) => {
+          const col = r.state === 'done' ? '#137333' : (r.state === 'error' || r.state === 'failed') ? '#c5221f' : r.state === 'skip' ? '#b06000' : '#5f6368';
+          t.appendChild(el('tr', {}, [
+            el('td', { text: String(r.no) }),
+            el('td', { text: r.emp ? (r.emp.name || '') + (r.emp.code ? ' · ' + r.emp.code : '') : (r.empText || r.iqamaText || '—') }),
+            el('td', { text: r.typeName || r.typeText || '—' }),
+            el('td', { text: r.amount != null && !isNaN(r.amount) ? (r.category === 'deduction' ? '− ' : '+ ') + fmt_(r.amount) : String(r.amountRaw == null ? '' : r.amountRaw) || '—' }),
+            el('td', { text: (r.effective || '—') + (r.payType === 'out_of_payrun' && r.paid ? T(' · paid ', ' · دفع ') + r.paid : '') }),
+            el('td', { text: r.note || '' }),
+            el('td', { text: r.msg || (r.state === 'ready' ? T('ready', 'جاهز') : '—'), style: { color: col, whiteSpace: 'pre-line' } }),
+          ]));
+        });
+        wrap.appendChild(t);
+      }
+      const ready = S.rows.filter((r) => r.state === 'ready').length;
+      runB.textContent = T('▶ Create ', '▶ إنشاء ') + ready + T(' transaction(s)', ' حركة');
+      runB.disabled = !S.dryDone || !ready || !!S.busy;
+      dryB.disabled = !S.rows.length || !!S.busy;
+      stopB.style.display = S.phase === 'running' ? '' : 'none';
+      [tplB, upB, catSel, typeSel, paySel].forEach((b) => { b.disabled = !!S.busy; });
+      resB.style.display = S.rows.some((r) => ['done', 'failed'].includes(r.state)) ? '' : 'none';
+    }
+    async function types_(category) {
+      if (!S.types[category]) S.types[category] = await loadTypes_(category, (i, n) => { statusEl.textContent = T('Reading types for paygroup ', 'جارٍ قراءة الأنواع لمجموعة الرواتب ') + i + '/' + n; });
+      return S.types[category];
+    }
+    async function fillTypes_() {
+      const cat = catSel.value; typeSel.innerHTML = ''; typeSel.appendChild(el('option', { value: '', text: T('Loading…', 'جارٍ التحميل…') }));
+      S.busy = T('Reading transaction types…', 'جارٍ قراءة أنواع الحركات…'); paint_();
+      try {
+        const list = await types_(cat);
+        typeSel.innerHTML = '';
+        typeSel.appendChild(el('option', { value: '', text: list.length ? T('— choose a type —', '— اختر النوع —') : T('No types found', 'لا توجد أنواع') }));
+        list.forEach((t) => typeSel.appendChild(el('option', { value: String(t.id), text: t.name + (t.paygroups.length ? '  ·  ' + t.paygroups.slice(0, 3).join(', ') + (t.paygroups.length > 3 ? ' +' + (t.paygroups.length - 3) : '') : '') })));
+        S.note = list.length + T(' type(s) available.', ' نوع متاح.'); S.noteErr = false;
+      } catch (e) { typeSel.innerHTML = ''; typeSel.appendChild(el('option', { value: '', text: '—' })); S.note = e.message; S.noteErr = true; }
+      S.busy = ''; S.dryDone = false; paint_();
+    }
+    catSel.addEventListener('change', () => { S.rows.forEach((r) => { if (r.state !== 'done') { r.state = ''; r.msg = ''; } }); fillTypes_(); });
+    [typeSel, paySel, effIn, paidIn, noteIn].forEach((x) => x.addEventListener('change', () => { S.dryDone = false; S.rows.forEach((r) => { if (r.state === 'ready') { r.state = ''; r.msg = T('settings changed — run the Dry Run again', 'تغيّرت الإعدادات — أعد التشغيل التجريبي'); } }); paint_(); }));
+
+    // ---------------- template: all employees, amount blank
+    tplB.addEventListener('click', async () => {
+      S.busy = T('Loading employees…', 'جارٍ تحميل الموظفين…'); paint_();
+      try {
+        const emps = await W.__jisrBulkOpsEmployees.get(false, (n) => { statusEl.textContent = T('Loading employees… ', 'جارٍ تحميل الموظفين… ') + n; });
+        const rows = emps.map((e) => [e.code || e.id, e.name || '', e.nid ? String(e.nid) : '', '', '', '', '', '']);
+        const names = [];
+        for (const c of ['addition', 'deduction']) { try { (await types_(c)).forEach((t) => names.push(t.name)); } catch (e) { /* dropdown optional */ } }
+        X.setNextLists({ [HEADERS[7]]: { values: Array.from(new Set(names)).slice(0, 250), strict: false } });
+        await X.downloadAoa('jisr-payroll-transactions-' + slug_() + '.xlsx', HEADERS, rows, 'Transactions');
+        S.note = rows.length + T(' employee(s) in the template. Fill the Amount for the employees who get the transaction; rows without an amount are ignored.', ' موظف في القالب. املأ المبلغ للموظفين المستحقين؛ الصفوف بلا مبلغ تُتجاهل.'); S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+
+    // ---------------- upload
+    upB.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
+    fileIn.addEventListener('change', async () => {
+      const f = fileIn.files && fileIn.files[0]; if (!f) return;
+      try {
+        const isCsv = /\.csv$/i.test(f.name);
+        const wb = isCsv ? XLSX.read(await f.text(), { type: 'string', raw: true }) : XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames.find((n) => !/^(lists|_?pick|instructions?)$/i.test(n)) || wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+        const h = (aoa[0] || []).map(norm_);
+        const col = (re, not) => h.findIndex((x) => re.test(x) && !(not && not.test(x)));
+        const c = { emp: col(/^employee id$|employee code|employee number|^code$|رقم الموظف|الرقم الوظيفي/), iqama: col(/iqama|national id|هوية/), amount: col(/^amount|المبلغ/), eff: col(/^effective|سريان/), paid: col(/^paid|الدفع/), note: col(/^note|ملاحظ|description/), type: col(/transaction type|^type|نوع/) };
+        if ((c.emp < 0 && c.iqama < 0) || c.amount < 0) throw new Error(T('Use the template from this tool (Employee ID and Amount columns are needed).', 'استخدم القالب من هذه الأداة (يلزم عمودا Employee ID وAmount).'));
+        const get = (r, i) => (i >= 0 ? r[i] : '');
+        S.rows = [];
+        aoa.slice(1).forEach((r, k) => {
+          const amountRaw = get(r, c.amount);
+          if (String(amountRaw == null ? '' : amountRaw).trim() === '') return;
+          S.rows.push({ no: k + 2, empText: String(get(r, c.emp) || '').trim().replace(/\.0+$/, ''), iqamaText: String(get(r, c.iqama) || '').trim().replace(/\.0+$/, ''), amountRaw, effRaw: get(r, c.eff), paidRaw: get(r, c.paid), noteRaw: String(get(r, c.note) || '').trim(), typeText: String(get(r, c.type) || '').trim(), state: '', msg: '' });
+        });
+        S.dryDone = false;
+        S.note = S.rows.length + T(' row(s) with an amount read. Run the Dry Run next.', ' صف به مبلغ قُرئ. شغّل التشغيل التجريبي.'); S.noteErr = !S.rows.length;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      paint_();
+    });
+
+    // ---------------- dry run
+    async function dryRun_() {
+      S.busy = T('Checking…', 'جارٍ الفحص…'); S.note = ''; S.noteErr = false; paint_();
+      try {
+        const cat = catSel.value; const list = await types_(cat);
+        const defType = list.find((t) => String(t.id) === typeSel.value) || null;
+        const effDef = effIn.value, paidDef = paidIn.value, payType = paySel.value;
+        const emps = await W.__jisrBulkOpsEmployees.get(false);
+        const byCode = new Map(emps.filter((e) => e.code != null).map((e) => [String(e.code).trim().toLowerCase(), e]));
+        const byNid = new Map(emps.filter((e) => e.nid).map((e) => [String(e.nid).trim(), e]));
+        const todo = S.rows.filter((r) => r.state !== 'done');
+        todo.forEach((r) => {
+          const errs = [];
+          r.state = ''; r.msg = ''; r.category = cat; r.payType = payType;
+          r.emp = (r.empText && byCode.get(r.empText.toLowerCase())) || (r.iqamaText && byNid.get(r.iqamaText)) || null;
+          if (!r.emp) errs.push(T('Employee not found', 'الموظف غير موجود'));
+          r.amount = num_(r.amountRaw);
+          if (r.amount == null || isNaN(r.amount) || r.amount <= 0) errs.push(T('Amount must be a positive number', 'المبلغ يجب أن يكون رقمًا موجبًا'));
+          const t = r.typeText ? findType_(list, r.typeText) : defType;
+          if (!t) errs.push(r.typeText ? T('Type "', 'النوع "') + r.typeText + T('" not found among ', '" غير موجود ضمن ') + (cat === 'addition' ? T('additions', 'الإضافات') : T('deductions', 'الخصومات')) : T('Choose a transaction type', 'اختر نوع الحركة'));
+          else { r.typeId = t.id; r.typeName = t.name; }
+          const e = date_(r.effRaw), p = date_(r.paidRaw);
+          r.effective = e || effDef; r.paid = p || paidDef || r.effective;
+          if (e === null || p === null) errs.push(T('Date not understood (use YYYY-MM-DD or DD/MM/YYYY)', 'لم يُفهم التاريخ (استخدم YYYY-MM-DD أو DD/MM/YYYY)'));
+          if (!r.effective) errs.push(T('Effective date missing', 'تاريخ السريان مفقود'));
+          r.note = r.noteRaw || noteIn.value.trim();
+          if (errs.length) { r.state = 'error'; r.msg = '✗ ' + errs.join('\n✗ '); }
+        });
+        // same employee + type + amount + date twice in the file
+        const seen = new Map();
+        todo.filter((r) => !r.state).forEach((r) => { const k = [r.emp.id, r.typeId, money_(r.amount), r.effective].join('|'); if (seen.has(k)) { r.state = 'skip'; r.msg = T('Same as row ', 'مطابق للصف ') + seen.get(k); } else seen.set(k, r.no); });
+        // already in Jisr?
+        const ids = Array.from(new Set(todo.filter((r) => !r.state).map((r) => String(r.emp.id))));
+        const ex = new Map(); let n = 0, unread = 0;
+        await pool_(ids, 4, async (id) => { const l = await existing_(id).catch(() => null); if (l) ex.set(id, l); else unread++; n++; statusEl.textContent = T('Checking existing transactions… ', 'جارٍ فحص الحركات الموجودة… ') + n + '/' + ids.length; });
+        todo.filter((r) => !r.state).forEach((r) => {
+          const l = ex.get(String(r.emp.id)) || [];
+          const same = l.find((t) => String(t.typeId) === String(r.typeId) && t.amount != null && Math.abs(Math.abs(t.amount) - r.amount) < 0.005 && t.effective === r.effective && !/cancel|reject/i.test(String(t.status || '')));
+          if (same && !dupChk.checked) { r.state = 'skip'; r.msg = T('Already in Jisr (#', 'موجودة في جسر (#') + same.id + T(') — tick “create even if…” to add it again', ') — فعّل «أنشئ حتى لو…» لإضافتها مجددًا'); }
+          else { r.state = 'ready'; if (same) r.msg = T('ready — a same transaction exists (#', 'جاهز — توجد حركة مماثلة (#') + same.id + ')'; }
+        });
+        S.dryDone = true;
+        const rd = S.rows.filter((r) => r.state === 'ready');
+        S.note = T('Dry Run done — nothing was created. ', 'انتهى التشغيل التجريبي — لم يُنشأ شيء. ') + rd.length + T(' transaction(s) ready, total ', ' حركة جاهزة، الإجمالي ') + fmt_(rd.reduce((a, r) => a + r.amount, 0)) + '.' + (unread ? T(' Existing transactions could not be read for ', ' تعذّرت قراءة الحركات الموجودة لـ ') + unread + T(' employee(s), so duplicates were not checked for them.', ' موظف، فلم يُفحص التكرار لهم.') : '');
+        S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    }
+    dryB.addEventListener('click', dryRun_);
+
+    // ---------------- live
+    async function createOne_(r) {
+      try {
+        const res = await request_('POST', '/v2/finance/payroll_transactions', null, txnBody_(r));
+        if (!res.ok) { r.state = 'failed'; r.msg = '✗ ' + (jisrMsg_(res.json) || 'HTTP ' + res.status); return false; }
+        const tx = created_(res.json); r.txId = tx && tx.id;
+        const bad = mismatch_(tx, r);
+        if (bad) { r.state = 'failed'; r.msg = '✗ ' + T('Created', 'أُنشئت') + (r.txId ? ' #' + r.txId : '') + T(' but ', ' لكن ') + bad + T(' — check it in Jisr. The run was stopped.', ' — تحقّق منها في جسر. أُوقف التشغيل.'); return 'stop'; }
+        r.state = 'done'; r.msg = '✓ ' + T('created', 'أُنشئت') + (r.txId ? ' #' + r.txId : '');
+        return true;
+      } catch (e) { r.state = 'failed'; r.msg = '✗ ' + (e.unknown ? T('no answer from Jisr — check this employee in Jisr', 'لا رد من جسر — تحقّق من هذا الموظف في جسر') : e.message); return false; }
+    }
+    async function runLive_() {
+      const todo = S.rows.filter((r) => r.state === 'ready');
+      if (!todo.length) return;
+      const tot = todo.reduce((a, r) => a + r.amount, 0);
+      const u = untested_();
+      if (!confirm(T('Create ', 'إنشاء ') + todo.length + ' ' + (catSel.value === 'addition' ? T('addition(s)', 'إضافة') : T('deduction(s)', 'خصم')) + T(' in ', ' في ') + slug_() + T(', total ', '، الإجمالي ') + fmt_(tot) + ' (' + paySel.options[paySel.selectedIndex].text + ')?' + (u.length ? '\n\n' + T('Not yet confirmed: ', 'لم يتأكد بعد: ') + u.join(', ') + T('. The first one is checked before the rest are sent.', '. تُفحص الأولى قبل إرسال الباقي.') : ''))) return;
+      S.phase = 'running'; S.stop = false; S.busy = ' '; paint_();
+      // the first transaction alone, checked before the rest
+      const first = await createOne_(todo[0]); let done = 1;
+      if (first === 'stop') todo.slice(1).forEach((r) => { r.state = 'ready'; r.msg = T('not sent — the first transaction did not match', 'لم تُرسل — الحركة الأولى لم تطابق'); });
+      else {
+        let halted = false;
+        await pool_(todo.slice(1), 3, async (r) => {
+          if (S.stop || halted) { r.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); return; }
+          if ((await createOne_(r)) === 'stop') halted = true;
+          done++; S.busy = T('Creating… ', 'جارٍ الإنشاء… ') + done + '/' + todo.length; paint_();
+        });
+      }
+      S.phase = 'done'; S.busy = ''; S.dryDone = false;
+      const ok = todo.filter((r) => r.state === 'done');
+      S.note = ok.length + T(' of ', ' من ') + todo.length + T(' transaction(s) created, total ', ' حركة أُنشئت، الإجمالي ') + fmt_(ok.reduce((a, r) => a + r.amount, 0)) + '.'; S.noteErr = ok.length < todo.length;
+      paint_();
+    }
+    runB.addEventListener('click', runLive_);
+    stopB.addEventListener('click', () => { S.stop = true; });
+    resB.addEventListener('click', () => {
+      const aoa = [['Row', 'Employee ID', 'Employee Name', 'Kind', 'Type', 'Amount', 'Payment', 'Effective date', 'Paid date', 'Note', 'Transaction ID', 'Result']].concat(S.rows.map((r) => [r.no, r.emp ? r.emp.code || r.emp.id : r.empText, r.emp ? r.emp.name : '', r.category || '', r.typeName || r.typeText, r.amount != null && !isNaN(r.amount) ? r.amount : r.amountRaw, r.payType || '', r.effective || '', r.payType === 'out_of_payrun' ? r.paid || '' : '', r.note || '', r.txId || '', String(r.msg || '').replace(/\n/g, ' | ')]));
+      const wb = XLSX.utils.book_new(); const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = [{ wch: 6 }, { wch: 12 }, { wch: 28 }, { wch: 10 }, { wch: 24 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 24 }, { wch: 14 }, { wch: 50 }];
+      XLSX.utils.book_append_sheet(wb, ws, 'Transaction results');
+      XLSX.writeFile(wb, 'jisr-payroll-transactions-results-' + slug_() + '.xlsx');
+    });
+
+    render_();
+    fillTypes_();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Bulk Payroll Transactions', open: openTool_, version: SECTION_VERSION };
+    W.__jisrPayrollTxns = { txnBody_, created_, mismatch_, typesFrom_, date_, num_ };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.19.0
+// ###########################################################################
+
+/**
+ * ===========================================================================
+ * Jisr Bulk Ops — Bulk Cancel Leave Requests  (v4.12.0)
+ * ===========================================================================
+ * Confirmed (user captures, onboardingteam, 2026-10-13):
+ *   History:  GET  /v2/employees/{employee_id}/leaves/history?all_years=true&rpp=25&page=1&imported_leaves=true
+ *             -> data.leave_history[], data.pagination{ current_page, next_page, total_pages, total_entries }
+ *   Cancel:   POST /v2/employees/{employee_id}/leave_requests/bulk_cancel  { leave_request_ids:[28559901], reason:"…" } -> 200
+ *             (after cancelling, the leave no longer appears in the history)
+ *   Leave types: GET /v2/leaves/leave_types/ -> 200 (shape read flexibly: a list of { id, name / name_i18n / name_ar })
+ * Assumed (read flexibly, shown in the Dry Run): the field names inside a leave_history item
+ *   (id / leave_request_id, from / start_date, to / end_date, leave_type, status, days).
+ * Input: the list exported from this tool (Cancel? = YES), or the leave import file that was
+ * uploaded to Jisr (employee + start date [+ end date, leave type]) — every row of that file is
+ * a leave to cancel.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+
+  const SECTION_VERSION = '4.12.1';
+  const MODULE_ID = 'leave-cancel-bulk';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // ======================================================================= pure helpers
+  const pad_ = (n) => String(n).padStart(2, '0');
+  /** Excel serial / Date / "2026-10-13" / "13/10/2026" / "13-10-2026" / "2026-10-13T00:00:00Z" -> "YYYY-MM-DD" | '' | null (bad) */
+  function date_(v) {
+    if (v === null || v === undefined || v === '') return '';
+    if (v instanceof Date) return isNaN(v) ? null : v.getFullYear() + '-' + pad_(v.getMonth() + 1) + '-' + pad_(v.getDate());
+    if (typeof v === 'number') { if (v < 20000 || v > 80000) return null; const d = new Date(Math.round((v - 25569) * 86400000)); return d.getUTCFullYear() + '-' + pad_(d.getUTCMonth() + 1) + '-' + pad_(d.getUTCDate()); }
+    const s = String(v).trim().replace(/[٠-٩]/g, (c) => '٠١٢٣٤٥٦٧٨٩'.indexOf(c));
+    if (!s) return '';
+    let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s);
+    if (m) return m[1] + '-' + pad_(m[2]) + '-' + pad_(m[3]);
+    m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(s);
+    if (m) return m[3] + '-' + pad_(m[2]) + '-' + pad_(m[1]);
+    if (/^\d+(\.\d+)?$/.test(s)) return date_(Number(s));
+    return null;
+  }
+  const pick_ = (o, keys) => { for (const k of keys) { const v = o && o[k]; if (v !== undefined && v !== null && v !== '') return v; } return undefined; };
+  const nameOf_ = (v) => (v && typeof v === 'object' ? v.name_i18n || v.name || v.name_en || v.name_ar || '' : v || '');
+  const normT_ = (s) => String(s || '').toLowerCase().replace(/[\u064B-\u065F\u0640]/g, '').replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ').trim();
+  /** Leave types out of GET /v2/leaves/leave_types/ (any list of objects with an id and a name). */
+  function typesFrom_(json) {
+    let list = null;
+    (function walk(v, d) { if (list || !v || typeof v !== 'object' || d > 5) return; if (Array.isArray(v)) { if (v.length && v.every((x) => x && typeof x === 'object' && x.id != null && ['name', 'name_i18n', 'name_en', 'name_ar', 'title'].some((k) => x[k]))) { list = v; return; } v.forEach((x) => walk(x, d + 1)); return; } Object.values(v).forEach((x) => walk(x, d + 1)); })(json, 0);
+    return (list || []).map((t) => ({ id: t.id, name: String(t.name_i18n || t.name || t.name_en || t.title || t.name_ar || '').trim(), names: Array.from(new Set(['name_i18n', 'name', 'name_en', 'name_ar', 'title', 'title_ar'].map((k) => t[k]).filter((x) => typeof x === 'string' && x.trim()).map(normT_))) }));
+  }
+  /** Leave type ids a free-text name means (exact name first, then partial). */
+  function resolveType_(text, types) {
+    const t = normT_(text); if (!t || !types || !types.length) return [];
+    const exact = types.filter((x) => x.names.includes(t));
+    if (exact.length) return exact.map((x) => String(x.id));
+    return types.filter((x) => x.names.some((n) => n && (n.includes(t) || t.includes(n)))).map((x) => String(x.id));
+  }
+  /** One leave_history item -> what the tool needs (field names are read flexibly). */
+  function leaveItem_(o) {
+    const lr = o && typeof o.leave_request === 'object' ? o.leave_request : null;
+    const id = pick_(o, ['leave_request_id', 'request_id']) != null ? pick_(o, ['leave_request_id', 'request_id']) : lr && lr.id != null ? lr.id : o.id;
+    const start = date_(pick_(o, ['from', 'start_date', 'from_date', 'starting_date', 'leave_from', 'date_from', 'start']) || (lr && pick_(lr, ['from', 'start_date'])));
+    const end = date_(pick_(o, ['to', 'end_date', 'to_date', 'ending_date', 'leave_to', 'date_to', 'end']) || (lr && pick_(lr, ['to', 'end_date'])));
+    const type = String(nameOf_(o.leave_type) || o.leave_type_i18n || o.leave_type_name || nameOf_(o.leave_type_info) || nameOf_(lr && lr.leave_type) || '').trim();
+    const lt = o.leave_type && typeof o.leave_type === 'object' ? o.leave_type : (lr && lr.leave_type && typeof lr.leave_type === 'object' ? lr.leave_type : null);
+    const typeId = lt && lt.id != null ? lt.id : pick_(o, ['leave_type_id']) != null ? pick_(o, ['leave_type_id']) : lr ? pick_(lr, ['leave_type_id']) : undefined;
+    const status = String(pick_(o, ['status', 'leave_status', 'request_status']) || (lr && lr.status) || '');
+    const imp = pick_(o, ['is_imported', 'imported', 'imported_leave']);
+    return { id, start: start || '', end: end || start || '', type, typeId: typeId != null ? String(typeId) : null, status, statusLabel: String(o.status_i18n || status || ''), days: pick_(o, ['applied_days', 'days', 'number_of_days', 'duration', 'total_days']), imported: imp === undefined ? (/import/i.test(String(o.source || o.source_type || '')) ? true : null) : !!imp };
+  }
+  const isGone_ = (status) => /cancel|reject|declin|delet/i.test(String(status || ''));
+  /** Which history leaves a row means. Returns { matches, why } */
+  function matchLeaves_(row, leaves, types) {
+    const open = leaves.filter((l) => !isGone_(l.status));
+    if (row.leaveId) {
+      const l = leaves.find((x) => String(x.id) === String(row.leaveId));
+      if (!l) return { matches: [], why: T('Leave request ID not found for this employee (already cancelled?)', 'رقم طلب الإجازة غير موجود لهذا الموظف (أُلغي مسبقًا؟)') };
+      if (isGone_(l.status)) return { matches: [], why: T('Already ', 'بالفعل ') + (l.statusLabel || l.status) };
+      return { matches: [l], why: '' };
+    }
+    let c = open.filter((l) => l.start === row.start);
+    if (row.end) c = c.filter((l) => !l.end || l.end === row.end);
+    if (row.type) {
+      const ids = resolveType_(row.type, types); const t = normT_(row.type);
+      const same = (l) => (ids.length && l.typeId != null && ids.includes(l.typeId)) || (ids.length && l.type && resolveType_(l.type, types).some((x) => ids.includes(x))) || (l.type && (normT_(l.type) === t || normT_(l.type).includes(t) || t.includes(normT_(l.type))));
+      const byType = c.filter(same);
+      if (byType.length || c.every((l) => l.type || l.typeId != null)) c = byType;
+    }
+    if (!c.length) { const g = leaves.find((l) => isGone_(l.status) && l.start === row.start && (!row.end || !l.end || l.end === row.end)); if (g) return { matches: [], why: T('Already ', 'بالفعل ') + (g.statusLabel || g.status) }; }
+    if (!c.length) return { matches: [], why: T('No open leave starting ', 'لا توجد إجازة مفتوحة تبدأ ') + row.start + (row.end ? T(' and ending ', ' وتنتهي ') + row.end : '') + (row.type ? ' (' + row.type + ')' : '') };
+    if (c.length > 1) return { matches: [], why: c.length + T(' leaves match — add the leave type or use the exported list (Leave request ID)', ' إجازات مطابقة — أضف نوع الإجازة أو استخدم القائمة المصدّرة (رقم طلب الإجازة)') };
+    return { matches: c, why: '' };
+  }
+
+  // ======================================================================= network
+  function jisrMsg_(j) {
+    if (!j || typeof j !== 'object') return '';
+    const m = j.message || j.error || (j.errors && (Array.isArray(j.errors) ? j.errors.join('; ') : typeof j.errors === 'object' ? Object.values(j.errors).flat().join('; ') : j.errors));
+    return m ? String(m).slice(0, 240) : '';
+  }
+  async function request_(method, path, query, body) {
+    const qs = new URLSearchParams();
+    Object.entries(query || {}).forEach(([k, v]) => qs.append(k, v));
+    qs.append('slug', slug_());
+    const url = apiBase_() + path + '?' + qs.toString();
+    for (let a = 0; a < 4; a++) {
+      let res;
+      try {
+        res = await fetch(url, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: I.isAr() ? 'ar' : 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
+      } catch (e) {
+        if (method !== 'GET') { const err = new Error(T('No answer from Jisr — check in Jisr before retrying', 'لا رد من جسر — تحقّق في جسر قبل إعادة المحاولة')); err.unknown = true; throw err; }
+        await sleep_(800 * (a + 1)); continue;
+      }
+      if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول مجددًا.'));
+      if (res.status === 429 || (method === 'GET' && res.status >= 500)) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
+      const json = await res.json().catch(() => null);
+      if (res.status === 403) { const err = new Error(T('Jisr refused (HTTP 403)', 'رفض جسر الطلب (HTTP 403)') + (jisrMsg_(json) ? ': ' + jisrMsg_(json) : '')); err.status = 403; throw err; }
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+    }
+    throw new Error('Request failed after retries');
+  }
+  async function history_(empId) {
+    const out = [];
+    for (let page = 1; page <= 40; page++) {
+      const r = await request_('GET', '/v2/employees/' + encodeURIComponent(empId) + '/leaves/history', { all_years: 'true', rpp: 25, page, imported_leaves: 'true' });
+      if (!r.ok) throw new Error(T('Could not read the leaves (HTTP ', 'تعذّرت قراءة الإجازات (HTTP ') + r.status + ')' + (jisrMsg_(r.json) ? ': ' + jisrMsg_(r.json) : ''));
+      const d = (r.json && r.json.data) || {};
+      const list = Array.isArray(d.leave_history) ? d.leave_history : [];
+      list.forEach((o) => out.push(leaveItem_(o)));
+      const pg = d.pagination || {};
+      if (!list.length || !pg.next_page || (pg.total_pages && page >= pg.total_pages)) break;
+    }
+    return out;
+  }
+  async function leaveTypes_() {
+    const r = await request_('GET', '/v2/leaves/leave_types/', null);
+    if (!r.ok) throw new Error(T('Could not read the leave types (HTTP ', 'تعذّرت قراءة أنواع الإجازات (HTTP ') + r.status + ')');
+    return typesFrom_(r.json);
+  }
+  async function cancel_(empId, ids, reason) {
+    return request_('POST', '/v2/employees/' + encodeURIComponent(empId) + '/leave_requests/bulk_cancel', null, { leave_request_ids: ids.map((x) => (/^\d+$/.test(String(x)) ? Number(x) : x)), reason });
+  }
+  async function pool_(items, n, fn) {
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(n, items.length)) }, async () => { while (next < items.length) { const i = next++; await fn(items[i], i); } }));
+  }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-lc-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-lc-css', text: `
+      .jlc-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+      .jlc-bar label { font-size: 12.5px; display: flex; gap: 6px; align-items: center; }
+      .jlc-bar input[type=text], .jlc-bar input[type=date] { border: 1px solid #dadce0; border-radius: 6px; padding: 5px 7px; font: inherit; }
+      .jlc-wrap { max-height: 46vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jlc-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jlc-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jlc-wrap td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jlc-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jlc-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      .jlc-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
+    ` }));
+  }
+  const HEADERS = ['Leave request ID', 'Employee ID', 'Employee Name', 'Iqama / National ID', 'Leave type', 'Start date', 'End date', 'Days', 'Status', 'Imported', 'Cancel? (type YES)', 'Reason'];
+  const norm_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ?]+/g, ' ').trim();
+  const isYes_ = (v) => /^(yes|y|true|1|نعم)$/i.test(String(v == null ? '' : v).trim());
+
+  function openTool_() {
+    injectCss_();
+    const S = { rows: [], types: null, hist: new Map(), busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false };
+    const X = W.__jisrBulkOpsXlsx;
+    const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1250px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => { if (S.phase === 'running' && !confirm(T('Still cancelling. Close anyway?', 'لا يزال الإلغاء جاريًا. هل تريد الإغلاق؟'))) return; S.stop = true; backdrop.remove(); };
+    closeBtn.addEventListener('click', close);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    const fromIn = el('input', { type: 'date' }); const toIn = el('input', { type: 'date' });
+    const typeSel = el('select', { style: { border: '1px solid #dadce0', borderRadius: '6px', padding: '5px 7px', font: 'inherit' } }, [el('option', { value: '', text: T('All leave types', 'كل أنواع الإجازات') })]);
+    const reasonIn = el('input', { type: 'text', placeholder: T('e.g. Wrong import file', 'مثال: ملف استيراد خاطئ'), style: { minWidth: '260px' } });
+    const expB = el('button', { class: 'jbo-btn', text: T('⬇ Leaves list (.xlsx)', '⬇ قائمة الإجازات (‎.xlsx)') });
+    const upB = el('button', { class: 'jbo-btn', text: T('⬆ Upload list or the import file', '⬆ رفع القائمة أو ملف الاستيراد') });
+    const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
+    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const statsEl = el('div', { class: 'jlc-stats' }); const wrap = el('div', { class: 'jlc-wrap' });
+    const dryB = el('button', { class: 'jbo-btn', text: T('🔍 Dry Run', '🔍 تشغيل تجريبي') });
+    const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
+    const resB = el('button', { class: 'jbo-btn', text: T('⬇ Results (.xlsx)', '⬇ النتائج (‎.xlsx)') });
+
+    function render_() {
+      titleEl.textContent = T('Bulk Cancel Leave Requests', 'إلغاء طلبات الإجازة الجماعي');
+      body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
+        'Cancel leaves in bulk, for example after a wrong leave import. Upload the same import file you gave Jisr (employee + start date, optionally end date and leave type), or download the leaves list, type YES next to the ones to cancel and upload it.',
+        'ألغِ الإجازات دفعة واحدة، مثلًا بعد استيراد إجازات خاطئ. ارفع ملف الاستيراد نفسه الذي رُفع إلى جسر (الموظف + تاريخ البداية، واختياريًا تاريخ النهاية ونوع الإجازة)، أو نزّل قائمة الإجازات واكتب YES بجانب ما يجب إلغاؤه ثم ارفعها.') }));
+      body.appendChild(el('div', { class: 'jlc-warn', text: T(
+        'Cancelling gives the days back to the balance and cannot be undone from the tool (the leave would have to be imported or requested again). Check the Dry Run first.',
+        'الإلغاء يعيد الأيام إلى الرصيد ولا يمكن التراجع عنه من الأداة (يجب استيراد الإجازة أو طلبها من جديد). راجع التشغيل التجريبي أولًا.') }));
+      body.appendChild(el('div', { class: 'jlc-bar' }, [el('label', {}, [T('Reason', 'السبب') + ' *', reasonIn])]));
+      body.appendChild(el('div', { class: 'jlc-bar' }, [expB, typeSel, el('label', {}, [T('starting from', 'تبدأ من'), fromIn]), el('label', {}, [T('to', 'إلى'), toIn]), el('span', { class: 'jbo-muted', text: '·' }), upB]));
+      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
+      paint_();
+    }
+    function paint_() {
+      statusEl.textContent = S.busy || S.note;
+      statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      statsEl.innerHTML = '';
+      const cnt = (st) => S.rows.filter((r) => r.state === st).length;
+      if (S.rows.length) [[S.rows.length, T('rows', 'صف')], [cnt('ready'), T('ready', 'جاهز')], [cnt('error'), T('blocked', 'محجوب')], [cnt('skip'), T('skipped', 'تم تخطيه')], [cnt('done'), T('cancelled ✓', 'أُلغي ✓')], [cnt('failed'), T('failed', 'فشل')]]
+        .filter(([v], i) => i < 2 || v).forEach(([v, l]) => statsEl.appendChild(el('span', {}, [el('b', { text: String(v) }), ' ' + l])));
+      wrap.innerHTML = '';
+      if (S.rows.length) {
+        const t = el('table');
+        t.appendChild(el('tr', {}, ['#', T('Employee', 'الموظف'), T('Leave', 'الإجازة'), T('Dates', 'التواريخ'), T('Status in Jisr', 'الحالة في جسر'), T('Result', 'النتيجة')].map((h) => el('th', { text: h }))));
+        S.rows.slice(0, 3000).forEach((r) => {
+          const col = r.state === 'done' ? '#137333' : (r.state === 'error' || r.state === 'failed') ? '#c5221f' : r.state === 'skip' ? '#b06000' : '#5f6368';
+          const l = r.leave;
+          t.appendChild(el('tr', {}, [
+            el('td', { text: String(r.no) }),
+            el('td', { text: r.emp ? (r.emp.name || '') + (r.emp.code ? ' · ' + r.emp.code : '') : (r.empText || r.iqamaText || '—') }),
+            el('td', { text: l ? (l.type || '—') + ' · #' + l.id : (r.type || (r.leaveId ? '#' + r.leaveId : '—')) }),
+            el('td', { text: l ? l.start + (l.end && l.end !== l.start ? ' → ' + l.end : '') + (l.days != null ? ' (' + l.days + 'd)' : '') : (r.start || '—') + (r.end && r.end !== r.start ? ' → ' + r.end : '') }),
+            el('td', { text: l ? l.statusLabel || '—' : '—' }),
+            el('td', { text: r.msg || (r.state === 'ready' ? T('ready', 'جاهز') : '—'), style: { color: col, whiteSpace: 'pre-line' } }),
+          ]));
+        });
+        wrap.appendChild(t);
+      }
+      const ready = S.rows.filter((r) => r.state === 'ready').length;
+      runB.textContent = T('▶ Cancel ', '▶ إلغاء ') + ready + T(' leave(s)', ' إجازة');
+      runB.disabled = !S.dryDone || !ready || !!S.busy;
+      dryB.disabled = !S.rows.length || !!S.busy;
+      stopB.style.display = S.phase === 'running' ? '' : 'none';
+      [expB, upB].forEach((b) => { b.disabled = !!S.busy; });
+      resB.style.display = S.rows.some((r) => ['done', 'failed'].includes(r.state)) ? '' : 'none';
+    }
+    async function types_() {
+      if (!S.types) { try { S.types = await leaveTypes_(); } catch (e) { S.types = null; S.typesErr = e.message; } }
+      return S.types;
+    }
+    types_().then((list) => { (list || []).forEach((t) => typeSel.appendChild(el('option', { value: String(t.id), text: t.name }))); });
+    async function hist_(empId, force) {
+      const k = String(empId);
+      if (force || !S.hist.has(k)) S.hist.set(k, await history_(empId));
+      return S.hist.get(k);
+    }
+
+    // ---------------- export: every leave of every employee (date window optional)
+    expB.addEventListener('click', async () => {
+      S.busy = T('Loading employees…', 'جارٍ تحميل الموظفين…'); paint_();
+      try {
+        const emps = await W.__jisrBulkOpsEmployees.get(false, (n) => { statusEl.textContent = T('Loading employees… ', 'جارٍ تحميل الموظفين… ') + n; });
+        const from = fromIn.value, to = toIn.value, onlyType = typeSel.value; const rows = []; let done = 0, failed = 0;
+        const tl = onlyType ? await types_() : null;
+        await pool_(emps, 4, async (e) => {
+          try {
+            (await hist_(e.id, true)).forEach((l) => {
+              if (isGone_(l.status)) return;
+              if (from && l.start && l.start < from) return; if (to && l.start && l.start > to) return;
+              if (onlyType && !(l.typeId === onlyType || (l.type && resolveType_(l.type, tl).includes(onlyType)))) return;
+              rows.push([l.id, e.code || e.id, e.name || '', e.nid ? String(e.nid) : '', l.type, l.start, l.end, l.days != null ? l.days : '', l.statusLabel, l.imported == null ? '' : l.imported ? 'Yes' : 'No', '', '']);
+            });
+          } catch (err) { failed++; }
+          done++; S.busy = T('Reading leaves… ', 'جارٍ قراءة الإجازات… ') + done + '/' + emps.length + ' · ' + rows.length + T(' leave(s)', ' إجازة'); statusEl.textContent = S.busy;
+        });
+        rows.sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[5]).localeCompare(String(b[5])));
+        X.setNextLists({ 'Cancel? (type YES)': { values: ['YES'], strict: false } });
+        await X.downloadAoa('jisr-leaves-' + slug_() + '.xlsx', HEADERS, rows, 'Leaves');
+        S.note = rows.length + T(' leave(s) exported', ' إجازة صُدّرت') + (failed ? T(' (', ' (') + failed + T(' employee(s) could not be read)', ' موظف تعذّرت قراءته)') : '') + T('. Type YES in “Cancel?” for the ones to cancel, then upload the file.', '. اكتب YES في «Cancel?» لما يجب إلغاؤه ثم ارفع الملف.'); S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+
+    // ---------------- upload: exported list (Cancel? = YES) or the leave import file
+    upB.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
+    fileIn.addEventListener('change', async () => {
+      const f = fileIn.files && fileIn.files[0]; if (!f) return;
+      try {
+        const isCsv = /\.csv$/i.test(f.name);
+        const wb = isCsv ? XLSX.read(await f.text(), { type: 'string', raw: true }) : XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array', cellDates: false });
+        const ws = wb.Sheets[wb.SheetNames.find((n) => !/^(lists|_?pick|instructions?)$/i.test(n)) || wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+        let hi = aoa.findIndex((r) => r.some((x) => /employee|موظف|code|iqama|هوية/i.test(String(x))));
+        if (hi < 0) hi = 0;
+        const h = (aoa[hi] || []).map(norm_);
+        const col = (re, not) => h.findIndex((x) => re.test(x) && !(not && not.test(x)));
+        const c = {
+          lid: col(/leave request id|request id|^leave id$/), emp: col(/^employee id$|employee code|employee number|^code$|^emp|رقم الموظف|الرقم الوظيفي/, /name/), iqama: col(/iqama|national id|هوية|اقامة|إقامة/),
+          type: col(/leave type|^type$|نوع/), start: col(/start|^from|بداية|من/), end: col(/^end|^to\b|end date|نهاية|إلى|الى/), cancel: col(/^cancel/), reason: col(/^reason|سبب/),
+        };
+        if (c.emp < 0 && c.iqama < 0) throw new Error(T('No employee column found (Employee ID or Iqama).', 'لم يُعثر على عمود الموظف (Employee ID أو الهوية).'));
+        if (c.lid < 0 && c.start < 0) throw new Error(T('The file needs a Start date column (import file) or Leave request ID (exported list).', 'يحتاج الملف عمود تاريخ البداية (ملف الاستيراد) أو رقم طلب الإجازة (القائمة المصدّرة).'));
+        const get = (r, i) => (i >= 0 ? r[i] : '');
+        const exported = c.cancel >= 0;
+        S.rows = []; let bad = 0;
+        aoa.slice(hi + 1).forEach((r, k) => {
+          const empText = String(get(r, c.emp) || '').trim().replace(/\.0+$/, ''), iqamaText = String(get(r, c.iqama) || '').trim().replace(/\.0+$/, '');
+          if (!empText && !iqamaText) return;
+          if (exported && !isYes_(get(r, c.cancel))) return;
+          const start = date_(get(r, c.start)), end = date_(get(r, c.end));
+          const row = { no: hi + k + 2, empText, iqamaText, leaveId: String(get(r, c.lid) || '').trim().replace(/\.0+$/, ''), type: String(get(r, c.type) || '').trim(), start: start || '', end: end || '', reason: String(get(r, c.reason) || '').trim(), state: '', msg: '' };
+          if (start === null || end === null) { row.parseErr = true; row.state = 'error'; row.msg = '✗ ' + T('Date not understood (use YYYY-MM-DD or DD/MM/YYYY)', 'لم يُفهم التاريخ (استخدم YYYY-MM-DD أو DD/MM/YYYY)'); bad++; }
+          else if (!row.leaveId && !row.start) { row.parseErr = true; row.state = 'error'; row.msg = '✗ ' + T('Start date missing', 'تاريخ البداية مفقود'); bad++; }
+          S.rows.push(row);
+        });
+        S.dryDone = false;
+        S.note = S.rows.length + T(' leave(s) to cancel read from ', ' إجازة للإلغاء قُرئت من ') + (exported ? T('the exported list (rows with YES)', 'القائمة المصدّرة (الصفوف التي بها YES)') : T('the import file (every row)', 'ملف الاستيراد (كل الصفوف)')) + (bad ? ' · ' + bad + T(' with errors', ' بها أخطاء') : '') + T('. Run the Dry Run next.', '. شغّل التشغيل التجريبي.'); S.noteErr = !S.rows.length;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      paint_();
+    });
+
+    // ---------------- dry run
+    async function dryRun_() {
+      S.busy = T('Checking…', 'جارٍ الفحص…'); S.note = ''; S.noteErr = false; paint_();
+      try {
+        const emps = await W.__jisrBulkOpsEmployees.get(false);
+        const types = await types_();
+        const byCode = new Map(emps.filter((e) => e.code != null).map((e) => [String(e.code).trim().toLowerCase(), e]));
+        const byNid = new Map(emps.filter((e) => e.nid).map((e) => [String(e.nid).trim(), e]));
+        const todo = S.rows.filter((r) => r.state !== 'done' && !r.parseErr);
+        todo.forEach((r) => {
+          r.state = ''; r.msg = ''; r.leave = null; r.emp = (r.empText && byCode.get(r.empText.toLowerCase())) || (r.iqamaText && byNid.get(r.iqamaText)) || null;
+          const errs = [];
+          if (!r.emp) errs.push(T('Employee not found', 'الموظف غير موجود'));
+          if (r.type && types && types.length && !resolveType_(r.type, types).length) errs.push(T('Leave type "', 'نوع الإجازة "') + r.type + T('" not found in Jisr (', '" غير موجود في جسر (') + types.slice(0, 6).map((t) => t.name).join(', ') + (types.length > 6 ? '…' : '') + ')');
+          if (errs.length) { r.state = 'error'; r.msg = '✗ ' + errs.join('\n✗ '); }
+        });
+        const empIds = Array.from(new Set(todo.filter((r) => r.emp).map((r) => String(r.emp.id))));
+        let done = 0;
+        await pool_(empIds, 4, async (id) => {
+          try { await hist_(id, true); } catch (e) { todo.filter((r) => r.emp && String(r.emp.id) === id).forEach((r) => { r.state = 'error'; r.msg = '✗ ' + e.message; }); }
+          done++; statusEl.textContent = T('Reading leaves… ', 'جارٍ قراءة الإجازات… ') + done + '/' + empIds.length;
+        });
+        const taken = new Map();
+        todo.filter((r) => !r.state).forEach((r) => {
+          const m = matchLeaves_(r, S.hist.get(String(r.emp.id)) || [], types);
+          if (!m.matches.length) { r.state = /Already|بالفعل/.test(m.why) ? 'skip' : 'error'; r.msg = (r.state === 'skip' ? '' : '✗ ') + m.why; return; }
+          const l = m.matches[0]; const k = r.emp.id + ':' + l.id;
+          if (taken.has(k)) { r.state = 'skip'; r.msg = T('Same leave as row ', 'نفس الإجازة في الصف ') + taken.get(k); return; }
+          taken.set(k, r.no); r.leave = l; r.state = 'ready';
+          if (l.imported === false) r.msg = T('ready — this leave was not imported (requested in Jisr)', 'جاهز — هذه الإجازة لم تُستورد (طُلبت في جسر)');
+        });
+        S.dryDone = true;
+        const rd = S.rows.filter((r) => r.state === 'ready').length;
+        S.note = T('Dry Run done — nothing was cancelled. ', 'انتهى التشغيل التجريبي — لم يُلغَ شيء. ') + rd + T(' leave(s) ready to cancel for ', ' إجازة جاهزة للإلغاء لـ ') + new Set(S.rows.filter((r) => r.state === 'ready').map((r) => r.emp.id)).size + T(' employee(s).', ' موظف.');
+        if (!types) S.note += T(' (Leave types could not be read, so types were matched by name only.)', ' (تعذّرت قراءة أنواع الإجازات، فطوبقت الأنواع بالاسم فقط.)');
+        S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    }
+    dryB.addEventListener('click', dryRun_);
+
+    // ---------------- live: one bulk_cancel per employee (and reason), then read back
+    async function runLive_() {
+      const reason = reasonIn.value.trim();
+      const todo = S.rows.filter((r) => r.state === 'ready');
+      if (!todo.length) return;
+      if (!reason && todo.some((r) => !r.reason)) { S.note = T('Enter a reason first (it is sent to Jisr with the cancellation).', 'أدخل السبب أولًا (يُرسل إلى جسر مع الإلغاء).'); S.noteErr = true; paint_(); reasonIn.focus(); return; }
+      const nEmp = new Set(todo.map((r) => r.emp.id)).size;
+      if (!confirm(T('Cancel ', 'إلغاء ') + todo.length + T(' leave(s) of ', ' إجازة لـ ') + nEmp + T(' employee(s) in ', ' موظف في ') + slug_() + '?\n\n' + T('Reason: ', 'السبب: ') + (reason || T('(from the file)', '(من الملف)')) + '\n\n' + T('This cannot be undone from the tool.', 'لا يمكن التراجع عن ذلك من الأداة.'))) return;
+      const groups = new Map();
+      todo.forEach((r) => { const k = r.emp.id + '|' + (r.reason || reason); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
+      const jobs = []; groups.forEach((rows, k) => { for (let i = 0; i < rows.length; i += 50) jobs.push({ empId: rows[0].emp.id, reason: k.slice(k.indexOf('|') + 1), rows: rows.slice(i, i + 50) }); });
+      S.phase = 'running'; S.stop = false; S.busy = ' '; paint_();
+      let done = 0;
+      await pool_(jobs, 3, async (j) => {
+        if (S.stop) { j.rows.forEach((r) => { r.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); }); return; }
+        try {
+          const res = await cancel_(j.empId, j.rows.map((r) => r.leave.id), j.reason);
+          if (!res.ok) j.rows.forEach((r) => { r.state = 'failed'; r.msg = '✗ ' + (jisrMsg_(res.json) || 'HTTP ' + res.status); });
+          else {
+            let after = null; try { after = await hist_(j.empId, true); } catch (e) { after = null; }
+            j.rows.forEach((r) => {
+              const still = after && after.find((l) => String(l.id) === String(r.leave.id) && !isGone_(l.status));
+              if (after && still) { r.state = 'failed'; r.msg = '✗ ' + T('Jisr answered OK but the leave is still ', 'ردّ جسر بنجاح لكن الإجازة ما زالت ') + (still.statusLabel || still.status); }
+              else { r.state = 'done'; r.msg = '✓ ' + T('cancelled', 'أُلغيت') + (after ? '' : T(' (could not re-read to verify)', ' (تعذّر التحقق)')); }
+            });
+          }
+        } catch (e) { j.rows.forEach((r) => { r.state = 'failed'; r.msg = '✗ ' + e.message; }); }
+        done += j.rows.length; S.busy = T('Cancelling… ', 'جارٍ الإلغاء… ') + done + '/' + todo.length; paint_();
+      });
+      S.phase = 'done'; S.busy = '';
+      const ok = todo.filter((r) => r.state === 'done').length;
+      S.note = ok + T(' of ', ' من ') + todo.length + T(' leave(s) cancelled.', ' إجازة أُلغيت.'); S.noteErr = ok < todo.length;
+      paint_();
+    }
+    runB.addEventListener('click', runLive_);
+    stopB.addEventListener('click', () => { S.stop = true; });
+    resB.addEventListener('click', () => {
+      const aoa = [['Row', 'Employee ID', 'Employee Name', 'Leave request ID', 'Leave type', 'Start date', 'End date', 'Result']].concat(S.rows.map((r) => [r.no, r.emp ? r.emp.code || r.emp.id : r.empText, r.emp ? r.emp.name : '', r.leave ? r.leave.id : r.leaveId, r.leave ? r.leave.type : r.type, r.leave ? r.leave.start : r.start, r.leave ? r.leave.end : r.end, String(r.msg || '').replace(/\n/g, ' | ')]));
+      const wb = XLSX.utils.book_new(); const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = [{ wch: 6 }, { wch: 12 }, { wch: 28 }, { wch: 14 }, { wch: 20 }, { wch: 12 }, { wch: 12 }, { wch: 60 }];
+      XLSX.utils.book_append_sheet(wb, ws, 'Leave cancel results');
+      XLSX.writeFile(wb, 'jisr-leave-cancel-results-' + slug_() + '.xlsx');
+    });
+    render_();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Bulk Cancel Leave Requests', open: openTool_, version: SECTION_VERSION };
+    W.__jisrLeaveCancel = { date_, leaveItem_, matchLeaves_, typesFrom_, resolveType_ };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.19.0
+// ###########################################################################
+
+/**
+ * ===========================================================================
+ * Jisr Bulk Ops — Fixed Working Hours (weekly schedules): create, edit, delete, assign  (v4.13.0)
+ * ===========================================================================
+ * Confirmed (user captures, onboardingteam, 2026-10-13/15):
+ *   List:    GET    /v2/attendance/weekly_shift_templates?name=&page=1&rpp=25
+ *   Detail:  GET    /v2/attendance/weekly_shift_templates/{id}
+ *   Create:  POST   /v2/attendance/weekly_shift_templates                       -> 201
+ *   Edit:    PUT    /v2/attendance/weekly_shift_templates/{id}                  -> 200 { data.weekly_shift_template }
+ *   Delete:  DELETE /v2/attendance/weekly_shift_templates/{id}                  -> 200
+ *   Body (create and edit):
+ *     { [confirm_unassign:true,] employee_ids:[…], name_en, name_ar, effective_date:"2026-09-22", repeat_unit:"forever", repeat_value:null,
+ *       weekday_mappings_attributes:[{ is_day_off:false, weekday:0, location_id:"default", newShifts:[<full shift object>], shift_ids:[478660] },
+ *                                    … { is_day_off:true, weekday:6, newShifts:[], location_id:null, shift_ids:[] }] }
+ *     confirm_unassign:true was sent by Jisr when an employee assigned to another schedule was added.
+ *   Answer: data.weekly_shift_template{ id, name_en, name_ar, employee_ids[], effective_date, repeat_unit, repeat_value, shift_ids[], weekday_mappings[{ id, is_day_off, weekday, … }] }
+ * Assumed (read flexibly; check the first export against Jisr):
+ *   - the list answer's array key and the shift objects inside weekday_mappings (shifts / newShifts / …)
+ *   - which day weekday 0 is (a setting in the tool, default Sunday)
+ *   - GET /v2/attendance/shifts for shifts not used by any schedule (optional; ignored if it fails)
+ * Shift times themselves are not edited here: a schedule uses existing shifts (by name or id).
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+
+  const SECTION_VERSION = '4.13.0';
+  const MODULE_ID = 'fixed-hours-bulk';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
+  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const BASE = '/v2/attendance/weekly_shift_templates';
+  const DAYS = [['Sun', 'الأحد'], ['Mon', 'الاثنين'], ['Tue', 'الثلاثاء'], ['Wed', 'الأربعاء'], ['Thu', 'الخميس'], ['Fri', 'الجمعة'], ['Sat', 'السبت']];
+
+  // ======================================================================= pure helpers
+  const pad_ = (n) => String(n).padStart(2, '0');
+  function date_(v) {
+    if (v === null || v === undefined || v === '') return '';
+    if (v instanceof Date) return isNaN(v) ? null : v.getFullYear() + '-' + pad_(v.getMonth() + 1) + '-' + pad_(v.getDate());
+    if (typeof v === 'number') { if (v < 20000 || v > 80000) return null; const d = new Date(Math.round((v - 25569) * 86400000)); return d.getUTCFullYear() + '-' + pad_(d.getUTCMonth() + 1) + '-' + pad_(d.getUTCDate()); }
+    const s = String(v).trim().replace(/[٠-٩]/g, (c) => '٠١٢٣٤٥٦٧٨٩'.indexOf(c));
+    if (!s) return '';
+    let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s); if (m) return m[1] + '-' + pad_(m[2]) + '-' + pad_(m[3]);
+    m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(s); if (m) return m[3] + '-' + pad_(m[2]) + '-' + pad_(m[1]);
+    if (/^\d+(\.\d+)?$/.test(s)) return date_(Number(s));
+    return null;
+  }
+  const today_ = () => date_(new Date());
+  /** column index (0 = Sun … 6 = Sat) -> Jisr weekday number, for "weekday 0 is Sunday" or "… Monday" */
+  const toWeekday_ = (col, firstIsMonday) => (firstIsMonday ? (col + 6) % 7 : col);
+  const shiftName_ = (s) => String(s.name_i18n || s.name_en || s.name_ar || s.name || ((s.start_time || '?') + '–' + (s.end_time || '?'))).trim();
+  const isOff_ = (t) => /^(off|day off|rest|weekend|-|—|عطلة|إجازة|اجازة|راحة)$/i.test(String(t || '').trim());
+  function findList_(json, test) {
+    let out = null;
+    (function walk(v, d) { if (out || !v || typeof v !== 'object' || d > 5) return; if (Array.isArray(v)) { if (v.length && v.every((x) => x && typeof x === 'object' && test(x))) { out = v; return; } v.forEach((x) => walk(x, d + 1)); return; } Object.values(v).forEach((x) => walk(x, d + 1)); })(json, 0);
+    return out || [];
+  }
+  /** One weekly_shift_template object -> model; shift objects found inside are added to catalog (Map id -> shift). */
+  function readTemplate_(t, catalog) {
+    const days = new Array(7).fill(null);
+    (Array.isArray(t.weekday_mappings) ? t.weekday_mappings : Array.isArray(t.weekday_mappings_attributes) ? t.weekday_mappings_attributes : []).forEach((m) => {
+      const wd = Number(m.weekday); if (!(wd >= 0 && wd <= 6)) return;
+      const objs = ['shifts', 'newShifts', 'new_shifts', 'weekday_shifts', 'shift_details', 'shift'].map((k) => m[k]).find((x) => Array.isArray(x) && x.length) || (m.shift && typeof m.shift === 'object' ? [m.shift] : []);
+      objs.forEach((s) => { if (s && s.id != null && catalog && !catalog.has(String(s.id))) catalog.set(String(s.id), s); });
+      const ids = (Array.isArray(m.shift_ids) && m.shift_ids.length ? m.shift_ids : objs.map((s) => s && s.id).filter((x) => x != null)).map(String);
+      days[wd] = { off: !!m.is_day_off || !ids.length, shiftIds: m.is_day_off ? [] : ids, locationId: m.location_id != null ? m.location_id : null };
+    });
+    return { id: t.id, nameEn: String(t.name_en || t.name_i18n || '').trim(), nameAr: String(t.name_ar || '').trim(), eff: date_(t.effective_date) || '', repeatUnit: t.repeat_unit || 'forever', repeatValue: t.repeat_value != null ? t.repeat_value : null, employeeIds: (t.employee_ids || []).map(String), days, complete: days.every(Boolean) };
+  }
+  /** Request body exactly like Jisr's own form. */
+  function body_(m, catalog, confirm) {
+    const b = {};
+    if (confirm) b.confirm_unassign = true;
+    b.employee_ids = m.employeeIds.map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+    b.name_en = m.nameEn; b.name_ar = m.nameAr; b.effective_date = m.eff; b.repeat_unit = m.repeatUnit || 'forever'; b.repeat_value = m.repeatValue != null ? m.repeatValue : null;
+    b.weekday_mappings_attributes = m.days.map((d, wd) => d.off
+      ? { is_day_off: true, weekday: wd, newShifts: [], location_id: null, shift_ids: [] }
+      : { is_day_off: false, weekday: wd, location_id: d.locationId || 'default', newShifts: d.shiftIds.map((id) => catalog.get(String(id)) || { id: Number(id) }), shift_ids: d.shiftIds.map(Number) });
+    return b;
+  }
+  /** Text for one day: "OFF" or shift names joined with " + " (name #id when the name is not unique). */
+  function dayText_(d, catalog, dupNames) {
+    if (!d) return '?';
+    if (d.off) return 'OFF';
+    return d.shiftIds.map((id) => { const s = catalog.get(String(id)); if (!s) return '#' + id; const n = shiftName_(s); return dupNames.has(n.toLowerCase()) ? n + ' #' + id : n; }).join(' + ');
+  }
+  /** Cell text -> { off, shiftIds } | { error } */
+  function parseDay_(text, catalog) {
+    const t = String(text == null ? '' : text).trim();
+    if (!t) return { error: T('empty — write OFF or a shift', 'فارغ — اكتب OFF أو اسم وردية') };
+    if (isOff_(t)) return { off: true, shiftIds: [] };
+    const ids = [];
+    for (const part of t.split(/\s*\+\s*/)) {
+      const m = /#\s*(\d+)\s*$/.exec(part) || /^(\d+)$/.exec(part);
+      if (m) { if (!catalog.has(m[1])) return { error: T('shift #', 'الوردية #') + m[1] + T(' not found', ' غير موجودة') }; ids.push(m[1]); continue; }
+      const k = part.toLowerCase();
+      const hits = Array.from(catalog.entries()).filter(([, s]) => [s.name_i18n, s.name_en, s.name_ar, s.name].some((n) => n && String(n).trim().toLowerCase() === k));
+      if (!hits.length) return { error: T('shift "', 'الوردية "') + part + T('" not found', '" غير موجودة') };
+      if (hits.length > 1) return { error: T('shift "', 'الوردية "') + part + T('" matches ', '" تطابق ') + hits.length + T(' shifts — write it as "', ' ورديات — اكتبها "') + part + ' #' + hits[0][0] + '"' };
+      ids.push(hits[0][0]);
+    }
+    return { off: false, shiftIds: ids };
+  }
+  const sameDays_ = (a, b) => a.every((d, i) => d && b[i] && d.off === b[i].off && d.shiftIds.join(',') === b[i].shiftIds.join(','));
+
+  // ======================================================================= network
+  function jisrMsg_(j) {
+    if (!j || typeof j !== 'object') return '';
+    const m = j.message || j.error || (j.errors && (Array.isArray(j.errors) ? j.errors.join('; ') : typeof j.errors === 'object' ? Object.values(j.errors).flat().join('; ') : j.errors));
+    return m ? String(m).slice(0, 240) : '';
+  }
+  async function request_(method, path, query, body) {
+    const qs = new URLSearchParams();
+    Object.entries(query || {}).forEach(([k, v]) => qs.append(k, v));
+    qs.append('slug', slug_());
+    const url = apiBase_() + path + '?' + qs.toString();
+    for (let a = 0; a < 4; a++) {
+      let res;
+      try {
+        res = await fetch(url, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: I.isAr() ? 'ar' : 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
+      } catch (e) {
+        if (method !== 'GET') { const err = new Error(T('No answer from Jisr — check the schedule in Jisr before retrying', 'لا رد من جسر — تحقّق من الجدول في جسر قبل إعادة المحاولة')); err.unknown = true; throw err; }
+        await sleep_(800 * (a + 1)); continue;
+      }
+      if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول مجددًا.'));
+      if (res.status === 429 || (method === 'GET' && res.status >= 500)) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
+      const json = await res.json().catch(() => null);
+      if (res.status === 403) { const err = new Error(T('Jisr refused (HTTP 403)', 'رفض جسر الطلب (HTTP 403)') + (jisrMsg_(json) ? ': ' + jisrMsg_(json) : '')); err.status = 403; throw err; }
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+    }
+    throw new Error('Request failed after retries');
+  }
+  const isTpl_ = (x) => x.id != null && ('name_en' in x || 'name_i18n' in x || 'weekday_mappings' in x || 'employee_ids' in x);
+  async function listTemplates_() {
+    const out = []; const seen = new Set();
+    for (let page = 1; page <= 100; page++) {
+      const r = await request_('GET', BASE, { name: '', page, rpp: 25 });
+      if (!r.ok) throw new Error(T('Could not read the fixed working hours schedules (HTTP ', 'تعذّرت قراءة جداول ساعات العمل الثابتة (HTTP ') + r.status + ')' + (jisrMsg_(r.json) ? ': ' + jisrMsg_(r.json) : ''));
+      const list = findList_(r.json, isTpl_).filter((t) => !seen.has(String(t.id)));
+      list.forEach((t) => { seen.add(String(t.id)); out.push(t); });
+      const pg = (r.json && r.json.data && (r.json.data.pagination || r.json.data.pagination_info)) || (r.json && r.json.pagination) || null;
+      if (!list.length || (pg && (pg.next_page === null || (pg.total_pages && page >= pg.total_pages))) || (!pg && list.length < 25)) break;
+    }
+    return out;
+  }
+  async function detail_(id) {
+    const r = await request_('GET', BASE + '/' + encodeURIComponent(id), null);
+    if (!r.ok) throw new Error(T('Could not read schedule #', 'تعذّرت قراءة الجدول #') + id + ' (HTTP ' + r.status + ')');
+    const d = r.json && r.json.data;
+    return (d && (d.weekly_shift_template || (isTpl_(d) ? d : null))) || findList_(r.json, isTpl_)[0] || null;
+  }
+  async function extraShifts_(catalog) {
+    try {
+      const r = await request_('GET', '/v2/attendance/shifts', { page: 1, rpp: 200 });
+      if (!r.ok) return 0;
+      let n = 0; findList_(r.json, (x) => x.id != null && ('start_time' in x || 'end_time' in x)).forEach((s) => { if (!catalog.has(String(s.id))) { catalog.set(String(s.id), s); n++; } });
+      return n;
+    } catch (e) { return 0; }
+  }
+  async function pool_(items, n, fn) {
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(n, items.length)) }, async () => { while (next < items.length) { const i = next++; await fn(items[i], i); } }));
+  }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-fh-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-fh-css', text: `
+      .jfh-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+      .jfh-bar label { font-size: 12.5px; display: flex; gap: 6px; align-items: center; }
+      .jfh-bar select { border: 1px solid #dadce0; border-radius: 6px; padding: 5px 7px; font: inherit; }
+      .jfh-wrap { max-height: 46vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jfh-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jfh-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jfh-wrap td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jfh-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jfh-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      .jfh-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
+    ` }));
+  }
+  const SCH_HEAD = ['Schedule ID (blank = new)', 'Name (English)', 'Name (Arabic)', 'Effective date', 'Employees'].concat(DAYS.map((d) => d[0])).concat(['Action (DELETE to delete)']);
+  const ASG_HEAD = ['Employee ID', 'Employee Name', 'Iqama / National ID', 'Current schedule', 'New schedule (name or ID, NONE = unassign)'];
+  const SHIFT_HEAD = ['Shift ID', 'Shift name', 'Start', 'End', 'Next day end', 'Flexible (min)', 'Allowed delay (min)', 'Write it as'];
+  const norm_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
+
+  function openTool_() {
+    injectCss_();
+    const S = { tpls: null, catalog: new Map(), items: [], parsed: null, busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false };
+    const X = W.__jisrBulkOpsXlsx;
+    const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1300px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => { if (S.phase === 'running' && !confirm(T('Still saving. Close anyway?', 'لا يزال الحفظ جاريًا. هل تريد الإغلاق؟'))) return; S.stop = true; backdrop.remove(); };
+    closeBtn.addEventListener('click', close);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    const wdSel = el('select', {}, [el('option', { value: 'sun', text: T('Sunday', 'الأحد') }), el('option', { value: 'mon', text: T('Monday', 'الاثنين') })]);
+    wdSel.value = gmGet_('fixedHoursWeekday0', 'sun');
+    wdSel.addEventListener('change', () => { gmSet_('fixedHoursWeekday0', wdSel.value); S.dryDone = false; S.note = T('Day setting changed — export again before editing.', 'تغيّر إعداد الأيام — صدّر مجددًا قبل التعديل.'); paint_(); });
+    const expB = el('button', { class: 'jbo-btn', text: T('⬇ Schedules & assignments (.xlsx)', '⬇ الجداول والتعيينات (‎.xlsx)') });
+    const upB = el('button', { class: 'jbo-btn', text: T('⬆ Upload the edited file', '⬆ رفع الملف المعدّل') });
+    const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls', style: { display: 'none' } });
+    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const statsEl = el('div', { class: 'jfh-stats' }); const wrap = el('div', { class: 'jfh-wrap' });
+    const dryB = el('button', { class: 'jbo-btn', text: T('🔍 Dry Run', '🔍 تشغيل تجريبي') });
+    const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
+    const resB = el('button', { class: 'jbo-btn', text: T('⬇ Results (.xlsx)', '⬇ النتائج (‎.xlsx)') });
+    const monday = () => wdSel.value === 'mon';
+
+    function render_() {
+      titleEl.textContent = T('Fixed Working Hours — Bulk', 'ساعات العمل الثابتة — جماعي');
+      body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
+        'Download the schedules and assignments, then in the file: edit names, days and shifts (sheet Schedules), add rows without an ID to create schedules, type DELETE to delete one, and set each employee\'s schedule (sheet Assignments; NONE = unassign). Upload it, Dry Run, then apply.',
+        'نزّل الجداول والتعيينات، ثم في الملف: عدّل الأسماء والأيام والورديات (ورقة Schedules)، وأضف صفوفًا بلا رقم لإنشاء جداول، واكتب DELETE للحذف، وحدّد جدول كل موظف (ورقة Assignments؛ NONE = إلغاء التعيين). ارفعه وشغّل التجريبي ثم طبّق.') }));
+      body.appendChild(el('div', { class: 'jfh-warn', text: T(
+        'Check once: open one schedule in Jisr and compare its days with the exported file. If the days are shifted by one, change “Jisr\'s first day (weekday 0)” and export again. Shifts are used as they are; create new shift times in Jisr first.',
+        'تحقّق مرة واحدة: افتح جدولًا في جسر وقارن أيامه بالملف المصدّر. إن كانت الأيام مزاحة بيوم، غيّر «أول يوم في جسر (اليوم 0)» وصدّر مجددًا. تُستخدم الورديات كما هي؛ أنشئ أوقات الورديات الجديدة في جسر أولًا.') }));
+      body.appendChild(el('div', { class: 'jfh-bar' }, [expB, upB, el('label', {}, [T('Jisr\'s first day (weekday 0)', 'أول يوم في جسر (اليوم 0)'), wdSel])]));
+      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
+      paint_();
+    }
+    function paint_() {
+      statusEl.textContent = S.busy || S.note;
+      statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      statsEl.innerHTML = ''; wrap.innerHTML = '';
+      const it = S.items; const cnt = (st) => it.filter((r) => r.state === st).length;
+      if (it.length) {
+        [[cnt('ready'), T('ready', 'جاهز')], [cnt('error'), T('blocked', 'محجوب')], [cnt('skip'), T('no change', 'بلا تغيير')], [cnt('done'), T('done ✓', 'تم ✓')], [cnt('failed'), T('failed', 'فشل')]]
+          .filter(([v], i) => i === 0 || v).forEach(([v, l]) => statsEl.appendChild(el('span', {}, [el('b', { text: String(v) }), ' ' + l])));
+        const t = el('table');
+        t.appendChild(el('tr', {}, [T('Sheet / row', 'الورقة / الصف'), T('Schedule', 'الجدول'), T('Action', 'الإجراء'), T('Changes', 'التغييرات'), T('Result', 'النتيجة')].map((h) => el('th', { text: h }))));
+        it.forEach((r) => {
+          const col = r.state === 'done' ? '#137333' : (r.state === 'error' || r.state === 'failed') ? '#c5221f' : r.state === 'skip' ? '#5f6368' : '#202124';
+          t.appendChild(el('tr', {}, [el('td', { text: r.where || '' }), el('td', { text: r.label || '' }), el('td', { text: r.actionLabel || '' }), el('td', { text: (r.plan || []).join('\n'), style: { whiteSpace: 'pre-line' } }),
+            el('td', { text: r.msg || (r.state === 'ready' ? T('ready', 'جاهز') : '—'), style: { color: col, whiteSpace: 'pre-line' } })]));
+        });
+        wrap.appendChild(t);
+      }
+      const ready = it.filter((r) => r.state === 'ready').length;
+      runB.textContent = T('▶ Apply ', '▶ تطبيق ') + ready + T(' change(s)', ' تغيير');
+      runB.disabled = !S.dryDone || !ready || !!S.busy;
+      dryB.disabled = !S.parsed || !!S.busy;
+      stopB.style.display = S.phase === 'running' ? '' : 'none';
+      [expB, upB, wdSel].forEach((b) => { b.disabled = !!S.busy; });
+      resB.style.display = it.some((r) => ['done', 'failed'].includes(r.state)) ? '' : 'none';
+    }
+    /** Read every schedule with its days, and the shift catalog. */
+    async function loadAll_() {
+      const list = await listTemplates_();
+      S.catalog = new Map(); const out = []; let n = 0;
+      await pool_(list, 4, async (t) => {
+        let d = null; try { d = await detail_(t.id); } catch (e) { d = null; }
+        const m = readTemplate_(d || t, S.catalog);
+        if (!d) m.detailErr = true;
+        out.push(m); n++; statusEl.textContent = T('Reading schedules… ', 'جارٍ قراءة الجداول… ') + n + '/' + list.length;
+      });
+      await extraShifts_(S.catalog);
+      out.sort((a, b) => a.nameEn.localeCompare(b.nameEn));
+      S.tpls = out;
+      return out;
+    }
+    const dupNames_ = () => { const c = new Map(); S.catalog.forEach((s) => { const k = shiftName_(s).toLowerCase(); c.set(k, (c.get(k) || 0) + 1); }); return new Set(Array.from(c.entries()).filter(([, v]) => v > 1).map(([k]) => k)); };
+    /** model.days is indexed by Jisr weekday; the file shows Sun..Sat */
+    const cols_ = (m) => DAYS.map((_, col) => m.days[toWeekday_(col, monday())]);
+
+    // ---------------- export
+    expB.addEventListener('click', async () => {
+      S.busy = T('Reading schedules…', 'جارٍ قراءة الجداول…'); paint_();
+      try {
+        const tpls = await loadAll_();
+        const emps = await W.__jisrBulkOpsEmployees.get(false);
+        const dup = dupNames_();
+        const sch = tpls.map((m) => [m.id, m.nameEn, m.nameAr, m.eff, m.employeeIds.length].concat(cols_(m).map((d) => dayText_(d, S.catalog, dup))).concat(['']));
+        const byEmp = new Map(); tpls.forEach((m) => m.employeeIds.forEach((id) => { if (!byEmp.has(id)) byEmp.set(id, []); byEmp.get(id).push(m.nameEn || '#' + m.id); }));
+        const asg = emps.map((e) => [e.code || e.id, e.name || '', e.nid ? String(e.nid) : '', (byEmp.get(String(e.id)) || []).join(', '), '']);
+        const shifts = Array.from(S.catalog.entries()).map(([id, s]) => { const n = shiftName_(s); return [Number(id), n, s.start_time || '', s.end_time || '', s.is_end_time_next_day ? 'Yes' : 'No', s.flexible_duration != null ? s.flexible_duration : '', s.allowed_delay != null ? s.allowed_delay : '', dup.has(n.toLowerCase()) ? n + ' #' + id : n]; });
+        const wb = XLSX.utils.book_new();
+        const add = (name, head, rows, widths) => { const ws = XLSX.utils.aoa_to_sheet([head].concat(rows)); ws['!cols'] = widths.map((w) => ({ wch: w })); XLSX.utils.book_append_sheet(wb, ws, name); };
+        add('Schedules', SCH_HEAD, sch, [14, 26, 26, 13, 10, 16, 16, 16, 16, 16, 16, 16, 20]);
+        add('Assignments', ASG_HEAD, asg, [12, 28, 16, 30, 34]);
+        add('Shifts', SHIFT_HEAD, shifts, [10, 24, 10, 10, 12, 12, 16, 28]);
+        add('How to', ['How to use this file'], [
+          ['Schedules: change a name, the effective date or a day. A day is OFF or a shift name from the Shifts sheet; two shifts: "Morning + Evening".'],
+          ['New schedule: add a row with an empty Schedule ID, both names, the effective date and all 7 days.'],
+          ['Delete: type DELETE in the last column. Schedules that still have employees are refused by Jisr.'],
+          ['Assignments: write the schedule name (or ID) in the last column. NONE removes the employee from every schedule. Leave it empty for no change.'],
+          ['Days follow the tool setting “Jisr\'s first day (weekday 0)” = ' + (monday() ? 'Monday' : 'Sunday') + '. Do not change it between export and upload.'],
+        ], [110]);
+        const names = tpls.map((m) => m.nameEn).filter(Boolean).slice(0, 200).concat(['NONE']);
+        const shiftVals = ['OFF'].concat(shifts.map((s) => s[7])).slice(0, 250);
+        if (X && X.saveWithDropdowns) {
+          const picks = DAYS.map((_, i) => ({ sheet: 'Schedules', col: 5 + i, strict: false, title: DAYS[i][0], values: shiftVals })).concat([{ sheet: 'Schedules', col: 12, strict: false, title: 'Action', values: ['DELETE'] }, { sheet: 'Assignments', col: 4, strict: false, title: 'New schedule', values: names }]);
+          await X.saveWithDropdowns(wb, 'jisr-fixed-working-hours-' + slug_() + '.xlsx', picks);
+        } else XLSX.writeFile(wb, 'jisr-fixed-working-hours-' + slug_() + '.xlsx');
+        S.dayMode = wdSel.value;
+        const partial = tpls.filter((m) => !m.complete).length;
+        S.note = tpls.length + T(' schedule(s), ', ' جدول، ') + S.catalog.size + T(' shift(s) and ', ' وردية و') + emps.length + T(' employee(s) exported.', ' موظف صُدّروا.') + (partial ? T(' ', ' ') + partial + T(' schedule(s) could not be read day by day (shown as ?) — they can be assigned to but not edited.', ' جدول تعذّرت قراءة أيامه (يظهر ?) — يمكن التعيين عليه دون تعديله.') : ''); S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+
+    // ---------------- upload
+    upB.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
+    fileIn.addEventListener('change', async () => {
+      const f = fileIn.files && fileIn.files[0]; if (!f) return;
+      try {
+        const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' });
+        const sheet = (re) => { const n = wb.SheetNames.find((x) => re.test(x)); return n ? XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: '', raw: true }) : null; };
+        const sch = sheet(/^schedules?$/i), asg = sheet(/^assignments?$/i);
+        if (!sch && !asg) throw new Error(T('Use the file exported from this tool (sheets Schedules and Assignments).', 'استخدم الملف المصدّر من هذه الأداة (ورقتا Schedules وAssignments).'));
+        const parsed = { schedules: [], assignments: [] };
+        if (sch) {
+          const h = (sch[0] || []).map(norm_); const col = (re) => h.findIndex((x) => re.test(x));
+          const c = { id: col(/^schedule id/), en: col(/^name english/), ar: col(/^name arabic/), eff: col(/^effective/), act: col(/^action/), days: DAYS.map((d) => h.indexOf(d[0].toLowerCase())) };
+          if (c.days.some((i) => i < 0)) throw new Error(T('The Schedules sheet needs the columns Sun … Sat.', 'تحتاج ورقة Schedules الأعمدة Sun … Sat.'));
+          sch.slice(1).forEach((r, k) => {
+            const g = (i) => (i >= 0 ? r[i] : '');
+            const row = { no: k + 2, id: String(g(c.id) || '').trim().replace(/\.0+$/, ''), en: String(g(c.en) || '').trim(), ar: String(g(c.ar) || '').trim(), effRaw: g(c.eff), action: String(g(c.act) || '').trim().toUpperCase(), days: c.days.map((i) => r[i]) };
+            if (!row.id && !row.en && !row.ar && row.days.every((x) => String(x == null ? '' : x).trim() === '')) return;
+            parsed.schedules.push(row);
+          });
+        }
+        if (asg) {
+          const h = (asg[0] || []).map(norm_); const col = (re) => h.findIndex((x) => re.test(x));
+          const c = { emp: col(/^employee id$|employee code|^code$/), iq: col(/iqama|national id/), to: col(/^new schedule/) };
+          asg.slice(1).forEach((r, k) => {
+            const to = String(c.to >= 0 ? r[c.to] : '').trim().replace(/\.0+$/, '');
+            if (!to) return;
+            parsed.assignments.push({ no: k + 2, emp: String(c.emp >= 0 ? r[c.emp] : '').trim().replace(/\.0+$/, ''), iq: String(c.iq >= 0 ? r[c.iq] : '').trim().replace(/\.0+$/, ''), to });
+          });
+        }
+        S.parsed = parsed; S.items = []; S.dryDone = false;
+        S.note = parsed.schedules.length + T(' schedule row(s) and ', ' صف جداول و') + parsed.assignments.length + T(' assignment(s) read. Run the Dry Run next.', ' تعيين قُرئت. شغّل التشغيل التجريبي.'); S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      paint_();
+    });
+
+    // ---------------- dry run: build one change per schedule
+    async function dryRun_() {
+      S.busy = T('Reading schedules…', 'جارٍ قراءة الجداول…'); S.note = ''; S.noteErr = false; paint_();
+      try {
+        const tpls = await loadAll_();
+        const emps = await W.__jisrBulkOpsEmployees.get(false);
+        const byCode = new Map(emps.filter((e) => e.code != null).map((e) => [String(e.code).trim().toLowerCase(), e]));
+        const byNid = new Map(emps.filter((e) => e.nid).map((e) => [String(e.nid).trim(), e]));
+        const empById = new Map(emps.map((e) => [String(e.id), e]));
+        const byId = new Map(tpls.map((m) => [String(m.id), m]));
+        const items = []; const plans = new Map(); // key -> plan
+        const err = (where, label, msg) => items.push({ where, label, actionLabel: '—', plan: [], state: 'error', msg: '✗ ' + msg });
+        const nameKey = (s) => String(s || '').trim().toLowerCase();
+        // 1) schedule rows
+        for (const r of S.parsed.schedules) {
+          const where = 'Schedules ' + r.no;
+          if (r.id) {
+            const m = byId.get(r.id);
+            if (!m) { err(where, '#' + r.id, T('Schedule ID not found in Jisr', 'رقم الجدول غير موجود في جسر')); continue; }
+            if (plans.has('id:' + r.id)) { err(where, m.nameEn, T('Same schedule as ', 'نفس الجدول في ') + plans.get('id:' + r.id).where); continue; }
+            if (r.action === 'DELETE') { plans.set('id:' + r.id, { kind: 'delete', where, m, label: m.nameEn || '#' + m.id }); continue; }
+            const want = JSON.parse(JSON.stringify(m)); const plan = []; const errs = [];
+            if (r.en && r.en !== m.nameEn) { plan.push(T('English name: ', 'الاسم الإنجليزي: ') + m.nameEn + ' → ' + r.en); want.nameEn = r.en; }
+            if (r.ar && r.ar !== m.nameAr) { plan.push(T('Arabic name: ', 'الاسم العربي: ') + m.nameAr + ' → ' + r.ar); want.nameAr = r.ar; }
+            const eff = date_(r.effRaw);
+            if (eff === null) errs.push(T('Effective date not understood', 'لم يُفهم تاريخ السريان'));
+            else if (eff && eff !== m.eff) { plan.push(T('Effective date: ', 'تاريخ السريان: ') + m.eff + ' → ' + eff); want.eff = eff; }
+            const dup = dupNames_();
+            DAYS.forEach((d, col) => {
+              const wd = toWeekday_(col, monday()); const cur = m.days[wd];
+              const txt = String(r.days[col] == null ? '' : r.days[col]).trim();
+              if (cur && txt === dayText_(cur, S.catalog, dup)) return;
+              if (!cur && (txt === '?' || !txt)) return;
+              const p = parseDay_(txt, S.catalog);
+              if (p.error) { errs.push(d[0] + ': ' + p.error); return; }
+              if (cur && cur.off === p.off && cur.shiftIds.join(',') === p.shiftIds.join(',')) return;
+              want.days[wd] = { off: p.off, shiftIds: p.shiftIds, locationId: cur ? cur.locationId : null };
+              plan.push(d[0] + ': ' + dayText_(cur, S.catalog, dup) + ' → ' + dayText_(want.days[wd], S.catalog, dup));
+            });
+            if (plan.some((x) => /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat):/.test(x)) && !m.complete) errs.push(T('This schedule\'s days could not be read from Jisr, so its days cannot be edited here', 'تعذّرت قراءة أيام هذا الجدول من جسر، فلا يمكن تعديل أيامه هنا'));
+            if (want.days.every((d) => d && d.off)) errs.push(T('A schedule needs at least one working day', 'يحتاج الجدول يوم عمل واحدًا على الأقل'));
+            if (errs.length) { err(where, m.nameEn, errs.join('\n✗ ')); continue; }
+            plans.set('id:' + r.id, { kind: 'update', where, m, want, plan, label: want.nameEn || '#' + m.id });
+          } else {
+            const errs = [];
+            if (r.action === 'DELETE') { err(where, r.en, T('DELETE needs the Schedule ID', 'الحذف يحتاج رقم الجدول')); continue; }
+            if (!r.en || !r.ar) errs.push(T('New schedule needs both names', 'الجدول الجديد يحتاج الاسمين'));
+            if (tpls.some((m) => nameKey(m.nameEn) === nameKey(r.en))) errs.push(T('A schedule named "', 'يوجد جدول باسم "') + r.en + T('" already exists — fill its Schedule ID to edit it', '" — املأ رقم الجدول لتعديله'));
+            if (plans.has('new:' + nameKey(r.en))) errs.push(T('Same name as ', 'نفس الاسم في ') + plans.get('new:' + nameKey(r.en)).where);
+            const eff = date_(r.effRaw); if (eff === null) errs.push(T('Effective date not understood', 'لم يُفهم تاريخ السريان'));
+            const days = new Array(7).fill(null); const plan = [];
+            DAYS.forEach((d, col) => { const p = parseDay_(r.days[col], S.catalog); if (p.error) errs.push(d[0] + ': ' + p.error); else days[toWeekday_(col, monday())] = { off: p.off, shiftIds: p.shiftIds, locationId: null }; });
+            if (days.every((x) => x && x.off)) errs.push(T('A schedule needs at least one working day', 'يحتاج الجدول يوم عمل واحدًا على الأقل'));
+            if (errs.length) { err(where, r.en || '—', errs.join('\n✗ ')); continue; }
+            const dup = dupNames_();
+            DAYS.forEach((d, col) => plan.push(d[0] + ': ' + dayText_(days[toWeekday_(col, monday())], S.catalog, dup)));
+            plans.set('new:' + nameKey(r.en), { kind: 'create', where, want: { id: null, nameEn: r.en, nameAr: r.ar, eff: eff || today_(), repeatUnit: 'forever', repeatValue: null, employeeIds: [], days, complete: true }, plan: [T('Effective ', 'يسري ') + (eff || today_())].concat(plan), label: r.en });
+          }
+        }
+        // 2) assignments
+        const findTarget = (txt) => {
+          const k = nameKey(txt);
+          if (plans.has('new:' + k)) return plans.get('new:' + k);
+          const m = byId.get(String(txt).replace(/^#/, '')) || tpls.find((x) => nameKey(x.nameEn) === k || nameKey(x.nameAr) === k);
+          if (!m) return null;
+          const key = 'id:' + m.id;
+          if (!plans.has(key)) plans.set(key, { kind: 'update', where: '', m, want: JSON.parse(JSON.stringify(m)), plan: [], label: m.nameEn || '#' + m.id });
+          return plans.get(key);
+        };
+        const touched = new Map();
+        const movedTo = new Map(); // employee id -> the plan that receives them
+        for (const a of S.parsed.assignments) {
+          const where = 'Assignments ' + a.no;
+          const e = (a.emp && byCode.get(a.emp.toLowerCase())) || (a.iq && byNid.get(a.iq)) || null;
+          if (!e) { err(where, a.emp || a.iq, T('Employee not found', 'الموظف غير موجود')); continue; }
+          if (touched.has(String(e.id))) { err(where, a.emp, T('Employee already set in ', 'الموظف محدد مسبقًا في ') + touched.get(String(e.id))); continue; }
+          touched.set(String(e.id), where);
+          const inNow = tpls.filter((m) => m.employeeIds.includes(String(e.id)));
+          if (/^none$|^لا يوجد$/i.test(a.to)) {
+            if (!inNow.length) { items.push({ where, label: e.name || a.emp, actionLabel: T('Unassign', 'إلغاء التعيين'), plan: [], state: 'skip', msg: T('not in any schedule', 'غير معيّن في أي جدول') }); continue; }
+            inNow.forEach((m) => { const p = findTarget(String(m.id)); if (p.kind === 'delete') return; p.want.employeeIds = p.want.employeeIds.filter((x) => x !== String(e.id)); (p.removed = p.removed || []).push(e); });
+            continue;
+          }
+          const p = findTarget(a.to);
+          if (!p) { err(where, e.name || a.emp, T('Schedule "', 'الجدول "') + a.to + T('" not found', '" غير موجود')); continue; }
+          if (p.kind === 'delete') { err(where, e.name || a.emp, T('Schedule "', 'الجدول "') + a.to + T('" is being deleted in this file', '" سيُحذف في هذا الملف')); continue; }
+          if (p.want.employeeIds.includes(String(e.id)) && inNow.length === 1) { items.push({ where, label: e.name || a.emp, actionLabel: T('Assign', 'تعيين'), plan: [], state: 'skip', msg: T('already in ', 'معيّن مسبقًا في ') + p.label }); continue; }
+          if (!p.want.employeeIds.includes(String(e.id))) p.want.employeeIds.push(String(e.id));
+          (p.added = p.added || []).push(e);
+          movedTo.set(String(e.id), p);
+          if (inNow.some((m) => !p.m || String(m.id) !== String(p.m.id))) { p.confirm = true; (p.moved = p.moved || []).push(e.name + ' ← ' + inNow.filter((m) => !p.m || String(m.id) !== String(p.m.id)).map((m) => m.nameEn).join(', ')); }
+        }
+        // an employee moved to another schedule must not be written back into the schedule they leave
+        plans.forEach((q) => { if (q.want) q.want.employeeIds = q.want.employeeIds.filter((id) => !movedTo.has(id) || movedTo.get(id) === q); });
+        // 3) items from plans
+        plans.forEach((p) => {
+          const it = { where: p.where || 'Assignments', label: p.label, kind: p.kind, p, plan: (p.plan || []).slice() };
+          if (p.kind === 'delete') {
+            it.actionLabel = T('Delete', 'حذف'); it.plan.push(T('Delete schedule', 'حذف الجدول') + (p.m.employeeIds.length ? T(' — it still has ', ' — ما زال به ') + p.m.employeeIds.length + T(' employee(s); Jisr may refuse', ' موظف؛ قد يرفض جسر') : ''));
+          } else {
+            it.actionLabel = p.kind === 'create' ? T('Create', 'إنشاء') : T('Edit', 'تعديل');
+            if (p.added && p.added.length) it.plan.push('+ ' + p.added.length + T(' employee(s): ', ' موظف: ') + p.added.slice(0, 5).map((e) => e.name || e.code).join(', ') + (p.added.length > 5 ? '…' : ''));
+            if (p.moved && p.moved.length) it.plan.push(T('moved here (Jisr unassigns them there): ', 'منقولون إلى هنا (يلغي جسر تعيينهم هناك): ') + p.moved.slice(0, 5).join('; ') + (p.moved.length > 5 ? '…' : ''));
+            if (p.removed && p.removed.length) it.plan.push('− ' + p.removed.length + T(' employee(s): ', ' موظف: ') + p.removed.slice(0, 5).map((e) => e.name || e.code).join(', ') + (p.removed.length > 5 ? '…' : ''));
+            if (p.kind === 'update' && !it.plan.length) { it.state = 'skip'; it.msg = T('no change', 'بلا تغيير'); }
+            if (p.kind === 'update' && !p.m.complete && it.state !== 'skip') { it.state = 'error'; it.msg = '✗ ' + T('This schedule\'s days could not be read from Jisr, so it cannot be saved safely', 'تعذّرت قراءة أيام هذا الجدول من جسر، فلا يمكن حفظه بأمان'); }
+          }
+          if (!it.state) it.state = 'ready';
+          items.push(it);
+        });
+        const order = { create: 0, update: 1, delete: 2 };
+        S.items = items.sort((a, b) => (a.state === 'error') - (b.state === 'error') || (order[a.kind] != null ? order[a.kind] : 3) - (order[b.kind] != null ? order[b.kind] : 3));
+        S.empById = empById;
+        S.dryDone = true;
+        const rd = items.filter((x) => x.state === 'ready');
+        S.note = T('Dry Run done — nothing was saved. ', 'انتهى التشغيل التجريبي — لم يُحفظ شيء. ') + rd.filter((x) => x.kind === 'create').length + T(' to create, ', ' للإنشاء، ') + rd.filter((x) => x.kind === 'update').length + T(' to edit, ', ' للتعديل، ') + rd.filter((x) => x.kind === 'delete').length + T(' to delete.', ' للحذف.');
+        S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    }
+    dryB.addEventListener('click', dryRun_);
+
+    // ---------------- live
+    async function verify_(id, want) {
+      let d = null; try { d = await detail_(id); } catch (e) { d = null; }
+      if (!d) return T(' (could not re-read to verify)', ' (تعذّر التحقق)');
+      const got = readTemplate_(d, S.catalog); const bad = [];
+      const missing = want.employeeIds.filter((x) => !got.employeeIds.includes(x)), extra = got.employeeIds.filter((x) => !want.employeeIds.includes(x));
+      if (missing.length || extra.length) bad.push(T('employees differ (', 'الموظفون مختلفون (') + (missing.length ? missing.length + T(' missing', ' ناقص') : '') + (missing.length && extra.length ? ', ' : '') + (extra.length ? extra.length + T(' extra', ' زائد') : '') + ')');
+      if (got.complete && !sameDays_(want.days, got.days)) bad.push(T('days differ', 'الأيام مختلفة'));
+      if (got.nameEn !== want.nameEn) bad.push(T('name differs', 'الاسم مختلف'));
+      return bad.length ? '\n⚠ ' + T('Jisr shows: ', 'يظهر في جسر: ') + bad.join(', ') : T(' · verified', ' · تم التحقق');
+    }
+    async function runOne_(it) {
+      const p = it.p;
+      try {
+        if (p.kind === 'delete') {
+          const r = await request_('DELETE', BASE + '/' + encodeURIComponent(p.m.id), null, null);
+          if (!r.ok) { it.state = 'failed'; it.msg = '✗ ' + (jisrMsg_(r.json) || 'HTTP ' + r.status); return; }
+          let still = null; try { still = (await listTemplates_()).some((t) => String(t.id) === String(p.m.id)); } catch (e) { still = null; }
+          it.state = still ? 'failed' : 'done'; it.msg = still ? '✗ ' + T('Jisr answered OK but the schedule is still listed', 'ردّ جسر بنجاح لكن الجدول ما زال موجودًا') : '✓ ' + T('deleted', 'حُذف');
+          return;
+        }
+        const b = body_(p.want, S.catalog, !!p.confirm);
+        const r = p.kind === 'create' ? await request_('POST', BASE, null, b) : await request_('PUT', BASE + '/' + encodeURIComponent(p.m.id), null, b);
+        if (!r.ok) { it.state = 'failed'; it.msg = '✗ ' + (jisrMsg_(r.json) || 'HTTP ' + r.status); return; }
+        const t = r.json && r.json.data && (r.json.data.weekly_shift_template || (isTpl_(r.json.data) ? r.json.data : null));
+        const id = p.kind === 'create' ? (t && t.id) : p.m.id;
+        if (p.kind === 'create') p.newId = id;
+        it.state = 'done'; it.msg = '✓ ' + (p.kind === 'create' ? T('created', 'أُنشئ') + (id != null ? ' #' + id : '') : T('saved', 'حُفظ')) + (id != null ? await verify_(id, p.want) : '');
+      } catch (e) { it.state = 'failed'; it.msg = '✗ ' + (e.unknown ? T('no answer from Jisr — check this schedule in Jisr', 'لا رد من جسر — تحقّق من هذا الجدول في جسر') : e.message); }
+    }
+    async function runLive_() {
+      const todo = S.items.filter((x) => x.state === 'ready');
+      if (!todo.length) return;
+      const n = (k) => todo.filter((x) => x.kind === k).length;
+      const moves = todo.reduce((a, x) => a + ((x.p && x.p.moved) ? x.p.moved.length : 0), 0);
+      if (!confirm(T('Apply to fixed working hours in ', 'تطبيق على ساعات العمل الثابتة في ') + slug_() + ':\n\n' + T('Create ', 'إنشاء ') + n('create') + '\n' + T('Edit ', 'تعديل ') + n('update') + '\n' + T('Delete ', 'حذف ') + n('delete') + (moves ? '\n\n' + moves + T(' employee(s) are moved from another schedule (Jisr unassigns them there).', ' موظف يُنقلون من جدول آخر (يلغي جسر تعيينهم هناك).') : '') + '\n\n' + T('Deleting cannot be undone from the tool.', 'لا يمكن التراجع عن الحذف من الأداة.'))) return;
+      S.phase = 'running'; S.stop = false; S.busy = ' '; paint_();
+      let done = 0;
+      for (const kind of ['create', 'update', 'delete']) {
+        for (const it of todo.filter((x) => x.kind === kind)) {
+          if (S.stop) { it.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); continue; }
+          await runOne_(it); done++; S.busy = T('Saving… ', 'جارٍ الحفظ… ') + done + '/' + todo.length; paint_();
+        }
+      }
+      S.phase = 'done'; S.busy = ''; S.dryDone = false; S.tpls = null;
+      const ok = todo.filter((x) => x.state === 'done').length;
+      S.note = ok + T(' of ', ' من ') + todo.length + T(' change(s) applied. Export again to see the result.', ' تغيير طُبّق. صدّر مجددًا لرؤية النتيجة.'); S.noteErr = ok < todo.length;
+      paint_();
+    }
+    runB.addEventListener('click', runLive_);
+    stopB.addEventListener('click', () => { S.stop = true; });
+    resB.addEventListener('click', () => {
+      const aoa = [['Sheet / row', 'Schedule', 'Action', 'Changes', 'Result']].concat(S.items.map((x) => [x.where, x.label, x.actionLabel, (x.plan || []).join(' | '), String(x.msg || '').replace(/\n/g, ' | ')]));
+      const wb = XLSX.utils.book_new(); const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = [{ wch: 16 }, { wch: 28 }, { wch: 10 }, { wch: 70 }, { wch: 60 }];
+      XLSX.utils.book_append_sheet(wb, ws, 'Fixed hours results');
+      XLSX.writeFile(wb, 'jisr-fixed-working-hours-results-' + slug_() + '.xlsx');
+    });
+    render_();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Fixed Working Hours — Bulk', open: openTool_, version: SECTION_VERSION };
+    W.__jisrFixedHours = { readTemplate_, body_, parseDay_, dayText_, toWeekday_, date_ };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.19.0
+// ###########################################################################
+
+/**
+ * Look up knowledge sources besides the Labor Law (v4.18).
+ *  - playbook: the "Activation Phase Policies Playbook" PDF supplied by the user (English text, item by item).
+ *  - notes: team notes (FAQ / price lists). Empty until the team sends them; same shape as playbook items.
+ * Each item: { sec, title, text }. Read-only reference data.
+ */
+(function () {
+  const P = (sec, title, text) => ({ sec, title, text });
+  unsafeWindow.__jisrKB = {
+    playbookTitle: 'Activation Phase Policies Playbook',
+    playbook: [
+      P('How to use this playbook', 'How to use this playbook', 'Read it once with your team, then come back to it anytime. Tick each item once you have decided it or prepared it. Whatever stays unticked is what is still missing. Share it, discuss it internally, and bring your open points to the working session. Documents and data are needed before kickoff. Policy decisions are needed before configuration begins.'),
+      P('1. What we need from you to start', 'Before kickoff', 'All documents and data are required before kickoff. Certain modules cannot be configured without them.'),
+      P('1. What we need from you to start', 'Commercial Registration & official numbers', 'CR (scanned copy), MOL Unified Number (X-XXXXXX), and the Labor Office and GOSI establishment numbers.'),
+      P('1. What we need from you to start', 'Organization name in English and Arabic', 'Exactly as registered.'),
+      P('1. What we need from you to start', 'Active GOSI contributor list', 'One file for each CR to be added to the system.'),
+      P('1. What we need from you to start', 'Labor Office file', 'The Labor Office file for your establishment.'),
+      P('1. What we need from you to start', 'Muqeem file', 'Active residents in English and Arabic, one file per CR.'),
+      P('1. What we need from you to start', 'Complete employee list', 'All active employees, not partial.'),
+      P('1. What we need from you to start', 'Organizational structure', 'With reporting lines.'),
+      P('1. What we need from you to start', 'Departments and job titles', 'Your department and job title definitions.'),
+      P('1. What we need from you to start', 'Payroll policy finalized', 'Salary structure and bonuses. See section 5.'),
+      P('1. What we need from you to start', 'Leave policy defined', 'Types, accrual and limits. See section 4.'),
+      P('1. What we need from you to start', 'Attendance policy confirmed', 'Shifts and overtime rules. See section 3.'),
+      P('2. Account Setup', 'Account setup', 'The foundation of everything. Org structure, approval cycles and roles block downstream work, so prioritize these.'),
+      P('2. Account Setup', 'Org structure', 'Business units, departments and the reporting hierarchy.'),
+      P('2. Account Setup', 'Roles & permissions', 'Define the permission groups (HR, Finance, Line Manager, Employee) before assigning people to them.'),
+      P('2. Account Setup', 'Approval cycles', 'Who approves each request type and in what order, and what should happen when two roles resolve to the same person.'),
+      P('2. Account Setup', 'Letter templates & assets', 'Offer letters, contracts, certificates and warnings in English and Arabic. Asset categories, if applicable.'),
+      P('3. Attendance Configuration', 'Shifts', 'Fixed shift presets (e.g., 9–5), open shifts where employees cover their working hours in a flexible window, and shift templates that merge presets for double-shift scenarios.'),
+      P('3. Attendance Configuration', 'Schedule type', 'Fixed schedule (default) or temporary (maximum 2 months, expires automatically).'),
+      P('3. Attendance Configuration', 'Overtime', 'Rate (1.5x, 2x or custom), daily or monthly cap, calculation base (full package, basic, or basic + allowances), and automatic or request-based.'),
+      P('3. Attendance Configuration', 'Excuses', 'Personal, business, or both, with a monthly limit.'),
+      P('3. Attendance Configuration', 'Punch correction', 'Allow corrections, with a limit per period.'),
+      P('3. Attendance Configuration', 'Geofencing', 'Employees punch within a defined boundary.'),
+      P('3. Attendance Configuration', 'Biometric devices', 'ZKTeco devices only, connected through BioTime.'),
+      P('4. Leaves Configuration', 'Annual leave', 'Entitlement (21, 30, 0 or custom), calendar or business days, full or accumulative balance, and auto-upgrade after 5 years.'),
+      P('4. Leaves Configuration', 'Labor Law leaves', 'All standard leave types under the Labor Law, such as sick, maternity and Hajj. Each leave can have its own balance, probation extension (on or off), and attachments in the request (on or off).'),
+      P('4. Leaves Configuration', 'Custom leaves', 'Any extra leave types your company offers, such as study, exam or volunteering.'),
+      P('4. Leaves Configuration', 'Public holidays', 'Saudi holidays are pre-loaded. Tell us about any custom holidays.'),
+      P('4. Leaves Configuration', 'Leave balance sheet', 'Current leave balances, ready to upload.'),
+      P('4. Leaves Configuration', 'Past requests', 'Historical leave requests, ready to upload.'),
+      P('4. Leaves Configuration', 'Untracked leave balances', 'Leave balances that are not tracked or need cleanup can delay employee invitations and the start of user testing (UAT).'),
+      P('5. Payroll Configuration', 'Payroll configuration', 'The most configurable module. Settings are defined per payroll group, so different employee populations can have different rules.'),
+      P('5. Payroll Configuration', 'Payroll groups', 'Each group has its own cut-off date, pay date, approval cycle and deduction rules.'),
+      P('5. Payroll Configuration', 'Salary components', 'Standard (basic, housing, transport) plus custom allowances (food, mobile, remote, education).'),
+      P('5. Payroll Configuration', 'Loans', 'Maximum amount, calculation base, and multiple loan types with independent rules.'),
+      P('5. Payroll Configuration', 'Variable pay', 'Overtime base, bonuses and commissions. Can differ per group.'),
+      P('5. Payroll Configuration', 'Deductions', 'Absence (daily full package), lateness (hourly basic) and missing punches. All configurable per group.'),
+      P('5. Payroll Configuration', 'Flight policy', 'Annual budget per country, tickets per employee per year, and eligibility by nationality.'),
+      P('5. Payroll Configuration', 'Final settlement (EOS)', 'Calculation base, attendance reflection, and exempted employees.'),
+      P('6. Integrations', 'Integrations', 'Optional integrations that extend Jisr. Decide before activation, as some have prerequisites.'),
+      P('6. Integrations', 'Muqeem', 'Iqama & visa data sync. Client cost; the client contracts directly with Muqeem.'),
+      P('6. Integrations', 'Mudad', 'WPS salary disbursement. SAR 805.5 per year (annual fee), subject to change.'),
+      P('6. Integrations', 'GOSI', 'Social insurance sync. Free. Reconciles the contributor list.'),
+      P('6. Integrations', 'BioTime (ZKT)', 'Biometric punches into Jisr attendance. Device cost. ZKTeco devices only.'),
+      P('6. Integrations', 'Accounting (e.g., SAP B1)', 'Payroll to ERP journal entries. Project-based, on request; cut-off dates must align.'),
+      P('7. Possible Blockers', 'Possible blockers', 'Raise anything that applies at kickoff, so it can be planned for early. Several blockers together can extend activation by 2–4 weeks.'),
+      P('7. Possible Blockers', 'Rotational shifts', 'Can add 1–2 weeks to the timeline.'),
+      P('7. Possible Blockers', 'Floating or flexible schedules', 'Can add 2–4 weeks to the timeline.'),
+      P('7. Possible Blockers', 'Leave balances not fully tracked', 'Need cleanup or manual collection. Delays employee invitations and the start of user testing (UAT).'),
+      P('7. Possible Blockers', 'Attendance through API integration', 'Needs the client\'s IT team. Plan 2–3 weeks.'),
+      P('7. Possible Blockers', 'Modules you are unsure about', 'Late scope decisions delay configuration.'),
+      P('7. Possible Blockers', 'Decision makers and approval turnaround', 'Name a primary and a backup contact, who approves policies, and the expected response time.'),
+    ],
+    notes: [],
+  };
+})();
+
+
+// ###########################################################################
+// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.19.0
+// ###########################################################################
+
+/**
+ * Saudi Labor Law (Royal Decree M/51) as amended by Royal Decree M/44 (in force 19 Feb 2025), article by article, EN + AR.
+ * English: official 2005 translation + HRSD 'Amendments to Labor Law Articles' (Aug 2024) for amended/added/deleted articles.
+ * Arabic: 1442 AH edition; amended/added articles from the qadha.org.sa edition updated 5/5/1447 AH (extracted automatically).
+ * Built by data/build_lib.py. Read-only reference data.
+ */
+(function () { unsafeWindow.__jisrLaborLaw = {"version":"2025-02-19","sources":{"hrsd":"https://www.hrsd.gov.sa/sites/default/files/2025-03/Amendments%20to%20Labor%20Law%20Articles.pdf","ar":"https://qadha.org.sa/files/3/%D9%85%D8%B1%D9%83%D8%B2%20%D8%A7%D9%84%D8%A8%D8%AD%D9%88%D8%AB%20%D9%88%D8%A7%D9%84%D8%AF%D8%B1%D8%A7%D8%B3%D8%A7%D8%AA/%D9%86%D8%B8%D8%A7%D9%85%20%D8%A7%D9%84%D8%B9%D9%85%D9%84%20%D9%88%D9%84%D9%88%D8%A7%D8%A6%D8%AD%D9%87%20%D8%A7%D9%84%D8%AA%D9%86%D9%81%D9%8A%D8%B0%D9%8A%D8%A9.pdf"},"arts":[{"n":"1","st":"","en":"This law shall be called the Labor Law.","ar":"يسمى هذا النظام نظام العمل.","pe":"Part 1: Definitions And General Provisions · Chapter 1: Definitions","pa":""},{"n":"2","st":"amended","en":"The following terms and expressions, wherever mentioned in this Law, shall have the meanings assigned to them unless the context otherwise requires Ministry The Ministry of Human Resources and Social Development. Minister: The Minister of Human Resources and Social Development. Labor Office: The administrative body responsible for labor affairs within a spatial scope defined by a ministerial decision. Employer: Any natural or legal person who employs one or more workers in exchange for wages Worker Any natural person – male or female – who works for the benefit of an employer, under their management or supervision, in exchange for wages, even if away from their direct oversight. Juvenile: A person who has completed fifteen years of age and has not reached eighteen years of age. Work The effort exerted in all human activities in the implementation of an employment contract (written or unwritten), regardless of its nature or type, whether industrial, commercial, agricultural, technical, or otherwise, whether physical or mental. Original Work: For individuals: The subject of their usual activity and as for establishments: the work for which the establishment was created to perform and stipulated in its articles of incorporation or the concession contract - if it is a concession company - or in the commercial register. Temporary work: Work that, by its nature, falls within the employer's activity and requires a specific duration to complete, or focuses on a specific task and ends with its completion, and in both cases does not exceed ninety days. Occasional Work: Work that is not part of the usual activity of the employer and does not take more than ninety days to complete. Seasonal work: Work that is performed during established periodic seasons. Part-time work: Refers to work performed by an employee who is not fully dedicated to the employer and works fewer than half of the standard daily working hours at the establishment, whether the employee works daily or only on certain days of the week. Continuous service: Refers to the uninterrupted service of an employee with the same employer or their legal successor, starting from the commencement of service. The service is considered continuous in the following cases:\n1. Statutory holidays and leave.\n2. Periods of absence for exams as stipulated in this Law.\n3. Cases of employee absence without pay, provided the total duration does not exceed twenty intermittent days during the work year. Assignment: The service of providing a worker to work for someone other than the employer, through an establishment licensed for this purpose. Resignation: The worker's written declaration of their desire, without coercion, to terminate a fixed-term employment contract without any condition or stipulation, and the employer's acceptance of it. Basic Salary: Everything given to the worker in return for their work, based on a written or unwritten employment contract, regardless of the type of wage or method of payment, in addition to periodic allowances. Actual wage: The basic wage plus any other due increments granted to the worker in return for effort exerted in the work, risks faced in performing the job, or as stipulated in the employment contract or work regulations, including the following:\n1. Commission, or a percentage of sales, or a percentage of profits, paid in return for what the worker markets, produces, collects, or achieves in terms of increased production or improvements.\n2. Allowances that the worker is entitled to receive in exchange for the effort exerted or risks encountered while performing their work.\n3. Increases that may be granted based on the cost of living or to meet family burdens.\n4. Grant or Bonus that refers to payments made by an employer to an employee in recognition of their honesty, efficiency, or similar qualities, provided such payments are specified in the employment contract, the establishment's work regulations, or are regularly provided as a customary practice, such that employees regard them as part of their wages rather than a voluntary gift.\n5. Benefits in kind: Refers to benefits that the employer is obligated to provide to the worker in exchange for their work, as specified in the employment contract or the establishment's work regulations. They are valued at a maximum equivalent to two months' basic salary for each year unless the employment contract or the work regulations specify a higher value. Wage: Means the actual wage Establishment: Any project managed by a natural or legal person who employs one or more workers in return for a wage of any kind. Month: Thirty days unless otherwise stipulated in the employment contract or the establishment's work regulations. Regulation: Implementing Regulations of this Law.","ar":"يقصد بالألفاظ والعبارات الآتية -أينما وردت في هذا النظام -المعاني المبينة أمامها ما لم يقتض السياق خالف ذلك: الوزارة:وزارة العمل. الوزير:وزير العمل. مكتب العمل:الجهة الإدارية المنوط بها شؤون العمل في النطاق المكاني الذي يحدد بقرار من الوزير. صاحب العمل:كل شخص طبيعي أو اعتباري يش غل عاملا أو أكثر مقابل أجر. العامل:كل شخص طبيعي -ذكرا أو أنثى -يعمل لمصلحة صاحب عمل وتحت إدارته أو إشرافه مقابل أجر، ولو كان بعيدا عن نظارته. الحدث:الشخص الذي أتم الخامسة عشرة من عمره ولم يبلغ الثامنة عشرة. العمل:الجهد المبذول في النشاطات الإنسانية كافة، تنفيذا لعقد عمل (مكتوب أو غير مكتوب) بصرف النظر عن طبيعتها أو نوعها، صناعية كانت أو تجارية، أو زراعية، أو فنية، أوغيرها، عضلية كانت أو ذهنية. العمل الأصلي:بالنسبة للأفراد:موضوع نشاطهم المعتاد، وبالنسبة للمنشآت:الأعمال التي أنشئت المنشأة من أجل القيام بها والمنصوص عليها في عقد تأسيسها أو في عقد الامتياز -إن كانت من شركات الامتياز -أو في السجل التجاري. العمل المؤقت:العمل الذي يدخل بطبيعته فيما يزاوله صاحب العمل من نشاط وتقتضي طبيعة إنجازه مدة محددة، أو ينصب على عمل بذاته وينتهي بانتهائه، وال يتجاوز في الحالتين تسعين يوما. العمل العرضي:العمل الذي لا يدخل بطبيعته فيما يزاوله صاحب العمل في نشاطه المعتاد، وال يستغرق تنفيذه أكثر من تسعين يوما. العمل الموسمي:العمل الذي يتم في مواسم دورية متعارف عليها. العمل لبعض الوقت:العمل الذي يؤديه عامل غير متفرغ لدى صاحب عمل ولساعات عمل تقل عن نصف ساعات العمل اليومية المعتادة لدى المنشأة، سواء كان هذا العامل يؤدي ساعات عمله يوميًا أو بعض أيام الأسبوع. الخدمة المستمرة:خدمة العامل غير المنقطعة مع صاحب العمل نفسه أو خلفه النظامي، من تاريخ ابتداء الخدمة. وتعد الخدمة مستمرة في الحالات الآتية:\n1. الإجازات والعطل المقررة نظا ما.\n2. فترة الانقطاع لأداء الامتحانات وفقا لما هو منصوص عليه في هذا النظام.\n3. حالات غياب العامل عن عمله بدون أجر التي لا تزيد مدتها على عشرين يوما متقطعة خلال سنة العمل. الأجر الأساسي:كلما يعطى للعامل مقابل عمله، بموجب عقد عمل مكتوب أو غير مكتوب، مهما كان نوع الأجر أو طريقة أدائه، مضافا إليه العلاوات الدورية. الأجر الفعلي:الأجر الأساسي مضافا إليه سائر الزيادات المستحقة الأخرى التي تتقرر للعامل مقابل جهد بذله في العمل، أو مخاطر يتعرض لها في أداء عمله، أو التي تتقرر للعامل لقاء العمل بموجب عقد العمل أو لائحة تنظيم العمل. ومن ذلك:\n1. العمولة، أو النسبة المئوية من المبيعات، أو النسبة المئوية من الأرباح، التي تدفع مقابل ما يقوم بتسويقه، أو إنتاجه، أو تحصيله، أو ما يحققه من زيادة الإنتاج أو تحسينه.\n2. البدلات التي يستحقها العامل لقاء طاقة يبذلها، أو مخاطر يتعرض لها في أداء عمله.\n3. الزيادات التي قد تمنح وفقا لمستوى المعيشة، أو لمواجهة أعباء العائلة.\n4. المنحة أو المكافأة:هي التي يعطيها صاحب العمل للعامل، وما يصرف له جزاء أمانته، أو كفايته، وما شابه ذلك، إذا كانت هذه المنحة أو المكافأة مقررة في عقد العمل، أو لائحة تنظيم العمل للمنشأة، أو جرت العادة بمنحها، حتى أصبح العمال يعدونها جزاء من الأجر لا ترب اع.\n5. الميزات العينية:هي التي يلتزم صاحب العمل بتوفيرها للعامل مقابل عمله، بالنص عليها في عقد العمل أو في لائحة تنظيم العمل. وتقدر بحد أقصى يعادل الأجر الأساسي لمدة شهرين عن كل سنة، مالم تقدر في عقد العمل أو لائحة تنظيم العمل بما يزيد على ذلك. الأجر:الأجر الفعلي. المنشأة:كل مشروع يديره شخص طبيعي، أو اعتباري، يشغل عاملا أو أكثر، لقاء أجر أيًا كان نوعه. الشهر:ثلاثون يوما مالم ينص على خالف ذلك في عقد العمل أو في لائحة تنظيم العمل. اللائحة:اللائحة التنفيذية لهذا النظام. الإسناد:خدمة توفير عامل للعمل لدى غير صاحب العمل وذلك من خلال منشأة مرخص لها لهذا الغرض. الاستقالة:إفصاح العامل كتابة عن رغبته دون إكراه في إنهاء عقد عمل محدد المدة دون تعليق على قيد أو شرط، وقبول صاحب العمل به. الأحكام العامة","pe":"Part 1: Definitions And General Provisions · Chapter 1: Definitions","pa":""},{"n":"3","st":"","en":"Work is the right of every citizen. No one else may exercise such right unless the conditions provided for in this Law are fulfilled. All citizens are equal in the right to work without discrimination on the basis of gender, disability, age, or any other form of discrimination, whether during their performance of work, at the time of employment, or at the time of advertising","ar":"العمل حق للمواطن، لايجوز لغيره ممارسـته إلا بعد توافر الشـروط المنصـوص عليها في هذا النظام، والمواطنون متسـاوون فيحق العمل دون أي تمييز على أساس الجنس أو الإعاقة أو السن أو أي شكل من أشكال التمييز الأخرى، سواًء أثناء أداء العمل أو عند التوظيف أو الإعلان عنه.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"4","st":"","en":"When implementing the provisions of this Law, employers and workers shall adhere to the provisions of Sharia.","ar":"يجب على صاحب العمل والعامل عند تطبيق أحكام هذا النظام الإلتزام بمقتضيات أحكام الشريعة الإسلامية.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"5","st":"","en":"Provisions of this Law shall apply to the following:\n1. Any contract whereby a person commits himself to work for an employer and under his management or supervision, for a wage.\n2. Workers of the government and public organizations and institutions including those who work in pastures or agriculture.\n3. Workers of charitable institutions.\n4. Qualification and training contracts with workers other than those working for the employer within the limits of the relevant provisions provided for in this Law.\n5. Part-time workers with respect to safety, occupational health, and work injuries, as well as decisions issued by the Minister.","ar":"تسري أحكام هذا النظام على الآتي:\n1. كل عقد عمل يلتزم بمقتضاه أي شخص بالعمل لمصلحة صاحب عمل وتحت إدارته أو إشرافه؛ مقابل أجر.\n2. عمال الحكومة والهيئات والمؤسسات العامة، بمن فيهم الذين يشتغلون في المراعي أو الزراعة.\n3. عمال المؤسسات الخيرية.\n4. عقود التأهيل والتدريب مع غير العاملين لدى صاحب العمل في حدود الأحكام الخاصة المنصوص عليها في هذا النظام.\n5. العاملين بعض الوقت في حدود ما يتعلق بالسلامة والصحة المهنية وإصابات العمل وما يقرره الوزير.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"6","st":"","en":"Incidental, seasonal, and temporary workers shall be subject to the provisions on duties and disciplinary rules, the maximum working hours, daily and weekly rest intervals, overtime work, official holidays, safety rules, occupational health, and work injuries and compensation therefore as well as whatever is decided by the Minister.","ar":"تسـري على العامل العرضـي والموسـمي والمؤقت الأحكام الخاصـة بالواجبات وقواعد التأديب، والحد الأقصـى لسـاعات العمل، وفترات الراحة اليومية والراحة الأسبوعية، والتشغيل الإضافي، والعطلات الرسمية، وقواعد السلامة، والصحة المهنية، وإصابات العمل والتعويض عنها، وما يقرره الوزير.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"7","st":"amended","en":"1. The following are exempt from the application of the provisions of this Law:\nA. The family members of the employer, including the spouse, parents, and children, who work in the establishment and who are the only employees there. B. Players and coaches of sports clubs and federations. C. Domestic workers and those considered as such. D. Agricultural workers, private herders, and those in similar roles. F. Non-Saudi workers who come to perform a specific task for a period not exceeding two months.\n2. The minister, in coordination with the relevant authorities, shall issue one or more regulations for the categories mentioned in paragraphs (A), (C), (D), and (E), of paragraph (1) of this Article, outlining the rights, duties, and other relevant provisions specific to each category. Notwithstanding the provisions of paragraph (1) of this article, the penalties specified in Article 229 of this law shall apply to violations of the provisions of those regulations.\n3. The regulations issued for the two categories mentioned in subparagraphs (c) and (d) of paragraph (1) of this article should include clear procedures and mechanisms to improve the performance of the labor market for these categories. They should also regulate the movement of workers, define the responsibilities of employers, and outline the duties of offices and companies involved in mediating their recruitment.","ar":"1. يستثنى من تطبيق أحكام هذا النظام كل من: أ -أفراد أسرة صاحب العمل، وهم زوجه وأصوله وفروعه الذين يعملون في المنشأة التي لا تضم سواهم. ب -لاعبو الأندية والاتحادات الرياضية ومدربوها. ج -العاملة المنزلية ومن في حكمهم. د -عامل الزراعة والرعاة الخاصون ومن في حكمهم. ه -العاملون غير السعوديين القادمون لأداء مهمة محددة ولمدة لا تزيد على شهرين.\n2. يصدر الوزير -بالتنسيق مع الجهات المختصة -لائحة أو أكثر للفئات الواردة في الفقرات الفرعية (أ) و(ج) و(د) و(ه) من الفقرة (1)من هذه المادة؛ تشتمل على الحقوق والواجبات والأحكام الخاصة الأخرى ذات الصلة بكل فئة. واستثناء من حكم الفقرة (1)من هذه المادة؛ تطبق في شأن مخالفات أحكام تلك اللوائح العقوبات المنصوص عليها في المادة (التاسعة والعشرين بعد المائتين) من هذا النظام. ضمن في اللوائح الصادرة في شأن الفئتين الواردتين في الفقرتين الفرعيتين\n3. يراعى أن ت (ج) و(د) من الفقرة (1)من هذه المادة الإجراءات والآليات التي تكفل تحسين أداء سوق العاملة للفئتين، وتنظيم حركة انتقاهلا، وتحديد المسؤوليات والواجبات التي تترتب على أصحاب العمل واملكاتب والشركات التي تقوم بالوساطة في التعاقد معها.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"8","st":"","en":"Any condition that conflicts with the provisions of this Law shall be deemed null and void. The same applies to any release or settlement of the worker’s rights arising from this Law during the validity of the employment contract, unless the same is more beneficial to the worker.","ar":"يبطل كل شـرط يخالف أحكام هذا النظام، ويبطل كل إبراء، أو مصـالحة عن الحقوق الناشـئة للعامل بموجب هذا النظام، أثناء سـريان عقد العمل، مالم يكن أكثر فائدة للعامل.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"9","st":"","en":"Arabic shall be the language used for data, records, files, employment contracts, and the like as provided for in this Law or in any decision issued in implementation of its provisions as well as the instructions issued by the employer to his workers. If the employer uses a foreign language besides Arabic in any of the aforementioned cases, the Arabic text shall prevail.","ar":"اللغة العربية هي الواجبة الإس ــتعمال في البيانات والس ــجلات والملفات وعقود العمل وغيرها مما هو منص ــوص عليه في هذا النظام، أو في أي قرار ص ــادر ً تطبيقا لأحكامه، وكذلك التعليمات التي يصدرها صاحب العمل لعماله. وإذا استعمل صاحب العمل لغة أجنبية إلى جانب اللغة العربية في أي من الحالات المذكورة، فإن النص العربي هو المعتمد دون غيره.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"10","st":"","en":"All periods and schedules provided for in this Law shall be according to the Hijri calendar, unless otherwise stated in the employment contract or the work organization regulation.","ar":"تحسب جميع المدد والمواعيد المنصوص عليها في هذا النظام بالتقويم الهجري، مالم ينص في عقد العمل أو لائحة تنظيم العمل على خلاف ذلك.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"11","st":"","en":"If the employer assigns all or part of his original work to a natural or corporate person, the latter shall give his workers all the rights and privileges which the original employer gives to his workers. Article 11 bis Without prejudice to the provisions of this Law and relevant regulations, the Minister may take any measures that would improve the performance of the labor market and regulate labor mobility.","ar":"إذا عهد صــاحب العمل لأي شـ ـخص طبيعي أو معنوي القيام بعمل من أعماله الأصـ ـلية ,أو جزء منها؛ وجب على الأخير أن يعطي عماله جميع الحقوق والمزايا التي يعطيها صاحب العمل الأصلي لعماله.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"11 bis","st":"","en":"","ar":"مع عدم الإخلال بأحكام هذا النظام والأنظمة ذات العلاقة، للوزير أن يتخذ الإجراءات التي من شـ ـأنها أن تكفل تحسـ ـين أداء سـ ـوق العمل، وتنظيم حركة انتقال الأيدي العاملة.","pe":"","pa":"الفصل الثاني"},{"n":"12","st":"","en":"1. The Ministry shall develop one or more model bylaws which shall include rules and regulations related to the conduct of work. It shall also include provisions relating to benefits, violations, and disciplinary actions.\n2. The Ministry shall set rules regulating the adoption of bylaws.","ar":"ً ً ً\n1. تضـ ـ ـع الوزارة نموذجا موحدا -أو أكثر -للائحة تنظيم العمل، على أن يكون شـ ـ ـاملا لقواعد تنظيم العمل وما يتصـــ ـل به من أحكام، بما في ذلك الأحكام المتعلقة بالميزات والأحكام الخاصة بالمخالفات والجزاءات التأديبية.\n2. تضع الوزارة ضوابط وآليات اعتماد لوائح تنظيم العمل.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"13","st":"","en":"1. Every employer shall draft bylaws for his firm in line with the Ministry’s model bylaws. Exceptions to this provision may be granted by the Minister.\n2. The employer may incorporate into the bylaws additional terms and conditions that do not conflict with the provisions of this Law, its Regulations, and the decisions for the implementation thereof.\n3. The employer shall make the bylaws and any amendments thereto accessible to employees in a manner that ensures their knowledge of the provisions.","ar":"1. يلتزم كل صاحب عمل بإعداد لائحة لتنظيم العمل في منشأته وفق النموذج المعد من الوزارة، ويجوز للوزير الاستثناء من ذلك.\n2. ً ً ً يجوز لصاحب العمل تضمين اللائحة شروطا وأحكاما إضافية، بما لا يتعارض مع أحكام هذا النظام ولائحته والقرارات الصادرة تنفيذا له.\n3. يجب على صـاحب العمل أن يعلن لائحة تنظيم العمل وأي تعديل يطرأ عليها في مكان ظاهر في المنش ـأة أو أي وس ـيلة أخرى تكفل علم الخاض ـعين لها بأحكامها.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"14","st":"repealed","en":"Repealed","ar":")ملغـ ـ ـاة(","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"15","st":"","en":"An employer shall, upon commencement of work in any firm, notify the competent labor office in writing of the following data:\n1. Name, type, and headquarters of the firm, as well as its mailing address and any information that facilitates contact therewith.\n2. Line of business for which it is licensed, providing the number of the Commercial Register or the license, its date, and issuing authority, together with a copy thereof.\n3. Number of workers to be employed in the firm.\n4. Name of the firm’s manager in-charge.\n5. Any other data required by the Ministry.","ar":"على صاحب العمل عند بدء العمل في أي منشأة أن يبلغ مكتب العمل المختص كتابة بالبيانات الآتية: إسم المنشأة ونوعها ومركزها، والعنوان الذي توجه إليه المراسلات، وأي معلومة يكون من شأنها سهولة الإتصال بالمنشأة.\n1. 5عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 6أضيفت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 7عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 8عدلت بعد دمح 1المادة )الرابعة عشرة( لها بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. C 9عدلت وألغيت بعد دمٜحها مع المادة )الثالثة عشرة( بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ\n2. النشاط الإقتصادي المرخص له بمزاولته مع ذكر رقم السجل التجاري أو الترخيص وتاريخه، وجهة إصداره، وإرفاق صورة منه.\n3. عدد العمال المراد تشغيلهم في المنشأة.\n4. إسم مدير المنشأة المسؤول.\n5. أي بيانات أخرى تطلبها الوزارة.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"16","st":"","en":"1. If the employer is unable to run the business in person, he shall designate a representative at the workplace. In case of multiple partners or managers in the firm, one of them, from among those residing at the place of work, shall be nominated to represent the employer and be liable for any violation of the provisions of this Law.\n2. The employer shall notify the competent labor office in writing of the name of the partner or manager, and, in case he is replaced, he shall notify the labor office of the name of the new partner or manager within seven days at most of the date the latter assumes the job.\n3. In case no manager is appointed to be in charge of the firm, or if the appointed manager does not assume his duties, then the person who actually runs the firm or the employer himself shall be considered the manager in charge of the firm. In all cases, the employer is ultimately liable.","ar":"ً إذالم يتمكن ص ــاحب العمل من ممارس ـ ـة العمل بنفســ ـه، فعليه أن يعين مســ ـؤولا يمثله في مكان العمل. وفي حالة تعدد الش ـ ـركاء أو المديرين في\n1. ً المنشأة يسمى أحدهم من المقيمين في مكان العمل، يمثل صاحب العمل ويكون مسؤولا عن أي مخالفة لأحكام هذا النظام.\n2. \n3. على صـاحب العمل أن يبلغ مكتب العمل المختص كتابة باسم الشـريك أو المدير، وعليه في حالة تغييره أن يبلغ المكتب بإسم الشـريك أو المدير الجديد خلال سبعة أيام على الأكثر من تولي هذا الأخير عمله. ً إذالم يوجد شـخص معين بصـفة مدير مسـؤول للمنشـأة -او إذا لم يباشـر الشـخص المعين عمله – فإن من يقوم فعلا بأعمال المدير أو صـاحب العمل ً ً نفسه يعد مديرا مسؤولا عن المنشأة. وفي كل الأحوال تبقى مسؤولية صاحب العمل قائمة بصفة أصلية.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"17","st":"","en":"An employer shall maintain, at the workplace, records, statements, and files the nature and contents of which shall be specified in the Regulations. He shall display at a visible location at the workplace a schedule of working hours, breaks, weekly rest days, and the time each shift starts and ends, when operating in shifts.","ar":"على صاحب العمل أن يحتفظ في مكان العمل بالسجلات والكشوف والملفات التي تحدد ماهيتها، والبيانات التي يجب أن تتضمنها اللائحة. ً وعليه أن يضــ ـع في مكان ظاهر بموقع العمل جدولا بمواعيد العمل، وفترات الراحة، ويوم الراحة الأســ ـبوعي، ومواعيد بدء كل نوبة وإنتهائها في حالة العمل بأسلوب المناوبة.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"18","st":"","en":"If the ownership of a firm is transferred to a new owner or a change takes place in its legal form through merger, partition, or otherwise, employment contracts shall remain in force in both cases and service shall be deemed continuous. As for workers’ rights accrued for the period prior to the change, such as wages or unrealized end-of-service awards on the date of the transfer of ownership and other rights, the predecessor and the successor shall be jointly and severally liable. However, in the case of transfer of ownership of individual firms, for any reason, the predecessor and the successor may agree to transfer all the previous rights of the worker to the new owner subject to the written consent of the worker. If the worker disapproves, he may request the termination of his contract and collect his dues from the predecessor.","ar":"إذا انتقلت ملكية المنش ـأة لمالك جديد، أو طرأ تغيير على ش ـكلها النظامي بالدمج أو التجزئة أو غير ذلك، تبقى عقود العمل نافذة في الحالين، وتعد الخدمة مستمرة. أما بالنسـبة لحقوق العمال الناشـئة عن المدة السـابقة لهذا التغيير من أجور، أو مكافأة نهاية مفبخضـة الإسـتحقاق بتاريخ إنتقال الملكية، أو غير ذلك من حقوق؛ فيكون الخلف والسلف مسؤولين عنها بالتضامن. ويجوز في ـحال إنتقـال المنش ـ ــآت الفرديـة لأي س ـ ــبـب، إتفـاق الس ـ ــلف والخلف على إنتقـال جميع حقوق العمـال السـ ــابقـة إلى المـالـك الجـديـد بموافقـة العـاـمل ّ الخطية. وللعامل في حال عدم موافقته طلب إنهاء عقده وتسلم مستحقاته من السلف.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"19","st":"","en":"Amounts due to the worker or his heirs under this Law shall be deemed first rate privileged debts and the worker and his heirs shall, for the purpose of settling them, be entitled to a privilege over all the employer’s properties. In case of the employer’s bankruptcy or the liquidation of his firm, the aforementioned amounts shall be entered as privileged debts and the worker shall be paid an expedited amount equivalent to one month wage prior to the payment of any other expenses including judicial, bankruptcy, or liquidation expenses.","ar":"ً تعد المبالغ المس ـتحقة للعامل أو ورثته بمقتض ـى هذا النظام ديونا ممتازة من الدرجة الأولى. وللعامل وورثته في س ـبيل إس ـتيفائها إمتياز على جميع أموال صاحب العمل. ً وفي حالة إفلاس صـاحب العمل أو تصـفية منشـأته تسـجل المبالغ المذكورة ديونا ممتازة، ويدفع للعامل مبلغ معجل يعادل أجر شـهر واحد، وذلك قبل سـداد أي مصروف آخر -بما في ذلك المصروفات القضائية ومصروفات الإفلاس أو التصفية.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"20","st":"","en":"An employer or a worker may not perform any act that may abuse the provisions of this Law or the decisions or regulations issued for its implementation. Neither of them may undertake any act that infringes upon the freedom of the other or the freedom of other workers or employers to realize any interest or impose a point of view that conflicts with the freedom of work or the jurisdiction of the competent authority in charge of the settlement of disputes.","ar":"ً لايجوز لصـ ـاحب العمل أو العامل أن يقوم بعمل من شـ ـأنه إسـ ـاءة إسـ ـتعمال أحكام هذا النظام أو القرارات واللوائح الصـ ـادرة تنفيذا لأحكامه كما لايجوز لأي منهما القيام بعمل من شأنه الضغط على حرية الآخر أو حرية عمال أو اصحاب عمل آخرين لتحقيق أي مصلحة أو وجهة نظر يتبناها مما يتنافى مع حرية العمل أو إختصاص الجهة المختصة بتسوية الخلافات.","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"21","st":"","en":"The Minister, in implementing the provisions of this Law, shall coordinate with relevant authorities whenever necessary.","ar":"على الوزير – في سبيل تنفيذ أحكام هذا النظام – التنسيق مع الجهات ذات العلاقة كلما إقتضى الأمر ذلك. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ تنظيم عمليات التوظيف نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الأ و ل وحدات التوظيف","pe":"Part 1: Definitions And General Provisions · Chapter 2: General Provisions","pa":"الفصل الثاني"},{"n":"22","st":"amended","en":"The ministry provides free employment channels that perform the following:\n1. Assisting workers in obtaining suitable employment and assisting employers in finding suitable workers.\n2. Gathering the necessary information about the labor market and its development, and analyzing it, to make it available to various public and private bodies concerned with economic and social planning.\n3. Performing the following duties:\n3.1 Registering job seekers,\n3.2 Obtaining data on job vacancies from employers,\n3.3 Matching job seeker applications with job vacancies according to their qualifications.\n3.4 Providing advice and assistance to job seekers regarding vocational qualification and training, or the necessary retraining to obtain job vacancies,\n3.5 Other matters determined by the ministry.","ar":"توفر الوزارة قنوات للتوظيف دون مقابل، وتقوم بما يأتي:\n1. مساعدة العمال في الحصول على الأعمال المناسبة، ومساعدة أصحاب الأعمال في إيجاد العمال المناسبين.\n2. جمع المعلومات الضرورية عن سوق العمل وتطوره وتحليلها؛ لكي تكون في متناول مختلف الهيئات العامة والخاصة المعنية بشؤون التخطيط الاقتصادي والاجتماعي.\n3. تنفيذ الواجبات الآتية:\n1. / 3تسجيل طالبي العمل.\n2. / 3الحصول على بيانات بالأعمال الشاغرة من أصحاب الأعمال.\n3. / 3مواءمة طلبات طالبي العمل مع الأعمال الشاغرة وفق مؤهلاتهم.\n4. / 3تقديم النصح والمعونة إلى طالبي العمل فيما يختص بالتأهيل والتدريب المهني، أو بإعادة التدريب اللازم للحصول على الأعمال الشاغرة.\n5. / 3غير ذلك من الأمور التي تقررها الوزارة.","pe":"Part 2: Organization Of Recruitment · Chapter 1: Employment Units","pa":"الباب الثاني · الفصل الأول"},{"n":"23","st":"amended","en":"Every citizen of working age who is able and willing to work has the right to register their name in the employment channels, stating their date of birth, qualifications, previous work experience, preferences, and address.","ar":"لكل مواطن في سن العمل قادر على العمل وراغب فيه أن يطلب قيد ساهم في قنوات التوظيف، مع بيان تاريخ مولده ومؤهلاته وأعماله السابقة ورغباته وعنوانه.","pe":"Part 2: Organization Of Recruitment · Chapter 1: Employment Units","pa":"الباب الثاني · الفصل الأول"},{"n":"24","st":"amended","en":"The regulations specify the rules and procedures of work in employment channels, the forms of records, notices, and documents used in their work, as well as job classification tables according to the approved occupational classification, and serve as the basis for organizing employment operations.","ar":"تحدد اللائحة قواعد سير العمل وإجراءاته في قنوات(1)التوظيف، ونماذج السجلات والإشعارات والأوراق المستخدمة في أعمالها، وكذلك جداول تصنيف المهن وفقا للتصنيف المهني أساسا في تنظيم عمليات التوظيف. المعتمد، وتكون","pe":"Part 2: Organization Of Recruitment · Chapter 1: Employment Units","pa":"الباب الثاني · الفصل الأول"},{"n":"25","st":"amended","en":"Every employer must send the following to the Ministry:\n1. A statement of vacant and newly created jobs, their types, location, assigned wages, and the necessary conditions for filling them, within a period not exceeding fifteen days from the date of vacancy or creation.\n2. A notification of the action taken regarding the employment of the citizen nominated by the employment unit, within seven days from the date of receiving the nomination letter.\n3. A statement of the names of their workers, their jobs, professions, wages, ages, nationalities, work permit numbers for non-Saudis and their dates, and other data specified by the regulations.\n4. A report on the state of work, its conditions and nature, and the expected increase or decrease in work during the year following the report date.\n5. The data referred to in paragraphs 3 and 4 of this Article shall be submitted during the month of Muharram of each year.","ar":"على كل صاحب عمل أن يرسل إلى الوزارة المختص ما يأتي:\n1. بيانا بالأعمال الشاغرة والمستحدثة، وأنواعها، ومكانها، والأجر المخصص لها، والشروط اللازم توافرها لشغلها، وذلك في مدة لا تتجاوز خمسة عشر يوما من تاريخ شغورها أو استحداثها.\n2. إشعارا بما اتخذه بشأن توظيف المواطن الذي رشحته قنوات (1)التوظيف خلال سبعة أيام من تاريخ تسلم خطاب الترشيح. أح تل كلمة «قنوات» محل كلمتي «وحدة» و«وحدات» بموجب المرسوم الملكي رقم م 44/وتاريخ 1446/02/08ه. أح تل كلمة «الوزارة» محل عبارة «مكتب العمل» بموجب المرسوم الملكي رقم م 44/وتاريخ 1446/02/08ه. \n3. بيانا بأسماء عامله، ووظائفهم، ومهنهم، وأجورهم، وأعمارهم، وجنسياتهم، وأرقام رخص العمل لغير السعوديين وتواريخها وغير ذلك من البيانات التي تحددها اللائحة. تقريرا عن حالة العمل وظروفه وطبيعته، والنقص والزيادة في الأعمال المتوقعة خلال\n4. السنة التالية لتاريخ التقرير.\n5. ترسل البيانات المشار إليها في الفقرتين 4،3من هذه المادة خلال شهر محرم من كل عام.","pe":"Part 2: Organization Of Recruitment · Chapter 1: Employment Units","pa":"الباب الثاني · الفصل الأول"},{"n":"26","st":"","en":"1. All firms in all fields, and regardless of the number of workers, shall work to attract and employ Saudis, create conditions to keep them on the job, and avail them of adequate opportunities to prove their suitability for the job by guiding, training, and qualifying them for their assigned jobs.\n2. The percentage of Saudi workers employed by an employer shall not be less than 75% of the total number of his workers. The Minister may temporarily reduce this percentage in case of the lack of adequate technically or academically qualified workers or if it is not possible to fill vacant jobs with nationals.","ar":"ً على جميع المنش ـآت في مختلف أنش ـطتها، وأيا كان عدد العاملين فيها، العمل على إس ـتقطاب الس ـعوديين وتوظيفهم، وتوفير وس ـائل إس ـتمرارهم\n1. في العمل، وإتاحة الفرصة المناسبة لهم لإثبات صلاحيتهم للعمل، عن طريق توجيههم وتدريبهم وتأهيلهم للأعمال الموكولة إليهم.\n2. ّ يجب الا تقل نسـب العمال السـعوديين الذين يسـتخدمهم صـاحب العمل عن % 75من مجموع عماله 0وللوزير في حالة عدم توافر الكفايات الفنية أو المؤهلات الدراسية، أو تعذر إشغال الوظائف بالمواطنين أن يخفض هذه النسبة مؤقتا.","pe":"Part 2: Organization Of Recruitment · Chapter 1: Employment Units","pa":"الباب الثاني · الفصل الأول"},{"n":"27","st":"amended","en":"When necessary, the Minister may require employers – in certain activities, professions, and certain regions and governorates – not to employ workers unless they are registered in employment channels, under the conditions and circumstances specified by a decision from him.","ar":"للوزير عند الاقتضاء أن يلزم أصحاب العمل -في بعض النشاطات والمهن وفي بعض المناطق والمحافظات -بعدم توظيف العمال إلا بعد تسجيلهم في قنوات التوظيف بالشروط والأوضاع التي يحددها بقرار منه. أح تل كلمة «قنوات» محل كلمتي «وحدة» و«وحدات» بموجب المرسوم الملكي رقم م 44/وتاريخ 1446/02/08ه. توظيف ذوي الإعاقة","pe":"Part 2: Organization Of Recruitment · Chapter 1: Employment Units","pa":"الباب الثاني · الفصل الأول"},{"n":"28","st":"amended","en":"Every employer who employs twenty-five workers or more, and whose nature of work enables them to employ professionally qualified persons with disabilities, shall employ at least 4% of their total workforce from professionally qualified persons with disabilities, whether through nominations from employment channels or otherwise. He shall also send to the Ministry a statement of the number of jobs and work positions occupied by professionally qualified persons with disabilities, and the wage of each of them.","ar":"على كل صاحب عمل يستخدم خمسة وعشرين عام لا فأكثر، وكانت طبيعة العمل لديه تمكنه من تشغيل ذوي الإعاقة الذين تم تأهيلهم منهيًا أن يشغل %4على الأقل من مجموع عدد عامله من ذوي الإعاقة المؤهلين منهيًا، سواء أكان ذلك عن طريق ترشيح قنوات التوظيف أوغيرها. وعليه أن يرسل إلى الوزارة بيانا بعدد الوظائف والأعمال التي يشغلها ذوو الإعاقة الذين تم تأهيلهم منهيًا، وأجر كل منهم.","pe":"Part 2: Organization Of Recruitment · Chapter 2: Employment of the Disabled","pa":"الباب الثاني · الفصل الثاني"},{"n":"29","st":"","en":"If a worker sustains a work injury that results in a loss in his usual capabilities that does not prevent him from performing another job, the employer, under whose service the work injury was sustained, shall employ said worker in a suitable job for the wage specified for such job. This shall not prejudice the worker's due compensation for the injury.","ar":"إذا أص ـيب أي عامل إص ـابة عمل نتج عنها نقص في قدراته المعتادة لا يمنعه من أداء عمل آخر غير عمله الس ـابق، فإن على صـاحب العمل الذي وقعت إص ـابة العامل بسبب العمل لديه توظيفه في العمل المناسب بالأجر المحدد لهذا العمل. ولا يخل هذا بما يستحقه من تعويض عن إصابته. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الثالث المكاتب الأهلية لتوظيف المواطنين، ومكاتب الاستقدام الأهلية","pe":"Part 2: Organization Of Recruitment · Chapter 2: Employment of the Disabled","pa":"الباب الثاني · الفصل الثاني"},{"n":"30","st":"amended","en":"1. No natural or legal person may engage in the activity of employing Saudis, recruiting workers, or subcontracting unless licensed to do so by the Ministry. The regulations shall specify the controls for practicing each of these activities, the conditions for granting and renewing the license for each, the obligations of the licensee, the rules for non-renewal or revocation of the license, the consequences thereof, and other necessary conditions and controls to ensure the proper conduct of work thereunder.\n2. The Ministry proposes the value of fees for practicing the activities referred to in paragraph (1) of this Article, and their disbursement channels, in preparation for completing the regulatory procedures in this regard.","ar":"1. لايجوز لأي شخص طبيعي أو اعتباري أن يمارس نشاط توظيف السعوديين أو نشاط استقدام العمال أو نشاط الإسناد مالم يكن مرخصا له بذلك من الوزارة. وتحدد اللائحة ضوابط ممارسة كل من هذه الأنشطة، وشروط منح الترخيص لكل منها وتجديده، والتزامات المرخص له، وقواعد عدم تجديد الترخيص أوإلغائه، والآثار المترتبة على ذلك، وغير ذلك مما يكون رضوريًامن الشروط والضوابط لضمان حسن سير العمل بها.\n2. تقترح الوزارة قيمة رسوم ممارسة الأنشطة المشار إليها في الفقرة (1)من هذه المادة، وأوجه صرفها، متهيدا لاستكمال الإجراءات النظامية في هذا الشأن.","pe":"Part 2: Organization Of Recruitment · Chapter 3: Private Offices for the Recruitment of Citizens and Private Offices for Recruiting from Abroad","pa":"الباب الثاني · الفصل الثالث"},{"n":"31","st":"amended","en":"Saudi workers employed through the assistance of offices or companies, and workers recruited on behalf of employers, are considered employees of the employer and have a direct contractual relationship with them.","ar":"يعد العمال السعوديون الذين أسهمت المكاتب أو الشركات في توظيفهم، والعمال الذين عمالا لدى صاحب العمل؛ ويرتبطون به بعلاقة عقدية استقدمتهم نيابة عن أصحاب العمل؛ مباشرة. عدل اسم هذا الفصل بموجب المرسوم الملكي رقم م 44/وتاريخ 1446/02/08ه، واسمه السابق «المكاتب الأهلية لتوظيف المواطنين، ومكاتب الاستقدام الأهلية». لأي شخص توظيف غير السعوديين","pe":"Part 2: Organization Of Recruitment · Chapter 3: Private Offices for the Recruitment of Citizens and Private Offices for Recruiting from Abroad","pa":"الباب الثاني · الفصل الثالث"},{"n":"32","st":"","en":"Recruitment from abroad for the purpose of work may not be undertaken without the approval of the Ministry.","ar":"لايجوز الإستقدام بقصد العمل إلا بعد موافقة الوزارة.","pe":"Part 3: Employment Of Non-Saudis","pa":"الباب الثالث"},{"n":"33","st":"","en":"A non-Saudi may not engage in or be allowed to engage in any work except after obtaining a work permit from the Ministry, according to the form prepared by it for this purpose. The conditions for granting the permit are as follows:\n1. The worker has lawfully entered the country and is authorized to work.\n2. The worker possesses the professional or academic qualifications which the country needs and which are not possessed by citizens or the available number of such citizens is insufficient to meet the needs, or that he belongs to the class of ordinary workers that the country needs.\n3. The worker has a contract with an employer and is under his responsibility. The word work in this Article shall mean any industrial, commercial, agricultural, financial, or other work, and any service including domestic service.","ar":"ً لايجوز لغير الس ــعودي أن يمارس عملا، ولا يجوز أن يس ــمح له بمزاولته، إلا بعد الحص ــول على رخص ــة عمل من الوزارة وفق النموذج الذي تعده لهذا الغرض. ويشترط لمنح الرخصة ما يأتي: ً\n1. أن يكون العامل قد دخل البلاد بطريقة مشروعة ومصرحا له بالعمل.\n2. \n3. أن يكون من ذوي الكفـايـات المهنيـة أو المؤهلات الـدراس ـ ــيـة التي تحتـاج إليهـا البلاد، ولا يوجـد من أبنـاء من يحملهـا أو كـان العـدد الموجود منهم لا يفي بالحاجة، أو يكون من فئة العمال العاديين التي تحتاج إليها البلاد. ً أن يكون متعاقدا مع صاحب عمل وتحت مسؤوليته. ويقصد بكلمة ) العمل ( في هذه المادة كل عمل صناعي أو تجاري أو زراعي أو مالي أو غيره وأي خدمة بما في ذلك الخدمة المنزلية.","pe":"Part 3: Employment Of Non-Saudis","pa":"الباب الثالث"},{"n":"34","st":"","en":"No permit or license required by any other agency for engaging in a work or profession shall substitute for said work permit.","ar":"ً لايغني عن رخصة العمل المشار إليها أي تصريح أو ترخيص يكون مطلوبا من جهة أخرى لممارسة العمل أو المهنة.","pe":"Part 3: Employment Of Non-Saudis","pa":"الباب الثالث"},{"n":"35","st":"amended","en":"For reasons it deems appropriate, the Ministry may refuse to renew the work permit if the employer violates the standards for nationalizing jobs set by the Ministry, or any other conditions or regulations mentioned in the regulations. The regulation outlines procedures to ensure that the worker is not negatively impacted by the non-renewal of the work permit, including the possibility of transferring the worker’s service to another employer without the approval of the violating employer.","ar":"للوزارة -لاعتبارات تقدرها -أن تمتنع عن تجديد رخصة العمل متى خالف صاحب العمل المعايير الخاصة بتوطين الوظائف التي تضعها الوزارة، أويًامن الاشتراطات أو الضوابط الأخرى الواردة في اللائحة. وتبين اللائحة الإجراءات التي تكفل عدم تأثر العامل من عدم تجديد رخصة العمل، بما في ذلك إمكانية نقل خدمة العامل إلى صاحب عمل آخر دون موافقة صاحب العمل المخالف.","pe":"Part 3: Employment Of Non-Saudis","pa":"الباب الثالث"},{"n":"36","st":"","en":"The Minister shall issue a decision specifying the professions and jobs which are prohibited for non-Saudis.","ar":"على الوزير أن يحدد بقرار منه المهن والأعمال التي يحظر على غير السعودي الاشتغال بها.","pe":"Part 3: Employment Of Non-Saudis","pa":"الباب الثالث"},{"n":"37","st":"amended","en":"The employment contract for a non-Saudi worker must be written and of a fixed term. If the contract does not specify its duration, it is considered to be one year starting from the worker's actual commencement date. If the work continues after this period, it is considered renewed for a similar duration.","ar":"يجب أن يكون عقد عمل غير السعودي مكتوبا ومحدد المدة. وإذا خلا العقد من بيان مدته تعد مدته (سنة) من تاريخ مباشرة العامل الفعلية، وإذا استمر العمل بعد انتهاء هذه المدة، عد متجددا لمدة مماثلة.","pe":"Part 3: Employment Of Non-Saudis","pa":"الباب الثالث"},{"n":"38","st":"","en":"An employer may not employ a worker in a profession other than the one specified in his work permit. A worker is prohibited from engaging in a profession other than his before taking the legal measures necessary to change his profession.","ar":"لايجوز لصـ ــاحـب العمـل توظيف العـامـل في مهنـة غير المهنـة المـدونـة في رخص ـ ــة عملـه، ويحظر على العـامـل الاش ـ ــتغـال في غير مهنتـه قبـل اتخـاذ الإجراءات النظامية لتغيير المهنة.","pe":"Part 3: Employment Of Non-Saudis","pa":"الباب الثالث"},{"n":"39","st":"amended","en":"An employer may not allow their worker to work for another employer or their account, nor may a worker work for another employer or their account, unless in accordance with the prescribed rules and procedures. An employer is also prohibited from hiring another worker. The Ministry is responsible for inspecting establishments, identifying violations of this regulation, and taking necessary actions to enforce the prescribed penalties. Any violations falling under the jurisdiction of the Ministry of Interior will be referred to it for appropriate action in accordance with the applicable legal provisions. If the Ministry of Interior detects violations related to the provisions under its jurisdiction, it shall refer the details of the violating employers to the Ministry of Human Resources and Social Development for the enforcement of the penalties prescribed by this regulation.","ar":"لايجوز -بغير اتباع القواعد والإجراءات النظامية المقررة -أن يترك صاحب العمل عامله يعمل لدى الغير أو يعمل لحسابه الخاص، ولايجوز للعامل أن يعمل لدى صاحب عمل آخر أو لحسابه الخاص، ولايجوز لصاحب العمل توظيف عامل غيره، وتتولى الوزارة التفتيش على المنشآت، وضبط مخالفات هذا النظام، واتخاذ مايلزم لتطبيق العقوبات المقررة بموجبه، ومن ثم إحالة مايدخل في اختصاص وزارة الداخلية إليها لاتخاذ ماتراه وفق الأحكام المقررة نظاما. كما حتيل وزارة الداخلية -في حال ضبطها مخالفات تتصل بالأحكام المقررة لديها نظاما -بيانات أصحاب العمل المخالفين لحكم هذه المادة إلى وزارة الموارد البشرية التنمية الاجتماعية؛ لتطبيق العقوبات المقررة بموجب هذا النظام.","pe":"Part 3: Employment Of Non-Saudis","pa":"الباب الثالث"},{"n":"40","st":"amended","en":"1. The employer shall bear the costs of recruiting the foreign worker, the residence and work permit fees and their renewals, along with any penalties resulting from delays in such renewals, the fees for changing the profession, exit and re-entry fees, and the cost of the worker’s return ticket to their home country after the termination of the relationship between the two parties.\n2. The worker shall bear the costs of his return to his home country if he is unfit for work or if he wishes to return without a legitimate reason.\n3. The employer shall bear the costs of transferring the services of the worker who wishes to transfer his services to them. The employer shall be responsible for the costs of preparing the worker's body and transporting it to the location where the contract was concluded or where the worker was recruited from unless the worker is buried with the consent of their family within the Kingdom. The employer shall be exempted in case the General Organization for Social Insurance assumes this responsibility.","ar":"1. يتحمل صاحب العمل رسوم استقدام العامل غير السعودي، ورسوم الإقامة ورخصة العمل وتجديدهما، وما يترتب على تأخير ذلك من غرامات يتسبب بها صاحب العمل، ورسوم تغيير المهنة، والخروج والعودة، وتذكرة عودة العامل إلى موطنه بعد انتهاء العلاقة بين الطرفين.\n2. يتحمل العامل تكاليف عودته إلى بلده في حالة عدم صلاحيته للعمل أو إذا رغب في العودة دون سبب مشروع.\n3. يتحمل صاحب العمل رسوم نقل خدمات العامل الذي يرغب في نقل خدماته إليه.\n4. يلزم صاحب العمل بنفقات تجهيز جثمان العامل ونقله إلى الجهة التي أبرم فيها العقد أو استقدم العامل منها، مالم يدفن بموافقة ذويه داخل المملكة. ويعفى صاحب العمل في حالة التزام المؤسسة العامة للتأمينات الاجتماعية بذلك.","pe":"Part 3: Employment Of Non-Saudis","pa":"الباب الثالث"},{"n":"41","st":"","en":"The Regulations shall specify the conditions, controls, and procedures for recruitment from abroad, transfer of services, and change of profession.","ar":"تحدد اللائحة شروط الاستقدام، ونقل الخدمات، وتغيير المهنة، وضوابط ذلك وإجراءاته. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ التدريب والتأهيل نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الأ و ل التدريب والتأهيل للعاملين لدى صاحب العمل","pe":"Part 3: Employment Of Non-Saudis","pa":"الباب الثالث"},{"n":"42","st":"amended","en":"Each employer shall establish a policy for training and qualifying their Saudi workers to enhance their skills and improve their performance in technical, administrative, professional, and other fields. The regulation shall specify the provisions related to this matter.","ar":"على كل صاحب عمل وضع سياسة لتدريب عامله السعوديين وتأهيلهم، من أجل رفع مهاراهتم وتحسين مستواهم في الأعمال الفنية والإدارية والمهنية وغيرها. وتحدد اللائحة الأحكام المتصلة بذلك.","pe":"Part 4: Training And Qualification · Chapter 1: Training and Qualification of the Employer’s Workers","pa":"الباب الرابع · الفصل الأول"},{"n":"43","st":"amended","en":"This is without prejudice to the provisions of franchise agreements and other agreements that specify particular conditions and rules for training, qualification, and skill development. Every employer must provide training or qualification for his workers in accordance with these requirements. The employer must train or qualify a percentage of his Saudi workers, which is determined by a decision from the Minister. This percentage includes Saudi workers who continue their studies, provided the employer bears the costs of their education. The regulation shall define the standards and general provisions related to this matter.","ar":"دون إخلال بما تنص عليه اتفاقيات الامتياز وغيرها من الاتفاقيات من شروط وقواعد خاصة بالتدريب والتأهيل وفرع المهارات؛ على كل صاحب عمل أن يؤهل أو يدرب على أعماله من عامله السعوديين النسبة التي تحدد بقرار من الوزير، ويدخل ضمن هذه النسبة الذين يكملون دراساتهم إذا كان صاحب العمل يتحمل تكاليف الدراسة. وتحدد اللائحة المعايير والأحكام العامة المتصلة بذلك.","pe":"Part 4: Training And Qualification · Chapter 1: Training and Qualification of the Employer’s Workers","pa":"الباب الرابع · الفصل الأول"},{"n":"44","st":"amended","en":"The training program must include the skill that the worker is being trained on, the rules and conditions followed in the training, its duration, the number of hours, the theoretical and practical training programs, the method of assessment, and the certificates awarded in this regard. The regulation shall define the standards and general rules to be followed in this regard to enhance the worker's performance in terms of skill and productivity.","ar":"يجب أن يشتمل برنامج التدريب على المهارة التي يتدرب العامل عليها والقواعد والشروط التي تتبع في التدريب، وعلى مدته وعدد ساعاته والبرامج التدريبية النظرية والعملية، وطريقة الاختبار والشهادات التي تمنح في هذا الشأن. وتحدد اللائحة المعايير والقواعد العامة التي ينبغي اتباعها بهذا الخصوص لرفع مستوى أداء العامل من حيث المهارة والإنتاجية.","pe":"Part 4: Training And Qualification · Chapter 1: Training and Qualification of the Employer’s Workers","pa":"الباب الرابع · الفصل الأول"},{"n":"45","st":"","en":"A training or qualification contract is a contract which commits the employer to train and qualify a person for a specific profession.","ar":"عقد التأهيل والتدريب عقد يلتزم بمقتضاه صاحب العمل بتأهيل أو تدريب شخص لإعداده في مهنة معينة.","pe":"Part 4: Training And Qualification · Chapter 2: Qualification and Training Contracts of other than the Employer’s Workers","pa":"الباب الرابع · الفصل الثاني"},{"n":"46","st":"amended","en":"The training or qualification contract must be in writing, specifying the type of profession for which the training is being undertaken, the duration of the training, its successive stages, the skill to be acquired, and the amount of compensation provided to the trainee at each stage, ensuring that compensation is not based on piecework or production. The contract must also outline the rights and obligations of both the trainee and the employer and indicate whether the training or qualification will take place within the employer's establishment or at another facility.","ar":"يجب أن يكون عقد التأهيل أو التدريب مكتوبا، وأن يحدد فيه نوع المهنة المتعاقد للتدريب عليها، ومدة التدريب ومراحله المتتابعة، والمهارة المستهدف اكتسابها منه، ومقدار المكافأة التي تعطى للمتدرب في كل مرحلة، على ألا يكون تحديدها على أساس القطعة أو الإنتاج، ويجب أن بين في العقد حقوق المتدرب وصاحب العمل وواجباهتما، وما إذا كان التأهيل أو التدريب في ت منشأة تتبع صاحب العمل أو لدى منشأة أخرى.","pe":"Part 4: Training And Qualification · Chapter 2: Qualification and Training Contracts of other than the Employer’s Workers","pa":"الباب الرابع · الفصل الثاني"},{"n":"47","st":"amended","en":"The Minister may require establishments to accept a specified number or percentage of students from universities, colleges, institutes, centers, and their graduates for training and to complete practical experience, in accordance with the conditions, terms, and durations set out in the regulation. A training contract must be concluded between the trainee and the employer, and the provisions of this chapter shall apply. The establishment may provide the trainee with an allowance.","ar":"للوزير أن يلزم المنشآت بقبول عدد أو نسبة محددة من طلاب الجامعات والكليات والمعاهد والمراكز وخريجيها؛ بغية التدريب واستكمال الخبرة العملية، وفق الشروط والأوضاع والمدد التي تحددها اللائحة، على أن يبرم عقد تدريب بين المتدرب وصاحب العمل تطبق في شأنه الأحكام الواردة في هذا الفصل. وللمنشأة أن تقدم مكافأة للمتدرب.","pe":"Part 4: Training And Qualification · Chapter 2: Qualification and Training Contracts of other than the Employer’s Workers","pa":"الباب الرابع · الفصل الثاني"},{"n":"48","st":"amended","en":"1. The employer may terminate the training or rehabilitation contract if it is proven that the trainee or rehabilitee is not capable or able to complete the training or rehabilitation programs beneficially. Similarly, the trainee, rehabilitee, or their guardian or custodian has the right to exercise this option. The party wishing to terminate the contract must notify the other party of their intention at least one week prior to the specified termination date. Neither party may demand compensation from the other unless the contract includes a provision stating otherwise.\n2. The employer, after the completion of the training or rehabilitation period, may require the trainee or rehabilitee to work for a period equal to the duration of the training or rehabilitation. If the trainee or rehabilitee refuses or fails to work for the equivalent period or part of it, they must compensate the employer for the costs of the training or rehabilitation incurred by the employer, or a proportionate amount for the remaining period.","ar":"1. لصاحب العمل أن ينهي عقد التأهيل أو التدريب إذا ثبت له عدم قابلية أو قدرة المتدرب أو الخاضع للتأهيل على إكمال برامج التدريب أو التأهيل بصورة مفيدة، وفقا لتقارير تقويم دورية تضعها المنشأة التي تقدم التدريب أو التأهيل. وللمتدرب أو الخاضع للتأهيل الحق في إنهاء العقد. وعلى الطرف الذي يرغب في إنهاء العقد إبلاغ الطرف الآخر برغبته في ذلك قبل (أسبوع) على الأقل من التاريخ المحدد للإنهاء، وليس لأي من الطرفين أن يطالب الطرف الآخر بالتعويض إلا إذا تضمن العقد حك ام يقضي بذلك.\n2. لصاحب العمل -بعد إكمال مدة التدريب أو التأهيل -أن يلزم المتدرب أو الخاضع للتأهيل بأن يعمل لديه مدة مماثلة لمدة التدريب أو التأهيل، فإن رفض أو امتنع المتدرب أو الخاضع للتأهيل عن العمل المدة المماثلة أو بعضها؛ وجب عليه أن يدفع لصاحب العمل تكاليف التدريب أو التأهيل التي تحملها صاحب العمل أو بنسبة المدة الباقية منها.","pe":"Part 4: Training And Qualification · Chapter 2: Qualification and Training Contracts of other than the Employer’s Workers","pa":"الباب الرابع · الفصل الثاني"},{"n":"49","st":"","en":"The training and qualification contract shall be subject to the provisions of this Law in terms of annual vacations, official holidays, maximum working hours, daily and weekly rest periods, occupational health and safety rules, and work injuries and their conditions as well as whatever is decided by the Minister.","ar":"تسـري على عقد التأهيل والتدريب الأحكام الواردة في هذا النظام، الخاصـة بالإجازات الس ـنوية والعطلات الرس ـمية، والحد الأقص ـى لس ـاعات العمل، وفترات الراحة اليومية والراحة الأسبوعية، وقواعد السلامة والصحة المهنية، وإصابات العمل وشروطها، وما يقرره الوزير. 13عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ علاقات العمل نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الأ و لعقد العمل","pe":"Part 4: Training And Qualification · Chapter 2: Qualification and Training Contracts of other than the Employer’s Workers","pa":"الباب الرابع · الفصل الثاني"},{"n":"50","st":"","en":"An employment contract is a contract concluded between an employer and a worker, whereby the latter undertakes to work under the management or supervision of the former for a wage.","ar":"عقد العمل هو عقد مبرم بين صاحب عمل وعامل، يتعهد الأخير بموجبه أن يعمل تحت إدارة صاحب العمل أو إشرافه مقابل أجر.","pe":"Part 5: Work Relations · Chapter 1: Employment contract","pa":"الباب الخامس · الفصل الأول"},{"n":"51","st":"amended","en":"The employment contract must be written in two copies, with each party retaining one copy. It must be documented in accordance with the relevant regulatory provisions and as specified by the regulations. The contract is considered valid even if it is not written. In this case, the worker alone may prove the contract and the rights arising from it using all means of proof. Either party has the right to request a written contract at any time. As for government employees and public institutions, the decision or appointment order issued by the competent authority shall serve as the contract.","ar":"يجب أن يكتب عقد العمل من نسختين، يحتفظ كل من طرفيه بنسخة منه، ويجب توثيقه وفق الأحكام النظامية ذات الصلة وفي ضوء ما تحدده اللائحة، ويعد العقد قائ ام ولو كان غير مكتوب، وفي هذه الحالة يجوز للعامل وحده إثبات العقد وحقوقه التي نشأت عنه بجميع طرق الإثبات، ويكون لكل من الطرفين أن يطلب كتابة العقد في أي وقت. أما عمال الحكومة والمؤسسات العامة فيقوم قرار أو أمر التعيين الصادر من الجهة المختصة مقام العقد.","pe":"Part 5: Work Relations · Chapter 1: Employment contract","pa":"الباب الخامس · الفصل الأول"},{"n":"52","st":"amended","en":"1. Taking into account the provisions of Article (37) of this Law, the ministry shall provide a unified model for each type of employment contract. The model shall include, as a minimum, the employer's name and location, the worker's name and nationality, the necessary details to verify their identity, their residence address, the agreed-upon salary including allowances and benefits, the type of work and its location, the starting date of employment, the contract's duration if it is for a fixed term, and the basic rights and obligations of each party.\n2. The employment contract shall be in accordance with the model referred to in paragraph (1) of this Article. Both parties to the contract may add other clauses, provided they do not conflict with the provisions of this Law, its regulations, and the decisions issued for its implementation.","ar":"1. مع مراعاة ماورد في المادة (السابعة والثلاثين) من هذا النظام، تضع الوزارة نموذجا موحدا لكل نوع من أنواع عقد العمل، يحتوي بصورة أساسية على:اسم صاحب العمل ومكانه، واسم العامل وجنسيته، وما يلزم لإثبات شخصيته، وعنوان إقامته، والأجر المتفق عليه بما في ذلك المزايا والبدلات، ونوع العمل ومكانه، وتاريخ الالتحاق به، ومدة العقد إن كان محدد المدة، وحقوق كل طرف والتزاماته الأساسية.\n2. يجب أن يكون عقد العمل وفق النموذج المشار إليه في الفقرة (1)من هذه المادة، ولطرفي العقد أن يضيفا إليه بنو اد أخرى، بما لا يتعارض مع أحكام هذا النظام ولائحته والقرارات الصادرة تنفيذا له.","pe":"Part 5: Work Relations · Chapter 1: Employment contract","pa":"الباب الخامس · الفصل الأول"},{"n":"53","st":"amended","en":"If the worker is subject to a probationary period, this must be explicitly stated in the employment contract, with the duration specified, provided that the total duration does not exceed one hundred and eighty days in all cases. The regulations shall specify the provisions related to this, including those concerning the leave that does not count toward the duration of the probationary period. Both parties have the right to terminate the contract during this period.","ar":"إذا كان العامل خاضعا للتجربة، وجب النص على ذلك صراحة في عقد العمل، وتحديد مدتها بوضوح، على ألا يزيد مجموع المدة في جميع الأحوال على (مائة وثمانين) يوما. وتبين اللائحة الأحكام المتصلة بذلك بما في ذلك مايتعلق بالإجازات التي لا تدخل في حساب المدة. ولكل من الطرفين الحق في إنهاء العقد خلال هذه المدة.","pe":"Part 5: Work Relations · Chapter 1: Employment contract","pa":"الباب الخامس · الفصل الأول"},{"n":"54","st":"","en":"A worker may not be placed on probation more than once by the same employer. As an exception, the worker may, with the approval of contract parties, in writing, be subjected to another probation period provided that such period involves another profession or work, or if no less than six months have elapsed since the termination of the work relationship between the worker and the employer. If the contract is terminated during the probation period, neither party shall be entitled to compensation nor shall the worker be entitled to an end-of-service award.","ar":"لايجوز وضـع العامل تحت التجربة أكثر من مرة واحدة لدى صـاحب عمل واحد. واسـتثناء من ذلك يجوز باتفاق طرفي العقد -كتابة -إخضـاع العامل لفترة تجربة أخرى بشـرط أن تكون في مهنة أخرى أو عمل آخر، أو أن يكون قد مضـى على انتهاء علاقة العامل بصـاحب العمل مدة لاتقل عن سـتة أشـهر. وإذا أنهي العقد ً خلال فترة التجربة فإن أًّيا من الطرفين لا يستحق تعويضا، كما لا يستحق العامل مكافأة نهاية الخدمة عن ذلك.","pe":"Part 5: Work Relations · Chapter 1: Employment contract","pa":"الباب الخامس · الفصل الأول"},{"n":"55","st":"","en":"1. A fixed-term employment contract shall terminate upon expiration of its term. If the two parties continue to implement it, the contract shall be deemed to have been renewed for an indefinite period of time, subject to the provisions of Article 37 of this Law for non-Saudi workers.\n2. If a fixed-term contract contains a clause providing for its renewal for a similar term or a specified term, the contract shall be renewed for the agreed upon period. If the contract is renewed for three consecutive terms, or if the original contract term and the renewal period amount to four years, whichever is less, and the parties continue to implement it, the contract shall become an indefinite term contract.","ar":"ً ينتهي عقد العمل المحدد المدة بانقضاء مدته، فإذا استمر طرفاه في تنفيذه عّد العقد مجددا لمدة غير محددة. مع مراعاة مانصت عليه المادة\n1. )السابعة والثلاثون( من هذا النظام بالنسبة إلى غير السعوديين.\n2. ً إذا تض ـمن العقد المحدد المدة ش ـرطا يقض ـي بتجديده لمدة مماثلة أو لمدة محددة، فإنه يتجدد للمدة المتفق عليها. فإن تعدد التجديد ثلاث مرات متتالية، أو بلغت مدة العقد الأصلي مع مدة التجديد أربع سنوات أيهما أقل واستمر الطرفان في تنفيذه؛ تحّول العقد إلى عقد غير محدد المدة.","pe":"Part 5: Work Relations · Chapter 1: Employment contract","pa":"الباب الخامس · الفصل الأول"},{"n":"56","st":"","en":"In all cases where the contract term is renewed for a specific period of time, the contract renewal period shall be deemed an extension of the original term in determining the worker’s rights which takes into account the worker’s period of service.","ar":"ً في جميع الحـالات التي يتجـدد فيهـا العقـد لمـدة محـددة، تعـد المـدة التي تجـدد إليهـا العقـد امتـدادا للمـدة الأصـ ـــليـة في تحـديـد حقوق العـامـل التي تـدخـل مـدة الخدمة في حسابها. 14عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 15عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 16عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 17عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 5: Work Relations · Chapter 1: Employment contract","pa":"الباب الخامس · الفصل الأول"},{"n":"57","st":"","en":"If the contract involves performance of a specific work, it shall terminate with the completion of the agreed upon work.","ar":"إذا كان العقد من أجل القيام بعمل معين، فإنه ينتهي بإنجاز العمل المتفق عليه.","pe":"Part 5: Work Relations · Chapter 1: Employment contract","pa":"الباب الخامس · الفصل الأول"},{"n":"58","st":"","en":"1. The employer may not relocate the worker from his original place of work to another place that requires a change in place of residence without his written consent.\n2. The employer may, in exigent circumstances and for a period not exceeding 30 days per year, assign the worker without his consent to a different location, provided that the employer bears the costs of the worker’s transport and residence during such period.","ar":"ً لايجوز لصاحب العمل أن ينقل العامل بغير موافقته -كتابة -من مكان عمله الأصلي إلى مكان آخر يقتضي تغيير محل إقامته.\n1. ً.2لصـاحب العمل -في حالات الضـرورة التي قد تقتضـيها ظروف عارضـة ولمدة لا تتجاوز ثلاثين يوما في السـنة -تكليف العامل بعمل في مكان يختلف عن المكان المتفق عليه دون اشتراط موافقته، على أن يتحمل صاحب العمل تكاليف انتقال العامل وإقامته خلال تلك المدة.","pe":"Part 5: Work Relations · Chapter 1: Employment contract","pa":"الباب الخامس · الفصل الأول"},{"n":"59","st":"","en":"A monthly-paid worker may not be reclassified as a daily-paid,a weekly-paid, or hourly-paid worker nor as a worker paid by piecework, unless the worker agrees thereto in writing and without prejudice to the rights he has acquired during the period he spent as a monthly-paid worker.","ar":"لايجوز نقل العامل ذي الأجر الشـهري إلى فئة عمال اليومية أو العمال المعينين بالأجر الأسـبوعي أو بالقطعة أو بالسـاعة، إلا إذا وافق العامل على ذلك كتابة، ومع عدم الإخلال بالحقوق التي اكتسبها العامل في المدة التي قضاها بالأجر الشهري.","pe":"Part 5: Work Relations · Chapter 1: Employment contract","pa":"الباب الخامس · الفصل الأول"},{"n":"60","st":"","en":"Without prejudice to the provisions of Article 38 of this Law, a worker may not be assigned duties which are essentially different from the agreed upon work without his written consent, except in cases of necessity dictated by transient circumstances and for a period not exceeding 30 days a year. First: Employers’ Duties","ar":"ً ً مع عـدم الإخلال بمـا تضـ ــمنتـه المـادة )الثـامنـة و الثلاثون( من هـذا النظـام، لايجوز تكليف العـامـل بعمـل يختلف إختلافـا جوهريـا عن العمـل المتفق عليـه بغير ً موافقته الكتابية، إلا في حالات الضرورة التي قد تقتضيها ظروف عارضة ولمدة لا تتجاوز ثلاثين يوما في السنة. 18عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الثاني الواجبات وقواعد التأديب ً أولا:واجبات أصحاب العمل","pe":"Part 5: Work Relations · Chapter 1: Employment contract","pa":"الباب الخامس · الفصل الأول"},{"n":"61","st":"amended","en":"In addition to the duties stipulated in this law, regulations, and resolutions issued in implementation thereof, the employer must do the following:\n1. The employer must refrain from exploiting the worker for forced labor, must not withhold the worker's wages or any part thereof without judicial basis, must treat the workers with due respect, and must refrain from any statement or action that violates their dignity or religion.\n2. The employer must provide workers with the necessary time to exercise their rights as stipulated in this Law, without deducting wages for this time. The employer may organize the exercise of this right in a manner that does not disrupt the workflow.\n3. The employer must facilitate all tasks related to the implementation of the provisions of this Law for the employees of the relevant authorities.\n4. The employer must refrain from doing anything that may invalidate or weaken the application of equal opportunities or treatment in employment and profession, whether through exclusion, differentiation, or preference among job applicants or employees based on race, color, gender, age, disability, marital status, or any other form of discrimination.\n5. The employer must provide suitable housing for his employees, or he may substitute this by providing an appropriate cash allowance along with their salary.\n6. The employer must provide suitable transportation for his employees from their residence to the workplace, or he may substitute this by providing an appropriate cash allowance along with their salary.","ar":"بالإضافة إلى الواجبات المنصوص عليها في هذا النظام واللوائح والقرارات الصادرة تطبيقا له، يجب على صاحب العمل مايأتي:\n1. أن يمتنع عن تشغيل العامل سخرة، أولا يحتجز دون سند قضائي أجر العامل أو جزاء منه، وأن يعامل عامله بالاحترام اللائق، وأن يمتنع عن كل قول أو فعل يمس كرامتهم ودينهم.\n2. أن يعطي العمال الوقت اللازم لممارسة حقوقهم المنصوص عليها في هذا النظام دون تنزيل من الأجور لقاء هذا الوقت، وله أن ينظم ممارسة هذا الحق بصورة لا تخل بسير العمل.\n3. أن يسهل لموظفي الجهات المختصة كل مهمة تتعلق بتطبيق أحكام هذا النظام.\n4. أن يمتنع عن القيام بكل ما من شأنه إبطال أو إضعاف تطبيق تكافؤ الفرص أو المعاملة في الاستخدام والمهنة، سواء من خلال الاستبعاد أو التفريق أو التفضيل بين المتقدمين للعمل أو العاملين لديه على أساس العرق أو اللون أو الجنس أو السن أو الإعاقة أو الحالة الاجتماعية أو أي شكل من أشكال التمييز الأخرى.\n5. أن يوفر السكن اللائق لعماله. وله أن يستعيض عن ذلك ببدل نقدي مناسب يدفعه لهم مع الأجر.\n6. أن يوفر وسيلة مواصلات مناسبة لعماله من مقر سكنهم إلى مقر العمل. وله أن يستعيض عن ذلك ببدل نقدي مناسب يدفعه لهم مع الأجر.","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"62","st":"","en":"If the worker reports to work on the prescribed time or expresses his readiness to perform his work at such time but is prevented from doing so only by a cause which is ascribed to the employer, the worker shall be entitled to the wage for the period during which no work is performed.","ar":"ّ إذا حض ـر العامل لأداء عمله في الوقت المحدد لذلك، أو بين أنه مس ـتعد لأداء عمله في هذا الوقت، ولم يمنعه عن العمل إلا س ـبب راجع إلى ص ـاحب العمل؛ كان له الحق في أجر المدة التي لا يؤدي فيها العمل.","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"63","st":"","en":"The employer, his agents, or any person having authority over the workers shall prohibit the entry of any illegal substances into places of work. Anyone who is found in possession of or consumes such substances shall be subject to the punishments provided for in this Law, without prejudice to other punishments provided for in Sharia.","ar":"ً على ص ــاحب العمل أو وكيله أو أي ش ــخص له س ـ ـلطة على العمال، منع دخول أي مادة محرمة ش ـ ـرعا إلى أماكن العمل، ويطبق بحق من وجدت لديه أو من تعاطاها العقوبات المقررة في هذا النظام، مع عدم الإخلال بالعقوبات الشرعية.","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"64","st":"","en":"Upon expiration of the employment contract, the employer shall be required to:\n1. Give the worker, upon his request, a certificate of work experience free of charge, stating the date of commencing work, date of the end of the relationship with them, profession, and amount of the last salary. The employer may not include in the certificate any remark that would undermine the reputation of the worker or his chances of future employment.\n2. Return to the worker all certificates or documents he had deposited with the employer. Second: Workers’ Duties","ar":"يلتزم صاحب العمل عند إنتهاء عقد العمل بما يأتي: أن يعطي العامل – بناء على طلبه – شهادة خدمة دون مقابل، يوضح فيها تاريخ التحاقه بالعمل، وتاريخ انتهاء علاقته به، ومهنته، ومقدار أجره الأخير.\n1. ولا يجوز لصاحب العمل تضمين الشهادة ما قد يسيء إلى سمعة العامل أو يقلل من فرص العمل أمامه.\n2. أن يعيد إلى العامل جميع ما أودعه لديه من شهادات أو وثائق. ً ثانيا:واجبات العمال","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"65","st":"","en":"In addition to the duties provided for in this Law and the regulations and decisions issued in implementation thereof, the worker shall be required to:\n1. Perform the work in accordance with the trade practice and the employer’s instructions provided that such instructions do not conflict with the contract, the law, or public morality and that they do not expose him to any undue hazards.\n2. Take due care of the employer’s machinery, tools, supplies, and raw materials which are placed at his disposal or in his custody and return unused materials to the employer.\n3. Abide by proper conduct and ethical norms during work.\n4. Extend all assistance and help without making it contingent on additional pay in cases of disasters or hazards threatening the workplace or the persons working therein.\n5. Undergo, upon the employer’s request, the medical examinations required prior to or during employment to ensure that he is free from occupational or communicable diseases.\n6. Keep confidential the technical, trade, and industrial secrets of the materials he produces or those to which he directly or indirectly contributes to the production thereof, as well as all trade secrets related to the work or firm, the disclosure of which is likely to cause damage to the employer’s interests. Third: Disciplinary Rules","ar":"ً بالإضافة إلى الواجبات المنصوص عليها في هذا النظام واللوائح والقرارات الصادرة تطبيقا له، يجب على العامل: ً أن ينجز العمـل وفقـا لأصــ ــول المهنـة ووفق تعليمـات صـ ـــاحـب العمـل، إذالم يكن في هـذه التعليمـات مـا يخـالف العقـد أو النظـام أو الآداب العـامـة، ولم\n1. يكن في تنفيذها ما يعرض للخطر.\n2. أن يعتني عناية كافية بالآلات والأدوات والمهمات والخامات المملوكة لصـــاحب العمل الموضـــوعة تحت تصـــرفه، أو التي تكون في عهدته، وأن يعيد إلى صاحب العمل المواد غير المستهلكة.\n3. أن يلتزم حسن السلوك والأخلاق أثناء العمل.\n4. ً أن يقدم كل عون ومساعدة دون أن يشترط لذلك أجرا إضافيا في حالات الكوارث والأخطار التي تهدد سلامة مكان العمل أو الأشخاص العاملين فيه. 19عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ\n5. \n6. ً أن يخض ـ ــع – وفقـا لطلـب صـ ــ ـاحـب العمـل – للفحوص الطبيـة التي يرغـب في إجرائهـا عليـه قبـل الإلتحـاق بـالعمـل أو أثنـاءه، للتحقق من خلوه من الأمراض المهنية أو السارية. أن يحفظ الأس ــرار الفنية والتجارية والص ــناعية للمواد التي ينتجها، أو التي أس ــهم في إنتاجها بص ــورة مباش ــرة أو غير مباش ــرة، وجميع الأس ــرار المهنية المتعلقة بالعمل أو المنشأة التي من شأن إفشائها الإضرار بمصلحة صاحب العمل. ً ثالثا:قواعد التأديب","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"66","st":"","en":"The disciplinary penalties that an employer may inflict on a worker are as follows:\n1. Warnings.\n2. Fines.\n3. Withholding or postponing a raise for a period not exceeding one year if prescribed by the employer.\n4. Postponement of a promotion for a period not exceeding one year if prescribed by the employer.\n5. Suspension from work and withholding wages.\n6. Dismissal from work in cases set forth by the law.","ar":"الجزاءات التأديبية التي يجوز لصاحب العمل توقيعها على العامل:\n1. \n2. \n3. \n4. \n5. \n6. الإنذار. الغرامة. الحرمان من العلاوة أو تأجيلها لمدة لا تزيد على سنة متى كانت مقررة من صاحب العمل. تأجيل الترقية مدة لا تزيد على سنة متى كانت مقررة من صاحب العمل. الإيقاف عن العمل مع الحرمان من الأجر.","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"67","st":"","en":"An employer may not inflict on a worker a penalty not provided for in this Law or in the work organization regulation.","ar":"ً لايجوز لصاحب العمل أن يوقع على العامل جزاء غير وارد في هذا النظام أو في لائحة تنظيم العمل.","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"68","st":"","en":"A penalty shall not be made harsher in the event of a repeated violation if 180 days have elapsed since the previous violation was committed, as of the date the worker is informed of the penalty for that violation.","ar":"ً لايجوز تشـ ـديد الجزاء في حالة تكرار المخالفة إذا كان قد انقضـ ـى على المخالفة السـ ـابقة مائة وثمانون يوما من تاريخ إبلاغ العامل بتوقيع الجزاء عليه عن تلك المخالفة.","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"69","st":"","en":"A worker may not be accused of any violation discovered after the elapse of more than 30 days, nor shall he be subjected to a disciplinary penalty after the elapse of more than 30 days from the conclusion of the investigation and establishment of the worker’s guilt.","ar":"ً لايجوز إتهـام العـامـل بمخـالفـة مض ـ ــى على كش ـ ــفهـا أكثر من ثلاثين يومـا. ولا يجوز توقيع جزاء تـأديبي بعـد تـاريخ إنتهـاء التحقيق في المخـالفـة وثبوتهـا فيحق ً العامل بأكثر من ثلاثين يوما.","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"70","st":"","en":"A worker may not be subjected to a disciplinary penalty for an act committed outside the workplace unless such act is related to the job, the employer, or the manager in-charge. Nor may a worker be fined for a single violation an amount in excess of a five-day wage, and not more than one penalty shall be applied for the same violation. No more than the equivalent of a five- day wage shall be deducted from his wage in one month in the payment of fines, and his suspension from work without pay may not exceed five days a month.","ar":"ً لايجوز توقيع جزاء تأديبي على العامل لأمر إرتكبه خارج مكان العمل مالم يكن متصـلا بالعمل أو بصـاحبه أو مديره المسـؤول. كما لا يجوز أن يوقع على العامل عن المخـالفـة الواحـدة غرامـة تزيـد قيمتهـا على أجرة خمس ــ ـة أيـام، ولا توقيع أكثر من جزاء واحـد على المخـالفـة الواحـدة، ولا أن ُتقتطع من أجره وفـاًء للغرامـات التي توقع عليه أكثر من أجر خمسة أيام في الشهر الواحد، ولا أن تزيد مدة إيقافه عن العمل دون أجر على خمسة أيام في الشهر.","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"71","st":"","en":"A disciplinary action may not be imposed on a worker except after notifying him in writing of the allegations, interrogating him, hearing his defense, and recording the same in minutes to be kept in his file. The interrogation may be verbal in minor violations the penalty for which does not exceed a warning or the deduction of an amount equivalent to one-day wage. This shall be recorded in the minutes.","ar":"لايجوز توقيع جزاء تأديبي على العامل إلا بعد إبلاغه كتابة بما نســ ـب إليه وإســ ـتجوابه وتحقيق دفاعه وإثبات ذلك في محضــ ـر يودع في ملفه الخاص. ويجوز أن يكون الاستجواب شفاهة في المخالفات البسيطة التي لا يتعدى الجزاء المفروض على مرتكبها الإنذار أو الغرامة بإقتطاع ما لا يزيد على أجر يوم واحد، على أن يثبت ذلك في المحضر.","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"72","st":"amended","en":"The employee must be notified in writing of the decision to impose a penalty on him. If he refuses to receive the notification or is absent, the notice shall be sent by registered mail to the address listed in his file. The employee has the right to file a written grievance with the competent authority at the employer’s side within thirty days, excluding official holidays, from the date he is notified of the decision. If his grievance is rejected or no decision is made in writing within fifteen days of submission, the employee has the right to appeal the decision before the labor courts within thirty days, excluding official holidays, from the date his grievance was rejected or the expiration of the specified period for resolving the grievance, whichever is earlier.","ar":"يجب أن يبلغ العامل بقرار توقيع الجزاء عليه كتابة، فإذا امتنع عن الاستلام أو كان غائبا فيرسل البلاغ بكتاب مسجل على عنوانه المبين في ملفه، وله التظلم كتابة للجهة المختصة لدى صاحب العمل خلال (ثلاثين) يوما -عدا أيام العطل الرسمية -من تاريخ إبلاغه بالقرار، فإن رفض تظلمه أو لم يبت فيه كتابة خلال (خمسة عشر) يوما من تقديمه كان له حق الاعتراض أمام المحاكم العمالية على القرار الخاص بتوقيع الجزاء عليه خلال (ثلاثين) يوما -عدا أيام العطل الرسمية -من تاريخ رفض تظلمه أو انتهاء المدة المحددة للبت في التظلم أيهما أقرب.","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"73","st":"","en":"The employer must keep a special record of the fines imposed on the worker, stating the name of the worker, his wage, the amount of the fine, the cause for imposing the fine, and the date of the fine. Fines may only be disbursed by the labor committee at the firm for the benefit of the workers of the firm. In the absence of such committee, disbursement of the fines shall be subject to the Ministry’s approval.","ar":"يجب على صـ ــاحب العمل أن يكتب الغرامات التي يوقعها على العامل في سـ ــجل خاص، مع بيان اسم العامل ومقدار أجره ومقدار الغرامة وسـ ــبب توقيعها وتـاريخ ذلـك. ولا يجوز التص ـ ــرف في الغرامـات إلا فيمـا يعود بـالنفع على عمـال المنش ــ ـأة، على أن يكون التص ـ ــرف بهـذه الغرامـات من قبـل اللجنـة العمـاليـة في المنشأة، وفي حالة عدم وجود لجنة يكون التصرف في الغرامات بموافقة الوزارة. 21عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الثالث انتهاء عقد العمل","pe":"Part 5: Work Relations · Chapter 2: Duties and Disciplinary Rules","pa":"الباب الخامس · الفصل الثاني"},{"n":"74","st":"amended","en":"The employment contract shall terminate in any of the following cases:\n1. If both parties agree to terminate it, provided that the employee's consent is in writing.\n2. If the specified term of the contract expires, unless the contract has been explicitly renewed in accordance with the provisions of this Law; in which case, it shall continue until its term.\n3. Based on the will of one of the parties in contracts of indefinite duration, in accordance with Article (75) of this Law.\n3. (Bis) - Resignation\n4. Upon the employee reaching the retirement age as stipulated by the Social Insurance Law, unless both parties agree to continue employment beyond this age.\n5. Force Majeure\n1. Permanent closure of the establishment.\n7. Cessation of the activity in which the employee is engaged unless otherwise agreed. (Bis) - Issuance of a final resolution or ruling by the competent court to terminate the employee's contract in any of the bankruptcy proceedings initiated under the Bankruptcy Law.\n8. Any other case stipulated by another law.","ar":"أي من الأحوال الآتية: ينتهي عقد العمل في\n1. إذا اتفق الطرفان على إنهائه، بشرط أن تكون موافقة العامل كتابية.\n2. إذا انتهت المدة المحددة في العقد، مالم يكن العقد قد تجدد صراحة وفق أحكام هذا النظام؛ فيستمر إلى أجله.\n3. بناء على إرادة أحد الطرفين في العقود غير المحددة المدة، وفقا لما ورد في المادة (الخامسة والسبعين) من هذا النظام. ( 3مكرر) -الاستقالة.\n4. بلوغ العامل سن التقاعد وفق ما تقضي به أحكام نظام التأمينات الاجتماعية، مالم يتفق الطرفان على الاستمرار في العمل بعد هذه السن.\n5. القوة القاهرة.\n6. إغلاق المنشأة نهائيا.\n7. إنهاء النشاط الذي يعمل فيه العامل، مالم يتفق على غير ذلك. ( 7مكرر) -صدور قرار أو حكم نهائي من المحكمة المختصة؛ بإنهاء عقد العامل في أي من إجراءات الإفلاس المفتتحة وفق نظام الإفلاس. أي حالة أخرى ينص عليها نظام آخر.\n8.","pe":"Part 5: Work Relations · Chapter 3: Termination of an Employment Contract","pa":"الباب الخامس · الفصل الثالث"},{"n":"75","st":"amended","en":"1. If the contract is of indefinite duration and the salary is paid monthly, either party may terminate it for a legitimate reason, as follows:\na. If the termination is initiated by the employee, they must provide written notice to the employer at least thirty (30) days prior to the termination date. b. If the termination is initiated by the employer, they must provide written notice to the employee at least sixty (60) days prior to the termination date.\n2. If the contract is of indefinite duration and the salary is not paid monthly, the party terminating the contract based on a legitimate reason, whether the employee or the employer, must provide written notice to the other party at least thirty (30) days before the termination date.","ar":"1. إذا كان العقد غير محدد المدة وكان الأجر يدفع شهريًا، جاز لأي من طرفيه إنهاؤه بناء على سبب مشروع، وفق ما يلي: أ -إذا كان الإنهاء من طرف العامل، فيجب عليه أن يوجه إشعارا كتابيًا بذلك لصاحب العمل قبل (ثلاثين) يوما على الأقل من تاريخ الإنهاء. ب -إذا كان الإنهاء من طرف صاحب العمل، فيجب عليه أن يوجه إشعارا كتابيًا بذلك للعامل قبل (ستين) يوما على الأقل من تاريخ الإنهاء.\n2. إذا كان العقد غير محدد المدة وكان الأجر لا يدفع شهريًا، فيجب أن يوجه الطرف الذي س ينهي العقد بناء على سبب مشروع -سواء كان العامل أو صاحب العمل -إشعارا كتابيًا بذلك للطرف الآخر قبل (ثلاثين) يوما على الأقل من تاريخ الإنهاء.","pe":"Part 5: Work Relations · Chapter 3: Termination of an Employment Contract","pa":"الباب الخامس · الفصل الثالث"},{"n":"76","st":"","en":"If the party terminating an indefinite term contract fails to observe the notice period specified in accordance with Article 75 of this Law, such party shall be required to pay the other party a compensation equal to the worker’s pay for the duration of the notice period, unless the two parties agree on a greater compensation.","ar":"ً إذالم يراِع الطرف الـذي أنهى العقـد غير المحـدد المـدة المهلـة المحـددة للإشــ ــعـار وفقـا للمـادة )الخـامســ ــة والسـ ـــبعين( من هـذا النظـام ,فـإنـه يلتزم بـأن يـدفع ً ً للطرف الآخر عن مهلة الإشعار مبلغا مساويا لأجر العامل عن المهلة نفسها، مالم يتفق الطرفان على أكثر من ذلك.","pe":"Part 5: Work Relations · Chapter 3: Termination of an Employment Contract","pa":"الباب الخامس · الفصل الثالث"},{"n":"77","st":"","en":"Unless the contract includes specific compensation for the termination by either party for an invalid reason, the party affected by termination shall be entitled to compensation as follows:\n1. For indefinite term contracts: an amount equivalent to fifteen-day wage for each year of the worker’s employment.\n2. For fixed-term contracts: the wage for the remainder of the contract term.\n3. The compensation referred to in paragraphs (1) and (2) of this Article shall not be less than the worker’s wage for two months.","ar":"ً ً ً مالم يتضمن العقد تعويضا محددا مقابل إنهائه من أحد الطرفين لسبب غير مشروع ,يستحق الطرف المتضرر من إنهاء العقد تعويضا على النحو الآتي: ً أجر خمسة عشر يوما عن كل سنة من سنوات خدمة العامل ,إذا كان العقد غير محدد المدة.\n1..2أجر المدة الباقية من العقد إذا كان العقد محدد المدة. يجب ألا يقل التعويض المشار إليه في الفقرتين ) (1و) (2من هذه المادة عن أجر العامل لمدة شهرين..3","pe":"Part 5: Work Relations · Chapter 3: Termination of an Employment Contract","pa":"الباب الخامس · الفصل الثالث"},{"n":"78","st":"","en":"If notice is made by the employer, the worker shall be entitled to a paid leave of absence of a full day or eight hours per week, to seek other employment. The worker shall be entitled to determine the time of the leave of absence, provided that the employer is notified at least one day in advance. The employer may relieve the worker from attending work during the notice period without affecting the worker’s term of service or entitlements for such period.","ar":"ً ً إذا كان الإشـعار من جانب صـاحب العمل ,فيحق للعامل أن يتغيب خلال مهلة الإشـعار يوما كاملا في الأسـبوع أو ثماني سـاعات أثناء الأسـبوع، وذلك للبحث عن عمل آخر مع اسـتحقاقه لأجر هذا اليوم أو سـاعات الغياب. ويكون للعامل تحديد يوم الغياب وسـاعاته بشـرط أن ُيشـعر صـاحب العمل بذلك في اليوم السـابق 22عدلت بالمرسوم الملك0ى 1رقم )م (134/وتاريخ 1440/11/27هـ.. 23عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 24عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 25عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 26إلغاء النص السابق وإحلال النص المذكور محله بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ للغياب على الأقل. ولصـ ـاحب العمل أن يعفي العامل من العمل أثناء مهلة الإش ـ ـعار مع احتس ــاب مدة خدمته مسـ ـتمرة إلى حين انتهاء تلك المهلة، والتزام صاحب العمل بما يترتب على ذلك من آثار وبخاصة استحقاق العامل أجره عن مهلة الإشعار.","pe":"Part 5: Work Relations · Chapter 3: Termination of an Employment Contract","pa":"الباب الخامس · الفصل الثالث"},{"n":"79","st":"","en":"An employment contract shall not expire by the death of the employer unless his person has been taken into consideration in concluding the contract, but shall expire with the death or incapacity of the worker pursuant to a medical report approved by the competent health authority or the authorized physician designated by the employer.","ar":"لا ينقضـي عقد العمل بوفاة صـاحب العمل، مالم تكن شـخصـيته قد روعيت في إبرام العقد ولكنه ينتهي بوفاة العامل أو بعجزه عن أداء عمله، وذلك بموجب شهادة طبية معتمدة من الجهات الصحية المخولة أو من الطبيب المخول الذي يعينه صاحب العمل.","pe":"Part 5: Work Relations · Chapter 3: Termination of an Employment Contract","pa":"الباب الخامس · الفصل الثالث"},{"n":"79 bis","st":"added","en":"1. The resignation request is considered accepted if thirty (30) days have passed since its submission without a response from the employer. The employer has the right to postpone the acceptance of the resignation request for a period not exceeding sixty (60) days if the interests of the work require it, and based on a written explanation provided to the employee. The postponement of acceptance must occur before the expiration of the thirty (30) days mentioned in this paragraph. The duration of the postponement of acceptance is calculated from the date the written explanation mentioned in the previous paragraph is provided to the employee.\n2. The employment contract ends upon the resignation being accepted by the employer, or after the thirty days mentioned in paragraph (1) of this article has passed without a response from the employer, or upon the expiration of the postponement period for acceptance as referred to in paragraph (1) of this Article.\n3. The employee has the right to withdraw the resignation request within a period not exceeding seven days from the date of its submission unless the employer accepts it before the withdrawal.\n4. A deferred date of resignation shall not be specified in the resignation request.\n5. The employment contract remains valid during the resignation request period, and both parties to the contract are obligated to fulfill all obligations arising therefrom during that period.\n6. An employee whose contract is terminated by resignation is entitled to all rights stipulated under this Law.","ar":"مقبولا إذا مضى على تقديمه (ثلاثون) يوما دون رد من صاحب\n1. يعد طلب الاستقالة المقدم العمل. ولصاحب العمل تأجيل قبول طلب الاستقالة مدة لا تزيد على (ستين) يوما إذا اقتضت مصلحة العمل ذلك ووفق إيضاح مسبب مكتوب يقدم للعامل، على أن يكون تأجيل القبول قبل انتهاء مدة الثلاثين يوما المشار إليها في هذه الفقرة. وتحتسب مدة تأجيل القبول من تاريخ تقديم الإيضاح المشار إليه للعامل.\n2. ينتهي عقد العمل بالاستقالة من تاريخ قبول صاحب العمل بها أو مضي مدة الثلاثين يوما المشار إليها في الفقرة (1)من هذه المادة دون رد من صاحب العمل، أو مرور مدة تأجيل القبول المشار إليها في الفقرة (1)من هذه المادة.\n3. للعامل العدول عن طلب الاستقالة خلال مدة لا تتجاوز (سبعة) أيام من تاريخ تقديمه مالم يقبلها صاحب العمل قبل العدول.\n4. لا يحص أن يحدد في طلب الاستقالة تاريخ مؤجل لها.\n5. يعد عقد العمل ساريًا خلال مدة طلب الاستقالة، ويلتزم طرفا العقد بتنفيذ جميع الالتزامات الناشئة عنه خلالها.\n6. يستحق العامل الذي انتهى عقده بالاستقالة جميع حقوقه المقررة بموجب هذا النظام. هذه المادة مضافة بموجب المرسوم الملكي رقم م 44/وتاريخ 1446/02/08ه.","pe":"","pa":"الباب الخامس · الفصل الثالث"},{"n":"80","st":"","en":"An employer may not terminate the contract without giving the worker an award, advance notice, or indemnity except in the following cases, and provided that he gives the worker a chance to state his reasons for objecting to the termination:\n1. If, during or by reason of the work, the worker assaults the employer, the manager in-charge, or any of his superiors.\n2. If the worker fails to perform his main obligations arising from the employment contract, or fails to obey legitimate orders, or if, in spite of written warnings, he deliberately fails to observe instructions related to the safety of work and workers which have been posted by the employer in a visible place.\n3. If it is established that the worker has committed a misconduct or an act infringing on honesty or integrity.\n4. If the worker deliberately commits or omits any act with the intent to cause material loss to the employer, provided that the employer reports the incident to the competent authorities within 24 hours after becoming aware of its occurrence.\n5. If it is established that the worker has committed forgery to obtain the job.\n6. During the probation period.\n7. If the worker is absent without a valid reason for more than 30 days in one contractual year or for more than 15 consecutive days, provided that the dismissal is preceded by a written warning from the employer to the worker if the latter is absent for 20 days in the first case and for 10 days in the second.\n8. If it is established that the worker has unlawfully taken advantage of his position for personal gain.\n9. If it is established that the worker has disclosed trade secrets.","ar":"لايجوز لصـاحب العمل فسـخ العقد دون مكافأة العامل، أو إشـعاره، أو تعويضـه؛ إلا في الحالات الآتية، وبشـرط أن يتيح له الفرصـة لكي يبدي أسـباب معارضـته للفسخ:\n1. إذا وقع من العامل اعتداء على صاحب العمل أو المدير المسئول أو أحد رؤسائه أو مرؤوسيه أثناء العمل أو بسببه.\n2. ً إذالم يؤِد العامل التزاماته الجوهرية المترتبة على عقد العمل أو لم يطع الأوامر المشـ ــروعة أو لم يراِع عمدا التعليمات -التي أعلن عنها ص ـ ــاحب العمل في مكان ظاهر -الخاصة بسلامة العمل والعمال رغم إنذاره كتابة.\n3. ً ً ً ً إذا ثبت اتباع العامل سلوكا سيئا، أو ارتكابه عملا مخلا بالشرف أو الأمانة.\n4. ً إذا وقع من العامل -عمدا -أ ُّي فعٍل أو تقص ـٍير يقص ـد به إلحاق خس ـارة مادية بصـاحب العمل، بشـرط أن يبلغ صـاحب العمل الجهات المختصـة بالحادث خلال أربع وعشرين ساعة من وقت علمه بوقوعه.\n5. إذا ثبت أن العامل لجأ إلى التزوير ليحصل على العمل.\n6. ً إذا كان العامل معينا تحت الاختبار.\n7. ً ً إذا تغيب العامل دون سـبب مشـروع أكثر من ثلاثين يوما خلال السـنة العقدية الواحدة أو أكثر من خمسـة عشـر يوما متتالية، على أن يسـبق الفصـل إنذار ً كتابي من صاحب العمل للعامل بعد غيابه عشرين يوما في الحالة الأولى وانقطاعه عشرة أيام في الحالة الثانية.\n8. إذا ثبت أن العامل استغل مركزه الوظيفي بطريقة غير مشروعة للحصول على نتائج ومكاسب شخصية.\n9. إذا ثبت أن العامل أفشى الأسرار الصناعية أو التجارية الخاصة بالعمل الذي يعمل فيه.","pe":"Part 5: Work Relations · Chapter 3: Termination of an Employment Contract","pa":"الباب الخامس · الفصل الثالث"},{"n":"81","st":"","en":"Without prejudice to all of his statutory rights, a worker may leave his job without notice in any of the following cases:\n1. If the employer fails to fulfill his essential contractual or statutory obligations towards the worker.\n2. If the employer or his representative resorts to fraud at the time of contracting with respect to work conditions and circumstances.\n3. If the employer assigns the worker, without his consent, to perform work which is essentially different from the agreed upon work and in violation of the provisions of Article 60 of this Law.\n4. If the employer, a family member thereof, or the manager in-charge commits a violent assault or an immoral act against the worker or any of his family members.\n5. If the treatment of the employer or the manager in-charge is characterized by cruelty, injustice, or insult.\n6. If there exists in the workplace a serious hazard threatening the safety or health of the worker, provided that the employer is aware thereof but fails to take measures indicating its removal.\n7. If the employer or his representative, through his actions and particularly his unjust treatment or violation of the terms of the contract, causes the worker to appear as the party terminating the contract.","ar":"يحق للعامل أن يترك العمل دون إشعار، مع احتفاظه بحقوقه النظامية كلها، وذلك في أي من الحالات الآتية: إذالم يقم صاحب العمل بالوفاء بالتزاماته العقدية أو النظامية الجوهرية إزاء العامل.\n1. \n2. إذا ثبت أن صاحب العمل أو من يمثله قد أدخل عليه الغش وقت التعاقد فيما يتعلق بشروط العمل وظروفه.\n3. ً ً إذا كلفه صاحب العمل دون رضاه بعمل يختلف جوهريا عن العمل المتفق عليه، وخلافا لما تقرره المادة الستون من هذا النظام.\n4. إذا وقع من صـاحب العمل أو من أحد أفراد أسـرته، أومن المدير المسـئول اعتداء يتسـم بالعنف، أو سـلوك مخل بالآداب نحو العامل أو أحد أفراد أسـرته.\n5. إذا اتسمت معاملة صاحب العمل أو المدير المسئول بمظاهر من القسوة والجور أو الإهانة.\n6. إذا كان في مقر العمل خطر جسـيم يهدد سـلامة العامل أو صـحته، بشـرط أن يكون صـاحب العمل قد علم بوجوده، ولم يتخذ من الإجراءات مايدل على إزالته. 27عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ\n7. إذا كان صـاحب العمل أومن يمثله قد دفع العامل بتصـرفاته وعلى الأخص بمعاملته الجائرة أو بمخالفته شـروط العقد إلى أن يكون العامل في الظاهر هو الذي أنهى العقد.","pe":"Part 5: Work Relations · Chapter 3: Termination of an Employment Contract","pa":"الباب الخامس · الفصل الثالث"},{"n":"82","st":"","en":"An employer may not terminate the worker’s services on account of illness prior to availing him of the period designated for sick leave as provided for in this Law. The worker shall have the right to request that his sick leave be combined with his annual leave.","ar":"لايجوز لصـ ـاحب العمل إنهاء خدمة العامل بس ــبب المرض، قبل اس ـ ـتنفاذه المدد المحددة للإجازة المنص ــوص عليها في هذا النظام، وللعامل الحق في أن يطلب وصل إجازته السنوية بالمرضية.","pe":"Part 5: Work Relations · Chapter 3: Termination of an Employment Contract","pa":"الباب الخامس · الفصل الثالث"},{"n":"83","st":"","en":"1. If the work assigned to the worker allows him to get acquainted with the employer’s clients, the employer may, for the protection of his legitimate interests, require the worker not to compete with him upon termination of the contract. For this condition to be valid, it shall be in writing and specific, in terms of time, place, and type of work. The validity of such condition shall not exceed two years from the date of termination of the relationship between the two parties.\n2. If the work assigned to the worker allows him to have access to the employer’s business secrets, the employer may, for the protection of his legitimate interests, require the worker not to disclose such secrets upon termination of the contract. For this condition to be valid, it shall be in writing and specific, in terms of time, place, and type of work.\n3. As an exception to the provisions of this Law, the employer may file a suit within one year from the date of discovery of the worker’s violation of any of his obligations pursuant to this Article.","ar":"1. ً إذا كان العمل المنوط بالعامل يسـ ـمح له بمعرفة عملاء صــاحب العمل ,جاز لصـ ـاحب العمل -حماية لمصـ ـالحه المشـ ـروعة -أن يشـ ـبخط على العامل ألا ً ً يقوم بعد انتهاء العقد بمنافسـ ـته، ويجب لصـ ـحة هذا الشـ ـرط أن يكون ُمحررا وُمحددا، من حيث الزمان والمكان ونوع العمل، ويجب ألا تزيد مدته على سنتين من تاريخ انتهاء العلاقة بين الطرفين.\n2. ً إذا كان العمل المنوط بالعامل يس ـمح له بالاطلاع على أس ـرار عمله ,جاز لص ـاحب العمل -حماية لمص ـالحه المش ـروعة -أن يش ـبخط على العامل ألا يقوم ً ً بعد انتهاء العقد بإفشاء أسراره، ويجب لصحة هذا الشرط أن يكون محررا ومحددا، من حيث الزمان والمكان ونوع العمل.\n3. استثناء من أحكام هذا النظام، لصاحب العمل رفع دعوى خلال سنة من تاريخ اكتشاف مخالفة العامل لأي من التزاماته الواردة في هذه المادة. 28عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الر ابع مكافأة نهاية الخدمة","pe":"Part 5: Work Relations · Chapter 3: Termination of an Employment Contract","pa":"الباب الخامس · الفصل الثالث"},{"n":"84","st":"","en":"Upon the end of the employment relation, the employer shall pay the worker an end-of-service award equivalent to the amount of a half-month wage for each of the first five years and a one-month wage for each of the following years. The end- of-service award shall be calculated on the basis of the last wage and the worker shall be entitled to an end-of-service award for the portions of the year in proportion to the time spent on the job.","ar":"إذا انتهت علاقة العمل وجب على صـاحب العمل أن يدفع إلى العامل مكافأة عن مدة خدمته تحسـب على أسـاس أجر نصـف شـهر عن كل سـنة من السـنوات ً الخمس الأولى، وأجر ش ـهر عن كل س ـنة من الس ـنوات التالية، ويتخذ الأجر الأخير أس ـاس ـا لحس ـاب المكافأة، ويس ـتحق العامل مكافأة عن أجزاء الس ـنة بنس ـبة ما قضاه منها في العمل.","pe":"Part 5: Work Relations · Chapter 4: End-of-Service Award","pa":"الباب الخامس · الفصل الرابع"},{"n":"85","st":"","en":"If the employment relation ends due to the worker’s resignation, he shall, in this case, be entitled to one third of the award after service of not less than two consecutive years and not more than five years, to two thirds if his service is in excess of five consecutive years but less than 10 years, and to the full award if his service amounts to 10 years or more.","ar":"إذا كان انتهاء علاقة العمل بســبب اســتقالة العامل يســتحق في هذه الحالة ثلث المكافأة بعد خدمة لاتقل مدتهاعن ســنتين متتاليتين، ولا تزيد على خمس سـنوات، ويسـتحق ثلثيها إذا زادت مدة خدمته على خمس سـنوات متتالية ولم تبلغ عشـر سـنوات ويسـتحق المكافأة كاملة إذا بلغت مدة خدمته عشـر سـنوات فأكثر.","pe":"Part 5: Work Relations · Chapter 4: End-of-Service Award","pa":"الباب الخامس · الفصل الرابع"},{"n":"86","st":"","en":"As an exception to the provisions of Article 8 of this Law, it may be agreed that the wage used as a basis for calculating the end-of-service award does not include all or some of the commissions, sales percentages, and similar wage components paid to the worker which are by their nature subject to increase or decrease.","ar":"اسـتثناء من حكم المادة )الثامنة( من هذا النظام، يجوز الاتفاق على ألا تحسـب في الأجر الذي تسـوى على أسـاسـه مكافأة نهاية الخدمة جميع مبالغ العمولات أو بعضها والنسب المئوية عن ثمن المبيعات وما أشبه ذلك من عناصر الأجر الذي يدفع إلى العامل وتكون قابلة بطبيعتها للزيادة والنقص.","pe":"Part 5: Work Relations · Chapter 4: End-of-Service Award","pa":"الباب الخامس · الفصل الرابع"},{"n":"87","st":"","en":"As an exception to the provisions of Article 85 of this Law, the worker shall be entitled to the full end-of-service award if he leaves the work due to a force majeure beyond his control. A female worker shall likewise be entitled to the full award if she ends her contract within six months from the date of her marriage or three months from the date of giving birth.","ar":"استثناًء مما ورد في المادة )الخامسة والثمانين( من هذا النظام تستحق المكافأة كاملة في حالة ترك العامل العمل نتيجة لقوة قاهرة خارجة عن إرادته، كما تستحقها العاملة إذا أنهت العقد خلال ستة أشهر من تاريخ عقد زواجها أو ثلاثة أشهر من تاريخ وضعها.","pe":"Part 5: Work Relations · Chapter 4: End-of-Service Award","pa":"الباب الخامس · الفصل الرابع"},{"n":"88","st":"","en":"Upon the end of the worker’s service, the employer shall pay his wages and settle his entitlements within a maximum period of one week from the date of the end of the contractual relation. If the worker ends the contract, the employer shall settle all his entitlements within a period not exceeding two weeks. The employer may deduct any work-related debt due to him from the worker’s entitlements.","ar":"إذا انتهت خدمة العامل وجب على صاحب العمل دفع أجره وتصفية حقوقه خلال أسبوع -على الأكثر -من تاريخ انتهاء العلاقة العقدية. أما إذا كان العامل هو الذي أنهى العقد، وجب على صــاحب العمل تصـ ـفية حقوقه كاملة خلال مدة لا تزيد على أسـ ـبوعين. ولصـ ـاحب العمل أن يحسـ ـم أي دين مسـ ـتحق له بسـ ـبب العمل من المبالغ المستحقة للعامل. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ شروط العمل وظروفه نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الأ و ل الأجور","pe":"Part 5: Work Relations · Chapter 4: End-of-Service Award","pa":"الباب الخامس · الفصل الرابع"},{"n":"89","st":"","en":"The Council of Ministers may, when necessary and upon a proposal by the Minister, set a minimum wage.","ar":"لمجلس الوزراء عند الاقتضاء – وبناء على اقتراح الوزير – وضع حد أدنى للأجور.","pe":"Part 6: Work Conditions And Circumstances · Chapter 1: Wages","pa":"الباب السادس · الفصل الأول"},{"n":"90","st":"","en":"1. The worker’s wage and all other dues shall be paid in the local currency in accordance with the following:\na) Workers paid on a daily basis shall be paid at least once a week.\nb) Workers paid on a monthly basis shall be paid once a month.\nc) If the work is done by piece and requires a period of more than two weeks, the worker shall receive a payment each week commensurate with the completed portion of the work. The balance of the wage shall be paid in full during the week following delivery of the work.\nd) In cases other than the above, worker’s wages shall be paid at least once a week.\n2. Firms shall be required to deposit workers’ wages into their bank accounts through approved banks in the Kingdom, provided that their due date does not exceed the deadlines referred to above. The Minister may exempt some firms from such requirement.","ar":"1. ً يجب دفع أجر العامل وكل مبلغ مستحق له بالعملة الرسمية للبلاد طبقا للأحكام الآتية: أ. العمال باليومية:تصرف أجورهم مرة كل أسبوع على الأقل. ب. العمال ذوو الأجور الشهرية:تصرف أجورهم مرة في الشهر. ج. إذا كان العمل يؤدى بالقطعة، ويحتاج لمدة تزيد على أسـبوعين؛ فيجب أن يحصـل العامل على دفعة كل أسـبوع تتناسـب مع ما أتمه من العمل ويصـرف ً باقي الأجر كاملا خلال الأسبوع التالي لتسليم العمل. د. في غير ما ذكر ,تؤدى إلى العمال أجورهم مرة كل أسبوع على الأقل.\n2. تلزم المنشـآت بدفع الأجور في حسـابات العمال عن طريق البنوك المعتمدة في المملكة، بشـرط ألا يتجاوز موعد اسـتحقاقها المواعيد المحددة أعلاه، ويجوز للوزير استثناء بعض المنشآت من ذلك.","pe":"Part 6: Work Conditions And Circumstances · Chapter 1: Wages","pa":"الباب السادس · الفصل الأول"},{"n":"91","st":"","en":"1. If a worker, as a result of his own fault or his violation of the employer’s instructions and not as a result of a third party’s fault or a force majeure, causes loss, damage, or destruction to machinery or products owned by the employer while in his custody, the employer may deduct from the worker’s wage the amount necessary for repair or restoration to the original condition, provided that such deductions do not exceed an amount equivalent to five-day wage per month. The employer may file a grievance, if necessary, demanding more deductions if the worker has other properties from which collections may be made. The worker may file a grievance with the labor court regarding the allegations leveled at him or the employer’s estimation of the damages. If the labor court rules that the employer is not entitled to claim such deductions or if it awards the employer a lower amount, the employer shall return to the worker the amounts unjustifiably deducted, within seven days from the date of the award.\n2. Either party shall file its grievance within 15 work days; otherwise, their right to do so shall be forfeited. For the employer, the date of filing the grievance shall be from the date the incident is discovered, and for the worker, from the date of his notification of the same by the employer.","ar":"1. \n2. ً إذا تس ـ ــبـب عـامـل في فقـد أو إتلاف أو تـدمير آلات أو منتجـات يملكهـا ص ــ ـاحـب العمـل أو هي في عهـدتـه وكـان ذلـك نـاش ـ ــئـا عن خطـأ العـامـل أو مخـالفتـه تعليمات ص ـاحب العمل ولم يكن نتيجة لخطأ الغير أو ناش ـئا عن قوة قاهرة، فلص ـاحب العمل أن يقتطع من أجر العامل المبلغ اللازم للإص ـلاح أو لإعادة الوضـع إلى ما كان عليه على ألا يزيد ما يقتطع لهذا الغرض على أجر خمس ـة أيام في كل شـهر، ولص ـاحب العمل الحق في التظلم عند الاقتض ـاء، وذلك بطلب ماهو أكثر من ذلك إذا كان للعامل مال آخر يمكن الاســتيفاء منه. وللعامل أن يتظلم مما نســب إليه أومن تقدير صــاحب العمل للتعويض أمام المحكمة العمالية فإذا حكمت بعدم أحقية صـاحب العمل في الرجوع على العامل بما اقتطعه منه أو حكمت بأقل منه وجب على صـاحب العمل أن يرد إلى العامل ما اقتطع منه دون وجه حق خلال سبعة أيام من تاريخ صدور الحكم. شاف الواقعة صاحب العمل من تاريخ اكت ـ سبة إلى ـ سقط الحق فيه ويبدأ موعد التظلم بالن ـ شر يوم عمل، وإلا ـ سة ع ـ يكون تظلم أي من الطرفين خلال خم ـ وبالنسبة إلى العامل من تاريخ إبلاغ صاحب العمل له بذلك.","pe":"Part 6: Work Conditions And Circumstances · Chapter 1: Wages","pa":"الباب السادس · الفصل الأول"},{"n":"92","st":"","en":"No amount shall be deducted from a worker’s wages against private rights without his written consent, except in the following cases:\n1.   Repayment of loans extended by the employer, provided that such deductions do not exceed 10% of his wage.\n2.   Social insurance or any other contributions due on workers as provided for by law.\n3.   Worker’s contributions to thrift funds or loans due to such funds.\n4.   Installments of any scheme undertaken by the employer involving home ownership programs or any other privilege.\n5.   Fines imposed on the worker on account of violations he commits, as well as deductions made for damages he causes.\n6.   Any debt collected in implementation of a judicial judgment, provided that the monthly deduction shall not exceed one quarter of the worker‘s wage, unless the judgment provides otherwise. First to be collected is alimony, followed by food, clothing, and accommodation debts, before other debts.","ar":"لايجوز حسم أي مبلغ من أجور العامل لقاء حقوق خاصة دون موافقة خطية منه، إلا في الحالات الآتية: استرداد قروض صاحب العمل، بشرط ألا يزيد ما يحسم من العامل في هذه الحالة على %10من أجره.\n1. \n2. ً اشتراكات التأمينات الاجتماعية، وأي اشتراكات أخرى مستحقة على العامل ومقررة نظاما.\n3. اشتراكات العامل في صندوق الادخار والقروض المستحقة للصندوق.\n4. أقساط أي مشروع يقوم به صاحب العمل لبناء المساكن بقصد تمليكها للعمال أو أي مزية أخرى.\n5. الغرامات التي توقع على العامل بسبب المخالفات التي يرتكبها، وكذلك المبلغ الذي يقتطع منه مقابل ما أتلفه. 29عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 30عدلت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ\n6. ً ً ّ استيفاء دين إنفاذا لأي حكم قضائي، على ألا يزيد ما يحسم شهريا لقاء ذلك على ربع الأجر المستحق للعامل ما لم يتضمن الحكم خلاف ذلك. ً ويستوفى دين النفقة أولا، ثم دين المأكل والملبس والمسكن قبل الديون الأخرى.","pe":"Part 6: Work Conditions And Circumstances · Chapter 1: Wages","pa":"الباب السادس · الفصل الأول"},{"n":"93","st":"","en":"In all cases, deductions made may not exceed half the worker’s due wage, unless the labor court determines that further deductions can be made or that the worker is in need of more than half his wage. In the latter case, the worker may not be given more than three quarters of his wage.","ar":"لايجوز -في جميع الأحوال -أن تزيد نسـبة المبالغ المحسـومة على نصـف أجر العامل المسـتحق، مالم يثبت لدى المحكمة العمالية إمكان الزيادة في الحسـم على تلك النسبة، أو يثبت لديها حاجة العامل إلى أكثر من نصف أجره، وفي هذه الحالة الأخيرة لا يعطى العامل أكثر من ثلاثة أرباع أجره، مهما كان الأمر.","pe":"Part 6: Work Conditions And Circumstances · Chapter 1: Wages","pa":"الباب السادس · الفصل الأول"},{"n":"94","st":"","en":"1. If any amount is deducted from a worker’s wages for reasons other than those specified in this Law without his written consent, or if an employer delays, without a valid justification, payment of a worker’s wage beyond the due date set forth in the Law, the worker, his representative, or the head of the competent labor office may submit a request to the labor court to order the employer to return to the worker any wrongfully-deducted amounts or to pay him his outstanding wages.\n2. The labor court may, if it establishes that the employer has unjustifiably deducted said amounts or delayed the payment of wages, impose on the employer a fine not exceeding twice the amount deducted from the worker’s wage or twice the outstanding wages.","ar":"1. إذا حسـم من أجر العامل أي مبلغ لسـبب غير ما هو منصـوص عليه في هذا النظام بغير موافقته الكتابية، أو تأخر صـاحب العمل عن أداء أجر العامل في ً موعد اسـتحقاقه المحدد نظاما دون مسـوغ مشـروع كان للعامل أو لمن يمثله أو مدير مكتب العمل المختص أن يتقدم بطلب إلى المحكمة العمالية، كي تأمر صاحب العمل أن يرد إلى العامل ما حسمه دون وجه حق، أو يدفع له أجوره المتأخرة.\n2. يجوز للمحاكم العمالية المذكورة إذا ثبت لديها أن صـ ـاحب العمل حسـ ـم المبالغ المذكورة أو تأخر في سـ ـداد الأجر دون مســ ـوغ أن توقع عليه غرامة لا تتجاوز ضعف ما حسم من أجر العامل أو ضعف قيمة الأجر المتأخر.","pe":"Part 6: Work Conditions And Circumstances · Chapter 1: Wages","pa":"الباب السادس · الفصل الأول"},{"n":"95","st":"","en":"1. If the employment contract or the work organization regulation does not provide for the wage binding on the employer, the wage estimated for the same type of work in the firm, if any, shall be adopted; otherwise, the wage shall be estimated in accordance with the norms of the profession at the place where the work is performed. In the absence of such norms, the labor court shall estimate the wage in accordance with the dictates of justice.\n2. The same shall also apply in determining the type and scope of the service that the worker is required to render.","ar":"1. \n2. إذالم ينص عقد العمل أو لائحة تنظيم العمل على الأجر الذي يلتزم به صاحب العمل يؤخذ بالأجر المقدر لعمل من النوع ذاته في المنشأة إن وجد، وإلا ً ً قدر الأجر طبقا لعرف المهنة في الجهة التي يؤدى فيها العمل، فإن لم يوجد تولت المحكمة العمالية تقدير الأجر وفقا لمقتضيات العدالة. ً ويتبع ذلك أيضا في تحديد نوع الخدمة الواجب على العامل أداؤها، وفي تحديد مداها.","pe":"Part 6: Work Conditions And Circumstances · Chapter 1: Wages","pa":"الباب السادس · الفصل الأول"},{"n":"96","st":"","en":"1. If the worker’s wage is determined on the basis of piecework or productivity, the average wage which the worker receives for his actual work days during the last year of his service shall be used as the basis for calculating any entitlements determined for the worker under this Law.\n2. If the entire wage is the amounts received as commissions, percentages of sales, or the like which are by nature subject to increases or decreases, the daily average wage shall be calculated on the basis of the amounts the worker receives for the actual work days, divided by them.","ar":"1. \n2. ً إذا كان أجر العامل محددا على أساس القطعة أو الإنتاج يعتمد متوسط الأجر الذي تقاضاه عن أيام عمله الفعلية في السنة الأخيرة من خدمته، لغرض حساب أي من الحقوق المقررة له بموجب هذا النظام. إذا كان الأجر كله مبالغ العمولات أو النسـب المئوية من المبيعات أو ما أشـبه ذلك، مما تكون قابلة بطبيعتها للزيادة أو النقص، يحسـب متوسـط الأجر ً اليومي على أساس ما تقاضاه العامل عن أيام العمل الفعلية مقسوما عليها.","pe":"Part 6: Work Conditions And Circumstances · Chapter 1: Wages","pa":"الباب السادس · الفصل الأول"},{"n":"97","st":"","en":"If a worker is detained or taken into custody by the competent authorities in cases related to work or occasioned by it, the employer shall continue to pay the worker 50% of the wage until the case is decided, provided that the period of detention or custody shall not exceed 180 days. If said period exceeds that, the employer shall not be required to pay any portion of the wage for the excess period. If the worker is acquitted or the investigation is closed for lack of evidence or invalidity thereof, the employer shall return to the worker the amount previously deducted from his wage. However, if he is convicted, none of the payments made to him shall be recovered unless the judgment provides otherwise.","ar":"إذا جرى توقف العامل أو احتجازه لدى الجهات المختصـة في قضـايا تتصـل بالعمل أو بسـببه فعلى صـاحب العمل أن يسـتمر في دفع % 50من الأجر إلى العامل ً حتى يفص ــل في قض ـ ـيته، على ألا تزيد مدة التوقيف أو الحجز على مائة وثمانين يوما، فإذا زادت على ذلك فلا يلتزم صـ ـاحب العمل بدفع أي جزء من الأجر عن المدة الزائدة. فإذا قضي ببراءة العامل أو حفظ التحقيق لعدم ثبوت ما نسب إليه أو لعدم صحته، وجب على صاحب العمل أن يرد إلى العامل ما سبق حسمه من أجره. أما إذا قضي بإدانته فلا يستعاد منهما صرف له مالم ينص الحكم على خلاف ذلك. 31عدلت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 32عدلت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 33عدلت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الثاني ساعات العمل","pe":"Part 6: Work Conditions And Circumstances · Chapter 1: Wages","pa":"الباب السادس · الفصل الأول"},{"n":"98","st":"","en":"A worker may not actually work for more than nine hours a day if the employer uses the daily work criterion, or more than forty-five hours a week if he uses the weekly criterion. During the month of Ramadan, the actual working hours for Muslims shall be reduced to a maximum of seven hours a day or thirty-five hours a week.","ar":"ً ً لايجوز تشغيل العامل تشغيلا فعليا أكثر من ثماني ساعات في اليوم الواحد، إذا اعتمد صاحب العمل المعيار اليومي، أو أكثر من ثمان وأربعين ساعة في الأسبوع، إذا اعتمد المعيار الأسبوعي. وتخفض ساعات العمل الفعلية خلال شهر رمضان للمسلمين، بحيث لا تزيد على ست ساعات في اليوم، أو ست وثلاثين ساعة في الأسبوع.","pe":"Part 6: Work Conditions And Circumstances · Chapter 2: Working Hours","pa":"الباب السادس · الفصل الثاني"},{"n":"99","st":"","en":"The number of working hours provided for in Article (98) of this Law may be raised to ten hours a day for certain categories of workers or in certain industries and jobs where the worker does not work continuously. It may likewise be reduced to eight hours a day for certain categories of workers or in certain hazardous or harmful industries or jobs. Categories of workers, industries and jobs referred to shall be determined pursuant to a decision by the Minister.","ar":"يجوز زيادة ساعات العمل المنصوص عليها في المادة الثامنة والتسعين من هذا النظام إلى تسع ساعات في اليوم الواحد لبعض فئات العمال، أو في بعض الصـ ـناعات والأعمال التي لا يشـ ـتغل فيها العامل بصـ ـفة مسـ ـتمرة. كما يجوز تخفيضـ ـها إلى سـ ـبع سـ ـاعات في اليوم الواحد لبعض فئات العمال أو في بعض الصناعات والأعمال الخطرة أو الضارة. وتحدد فئات العمال والصناعات والأعمال المشار إليها بقرار من الوزير.","pe":"Part 6: Work Conditions And Circumstances · Chapter 2: Working Hours","pa":"الباب السادس · الفصل الثاني"},{"n":"100","st":"","en":"In exception to Articles (98) and (101) of this Law, the employer may, with the Ministry’s approval, increase the number of working hours to more than nine hours a day or forty-five hours a week, provided that the average working hours when calculated over a period of three weeks or less is not more than nine hours a day or forty-five hours a week, in firms where work is done in shifts. First: Rest Periods","ar":"يجوز لصاحب العمل -بموافقة الوزارة -في المنشآت التي تقتضي طبيعة العمل فيها أداء العمل بالتناوب زيادة ساعات العمل على ثماني ساعات عمل في ً اليوم أو ثمان وأربعين ساعة في الأسبوع، بشرط ألا يزيد متوسط ساعات العمل عند احتسابه لمدة ثلاثة أسابيع أو أقل على ثماني ساعات يوميا أو ثمان ً وأربعين ساعة أسبوعيا. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الثالث فترات الراحة والراحة الأسبوعية ً أولا:فترات الراحة","pe":"Part 6: Work Conditions And Circumstances · Chapter 2: Working Hours","pa":"الباب السادس · الفصل الثاني"},{"n":"101","st":"","en":"Working hours and rest periods during the day shall be scheduled so that no worker shall work for more than five consecutive hours without a break of no less than thirty minutes each time during the total working hours for rest, prayer and meals, provided that a worker does not remain at the workplace for more than 12 hours a day.","ar":"تنظم س ـ ـاعات العمل وفترات الراحة خلال اليوم، بحيث لا يعمل العامل أكثر من خمس س ـ ـاعات متتالية دون فترة للراحة والص ـ ـلاة والطعام لاتقل عن نص ــف ساعة في المرة الواحدة خلال مجموع ساعات العمل، وبحيث لا يبقى العامل في مكان العمل أكثر من اثنتي عشرة ساعة في اليوم الواحد.","pe":"Part 6: Work Conditions And Circumstances · Chapter 3: Rest Periods and Weekly Rest Days","pa":"الباب السادس · الفصل الثالث"},{"n":"102","st":"","en":"The periods designated for rest, prayers, and meals shall not be included in the actual working hours. During such periods, the worker shall not be under the employer’s authority. The employer shall not require the worker to remain at the workplace during such breaks.","ar":"لا تدخل الفترات المخصصة للراحة والصلاة والطعام ضمن ساعات العمل الفعلية، ولا يكون العامل خلال هذه الفترات تحت سلطة صاحب العمل، ولا يجوز لصاحب العمل أن يلزم العامل بالبقاء خلالها في مكان العمل.","pe":"Part 6: Work Conditions And Circumstances · Chapter 3: Rest Periods and Weekly Rest Days","pa":"الباب السادس · الفصل الثالث"},{"n":"103","st":"","en":"The Minister may specify, pursuant to a decision by him, the cases and jobs where work shall continue without breaks, for technical reasons or operational conditions. In such cases and jobs, the employer shall allow prayer, meals, and rest periods to be scheduled during working hours by the management of the firm. Second: Weekly Rest Days","ar":"للوزير أن يحدد بقرار منه الحالات والأعمال التي يتحتم فيها اسـ ـتمرار العمل دون فترة راحة لأس ـ ـباب فنية أو لظروف التش ـ ـغيل، ويلتزم ص ــاحب العمل في هذه الحالات والأعمال بإعطاء فترة للصلاة والطعام والراحة بطريقة تنظمها إدارة المنشأة أثناء العمل. 34عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ ً ثانيا:الراحة الأسبوعية","pe":"Part 6: Work Conditions And Circumstances · Chapter 3: Rest Periods and Weekly Rest Days","pa":"الباب السادس · الفصل الثالث"},{"n":"104","st":"","en":"1- A worker shall be entitled to two rest days a week with full pay, one of which shall be a Friday.\n2- An employer may, upon notifying the relevant labor office, substitute Friday for some of his workers with any other day of the week. The employer shall allow workers to observe their religious duties.","ar":"1. يوم الجمعة يوم الراحة الأسـ ــبوعية لجميع العمال، ويجوز لصـ ــاحب العمل -بعد إبلاغ مكتب العمل المختص -أن يسـ ــتبدل بهذا اليوم لبعض عماله أي يوم من أيام الأسبوع، وعليه أن يمكنهم من القيام بواجباتهم الدينية، ولا يجوز تعويض يوم الراحة الأسبوعية بمقابل نقدي.\n2. يكون يوم الراحة الأسبوعية بأجر كامل، ولا يقل عن أربع وعشرين ساعة متتالية.","pe":"Part 6: Work Conditions And Circumstances · Chapter 3: Rest Periods and Weekly Rest Days","pa":"الباب السادس · الفصل الثالث"},{"n":"105","st":"","en":"As an exception to the provisions of Article 104 of this Law, in remote areas and in jobs where the nature of work and operational conditions require continuous work, weekly rest periods accruing to the worker may be consolidated for up to eight weeks if the employer and the workers agree to that effect, subject to the Ministry’s approval. In calculating consolidated weekly rest periods, it shall be taken into consideration that said periods begin at the hour the workers arrive at the nearest city with transportation services and end at the hour the workers return to it.","ar":"اسـ ـ ـتثناء من حكم المادة الرابعة بعد المائة من هذا النظام يجوز في الأماكن البعيدة عن العمران وفي الأعمال التي تتطلب طبيعة العمل وظروف التشـ ـ ـغيل فيها اسـتمرار العمل تجميع الراحات الأسـبوعية المسـتحقة للعامل عن مدة لا تتجاوز ثمانية أسـابيع إذا اتفق صـاحب العمل والعمال ووافقت على ذلك الوزارة، ويراعى في حساب مدة الراحة الأسبوعية لاُمَجمّعة أن تبدأ من ساعة وصول العمال إلى أقرب مدينة يتوفر بها وسائل نقل، وتنتهي ساعة العودة إليها.","pe":"Part 6: Work Conditions And Circumstances · Chapter 3: Rest Periods and Weekly Rest Days","pa":"الباب السادس · الفصل الثالث"},{"n":"106","st":"","en":"An employer may not comply with the provisions of Articles 98, 101, and 104 (1) of this Law, in the following cases:\n1. Annual inventory activities, preparation of the budget, liquidation, closing of accounts, and preparations for discounts and seasonal sales, provided that the number of days during which the workers work shall not exceed 30 days a year.\n2. If the work is intended to prevent a hazardous accident, remedy its impact, or avoid an imminent loss of perishable materials.\n3. If the work is intended to meet unusual work pressure.\n4. Eids, other seasons and occasions, and seasonal activities specified pursuant to a decision by the Minister. In all of the above cases, actual working hours shall not exceed 10 hours a day or 60 hours a week. The maximum overtime hours allowed per year shall be determined by a decision of the Minister.","ar":"يجوز لص ـــاحـب العمـل عـدم التقيـد بـأحكـام المواد الثـامنـة والتس ـ ــعين والأولى بعـد المـائـة والفقرة ) (1من المـادة الرابعـة بعـد المـائـة من هـذا النظـام في الحـالات الآتية:\n1. أعمال الجرد السـنوي، وإعداد الميزانية، والتصـفية، وقفل الحسـابات والاسـتعداد للبيع بأثمان مخفضـة والاسـتعداد للمواسم، بشـرط ألا يزيد عدد الأيام ً التي يشتغل فيها العمال على ثلاثين يوما في السنة.\n2. إذا كان العمل لمنع وقوع حادث خطر، أو إصلاح ما نشأ عنه، أو تلافي خسارة محققة لمواد قابلة للتلف.\n3. إذا كان التشغيل بقصد مواجهة ضغط عمل غير عادي.\n4. الأعياد والمواسم والمناسبات الأخرى والأعمال الموسمية التي تحدد بقرار من الوزير. ولا يجوز في جميع الحالات المتقدمة أن تزيد سـاعات العمل الفعلية على عش ـر س ـاعات في اليوم، أو س ـتين س ـاعة في الأس ـبوع. ويحدد الوزير بقرار منه الحد الأقصى لساعات العمل الإضافية التي يسمح بها في السنة.","pe":"Part 6: Work Conditions And Circumstances · Chapter 3: Rest Periods and Weekly Rest Days","pa":"الباب السادس · الفصل الثالث"},{"n":"107","st":"amended","en":"1. The employer shall pay the employee overtime compensation equivalent to the hourly wage plus 50% of the employee's basic wage. The employer may, with the employee's consent, grant the employee paid compensatory leave days instead of the wages due for overtime hours. The regulations shall specify the provisions relating thereto.\n2. If the establishment operates on a weekly standard of working hours, any hours exceeding the hours adopted for this standard shall be considered overtime hours.\n3. All working hours performed during holidays and official vacations shall be considered overtime hours.","ar":"1. يجب على صاحب العمل أن يدفع للعامل أجرا إضافيًا عن ساعات العمل الإضافية يوازي أجر الساعة مضافا إليه (%50)من أجره الأساسي، ويجوز لصاحب العمل بموافقة العامل أن يحتسب للعامل أيام إجازة تعويضية مدفوعة الأجر بدلا عن الأجر المستحق للعامل لساعات العمل الإضافية. وتبين اللائحة الأحكام المتصلة بذلك. \n2. إذا كان التشغيل في المنشأة على أساس المعيار الأسبوعي لساعات العمل تعد الساعات التي تزيد على الساعات المتخذة لهذا المعيار ساعات عمل إضافية.\n3. تعد جميع ساعات العمل التي تؤ دى في أيام العطل والأعياد ساعات عمل إضافية.","pe":"Part 6: Work Conditions And Circumstances · Chapter 3: Rest Periods and Weekly Rest Days","pa":"الباب السادس · الفصل الثالث"},{"n":"108","st":"","en":"The provisions of Articles 98 and 101 of this Law shall not apply to the following cases:\n1. Persons occupying high positions of authority in management and policy, if such positions grant the persons occupying them authority over workers.\n2. Preparatory or supplementary work which must be completed before the commencement or after the end of work.\n3. Work that is intermittent by necessity.\n4. Guards and janitors, excluding civil security guards. The Regulations shall specify the jobs listed under paragraphs (2), (3), and (4) of this Article and their maximum working hours.","ar":"لاتسري أحكام المادتين الثامنة والتسعين والأولى بعد المائة من هذا النظام على الحالات الآتية: الأشــخاص الذين يشــغلون مناصــب عالية ذات مســؤولية في الإدارة والتوجيه، إذا كان من شــأن هذه المناصــب أن يتمتع شــاغلوها بســلطات صــاحب\n1. العمل على العمال.\n2. الأعمال التجهيزية أو التكميلية التي يجب إنجازها قبل ابتداء العمل أو بعده.\n3. ً العمل الذي يكون متقطعا بالضرورة.\n4. العمال المخصصون للحراسة والنظافة، عدا عمال الحراسة الأمنية المدنية. وتحدد اللائحة الأعمال المبينة في الفقرات 4، 3، 2من هذه المادة والحد الأقصى لساعات العمل فيها. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الر ابع الإجازات","pe":"Part 6: Work Conditions And Circumstances · Chapter 3: Rest Periods and Weekly Rest Days","pa":"الباب السادس · الفصل الثالث"},{"n":"109","st":"","en":"1. A worker shall be entitled to a prepaid annual leave of not less than 21 days, to be increased to a period of not less than 30 days if the worker spends five consecutive years in the service of the employer.\n2. A worker shall enjoy his leave in the year it is due. He may not forgo it or receive cash in lieu during his period of service. The employer may set the dates of such leaves according to work requirements or may grant them in rotation to ensure the smooth progress of work. The employer shall notify the worker of the date of his leave in sufficient time of not less than 30 days.","ar":"1. \n2. ً ً ُ يسـتحق العامل عن كل عام إجازة سـنوية لا تقل مدتها عن واحد وعشـرين يوما، تزاد إلى مدة لا تقل عن ثلاثين يوما إذا أمضـى العامل في خدمة صـاحب ً العمل خمس سنوات متصلة، وتكون الإجازة بأجر يدفع مقدما. ً ً ً يجب أن يتمتع العامل بإجازته في سـ ـنة اسـ ـتحقاقها، ولا يجوز النزول عنها، أو أن يتقاضـ ـى بدلا نقديا عوضـ ـا عن الحصـ ـول عليها أثناء خدمته، ولصـ ـاحب ً العمل أن يحدد مواعيد هذه الإجازات وفقا لمقتضـيات العمل، أو يمنحها بالتناوب لكي يؤمن سـير عمله، وعليه إشـعار العامل بالميعاد المحدد لتمتعه ً فلا يقل عن ثلاثين يوما. بالإجازة بوقت كا ٍ","pe":"Part 6: Work Conditions And Circumstances · Chapter 4: Leaves","pa":"الباب السادس · الفصل الرابع"},{"n":"110","st":"","en":"1. A worker may, with the employer’s approval, postpone his annual leave or days thereof to the following year.\n2. An employer may postpone, for a period of not more than 90 days, the worker’s leave after the end of the year it is due if required by work conditions. If work conditions require extension of the postponement, the worker’s consent must be obtained in writing. Such postponement shall not, however, exceed the end of the year following the year the leave is due.","ar":"1. ً للعامل بموافقة صاحب العمل أن يؤجل إجازته السنوية أو أياما منها إلى السنة التالية.\n2. ً لصـاحب العمل حق تأجيل إجازة العامل بعد نهاية سـنة اسـتحقاقها إذا اقتضـت ظروف العمل ذلك لمدة لا تزيد على تسـعين يوما، فإذا اقتضـت ظروف ّ العمل استمرار التأجيل وجب الحصول على موافقة العامل كتابة، على ألا يتعدى التأجيل نهاية السنة التالية لسنة استحقاق الإجازة.","pe":"Part 6: Work Conditions And Circumstances · Chapter 4: Leaves","pa":"الباب السادس · الفصل الرابع"},{"n":"111","st":"","en":"A worker shall be entitled to a wage for the accrued days of the leave if he leaves the work without using such leave. This applies to the period of work for which he has not used his leave. He is also entitled to a leave pay for the parts of the year in proportion to the part he spent at work.","ar":"للعامل الحق في الحصول على أجرة عن أيام الإجازة المستحقة إذا ترك العمل قبل استعماله لها وذلك بالنسبة إلى المدة التي لم يحصل على إجازته عنها كما يستحق أجرة الإجازة عن أجزاء السنة بنسبة ما قضاه منها في العمل.","pe":"Part 6: Work Conditions And Circumstances · Chapter 4: Leaves","pa":"الباب السادس · الفصل الرابع"},{"n":"112","st":"","en":"Each worker shall be entitled to full-pay leave on Eids and occasions specified in the Regulations.","ar":"لكل عامل الحق في إجازة بأجر كامل في الأعياد والمناسبات التي تحددها اللائحة.","pe":"Part 6: Work Conditions And Circumstances · Chapter 4: Leaves","pa":"الباب السادس · الفصل الرابع"},{"n":"113","st":"amended","en":"Subject to the leave entitlements granted to female employees under this law, the employee shall be entitled to fully paid leave for (five) days upon marriage or in the event of the death of a spouse, an ascendant, or a descendant, and (three) days in the event of the death of a brother or sister, all of which shall be counted from the date of the incident. Additionally, the employee shall be entitled to (three) days of leave in the event of the birth of a child, to be taken within (seven) days from the date of birth. The employer shall have the right to request supporting documents for these cases.","ar":"مع مراعاة إجازات المرأة العاملة المحددة بموجب هذا النظام، للعامل الحق في إجازة بأجر كامل لمدة (خمسة) أيام عند زواجه، أو في حالة وفاة زوجه أو أحد أصوله أو فروعه، و(ثلاثة) أيام في حالة وفاة الأخ أو الأخت؛ تحتسب مجيعها من تاريخ الواقعة. و(ثلاثة) أيام في حالة ولادة مولود له خلال (سبعة) أيام من تاريخ الولادة. ويحق لصاحب العمل أن يطلب الوثائق المؤيدة لهذه الحالات.","pe":"Part 6: Work Conditions And Circumstances · Chapter 4: Leaves","pa":"الباب السادس · الفصل الرابع"},{"n":"114","st":"","en":"A worker shall be entitled to a paid leave of not less than 10 days and not more than 15 days, including Eid Al-Adha holiday, to perform Hajj only once during his service if he has not performed it before. To be eligible for this leave, the worker must have spent at least two consecutive years of service with the employer. The employer may determine the number of workers who shall be given this leave annually in accordance with work requirements.","ar":"ً للعامل الحق في الحصـ ـول على إجازة بأجر لاتقل مدتهاعن عشـ ـرة أيام ولا تزيد على خمسـ ـة عشـ ـر يوما بما فيها إجازة عيد الأضـ ـحى؛ وذلك لأداء فريضـ ـة الحج لمرة واحدة طوال مدة خدمته إذالم يكن قد أداها من قبل. ويشترط لاستحقاق هذه الإجازة أن يكون العامل قد أمضى في العمل لدى صاحب العمل سنتين ً ً متصلتين على الأقل، ولصاحب العمل أن يحدد عدد العمال الذين يمنحون هذه الإجازة سنويا وفقا لمقتضيات العمل.","pe":"Part 6: Work Conditions And Circumstances · Chapter 4: Leaves","pa":"الباب السادس · الفصل الرابع"},{"n":"115","st":"","en":"1. If an employer approves of a worker’s enrollment or continuance in an educational institution, he shall have the right to a leave with full pay to sit for an examination for an unrepeated year, the duration of which shall be based on the actual number of examination days. If the examination is for a repeat year, the worker shall have the right to a leave without pay based on the number of actual examination days. Without prejudice to the employer’s right to disciplinary action, the worker shall be denied the wage if it is established that he did not sit for the examination.\n2. If a worker does not obtain the employer’s approval on his enrollment in an educational institution, the worker shall be entitled to a leave to sit for the examination based on the actual number of examination days which shall be considered part of his annual leave, if available. If this is not possible, the worker shall be entitled to a leave without pay for the actual number of examination days.\n3. The worker shall apply for the leave at least 15 days in advance.\n4. The employer may require the worker to submit documents supporting the leave application, as well as proof of having taken the examination.","ar":"1. \n2. َ للعامل -إذا وافق صــاحب العمل على انتس ــابه إلى مؤســـس ــة تعليمية أو قِبل اســـتمراره فيها -الحق في إجازة بأجر كامل لتأدية الامتحان عن ســـنة غير معـادة تحـدد مـدتهـا بعـدد أيـام الامتحـان الفعليـة. أمـا إذا كـان الامتحـان عن س ـ ــنـة معـادة فيكون للعـامـل الحق في إجـازة دون أجر بعـدد أيـام الامتحـان الفعلية. ويحرم العامل من أجر الإجازة إذا ثبت أنه لم يؤِد الامتحان، مع عدم الإخلال بحق صاحب العمل في مساءلته تأديبًّيا. إذالم يحص ــل العامل على موافقة ص ــاحب العمل على انتس ــابه إلى مؤس ــس ــة تعليمية ,فله أن يحص ــل على إجازة لتأدية الامتحان بعدد أيام الامتحان الفعلية تحتسب من إجازته السنوية في حال توافرها، وعند تعذر ذلك فللعامل أن يحصل على إجازة دون أجر بعدد أيام الامتحان الفعلية. 35عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 36عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ\n3. ً على العامل أن يتقدم بطلب الإجازة قبل موعدها بخمسة عشر يوما على الأقل.\n4. لصاحب العمل أن يطلب من العامل تقديم الوثائق المؤيدة لطلب الإجازة، وكذلك ما يدل على أدائه الامتحان.","pe":"Part 6: Work Conditions And Circumstances · Chapter 4: Leaves","pa":"الباب السادس · الفصل الرابع"},{"n":"116","st":"","en":"A worker, subject to the employer’s approval, may obtain an unpaid leave for a duration to be agreed upon by the two parties. The employment contract shall be deemed suspended for the duration of the leave in excess of 20 days, unless both parties agree otherwise.","ar":"ً يجوز للعامل بموافقة صـاحب العمل الحصـول على إجازة دون أجر، يتفق الطرفان على تحديد مدتها، ويعد عقد العمل موقوفا خلال مدة الإجازة فيما زاد على ً عشرين يوما، مالم يتفق الطرفان على خلاف ذلك.","pe":"Part 6: Work Conditions And Circumstances · Chapter 4: Leaves","pa":"الباب السادس · الفصل الرابع"},{"n":"117","st":"","en":"A worker whose illness has been proven shall be eligible for a paid sick leave for the first 30 days, three quarters of the wage for the next 60 days, and without pay for the following 30 days, during a single year, whether such leaves are continuous or intermittent. A single year shall mean the year which begins from the date of the first sick leave.","ar":"ً ً ً للعامل الذي يثبت مرضـه الحق في إجازة مرضـية بأجر عن الثلاثين يوما الأولى، وبثلاثة أرباع الأجر عن السـتين يوما التالية، ودون أجر للثلاثين يوما التي تلي ذلك خلال السنة الواحدة، سواء أكانت هذه الإجازات متصلة أم متقطعة. ويقصد بالسنة الواحدة:السنة التي تبدأ من تاريخ أول إجازة مرضية.","pe":"Part 6: Work Conditions And Circumstances · Chapter 4: Leaves","pa":"الباب السادس · الفصل الرابع"},{"n":"118","st":"","en":"A worker may not work for another employer, while enjoying any of the leaves provided for in this Chapter. If the employer proves that the worker has violated this provision, he may deprive him of his wages for the duration of the leave or recover any wages previously paid to him.","ar":"لايجوز للعامل أثناء تمتعه بأي من إجازاته المنصـوص عليها في هذا الفصـل أن يعمل لدى صـاحب عمل آخر. فإذا أثبت صـاحب العمل أن العامل قد خالف ذلك فله أن يحرمه من أجره عن مدة الإجازة أو يسترد ما سبق أن أداه إليه من ذلك الأجر. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ العمل لبعض الوقت نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 6: Work Conditions And Circumstances · Chapter 4: Leaves","pa":"الباب السادس · الفصل الرابع"},{"n":"119","st":"","en":"Full-time workers who are affected by a collective temporary reduction in their normal working hours for economic, technical, or structural reasons shall not be considered part-time workers.","ar":"لا يعد العاملون طوال الوقت الذين يتأثرون بتخفيض جماعي ومؤقت لساعات عملهم العادية لأسباب اقتصادية أو تقنية أو هيكلية -عاملين لبعض الوقت.","pe":"Part 7: Part-Time Work","pa":"الباب السابع"},{"n":"120","st":"","en":"The Minister shall issue the necessary rules and controls for organizing part-time work, indicating therein the obligations of part-time workers and employers. To the exclusion of the protection extended to similar full-time workers in terms of occupational health and safety and work injuries, the provisions of this Law shall apply only to the extent determined by the Minister. Social Services","ar":"يصـ ــدر الوزير القواعـد والض ـ ــوابط اللازمـة لتنظيم العمـل لبعض الوقـت، يحـدد فيـه الالتزامـات المبختبـة على كـل من العـامـل لبعض الوقـت، وصـ ــاحـب العمـل. ولا تسـري أحكام هذا النظام إلا في الحدود التي يقررها الوزير، باسـتثناء الحماية الممنوحة للعاملين طوال الوقت المماثلين، من حيث السـلامة والصـحة المهنية وإصابات العمل. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الوقاية من مخاطر العمل والوقاية من الحوادث الصناعية الكبرى وإصابات العمل والخدمات الصحية والاجتماعية نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الأ و ل الوقاية من مخاطر العمل","pe":"Part 7: Part-Time Work","pa":"الباب السابع"},{"n":"121","st":"","en":"An employer shall maintain the firm in a clean and hygienic condition. He shall provide lighting, supply potable and washing water, and comply with other rules, measures, and standards of occupational protection, health, and safety in accordance with what is specified in the Minister’s decision.","ar":"على ص ــاحب العمل حفظ المنش ـ ـأة في حالة ص ــحية ونظيفة، وإنارتها وتأمين المياه الص ـ ـالحة للش ـ ـرب والاغتس ـ ـال، وغير ذلك من قواعد الحماية والس ـ ـلامة ً والصحة المهنية وإجراءاتها ومستوياتها وفقا لما يحدده الوزير بقرار منه.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 1: Protection Against Occupational Hazards","pa":"الباب الثامن · الفصل الأول"},{"n":"122","st":"","en":"An employer shall take the necessary precautions to protect workers against hazards, occupational diseases, and the machinery in use, and shall ensure work safety and protection. He shall post in a visible place in the firm the instructions related to work and workers’ safety in Arabic and, when necessary, in any other language the workers understand. The employer may not charge the workers or deduct from their wages any amounts for the provision of such protection.","ar":"على كل صـ ـاحب عمل أن يتخذ الاحتياطات اللازمة لحماية العمال من الأخطار، والأمراض الناجمة عن العمل، والآلات المســ ـتعملة، ووقاية العمل وســ ـلامته. وعليه أن يعلن في مكان ظاهر في المنشـأة التعليمات الخاصـة بسـلامة العمل والعمال، وذلك باللغة العربية وبأي لغة أخرى يفهمها العمالعند الاقتضـاء. ولا يجوز لصاحب العمل أن يحّمل العمال أو يقتطع من أجورهم أي مبلغ لقاء توفير هذه الحماية.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 1: Protection Against Occupational Hazards","pa":"الباب الثامن · الفصل الأول"},{"n":"123","st":"","en":"An employer shall inform the worker, prior to engaging in the work, of the hazards of his job and said employer shall require him to use the prescribed protective equipment. The employer shall supply workers with the appropriate personal protective gear and train them on its use.","ar":"على ص ـاحب العمل إحاطة العامل قبل مزاولة العمل بمخاطر مهنته، وإلزامه باس ـتعمال وس ـائل الوقاية المقررة لها، وعليه أن يوفر أدوات الوقاية الش ـخص ـية المناسبة للعمال، وتدريبهم على استخدامها.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 1: Protection Against Occupational Hazards","pa":"الباب الثامن · الفصل الأول"},{"n":"124","st":"","en":"A worker shall use and preserve the personal protective equipment designated for each process and shall adhere to the instructions established to protect his health against injuries and diseases. He shall refrain from any action or omission that may lead to failure to implement the instructions, or misuse or impairment of the devices provided to protect the workplace as well as the health and safety of fellow workers.","ar":"على العامل أن يس ــتعمل الوس ــائل الوقائية المخص ــص ــة لكل عملية، وأن يحافظ عليها، وأن ينفذ التعليمات الموض ــوعة للمحافظة على ص ــحته ووقايته من الإصـابات والأمراض. وعليه أن يمتنع عن ارتكاب أي فعل أو تقصـير يتسـبب عنه عدم تنفيذ التعليمات، أو إسـاءة اسـتعمال الوسـائل المعدة لحماية مقر العمل وصحة العمال المشتغلين معه وسلامتهم أو تعطيلها.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 1: Protection Against Occupational Hazards","pa":"الباب الثامن · الفصل الأول"},{"n":"125","st":"","en":"An employer shall take necessary precautions for protection against fire and provide the technical means to combat it, including safety exits which shall be maintained in working condition at all times. He shall post in a visible location in the workplace detailed instructions for fire prevention devices.","ar":"على ص ـــاحـب العمـل أن يتخـذ الاحتيـاطـات اللازمـة للوقـايـة من الحريق، وتهيئـة الوس ـ ــائـل الفنيـة لمكـافحتـه، بمـا في ذلـك تـأمين منـافـذ للنجـاة، وجعلهـا ص ـ ــالحـة للاستعمال في أي وقت، وأن يعلق في مكان ظاهر من أماكن العمل تعليمات مفصلة بشأن وسائل منع الحريق.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 1: Protection Against Occupational Hazards","pa":"الباب الثامن · الفصل الأول"},{"n":"126","st":"","en":"An employer shall be responsible for emergencies and accidents which may affect persons, other than his workers, who enter the workplace by virtue of their official duties or with the approval of the employer or his agents, if such emergencies and accidents are due to negligence in taking the technical precautions required by the nature of his work, and he shall compensate them for damage and harm they may sustain in accordance with the general laws.","ar":"صـــاحب العمل مس ــئول عن الطوارئ والحوادث التي يص ــاب بها أش ــخاص آخرون غير عماله، ممن يدخلون أماكن العمل بحكم الوظيفة، أو بموافقة صــاحب العمل أو وكلائه، إذا كانت بسـ ـبب إهمال اتخاذ الاحتياطات الفنية التي يتطلبها نوع عمله. وعليه أن يعوضـ ـهم عما يصـ ـيبهم من عطل وضـ ـرر حسـ ـب الأنظمة العامة. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الثاني الوقاية من الحوادث الصناعية الكبرى","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 1: Protection Against Occupational Hazards","pa":"الباب الثامن · الفصل الأول"},{"n":"127","st":"","en":"The provisions of this Chapter shall apply to high risk firms.","ar":"تطبق أحكام هذا الفصل على المنشآت ذات المخاطر الكبرى.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 2: Protection Against Major Industrial Accidents","pa":"الباب الثامن · الفصل الثاني"},{"n":"128","st":"","en":"1. The term “high risk firm” shall mean a firm which produces, prepares, disposes of, handles, uses, or stores, on a permanent or temporary basis, one or more hazardous substances, or categories of these substances, in quantities that exceed permissible limits the exceeding of which results in listing the firm among the high risk firms.\n2. The term “hazardous substance” shall mean any substance or mixture of substances that constitutes a hazard on account of its chemical, physical, or toxic properties either alone or in combination with other substances.\n3. The term “major accident” shall mean any sudden occurrence, such as a major leak, fire, or explosion in the course of an activity within a high risk firm and which involves one or more hazardous substances posing a great immediate or potential danger to the workers, the public, or the environment.","ar":"1. تعني عبارة \"المنشـأة ذات المخاطر الكبرى\":المنشـأة التي تقوم بشـكل دائم أو مؤقت بإنتاج مادة أو أكثر من المواد الخطرة أو فئات من هذه المواد أو تجهيزها أو اس ـتبعادها أو مناولتها أو اس ـتخدامها أو تخزينها بكميات تتجاوز المعايير المس ـموح بها، والتي يؤدي تجاوزها إلى إدراج المنش ـأة في عداد منشآت المخاطر الكبرى.\n2. تعني عبارة \"مادة خطرة\":أي مادة أو مزيج من المواد يشكل خطورة بحكم خواصه الكيماوية أو الفيزيائية أو السمية إما وحده أو في تركيب مع غيره.\n3. تعني عبارة \"حادث كبير\":أي حادث فجائي مثل:التسـرب الكبير، أو الحريق، أو الانفجار في مجرى نشـاط داخل منشـأة ذات مخاطر كبرى، ويتضـمن مادة ً ً خطرة أو أكثر، ويؤدي إلى خطر أكبر على العمال أو الجمهور أو البيئة عاجلا أو آجلا.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 2: Protection Against Major Industrial Accidents","pa":"الباب الثامن · الفصل الثاني"},{"n":"129","st":"","en":"The Ministry shall establish controls to identify high risk firms according to the list of hazardous substances, their categories, or both.","ar":"ً تضع الوزارة ضوابط لتحديد \"المنشآت ذات المخاطر الكبرى\" إستنادا إلى قائمة المواد الخطرة، أو فئات هذه المواد أوكلتيهما.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 2: Protection Against Major Industrial Accidents","pa":"الباب الثامن · الفصل الثاني"},{"n":"130","st":"","en":"Employers shall coordinate with the Ministry to determine the status of their firms on the basis of the controls referred to in Article 129 of this Law.","ar":"على أصحاب العمل بالتنسيق مع الوزارة تحديد وضع منشآتهم على أساس الضوابط المشار إليها في المادة التاسعة والعشرين بعد المائة من هذا النظام.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 2: Protection Against Major Industrial Accidents","pa":"الباب الثامن · الفصل الثاني"},{"n":"131","st":"","en":"The Minister shall issue the regulations and decisions that include the necessary arrangements at firm level for protection against major hazards, related duties of employers, arrangements for protecting the public and the environment outside the site of each high risk firm, worker’s rights and duties, and other measures necessary to prevent major accidents, minimize the risks of their occurrence, and mitigate their impacts. Article 131 bis The Minister shall, pursuant to a decision issued thereby, determine the professions and jobs that are deemed dangerous or hazardous and are likely to expose the worker to extraordinary risk or harm, and shall determine categories of workers that are permanently or temporary banned from occupying said professions and jobs, or the conditions for occupying said professions and jobs, including the need to set working hours for such categories, in accordance with international agreements to which the Kingdom is a party.","ar":"يصـدر الوزير اللوائح والقرارات التي تتضـمن الترتيبات اللازمة على مسـتوى المنشـأة للوقاية من المخاطر الكبرى، وواجبات أصـحاب العمل في هذا الخصـوص، وـكذلـك البختيبـات المتخـذة لحمـايـة الجمهور والبيئـة ـخارج موقع ـكل منش ـ ــأة ذات مخـاطر كبرى، وحقوق العمـال وواجبـاتهم، وغير ذلـك من التـدابير اللازـمة لمنع الحوادث الكبرى والتقليل من مخاطر وقوعها والحد من آثارها.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 2: Protection Against Major Industrial Accidents","pa":"الباب الثامن · الفصل الثاني"},{"n":"131 bis","st":"","en":"","ar":"ً ً يحدد الوزير -بقرار منه -المهن والأعمال التي تعد خطرة أو ضارة أو من شأنها أن تعرض العامل لأخطار أو أضرار غير عادية، والفئات التي يحظر -دائما أو مؤقتا تشغيلها فيها أو يكون تشغيلها فيها بشروط خاصة، بما في ذلك مدى الحاجة إلى تحديد أوقات العمل لأي من تلك الفئات، وذلك بما يتوافق مع التزاماتالمملكة ذات الصلة الواردة في الاتفاقيات الدولية. 37أضيفت بالمرسوم الملك0ى 1رقم )م (5/وتاريخ 1442/1/7هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الثالث إصابات العمل","pe":"","pa":"الباب الثامن · الفصل الثاني"},{"n":"132","st":"","en":"The provisions of this Chapter shall not apply to the firms subject to the Occupational Hazards Branch of the Social Insurance Law.","ar":"لاتسري أحكام هذا الفصل على المنشآت التي تخضع لفرع الأخطار المهنية من نظام التأمينات الاجتماعية.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 3: Work Injuries","pa":"الباب الثامن · الفصل الثالث"},{"n":"133","st":"","en":"If a worker sustains a work injury or an occupational disease, the employer shall be required to treat him and assume, directly or indirectly, all necessary expenses, including hospitalization, medical examinations and tests, radiology, prosthetic devices, and transportation expenses to treatment centers.","ar":"إذا أصـيب العامل بإصـابة عمل، أو بمرض مهني، فإن صـاحب العمل يلتزم بعلاجه، ويتحمل جميع النفقات اللازمة لذلك، بطريقة مباشـرة أو غير مباشـرة، بما فيها الإقامة في المستشفى، والفحوص والتحاليل الطبية، والأشعة، والأجهزة التعويضية، ونفقات الانتقال إلى أماكن العلاج.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 3: Work Injuries","pa":"الباب الثامن · الفصل الثالث"},{"n":"134","st":"","en":"An injury shall be deemed a work injury in accordance with the provisions of the Social Insurance Law. Occupational diseases shall also be considered work injuries and the date of the first medical diagnosis of the disease shall be treated tantamount to the date of injury.","ar":"تعـد الإص ـ ــابـة إص ـ ــابـة عمـل وفق مـاهو منص ـ ــوص عليـه في نظـام التـأمينـات الاجتمـاعيـة. وتعـد الأمراض المهنيـة في حكم إص ـ ــابـات العمـل، كمـا يعـد تـاريخ أول مشاهدة طبية للمرض في حكم تاريخ الإصابة.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 3: Work Injuries","pa":"الباب الثامن · الفصل الثالث"},{"n":"135","st":"","en":"Any relapse or complication arising from an injury shall be deemed an injury and shall be treated as such in terms of aid and treatment.","ar":"تعد في حكم الإصابة حالة الإنتكاس أو أي مضاعفة تنشأ عنها، ويسري عليها بالنسبة للمعونة والعلاج ما يسري على الإصابة الأصلية.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 3: Work Injuries","pa":"الباب الثامن · الفصل الثالث"},{"n":"136","st":"","en":"Occupational diseases shall be determined in accordance with the Occupational Diseases Schedule provided for in the Social Insurance Law. Degree of total or partial disability shall be determined according to the Disability Percentage Guide provided for in said law.","ar":"ماعيـة وتحدد درجات العجز الدائم الكلي أو الجزئي وفق جدول ظام التـأمينـات الاجت ـ حدد الأمراض المهنيـة وفق جدول الأمراض المهنيـة المنص ـ ــوص عليـه في ن ـ ت ـ دليل نسب العجز المنصوص عليه في النظام المذكور.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 3: Work Injuries","pa":"الباب الثامن · الفصل الثالث"},{"n":"137","st":"","en":"In the case of temporary disability arising from a work injury, the injured party shall be entitled to financial aid equal to his full wage for 60 days, then 75% of the wage for the entire duration of his treatment. If one year elapses, or it is medically determined that the injured party’s chances of recovery are improbable or that he is not physically fit to work, his injury shall be deemed a total disability. In this case, the contract shall be terminated and the worker shall be compensated for the injury. The employer shall not be entitled to recover payments made to the injured worker during that year.","ar":"ً ً ً ًّ للمصـاب -في حالة عجزه المؤقت عن العمل الناتج من إصـابة عمل -الحق في معونة مالية تعادل أجره كاملا لمدة س ـتين يوما ثم يسـتحق مقابلا ماليا يعادل ) (%75من أجره طوال المدة التي يسـ ــتغرقها علاجه. فإذا بلغت مدة العلاج ســـنة أو تقرر طبًّيا عدم احتمال ش ـــفائه وحالته الصـ ــحية لاتمكنه من العمل، عدت ً الإصابة عجزا كلًّيا، وينهى العقد ويعوض عن الإصابة. ولا يكون لصاحب العمل حق في استرداد ما دفعه إلى المصاب خلال تلك السنة.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 3: Work Injuries","pa":"الباب الثامن · الفصل الثالث"},{"n":"138","st":"","en":"If an injury results in a permanent total disability or the death of the injured person, the injured person or his eligible beneficiaries shall be entitled to a compensation equal to his wages for three years, with a minimum of 54,000 riyals. If the injury results in a permanent partial disability, the injured person shall be entitled to a compensation equal to the percentage of the estimated disability in accordance with the approved Disability Percentage Guide schedule multiplied by the amount of compensation for permanent total disability.","ar":"إذا نتج عن الإصـ ـ ـابة عجز دائم كلي أو أدت الإصـ ـ ـابة إلى وفاة المصـ ـ ـاب فللمصـ ــاب أو المسـ ـ ـتحقين عنه الحق في تعويض يقدر بما يعادل أجره عن مدة ثلاث سنوات بحد أدنى قدره أربعة وخمسون ألف ريال. ً ً ً أما إذا نتج عن الإصـابة عجز دائم جزئي، فإن المصـاب يسـتحق تعويضـا معادلا لنسـبة ذلك العجز المقدر، وفقا لجدول دليل نسـب العجز المعتمد، مضـروبة في قيمة تعويض العجز الدائم الكلي.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 3: Work Injuries","pa":"الباب الثامن · الفصل الثالث"},{"n":"139","st":"","en":"An employer shall not be required to comply with the provisions of Articles 133, 137, and 138 of this Law if any of the following is established:\n1. If a worker deliberately injures himself.\n2. If an injury is caused by intentional misconduct on the part of the worker.\n3. If a worker refuses to be examined by a physician or refuses to accept treatment by the physician designated by the employer without a valid reason.","ar":"لايلزم صاحب العمل بما ورد في المواد الثالثة والثلاثين بعد المائة والسابعة والثلاثين بعد المائة والثامنة والثلاثين بعد المائة من هذا النظام إذا ثبت أي مما يأتي: أن العامل تعمد إصابة نفسه.\n1. \n2. أن الإصابة حدثت بسبب سوء سلوك مقصود من جانب العامل.\n3. أن العامل امتنع عن عرض نفسه على طبيب، أو امتنع عن قبول معالجة الطبيب المكلف بعلاجه من قبل صاحب العمل دون سبب مشروع. 38عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 3: Work Injuries","pa":"الباب الثامن · الفصل الثالث"},{"n":"140","st":"","en":"Liability of previous employers of a worker suffering from an occupational disease shall be determined in light of the medical report of the attending physician. Previous employers shall be required to pay the compensation provided for in Article 138 of this Law, each in proportion to the period said worker spent in his service, provided that the industries or occupations they engage in cause the disease the worker suffers from.","ar":"تحدد مسـ ــؤولية أصـ ــحاب العمل السـ ــابقين الذين اشـ ــتغل لديهم العامل المصــــاب بالمرض المهني على ضــــوء التقرير الطبي للطبيب المعالج، ويلزم هؤلاء بالتعويض المنصـ ــوص عليه في المادة الثامنة والثلاثين بعد المائة من هذا النظام، كل بنسـ ـ ـبة المدة التي قضـ ـ ـاها المصـ ــاب في خدمته، بشـ ـ ـرط أن تكون الصناعات أو المهن التي يمارسونها مما ينشأ عنها المرض الذي أصيب به العامل.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 3: Work Injuries","pa":"الباب الثامن · الفصل الثالث"},{"n":"141","st":"","en":"Procedures for reporting work injuries shall be determined pursuant to a decision by the Minister.","ar":"تحدد بقرار من الوزير إجراءات الإبلاغ عن إصابات العمل. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ الف ص ل الر ابع الخدمات الصحية والاجتماعية","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 3: Work Injuries","pa":"الباب الثامن · الفصل الثالث"},{"n":"142","st":"","en":"An employer shall make available one or more medical aid cabinets, supplied with drugs and other necessities required for first aid. The Regulations shall specify the contents of such cabinets of first aid means, and the number of such means and quantities of drugs, and shall also regulate the method of keeping them and the conditions and requirements to be met by first aid providers.","ar":"على كل صاحب عمل أن يعد خزانة أو أكثر للإسعافات الطبية، مزودة بالأدوية وغيرها، مما يلزم للإسعافات الطبية الأولية. وتحدد اللائحة ما يجب أن تحتويه هذه الخزانة من وسـ ــائل الإسـ ـ ـعافات الأولية وعددها، وكميات الأدوية، وكذلك تنظيم وســ ـائل حفظها وشـ ـ ـروط من يقوم بمهمة الإسعافات ومستواه.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 4: Medical and Social Services","pa":"الباب الثامن · الفصل الرابع"},{"n":"143","st":"","en":"An employer shall assign one or more physicians to provide, at least once a year, a comprehensive medical examination for his workers who are exposed to any of the occupational diseases listed in the Schedules of Occupational Diseases provided for in the Social Insurance Law. The findings of the examination shall be kept in the employer’s records as well as the workers’ files.","ar":"على كل صـ ــاحب عمل أن يعهد إلى طبيب أو أكثر بفحص عماله المعرض ـ ــين لاحتمال الإصـ ــ ـابة بأحد الأمراض المهنية المحددة في جداول الأمراض المهنية - ً ً المنصـوص عليها في نظام التأمينات الاجتماعية -فحصـا شـاملا مرة كل سـنة على الأقل، وأن يثبت نتيجة ذلك الفحص في سـجلاته، وكذلك في ملفات أولئك العمال.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 4: Medical and Social Services","pa":"الباب الثامن · الفصل الرابع"},{"n":"144","st":"","en":"An employer shall provide his workers with preventive and therapeutic health care in accordance with the standards set forth by the Minister, taking into consideration whatever is provided for by the Cooperative Health Insurance Law.","ar":"على صاحب العمل أن يوفر لعماله العناية الصحية الوقائية والعلاجية طبقأ للمستويات التي يقررها الوزير، مع مراعاة ما يوفره نظام الضمان الصحي التعاوني.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 4: Medical and Social Services","pa":"الباب الثامن · الفصل الرابع"},{"n":"145","st":"","en":"An employer may, subject to the Minister’s approval, set up a savings and thrift fund, provided that the workers’ contribution thereto is optional. The provisions regulating the operation of such funds shall be made public.","ar":"يجوز لص ــاحب العمل بعد موافقة الوزير إنش ـ ـاء ص ـ ـندوق للتوفير والادخار، على أن تكون مس ـ ـاهمة العمال فيه إختيارية. ويجب إعلان الأحكام المنظمة لكل ما يتصل بقواعد عمل هذا الصندوق.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 4: Medical and Social Services","pa":"الباب الثامن · الفصل الرابع"},{"n":"146","st":"","en":"An employer shall provide at his own expense all or some of the following, as may be determined by the Minister, for those who work in remote locations:\n1. Stores for selling food, clothing, and other necessities at moderate prices in places where such stores are not available.\n2. Suitable recreational and educational services and sports facilities annexed to the workplace.\n3. Necessary medical arrangements to protect the workers’ health and provide comprehensive treatment for their families (Family shall mean the worker’s spouse, and the children and parents residing with him).\n4. Schools for the workers’ children in the absence of sufficient schools in the area.\n5. Mosques or prayer areas at the workplace.\n6. Literacy programs for the workers. The Regulations shall specify remote locations.","ar":"ً ً يلزم صاحب العمل وعلى نفقته بالنسبة لمن يؤدي عملا في الأماكن البعيدة عن العمران بكل ما يأتي أو بعضه وفقا لما يحدده الوزير: توفير حوانيت لبيع الطعام والملابس وغير ذلك من الحاجات الضرورية بأسعار معتدلة، وذلك في مناطق العمل التي لا تتوافر فيها عادة تلك الحوانيت.\n1. \n2. توفير وسائل ترفيه وتثقيف مناسبة وملاعب رياضية ملحقة بأماكن العمل.\n3. ً ً إجراء ما يلزم من الترتيبات الطبية المناس ـ ـبة للمحافظة على صــ ـحة العمال وعلاج أس ـ ـرهم علاجا شــ ـاملا ). ويقص ـ ـد بالأســ ـرة:الزوج والأولاد والأم والأب المقيمون معه(.\n4. توفير مدارس لتعليم أولاد العمال إذا لم يتوافر في المنطقة مدارس كافية.\n5. إعداد مساجد أو مصليات في أماكن العمل.\n6. إعداد برامج لمحو الأمية بين العمال. وتحدد اللائحة الأماكن البعيدة عن العمران. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 4: Medical and Social Services","pa":"الباب الثامن · الفصل الرابع"},{"n":"147","st":"","en":"An employer operating in remote locations, mines, quarries, and oil exploration centers shall provide his workers with accommodation, camps, and meals. The Minister shall determine, pursuant to a decision by him, the conditions and specifications of the accommodation and camps as well as the charges for the accommodation, the number of meals, quantities and kinds of food and related conditions, cost of meals to the worker, and any other requirements necessary for the workers’ health.","ar":"ً يلزم ص ــ ـاحـب العمـل الـذي يؤدي عملا في الأمـاكن البعيـدة عن العمران، وفي المنـاجم والمحـاجر ومراكز التنقيـب عن النفط بتوفير المسـ ــاكن والمخيمـات والوجبات الغذائية للعمال. ويحـدد الوزير بقرار منـه شـ ــروط المس ـ ــاكن والمخيمـات ومواص ـ ــفـاتهـا ومقـابـل الانتفـاع بـالمس ـ ــاكن، وكـذلـك عـدد الوجبـات الغـذائيـة وكميـات الطعـام وأنواعـه والشروط اللازمة لها، وما يتحمله العامل مقابل الوجبة، وغير ذلك مما يلزم للمحافظة على صحة العمال.","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 4: Medical and Social Services","pa":"الباب الثامن · الفصل الرابع"},{"n":"148","st":"","en":"An employer shall provide means for transporting his workers from their place of residence or from a certain gathering point to the places of work and bringing them back daily, if the places of work are not served by regular means of transportation at times compatible with the working hours.","ar":"ً على كل صــاحب عمل أن يوفر لعماله وســائل الإنتقال من محل إقامتهم، أومن مركز تجمع معين إلى أماكن العمل، وإعادتهم يوميا إذا كانت هذه الأماكن لا تصل إليها وسائل المواصلات المنتظمة في مواعيد تتفق مع مواعيد العمل. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ تشغيل النساء نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 8: Protection Against Occupational Hazards, Major Industrial Accidents And Work Injuries, And Health And · Chapter 4: Medical and Social Services","pa":"الباب الثامن · الفصل الرابع"},{"n":"149","st":"repealed","en":"Repealed","ar":")ملغـ ـ ـاة(","pe":"Part 9: Employment Of Women","pa":"الباب التاسع"},{"n":"150","st":"repealed","en":"Repealed","ar":")ملغـ ـ ـاة(","pe":"Part 9: Employment Of Women","pa":"الباب التاسع"},{"n":"151","st":"amended","en":"1. A working woman shall be entitled to a fully paid maternity leave of (twelve) weeks, of which the six weeks following childbirth are mandatory, and she may distribute the remaining six weeks as she sees fit, commencing from four weeks before the expected date of childbirth. The expected date of childbirth shall be determined by a medical certificate certified by a health authority. If the remaining leave period is less than (six) weeks due to a delay in childbirth beyond the expected date, the remaining period shall be considered unpaid leave. In all cases, the female employee shall have the right to extend this unpaid leave for one month.\n2. A female employee, in the event of giving birth to a sick child or a child with special needs whose health condition requires continuous accompaniment, shall be entitled to a fully paid leave of one month commencing after the end of the maternity leave period, and she has the right to extend the leave for one month as unpaid leave.","ar":"1. للمرأة العاملة الحق في إجازة وضع بأجر كامل لمدة (اثني عشر) أسبوعا، منها وجوبيًا الأسابيع الستة التالية للوضع، ولها أن توزع الأسابيع الستة المتبقية وفق ما تراه، ابتداء من أربعة أسابيع قبل التاريخ المرجح للوضع. ويحدد التاريخ المرجح للوضع بموجب شهادة طبية مصدقة من جهة صحية. وفي حال قل المتبقي من مدة الإجازة عن (ستة) أسابيع نتيجة تأخر الوضع عن تاريخه المرجح، فتحتسب المدة المكملة لها إجازة دون أجر. وفي جميع الأحوال يحق للمرأة العاملة تمديد هذه الإجازة (شهرا) دون أجر.\n2. للمرأة العاملة -في حالة إنجاب طفل مريض أو من ذوي الإعاقة تتطلب حالته الصحية مرافقا مستمرا له -الحق في إجازة مدتها (شهر) بأجر كامل تبدأ بعد انتهاء مدة إجازة الوضع، ولها الحق في تمديد الإجازة لمدة شهر دون أجر.","pe":"Part 9: Employment Of Women","pa":"الباب التاسع"},{"n":"152","st":"repealed","en":"Repealed","ar":")مل ـ ـغاة(","pe":"Part 9: Employment Of Women","pa":"الباب التاسع"},{"n":"153","st":"","en":"An employer shall provide medical care for female workers during pregnancy and delivery.","ar":"على صاحب العمل توفير الرعاية الطبية للمرأة العاملة أثناء الحمل والولادة.","pe":"Part 9: Employment Of Women","pa":"الباب التاسع"},{"n":"154","st":"","en":"When a female worker returns to work following a maternity leave, she shall be entitled, in addition to the rest periods granted to all workers, to a rest period or periods not exceeding in aggregate one hour a day for nursing her infant. Such period or periods shall be calculated as part of the actual working hours and shall not entail any reduction in wage.","ar":"يحق للمرأة العاملة عندما تعود إلى مزاولة عملها بعد إجازة الوضـع أن تأخذ بقصـد إرضـاع مولودها فترة أو فترات للاسـبخاحة لا تزيد في مجموعها على السـاعة في اليوم الواحـد، وذلـك علاوة على فترات الراحـة الممنوحـة لجميع العمـال، وتحس ـ ــب هـذه الفترة أو الفترات من س ــ ـاعـات العمـل الفعليـة، ولا يبختـب عليهـا تخفيض الأجر.","pe":"Part 9: Employment Of Women","pa":"الباب التاسع"},{"n":"155","st":"","en":"An employer may not terminate the employment of a female worker or give her a warning of the same during her pregnancy or while she is on maternity leave. This shall include the period she is ill as a result of either of them, provided that her illness is documented pursuant to an official medical report, and that her absence does not exceed 180 days a year whether separately or consecutively.","ar":"ُ لايجوز لصـاحب العمل فص ـل العاملة أو إنذارها بالفص ـل أثناء حملها أو تمتعها بإجازة الوض ـع، ويش ـمل ذلك مدة مرض ـها النائش عن أي منهما، على أن يثبت ً المرض بشهادة طبية معتمدة، وأن لا تتجاوز مدة غيابها )مائة وثمانين( يوما في السنة سواًء أكانت متصلة أم متفرقة.","pe":"Part 9: Employment Of Women","pa":"الباب التاسع"},{"n":"156","st":"repealed","en":"Repealed","ar":")مل ـ ـغاة(","pe":"Part 9: Employment Of Women","pa":"الباب التاسع"},{"n":"157","st":"","en":"A female worker shall forfeit her entitlements under the provisions of this Part if she works for another employer during her authorized leave. In this case, the original employer may deprive her of her wage for the duration of the leave or recover any payments made to her.","ar":"ً يسـقط حق العاملة فيما تسـتحقه وفقا لأحكام هذا الباب إذا عملت لدى صـاحب عمل آخر أثناء مدة إجازتها المصـرح بها، ولصـاحب العمل الأصـلي -في هذه الحالة -أن يحرمها من أجرها عن مدة الإجازة، أو أن يسترد ما أداه لها.","pe":"Part 9: Employment Of Women","pa":"الباب التاسع"},{"n":"158","st":"","en":"In all occupations and places where women are employed, the employer shall provide them with seats for resting.","ar":"ً على صاحب العمل في جميع الأماكن التي يعمل فيها نساء وفي جميع المهن أن يوفر لهن مقاعد، تأمينا لإسبخاحتهن. 39ألغيت بالمرسوم الملك0ى 1رقم )م (5/وتاريخ 1442/1/7هـ. 40ألغيت بالمرسوم الملك0ى 1رقم )م (5/وتاريخ 1442/1/7هـ. 41عدلت ودمح 1بها حكم المادة الثانية وال]حمسون بعد الما ٔىة بعد تعديلها بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. C 42عدلت وألغيت بعد دمح 1حكمها مع المادة الحادية وال]حمسون بعد الما ٔىة بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. C 43عدلت بالمرسوم الملك0ى 1رقم )م (134/وتاريخ 1440/11/27هـ. 44عدلت وألغيت بعد دمح 1حكمها مع المادة لا]حامسة وال]حمسون بعد الما ٔىة بالمرسوم الملك0ى 1رقم )م (134/وتاريخ 1440/11/27هـ. C نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 9: Employment Of Women","pa":"الباب التاسع"},{"n":"159","st":"","en":"1. An employer who employs 50 female workers or more shall provide them with a suitable place with an adequate number of babysitters to look after the female workers’ children under the age of six years, if the number of children reaches 10 or more.\n2. The Minister may require an employer who employs 100 women or more in a single city to set up a nursery, either on his own or in conjunction with other employers in the same city, or alternatively, to contract with an existing nursery to care for the children of the female workers who are under six years of age during work periods. In such case, the Minister shall set forth the terms and conditions regulating such facilities as well as the charges imposed on the female workers benefiting from this service.","ar":"ً ً.1على كل صــ ـاحب عمل يشـ ـ ـغل خمسـ ــين عاملة فأكثر أن يهئي مكانا مناسـ ــبا يتوافر فيه العدد الكافي من المربيات، لرعاية أطفال العاملات الذين تقل أعمارهم عن ست سنوات، وذلك إذا بلغ عدد الأطفال عشرة فأكثر. ً ضانة بنفسـه أو بالمشـاركة مع أصـحاب عمل آخرين ستخدم مائة عاملة فأكثر في مدينة واحدة أن ينشـئ دارا للح ـ صاحب العمل الذي ي ـ.2يجوز للوزير أن يلزم ـ في المدينة نفسـها، أو يتعاقد مع دار للحضـانة قائمة لرعاية أطفال العاملات الذين تقل أعمارهم عن سـت سـنوات وذلك أثناء فترات العمل، وفي هذه الحالة يحدد الوزير الشروط والأوضاع التي تنظم هذه الدار، كما يقرر نسبة التكاليف التي تفرض على العاملات المستفيدات من هذه الخدمة.","pe":"Part 9: Employment Of Women","pa":"الباب التاسع"},{"n":"160","st":"","en":"1. A Muslim female worker whose husband dies shall be entitled to ‘iddah leave’ with full pay for a period of not less than four months and 10 days starting from date of death. If she is pregnant, such leave may be extended without pay until her delivery. She may not, following childbirth, use the remainder of the leave granted to her under this Law.\n2. A non-Muslim female worker whose husband dies shall be entitled to a fifteen-day leave with full pay. In all cases, a female worker whose husband dies may not work for others during the leave period. The employer shall have the right to request supporting documents in the abovementioned cases.","ar":"1. \n2. للمرأة العـاملـة المسـ ــلمـة التي يتوفى زوجهـا الحق في إجـازة عـدة بـأجر كـامـل لمـدة لا تقـل عن أربعـة أش ـ ــهر وعش ـ ــرة أيـام من تـاريخ الوفـاة، ولهـا الحق في ً تمديد هذه الإجازة دون أجر إن كانت حاملا -خلال هذه الفترة -حتى تضـ ـع حملها، ولا يجوز لها الاسـ ـتفادة من باقي إجازة العدة الممنوحة لها -بموجب هذا النظام -بعد وضع حملها. ً للمرأة العاملة غير المسلمة التي يتوفى زوجها الحق في إجازة بأجر كامل لمدة خمسة عشر يوما. وفي جميع الأحوال لا يجوز للعاملة المتوفى عنها زوجها ممارسة أي عمل لدى الغير خلال هذه المدة. ويحق لصاحب العمل أن يطلب الوثائق المؤيدة للحالات المشار إليها. 45عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ تشغيل الأحداث نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 9: Employment Of Women","pa":"الباب التاسع"},{"n":"161","st":"","en":"Minors may not be employed in hazardous jobs or harmful industries, or in occupations or jobs that may endanger their health, safety, or morals due to the nature or conditions of the same. The Minister shall specify such jobs, industries, and occupations pursuant to a decision issued by him.","ar":"لايجوز تشـ ـغيل الأحداث في الأعمال الخطرة أو الصـ ـناعات الض ـ ـارة، أو في المهن والأعمال التي يحتمل أن تعرض صـ ـحتهم أو سـ ـلامتهم أو أخلاقهم للخطر، بسبب طبيعتها أو الظروف التي تؤدى فيها. ويحدد الوزير بقرار منه الأعمال والصناعات والمهن المشار إليها.","pe":"Part 10: Employment Of Minors","pa":"الباب العاشر"},{"n":"162","st":"","en":"1. Any person under the age of 15 years may not be employed or allowed to enter places of work. The Minister may, pursuant to a decision by him, raise this age limit in certain industries or areas or for certain categories of minors.\n2. As an exception to paragraph (1) of this Article, the Minister may allow the employment or work of persons between 13 and 15 years of age in light works, subject to the following conditions:\n2.1 Such jobs shall not be potentially harmful to their health or growth. 2.2 Such jobs shall not hinder their school attendance or their participation in orientation or vocational training programs, or impair their ability to benefit from their schooling.","ar":"1. لايجوز تشغيل أي شخص لم يتم الخامسة عشرة من عمره ولا يسمح له بدخول أماكن العمل، وللوزير أن يرفع هذه السن في بعض الصناعات أو المناطق أو بالنسبة لبعض فئات الأحداث بقرار منه.\n2. استثناء من الفقرة ) (1من هذه المادة يجوز للوزير أن يسمح بتشغيل أو عمل الأشخاص الذين تتراوح أعمارهم مابين ) (15\n13. سنة في أعمال خفيفة، يراعى فيها الآتي:\n1. /2ألا يحتمل أن تكون ضارة بصحتهم أو نموهم.\n2. /2ألا تعطل مواظبتهم في المدرسة واشتراكهم في برامج التوجيه أو التدريب المهني، ولا تضعف قدرتهم على الاستفادة من التعليم الذي يتلقونه.","pe":"Part 10: Employment Of Minors","pa":"الباب العاشر"},{"n":"163","st":"","en":"Minors may not work during a period of night the duration of which is not less than 12 consecutive hours, except in cases determined pursuant to a decision by the Minister.","ar":"يحظر تشغيل الأحداث أثناء فترة من الليل لا تقل عن إثنتي عشرة ساعة متتالية إلا في الحالات التي يحددها الوزير بقرار منه.","pe":"Part 10: Employment Of Minors","pa":"الباب العاشر"},{"n":"164","st":"","en":"Minors may not be made to perform actual work for more than six hours a day for all months except for the month of Ramadhan when the actual working hours shall not exceed four hours. Working hours shall be organized so that a minor does not work for more than four consecutive hours without one or more periods, each not less than half an hour, for rest, food, and prayers, provided that the minor does not remain at the workplace for more than seven hours. Minors may not be made to work during weekly rest days, Eids, official holidays, or annual vacations, nor shall they be subject to the exceptions provided for in Article 106 of this Law.","ar":"ً لايجوز تشـغيل الأحداث تشـغيلا فعليا أكثر من سـت سـاعات في اليوم الواحد لسـائر شـهور السـنة، عدا شـهر رمضـان فيجب ألا تزيد سـاعات العمل الفعليةفيه على أربع ساعات. وتنظم سـاعات العمل بحيث لايعمل الحدث أكثر من أربع سـاعات متصـلة، دون فترة أو أكثر للراحة والطعام والصـلاة، لاتقل في المرة الواحدة عن نصـفساعة، وبحيث لا يبقى في مكان العمل أكثر من سبع ساعات. ولا يجوز تشغيل الأحداث في أيام الراحة الأسبوعية أو في أيام الأعياد والعطلات الرسمية والإجازة السنوية. ولا تسري عليهم الاستثناءات التي نصت عليها المادة السادسة بعد المائة من هذا النظام.","pe":"Part 10: Employment Of Minors","pa":"الباب العاشر"},{"n":"165","st":"","en":"Prior to employing a minor, the employer shall obtain from him the following documents:\n1. The national identification card or an official birth certificate.\n2. A report of physical fitness for the required job issued by a competent physician and duly certified by a health authority.\n3. The consent of the minor’s guardian. Said documents shall be kept in the minor’s personal file.","ar":"على صاحب العمل قبل تشغيل الحدث أن يستوفي منه المستندات الآتية: بطاقة الهوية الوطنية أو شهادة رسمية بميلاده.\n1. \n2. شهادة باللياقة الصحية للعمل المطلوب، صادرة من طبيب مختص، ومصدق عليها من جهة صحية.\n3. موافقة ولي أمر الحدث. ويجب حفظ هذه المستندات في الملف الخاص بالحدث.","pe":"Part 10: Employment Of Minors","pa":"الباب العاشر"},{"n":"166","st":"","en":"An employer shall notify the competent labor office of the employment of each minor within the first week of such employment, and shall keep at the workplace a register for employed minors, showing the name of the minor, his age, the full name of his guardian, his place of residence, and the date of his employment.","ar":"على صــاحب العمل أن يبلغ مكتب العمل المختص عن كل حدث يشــغله خلال الأســبوع الأول من تشــغيله، وأن يحتفظ في مكان العمل بســجل خاص للعمال الأحداث يبين فيه إسم الحدث وعمره والأسم الكامل لولي أمره ومحل إقامته وتاريخ تشغيله.","pe":"Part 10: Employment Of Minors","pa":"الباب العاشر"},{"n":"167","st":"","en":"The provisions provided for in this Part shall not apply to work undertaken by children and minors in schools for general, vocational, or technical education, and in other training institutions, nor shall they apply to work undertaken in firms by persons who are at least 14 years of age if such work is performed in accordance with the conditions set forth by the Minister and the work constitutes an essential part of the following:\n1. An educational or training course the primary responsibility for which lies with a school or training institution.\n2. A training program all or the major part of which is implemented in a firm if approved by the competent authority.\n3. An orientation program aimed at facilitating the selection of the career or type of training.","ar":"لا تس ـ ــري الأحكـام المنصـــــوص عليهـا في هـذا البـاب على العمـل الـذي يؤديـه الأطفـال والأحـداث في المـدارس لأغراض التعليم العـام أو المهني أو التقني، وفي مؤس ـس ـات التدريب الأخرى، ولا تس ـري على العمل الذي يؤديه في المنش ـآت الأش ـخاص الذين بلغوا س ـن أربع عش ـرة س ـنة على الأقل إذا كان هذا العمل ينفذ ً ً وفقا لشروط يقررها الوزير، وكان العمل يشكل جزًءا أساسيا من الآتي:.1دورة تعليمية، أو تدريبية، تقع مسؤوليتها الرئيسية على مدرسة، أو مؤسسة تدريب.\n2. برنامج تدريبي ينفذ قسمه الأكبر، أو كله في منشأة إذا كانت الجهة المختصة قد أقرته.\n3. برنامج إرشادي، أو توجيهي، يرمي إلى تسهيل اختيار المهنة، أو نوع التدريب. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ عقد العمل البحري نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 10: Employment Of Minors","pa":"الباب العاشر"},{"n":"168","st":"amended","en":"The terms \"ship,\" \"shipowner,\" \"master,\" \"seafarer,\" and \"maritime employment contract\" as used in this Part shall have the meanings assigned to them under the Commercial Maritime Law.","ar":"يقصد بألفاظ وعبارات (السفينة، ومجهز السفينة، والربان، والبحار، وعقد العمل البحري) أينما وردت في هذا الباب المعاني المبينة حيالها في النظام البحري التجاري.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"169","st":"","en":"All persons working on a vessel shall be subject to the authority and orders of its captain.","ar":"يخضع جميع من يعمل على ظهر السفينة لسلطة ربانها وأوامره.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"170","st":"","en":"All employment contracts of seamen working on a vessel shall be entered in the vessel’s records or appended thereto. Such contracts shall be drafted in clear language, and shall indicate whether they are made for a specific period or for a single voyage. If the contract is made for a specific period, this period shall be clearly specified. If it is made for a single voyage, it shall specify the city or harbor where the voyage ends, and at what stage of unloading or loading the vessel at this harbor the contract terminates.","ar":"يجب أن تسـجل في س ـجلات الس ـفينة أو أن تلحق بها جميع عقود عمل البحارة العاملين عليها، وأن تكون هذه العقود محررة بص ـيغة واض ـحة، ويجب أن ينص ً ً في العقد على ما إذا كان معقودا لمدة محددة أو لسـفرة، فإذا كان معقودا لمدة محددة حددت المدة بصـورة واضـحة، وإذا كان لسـفرة حددت المدينة أو المرفأ البحري الذي تنتهي عنده السفرة، وفي أي مرحلة من مراحل تفريغ السفينة أو تحميلها في هذا المرفأ ينتهي العقد.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"171","st":"","en":"A marine employment contract shall provide for the date and place of its conclusion, name of the chandler, name of the seaman, his surname, age, nationality, and homeland, as well as the type of assigned work, method of performance, certification for work in sea navigation, personal marine card, wage, and the duration of the contract. If the contract is for a single voyage, it shall specify the city or harbor where the voyage ends and at what stage during the unloading or loading of the vessel at the harbor the work ends, and other details of the contract. Such contract shall be made out in three copies, one copy for the vessel’s chandler, one for the captain, to be kept on board the vessel, and a copy for the seaman.","ar":"يجب أن ينص في عقد العمل البحري على تاريخ إبرامه ومكانه، وإسم المجهز، وإسم البحار ولقبه وسـ ـنه وجنسـ ـيته وموطنه، ونوع العمل المكلف به، وكيفية أدائه، والش ــهادة التي تتيح له العمل في الملاحة البحرية، والتذكرة الش ــخص ــية البحرية، ومقدار الأجر، ومدة العقد، أما إذا كان العقد لســـفرة واحدة فيجب هذا المرفـأ ينتهي العمـل، وغير ذلـك من تحـديـد المـدينـة أو المرفـأ البحري الـذي تنتهي عنـده الرحلـة، وفي أي مرحلـة من مراحـل تفريغ السـ ــفينـة أو تحميلهـا في ـ تفاصيل العقد. ويكون العقد من ثلاث نسخ نسخة لمجهز السفينة ونسخة للربان للإحتفاظ بها على ظهر السفينة ونسخة للبحار.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"172","st":"","en":"Work terms and rules aboard the vessel shall be posted in the crew’s quarters. These terms and rules shall include the following:\n1. Seamen’s obligations and duties, organization rules for work aboard the vessel, service timetables, and daily working hours.\n2. Obligations of the vessel’s chandler towards the seamen in respect of fixed wages, rewards, and other types of wage.\n3. Methods of suspending payment of wages and deductions therefrom and methods of advance payments.\n4. Place and time of settlement of wages as well as the final calculation thereof.\n5. Rules and ways for the provision of food and accommodation aboard the vessel.\n6. Treatment of seamen’s illnesses and injuries.\n7. Conduct of seamen and the conditions for their repatriation.\n8. Seamen’s paid annual leaves.\n9. End-of-service award and other indemnities payable upon termination or expiration of the employment contract.","ar":"يجب أن تعلن في السفينة وفي القسم المخصص للعاملين فيها قواعد العمل على ظهرها وشروطه، ويجب أن تتضمن القواعد والشروط ما يأتي: إلتزامات البحارة وواجباتهم وقواعد تنظيم العمل على ظهر السفينة والجداول الزمنية للخدمة، وساعات العمل اليومية.\n1. \n2. واجبات مجهز السفينة تجاه البحارة، من حيث الأجور الثابتة والمكافآت، وغير ذلك من أنواع الأجر.\n3. كيفية تعليق دفع الأجور أو الحسم منها، وكيفية دفع السلف على الأجور.\n4. مكان تصفية الأجور وزمانها، وحسابها النهائي.\n5. قواعد تقديم الغذاء والمبيت وأصولها على ظهر السفينة.\n6. علاج أمراض البحارة وإصاباتهم.\n7. سلوك البحارة، وشروط ترحيلهم إلى بلدهم.\n8. إجازات البحارة السنوية المدفوعة الأجر.\n9. مكافأة نهاية الخدمة، وغير ذلك من التعويضات التي ستدفع بمناسبة إنهاء عقد العمل، أو إنتهائه.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"173","st":"","en":"A seaman shall satisfy the following:\n1. He shall have completed 18 years of age.\n2. He shall hold a certificate allowing him to work in marine service.\n3. He shall be physically fit.","ar":"ً يشترط فيمن يعمل بحارا: أن يكون قد أتم من العمر ثماني عشرة سنة.\n1. \n2. ً أن يكون حاصلا على شهادة تتيح له العمل في الخدمة البحرية.\n3. ً ً أن يكون لائقا طبيا. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"174","st":"","en":"All the seaman’s entitlements shall be paid in the official currency. They may be paid in foreign currency if they become due while the vessel is outside territorial waters, subject to the seaman's approval. The seaman may ask the employer to pay his due monetary wage to the person designated by him.","ar":"تدفع جميع استحقاقات البحار بالعملة الرسمية، ويجوز أداؤها بالعملة الأجنبية إذا أستحقت والسفينة خارج المياه الإقليمية وقبل البحار ذلك. وللبحار أن يطلب من صاحب العمل صرف ما يستحقه من أجره النقدي لمن يعينه.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"175","st":"","en":"If the voyage is cut short for any reason, voluntarily or forcibly, this shall not entail a reduction of the wage of the seaman employed on a marine employment contract for a single voyage.","ar":"ً ً ً إذا أختصـر السـفر لأي سـبب من الأسـباب، سـواءا كان ذلك إختياريا أم قهريا، فلا يترتب على ذلك نقص أجر البحار المشـغل بعقد عمل بحري، لمدة رحلة بحرية واحدة.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"176","st":"","en":"If the wage is set as a share of the profits or the proceeds of the vessel's charter, the seaman shall not be entitled to compensation if the voyage is cancelled nor to a wage increase if the voyage is delayed or extended. If the delay or extension is due to the action of the shippers, the seaman shall be entitled to compensation from the chandler.","ar":"ً إذا حدد الأجر بحصـ ـة من الأرباح أو أجر السـ ـفينة فإن البحار لا يسـ ـتحق تعويضـ ـا في حالة إلغاء الرحلة، ولا زيادة في الأجر عند تأخير الرحلة أو إطالتها، أما إذا كان ً ً التأخير أو الإطالة ناشئا عن فعل الشاحنين إستحق البحار تعويضا من المجهز.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"177","st":"","en":"A seaman shall be eligible for pay, through the day of occurrence, if the ship is captured, sinks, or becomes unseaworthy.","ar":"يستحق البحار أجره إذا أسرت السفينة، أو غرقت أو أصبحت غير صالحة للملاحة، وذلك حتى يوم وقوع الحادث.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"178","st":"amended","en":"Without prejudice to the provisions governing the seafarer employment contract under this Law, the Minister shall, in coordination with the General Transport Authority, issue regulations governing the seafarer employment contract. These regulations shall include provisions relating to the rights and obligations of both parties to the contract, living conditions, safety, food, accommodation, and recreational facilities on board the vessel, measures to be taken by the employer to prevent occupational injuries and diseases, healthcare, working hours, rest periods, leave entitlements, training and skill development of seafarers, repatriation of seafarers, issuance of a certificate of compliance with the provisions of this Law, inspection and monitoring mechanisms to ensure vessels’ compliance, determination of violations and the penalties imposed for committing them, as well as provisions for the amicable settlement of complaints.","ar":"دون إخلال بالأحكام المتعلقة بعقد العمل البحري الواردة في هذا النظام؛ تصدر بقرار من الوزير -بالتنسيق مع الهيئة العامة للنقل -لائحة تنظيم عقد العمل البحري، وتشتمل على الأحكام المتعلقة بحقوق طرفي العقد والتزاماهتا، وظروف المعيشة والسلامة والغذاء والنوم والترفيه على متن السفينة، والتدابير الواجب على صاحب العمل اتخاذها للوقاية من الإصابات والأمراض المهنية والرعاية الصحية وساعات العمل والراحة والإجازات، وتدريب وتنمية مهارات البحار، وأحكام إعادة البحار إلى موطنه، وإصدار شهادة التزام السفينة بأحكام هذا النظام، وآلية التفتيش والرقابة على التزام السفن في ضوء هذا النظام، وتحديد المخالفات والعقوبات المترتبة على ارتكابها، وأحكام التسوية الودية للشكاوى.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"179","st":"","en":"Working hours aboard the vessel while on high seas shall not exceed 14 hours in a 24-hour period and not more than 72 hours in a seven-day period.","ar":"لا تزيد سـاعات العمل على ظهر السـفينة أثناء وجودها في عرض البحر على أربع عشـرة سـاعة في مدة أربع وعشـرين سـاعة، ولا على إثنتين وسـبعين سـاعة في مدة سبعة أيام.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"180","st":"","en":"A seaman who contributes to aiding or rescuing another vessel is eligible to a share of the reward that the vessel on which he works is entitled to, regardless of the type of wage of the work performed.","ar":"ً لكل بحار أسهم في مساعدة سفينة أخرى، أو ِإنقاذها، نصيب في المكافإة التي تستحقها السفينة التي يعمل فيها، أيا كان نوع أجرة العمل الذي يؤديه.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"181","st":"","en":"If a seaman dies during the voyage, his heirs shall be eligible to receive his wages through the date of his death, if the wage is on a monthly basis. If the wage is on a voyage basis, the heirs shall be entitled to the full wage of the voyage , and if the wage is a share of the profits, it shall be fully payable. The dues of the deceased or missing seaman, or who is unable to collect his wage shall be deposited with the labor office at the port of destination in the Kingdom.","ar":"إذا توفي أحد البحارة أثناء الرحلة فيكون لورثته الحق في الحص ـول على أجره إلى يوم وفاته إذا كان الأجر بحسـب الش ـهر. أما إذا كان أجره يحسـب بالرحلة فيحق للورثة تس ـلم أجره عن الرحلة كاملة 0وإذا كان الأجر حص ـة في الأرباح، فإنها تس ـتحق بأكملها. وتودع المبالغ المس ـتحقة للبحار المتوفى، أو المفقود، أو الذي يتعذر عليه التسلم، لدى مكتب العمل في ميناء الوصول في المملكة.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"182","st":"amended","en":"The employer may also terminate the contract without prior notice and compensation if the voyage is canceled before its commencement due to circumstances beyond the shipowner’s control, provided that the wages are based on a per-voyage agreement unless otherwise stipulated in the contract.","ar":"يجوز لصاحب العمل إنهاء العقد دون سبق إعلان وبغير تعويض إذا ألغيت الرحلة قبل بدئها بسبب ليس لمجهز السفينة إرادة فيه، وكان الأجر على أساس الرحلة الواحدة، مالم ينص في العقد على غير ذلك.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"183","st":"","en":"If the contract expires or is revoked, the employer shall be obligated to:\n1. return the seaman to the port of departure at the commencement of the contract; and\n2. provide him with food and accommodation until he reaches that port.","ar":"يلتزم صاحب العمل في حالة إنقضاء العقد أو فسخه بما يأتي: أن يعيد البحار إلى الميناء الذي سافر منه عند بدء تنفيذ العقد.\n1. \n2. أن يتكفل بغذائه ونومه حتى بلوغه ذلك الميناء.","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"184","st":"","en":"A chandler shall return the seaman to his country in the following cases:\n1. If the chandler cancels the voyage after the vessel sails off.\n2. If the voyage is cancelled after the vessel sails off on account of prohibition of trading with the destination.\n3. If the seaman is removed from the vessel due to illness, injury, or disability.\n4. If the vessel is sold in a foreign country.\n5. If the seaman is dismissed from service during the voyage without a legitimate justification.\n6. If the contract concluded with the seaman expires at a port other than the one provided for in the contract.","ar":"يلتزم المجهز بترحيل البحار إلى بلده في الحالات الآتية: إذا ألغي السفر بفعل مجهز السفينة بعد قيام السفينة.\n1. \n2. إذا ألغي السفر بعد إبحار السفينة، بسبب منع التجارة مع الجهة التي عينت لسفرها.\n3. إذا أخرج البحار من السفينة بسبب إصابته بمرض، أوجرح أو عاهة. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ\n4. إذا بيعت السفينة في بلد أجنبي.\n5. إذا عزل البحار من الخدمة أثناء السفر من غير مسوغ نظامي.\n6. إذا إنتهى العقد مع البحار في ميناء غير الميناء الذي نص عليه في العقد. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ العمل في المناجم والمحاجر نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 11: Marine Employment Contract","pa":"الباب الحادي عشر"},{"n":"185","st":"","en":"Working in mines and quarries shall mean the following:\n1. Operations involving prospecting, detecting, extracting, or manufacturing (solid or liquid) mineral substances, including precious stones, in the area for which the license was issued.\n2. Operations involving extracting, concentrating, or manufacturing mineral sediments on the surface or under the ground in the area of the license.\n3. Construction works and the installation of structures and equipment related to the operations referred to in paragraphs (1) and (2) of this Article.","ar":"يقصد بالعمل في المناجم والمحاجر الآتي -:\n1. العمليات الخاصـة بالبحث، أو الكشـف عن المواد المعدنية، بما في ذلك الأحجار الكريمة، أوإسـتخراجها، أو تصـنيعها بالمنطقة الصـادر عنها الترخيص، سواء أكانت المعادن صلبة أم سائلة.\n2. العمليات الخاصة باستخراج رواسب المواد المعدنية الموجودة على سطح الأرض أو في باطنها، أو تركيزها، أو تصنيعها في منطقة الترخيص.\n3. ما يلحق بالعمليات المشار إليها في الفقرتين 2-1من هذه المادة من أعمال البناء وإقامة التركيبات والأجهزة.","pe":"Part 12: Working In Mines And Quarries","pa":"الباب الثاني عشر"},{"n":"186","st":"","en":"No person under the age of 18 may be employed in a mine or quarry.","ar":"لايجوز تشغيل أي شخص في المنجم أو المحجر لم يتم الثامنة عشرة من العمر.","pe":"Part 12: Working In Mines And Quarries","pa":"الباب الثاني عشر"},{"n":"187","st":"","en":"No person shall be allowed to engage in operations subject to the provisions of this Part until he undergoes a complete medical examination and is proven to be physically fit for the required work. Such examination shall be repeated periodically. The worker may not be required to bear the costs of necessary medical examinations. The Minister shall set forth, pursuant to a decision by him, the terms, conditions, and periods that must be complied with.","ar":"لايجوز السـ ـــــ ـماح لأي ش ـخص بالعمل في العمليات التي يس ـري عليها هذا الباب إلا بعد إجراء فحص طبي كامل عليه، وثبوت لياقته الص ـحية للعمل المطلوب ً ويجب إعادة هذا الفحص دوريا ولا يجوز تحميل العامل أي نفقة مقابل الفحوص الطبية اللازمة. ويحدد الوزير بقرار منه الأوضــ ـاع والشــ ـروط والمدد التي يجب الإلتزام بها.","pe":"Part 12: Working In Mines And Quarries","pa":"الباب الثاني عشر"},{"n":"188","st":"","en":"The actual working hours spent by the worker underground shall not exceed seven hours a day. No worker shall be kept at the workplace, above or below the ground, for more than 10 hours a day. If the work is conducted underground, such a period shall include the time needed for the worker to reach underground and the time needed to return to the surface.","ar":"لا تزيد سـاعات العمل الفعلية التي يمض ـيها العامل تحت س ـطح الأرض على س ـبع س ـاعات في اليوم، ولا يجوز إبقاء العامل في مكان العمل س ـواء فوق س ـطح الأرض أو في باطنها مدة تزيد على عشـر سـاعات في اليوم، وإذا كان العمل في باطن الأرض فتشـمل هذه المدة الوقت الذي يسـتغرقه العامل للوصـول من سطح الأرض والوقت الذي يستغرقه للعودة من باطن الأرض إلى سطحها.","pe":"Part 12: Working In Mines And Quarries","pa":"الباب الثاني عشر"},{"n":"189","st":"","en":"Access to the work location and facilities shall be restricted to workers therein, persons authorized to inspect the mine or quarry, and persons holding special permits from the competent authority.","ar":"ً ً يحظر دخول أماكن العمل وملحقاتها على غير العاملين فيها وعلى غير المكلفين بالتفتيش على المنجم أو المحجر، والأشـ ـخاص الذين يحملون إذنا خاصـ ـا من الجهة المختصة.","pe":"Part 12: Working In Mines And Quarries","pa":"الباب الثاني عشر"},{"n":"190","st":"","en":"An employer shall keep a record to register and count the workers before they enter the workplace and as they exit therefrom.","ar":"ً ً على صاحب العمل أن يعد سجلا خاصا لقيد العمال وحصرهم قبل دخولهم إلى أماكن العمل وعند خروجهم منها.","pe":"Part 12: Working In Mines And Quarries","pa":"الباب الثاني عشر"},{"n":"191","st":"","en":"An employer or the manager in-charge shall draft a list of orders and instructions related to public safety.","ar":"على صاحب العمل أو المدير المسؤول أن يضع لائحة بالأوامر والتعليمات الخاصة بالسلامة العامة.","pe":"Part 12: Working In Mines And Quarries","pa":"الباب الثاني عشر"},{"n":"192","st":"","en":"An employer shall establish a rescue point in the vicinity of the workplace, equipped with necessary rescue and first aid equipment. Said point shall be equipped with suitable means of communication for immediate access, and the employer shall appoint a trained technician to supervise rescue and first aid operations.","ar":"على ص ـاحب العمل إنش ـاء نقطة إنقاذ قريبة من مكان العمل مجهزة بأدوات الإنقاذ والإس ـعافات الض ـرورية، وأن يكون بهذه النقطة وس ـيلة اتص ـال مناس ـبة، بحيث تصلح للاستعانة بها في الحال، وعليه تعيين عامل فني مدرب للإشراف على عمليات الإنقاذ والإسعافات الأولية.","pe":"Part 12: Working In Mines And Quarries","pa":"الباب الثاني عشر"},{"n":"193","st":"","en":"Without prejudice to the provisions of Article 142 of this Law, the employer of each mine or quarry with at least 50 workers shall set up a suitable location with a room equipped with rescue and first aid equipment, another room for nursing, and one or more locker rooms. As for quarries and mines with less than 50 workers and which are located within a twenty-kilometer radius of each other, employers may pool their resources to establish a place of rescue and first aid in between such quarries and mines, or else establish their own places of rescue and first aid. The Minister may determine the rescue and first aid equipment and the protection and prevention measures in mines and quarries as well as employers’ responsibilities and workers’ rights and duties.","ar":"ً مع عدم الإخلال بحكم المادة الثانية والأربعين بعد المائة من هذا النظام على ص ـاحب العمل أن يعد في كل منجم أو محجر يش ـتغل فيه خمس ـون عاملا على ً ً ً الأقل مكانا مناس ــبا يحتوي على غرفة مجهزة بوســـائل الإنقاذ والإس ــعافات الأولية، وأخرى للتمريض، فض ــلا عن غرفة أو أكثر لتغيير الملابس. أما في المناجم ً ً والمحاجر التي يقل عدد العمال في كل منها عن خمس ــين عاملا وتقع في دائرة قطرها عشـــرون كيلو مترا فيجوز لصـــاحب العمل أن يشـــبخك في إنشـــاء مكان ً ً للإنقاذ والإسعاف في مكان وسط، أو ينشئ مكانا للإنقاذ والإسعاف مستقلا. وللوزير تحديد وسائل الإنقاذ والإسعاف وتدابير الوقاية والحماية في المناجم والمحاجر، وكذلك مسؤوليات أصحاب العمل وحقوق العمال وواجباتهم 46عدلت بالمرسوم الملك0ى 1رقم )م (5/وتاريخ 1442/1/7هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ تفتيش العمل نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 12: Working In Mines And Quarries","pa":"الباب الثاني عشر"},{"n":"194","st":"","en":"Work inspection shall be carried out by inspectors appointed from among the Ministry’s staff or other Saudis pursuant to a decision by the Minister or his designee. They shall have the powers provided for in this Law.","ar":"يتولى تفتيش العمل مفتشـ ـون من موظفي الوزارة، أومن غيرهم من السـ ـعوديين، يحددهم الوزير أومن يفوضـ ـه، وتكون لهم الصـ ـلاحيات والاختصـ ـاصـ ـات المنصوص عليها في هذا النظام.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"195","st":"deleted","en":"In addition to the general conditions for appointing employees, a work inspector shall satisfy the following requirements when performing his duties:\n1. Total impartiality.\n2. Absence of any direct or indirect relation with the firms he inspects.\n3. Passing a conduct examination following completion of a training period of at least 90 days.","ar":"يشترط في مفتش العمل عند ممارسته لعمله -بالإضافة إلى الشروط العامة في تعيين الموظفين -مايأتي: ً\n1. أن يكون متصفا بالحياد التام.\n2. ألا تكون له أي صلة مباشرة، أو غير مباشرة، بالمنشآت التي يقوم بتفتيشها.\n3. ً ً ً أن يكون قد اجتاز فحصا مسلكيا بعد قضائه فترة تدريب لاتقل عن تسعين يوما.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"196","st":"amended","en":"Labor inspectors shall be responsible for:\n1. Monitoring compliance with the provisions of this Law, its regulations, and the decisions issued in implementation thereof.\n2. Providing employers and employees with technical information and guidance to help them adopt the best means of implementing the provisions of this Law.\n3. Notifying the competent authorities within the Ministry of deficiencies in the existing provisions that fail to address certain issues and proposing necessary amendments. 4. Recording violations of this Law, its regulations, and the decisions issued in implementation thereof.\n5. Investigating violations detected by other competent government entities and referred to the Ministry.\n6. Proposing appropriate fines in accordance with the schedule of violations and penalties.","ar":"يختص مفتشو العمل بما يأتي:\n1. مراقبة تنفيذ أحكام هذا النظام واللائحة والقرارات الصادرة تنفيذا له.\n2. تزويد أصحاب العمل والعمال بالمعلومات والإرشادات الفنية التي تمكنهم من اتباع أحسن الوسائل لتنفيذ أحكام هذا النظام.\n3. إبلاغ المختصين بالوزارة بأوجه النقص التي تقرصاألحكام القائمة عن معالجتها، واقتراح ما يلزم لذلك.\n4. ضبط مخالفات أحكام هذا النظام واللائحة والقرارات الصادرة تنفيذا له.\n5. التحقق من المخالفات التي ترصدها جهات حكومية مختصة أخرى وتحال إلى الوزارة.\n6. اقتراح الغرامة المناسبة وفقا لجدول المخالفات والعقوبات.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"197","st":"deleted","en":"Before assuming their duties, inspectors shall sign a pledge form prepared by the Ministry, affirming their commitment to carry out their duties with honesty and dedication, and not to disclose the secrets of any industrial invention or any other secrets which they may become privy to in the course of performing their duties. An inspector shall carry an inspector identification card issued by the Ministry.","ar":"يلتزم مفتشـ ـ ـو العمل -قبل مباشـ ـ ـرتهم لمهماتهم -بتوقيع تعهد وفق النموذج الذي تعده الوزارة، يتضـ ـ ـمن التزامهم بأداء عملهم بكل أمانة وإخلاص، وألا يفشوا سر أي اختراع صناعي، أو غير ذلك من الأسرار التي يطلعون عليها بحكم عملهم. ويحمل مفتش العمل بطاقة من الوزارة تثبت صفته.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"198","st":"amended","en":"Labor inspectors shall have the right to:\n1. Enter any establishment subject to the provisions of the Labor Law at any time during its working hours without prior notice.\n2. Conduct any necessary inspection or investigation to ensure compliance with the law. In particular, they shall have the authority to:\na. Interview the employer, their representative, or employees—whether individually or in the presence of witnesses—regarding any matter related to the implementation of the law. b. Reviewing all books, records, and other documents required to be maintained under the provisions of this law and the decisions issued pursuant thereto, and obtaining copies or extracts thereof c. Collecting one or more samples of materials used or handled in industrial or other processes subject to inspection, if suspected of having harmful effects on workers’ health or safety, for analysis in government laboratories to determine their impact, while notifying the employer or their representative accordingly.","ar":"يحق لمفتشي العمل:\n1. دخول أي منشأة خاضعة لأحكام نظام العمل في أي وقت من أوقات عمل المنشأة دون إشعار سابق. بأي فحص أو تحقيق لازم للتحقق من سلامة تنفيذ النظام. ولهم على الأخص ما\n2. القيام يأتي: أي أمر أ -سؤال صاحب العمل أو من يمثله، أو العمال، على انفراد أو في حضور شهود، عن من الأمور المتعلقة بتنفيذ أحكام النظام. ب -الاطلاع على جميع الدفاتر والسجلات والوثائق الأخرى اللازم الاحتفاظ بها طبقا لأحكام هذا النظام والقرارات الصادرة بمقتضاه، والحصول على صور ومستخرجات منها. ج -أخذ عينة أو عينات من المواد المستعملة أو المتداولة في العمليات الصناعية وغيرها ضارا على صحة العامل أو سلامتهم، وذلك لغرض تحليلها أثرا الخاضعة للتفتيش، مما يظن أن لها في المختبرات الحكومية، ولمعرفة مدى هذا الأثر، مع إبلاغ صاحب العمل أو ممثله بذلك.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"199","st":"amended","en":"Employers, their representatives, and workplace officials shall provide labor inspectors and designated inspection officers with the necessary facilities to perform their duties. They must furnish any requested information related to the nature of their work, comply with summonses, and appoint a representative if required.","ar":"على أصحاب العمل ووكلائهم ومسؤوليهم في مكان العمل أن يقدموا للمفتشين والموظفين المكلفين بتفتيش العمل، التسهيلات اللازمة للقيام بأداء واجبهم، وأن يقدموا لهم ما يطلبونه من بيانات تتعلق بطبيعة عملهم، وأن يستجيبوا لطلبات المثول أمامهم، وأن يوفدوا مندوبا عنهم، إذا ما طلب منهم ذلك. ونصها السابق«:يلتزم مفتشو العمل -قبل مباشرتهم ملهامهتم -بتوقيع تعهد وفق النموذج الذي تعده الوزارة، يتضمن التزامهم بأداء عملهم بكل أمانة وإخلاص، صناعي، أو غير ذلك من الأسرار التي يطلعون عليها بحكم أي اختراع رس أولا يفشوا عملهم. ويحمل مفتش العمل بطاقة من الوزارة تثبت صفته». أي منشأة خاضعة لأحكام نظام العمل في بعد كلمة «وكلائهم» بموجب المرسوم الملكي رقم م 44/وتاريخ 1446/02/08ه.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"200","st":"","en":"A person conducting inspection shall notify the employer or his representative of his visit except where he believes that the task for which the inspection is being made requires otherwise.","ar":"على من يقوم بالتفتيش أن يبلغ بحضوره صاحب العمل أو ممثله، وذلك ما لم ير أن المهمة التي يقوم من أجلها بالتفتيش تقتضي غير ذلك.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"201","st":"","en":"A work inspector may instruct employers to amend the rules for operating their equipment and machinery at deadlines he specifies, to ensure compliance with the provisions pertaining to workers’ health and safety. In the event of a hazard threatening the workers’ health and safety, the inspector may request the immediate implementation of the measures he deems necessary to prevent such hazard.","ar":"ها، لمفتش العمـل الحق في إص ـ ــدار التعليمـات إلى أص ـ ــحـاب العمـل بـإدـخال التعـديلات على قواـعد العمـل في الأجهزة والمعـدات لـديهم في الآـجال التي يحـدد ـ ً وذلك لضـمان مراعاة الأحكام الخاصـة بصـحة العمال وسـلامتهم 0كما له في حالة وجود خطر يهدد صـحة العمال وسـلا متهم أن يطلب تنفيذ مايراه لازما من ً إجراءات لدرء هذا الخطر فورا.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"202","st":"","en":"A work inspector shall treat with absolute secrecy the complaints he receives regarding any shortage in equipment or any violation of the provisions of the Law, and he shall not disclose to the employer or his representative the existence of such complaints.","ar":"على مفتش العمل أن يحيط بالسـ ـرية المطلقة الشـ ـكاوي التي تصـ ـل إليه بشـ ـأن أي نقص في الأجهزة أو أي مخالفة لأحكام النظام، وألا يبوح لصـ ـاحب العمل أومن يقوم مقامه بوجود هذه الشكاوى.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"203","st":"deleted","en":"If, during inspection, the inspector discovers the presence of a violation of the provisions of this Law, the Regulations, or the decisions issued in implementation thereof, he shall record the violation in accordance with the provisions provided for in the Implementing Regulations for inspection and submit the violation report to the Minister for a decision.","ar":"ً ً إذا تحقق للمفتش أثناء التفتيش وجود مخالفة لأحكام هذا النظام أو اللائحة أو القرارات الصـادرة تنفيذا له ,فعليه تحرير محضـر ضـبط بالمخالفة وفقا للأحكام الواردة في اللائحة التنفيذية لضبط أعمال التفتيش وتنظيمها، ورفعه إلى الوزير؛ لإصدار قرار بذلك.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"204","st":"","en":"Whenever the need arises, physicians, engineers, chemists, and specialists in occupational health and safety shall participate in the inspection. If necessary, the director of the labor office and inspectors may request the competent executive bodies to extend the required assistance.","ar":"يشــبخك في التفتيش كلما دعت الحاجة أطباء ومهندســون وكيميائيون وإختصــاصــيون في الســلامة والصــحة المهنية. ولمدير مكتب العمل وللمفتشــين أن يطلبوا عند الضرورة من الجهات التنفيذية المختصة تقديم ما يلزم من مساعدة.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"205","st":"deleted","en":"The work inspection chief at the labor office shall prepare a monthly report on work inspection activities, the aspects of inspection, inspected firms, the number and type of violations committed, and the actions taken with respect thereto. He shall also prepare an annual report on the inspection undertaken within the jurisdiction of the labor office, and its findings and effects, and he shall include therein his comments and proposals. Copies of both reports shall be submitted to the Ministry.","ar":"ً ً يعد رئيس تفتيش العمل في مكتب العمل تقريرا شـ ـهريا عن نشـ ـاط تفتيش العمل، ونواحي التفتيش، والمنشـ ـآت التي تم التفتيش عليها وعدد المخالفات ً ً المرتكبة ونوعها والتدابير المتخذة بشأنها. كما يعد تقريرا سنويا عن التفتيش في دائرة إختصاص مكتب العمل ونتائجه وآثاره، ويضمنه ملاحظاته ومقترحاته. وترسل نسخة من التقريرين إلى الوزارة.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"206","st":"deleted","en":"The Deputy Minister for Labor Affairs shall prepare, within a period not exceeding 180 days from the end of the year, a comprehensive annual report on work inspection in the Kingdom, addressing all matters relating to the Ministry’s monitoring of the implementation of the provisions of the Labor Law. In particular, the report shall include the following:\n1. A statement of the provisions regulating inspection.\n2. A list of the officials in charge of inspection.\n3. Statistics on the firms subject to inspection and the number of workers therein.\n4. Statistics on inspectors’ visits and inspections.\n5. Statistics on the violations committed and the penalties imposed.\n6. Statistics on work injuries.\n7. Statistics on occupational diseases.","ar":"ً ً ً ً يقدم وكيل الوزارة للشؤون العمالية تقريرا سنويا شاملا عن تفتيش العمل في المملكة، وذلك خلال مدة لا تتجاوز مائة وثمانين يوما من نهاية العام، يتناول كل مايتعلق برقابة الوزارة على تنفيذ أحكام نظام العمل. ويشمل التقرير على الأخص مايأتي: ً بيانا بالأحكام المنظمة للتفتيش.\n1. \n2. ً بيانا بالموظفين المختصين بالتفتيش.\n3. إحصائيات بالمنشآت الخاضعة للتفتيش وعدد العمال فيها.\n4. إحصائيات عن زيارات المفتشين وجولاتهم.\n5. إحصائيات عن المخالفات التي وقعت، والجزاءات التي حكم بها.\n6. إحصائيات عن إصابات العمل.\n7. إحصائيات عن أمراض المهن. 50عدلت بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"207","st":"deleted","en":"The Ministry shall prepare forms for recording violations, inspection records, notices, and warnings, and shall establish the provisions necessary for the filing and use of such forms and for their distribution to labor offices.","ar":"تض ـع الوزارة نماذج محاض ـر ضـبط المخالفات، وس ـجلات التفتيش والتنبيهات والإنذارات، كما تض ـع الأحكام اللازمة لكيفية حفظها وإس ـتعمالها، وتعميمها على مكاتب العمل.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"208","st":"deleted","en":"Training courses shall be organized for work inspectors, and shall in particular include the following:\n1. Principles for organizing inspection visits and communicating with employers and workers.\n2. Principles for auditing books, records, and computers, as well as principles for organizing inspection reports and interrogating persons.\n3. Principles for guiding employers on the requirements of statutory provisions and the benefits of their application, and assisting them in such application.\n4. Fundamental principles of industrial technology and the means of protection against work injuries and occupational diseases.\n5. Fundamental principles of production efficiency and its relevance to providing conditions conducive to a proper work environment.","ar":"ينظم تدريب مفتشي العمل في دورات تدريبية تشتمل بصورة خاصة على الأمور الآتية:\n1. أصول تنظيم الزيارات التفتيشية، والإتصال بأصحاب العمل والعمال.\n2. أصول تدقيق السجلات والدفاتر والحاسب الآلي وأصول تنظيم محاضر التفتيش وإستجواب الأشخاص.\n3. أصول إرشاد أصحاب العمل إلى مستلزمات النصوص النظامية وفوائد تطبيقها، ومساعدتهم في هذا التطبيق.\n4. مبادئ أساسية في التقنية الصناعية، ووسائل الوقاية من إصابات العمل والأمراض المهنية.\n5. مبادئ أساسية في الكفاية الإنتاجية، وصلتها بمدى تأمين الشروط الصالحة لجو ممارسة العمل.","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"209","st":"amended","en":"The Minister shall issue the Executive Regulations for the oversight and organization of inspection activities.","ar":"يصدر الوزير اللائحة التنفيذية لضبط أعمال التفتيش وتنظيمها. شاملا عن تفتيش العمل في المملكة، وذلك خلال مدة تقريرا سنويا وكان نصها السابق«:يقدم وكيل الوزارة للشؤون العمالية لا تجاوز مائة وثمانين يوما من نهاية العام، يتناول كل مايتعلق برقابة الوزارة على تنفيذ أحكام نظام العمل. ويشمل التقرير على الأخص مايأتي\n1. :بيانا بالأحكام المنظمة للتفتيش\n2. . بيانا بالموظفين المختصين بالتفتيش\n3. . إحصائيات بالمنشآت الخاضعة للتفتيش وعدد العمال فيها\n4. . إحصائيات عن زيارات المفتشين وجولاتهم\n5. . إحصائيات عن المخالفات التي وقعت، والجزاءات التي حكم بها\n6. . إحصائيات عن إصابات العمل\n7. . إحصائيات عن أمراض المهن». وكان نصها السابق«:تضع الوزارة نماذج محاضر ضبط المخالفات، وسجلات التفتيش والتنبيهات والإنذارات، كما تضع الأحكام اللازمة لكيفية حفظها واستعامهلا، وتعميمها على مكاتب العمل». وكان نصها السابق«:ينظم تدريب مفتشي العمل في دورات تدريبية تشتمل بصورة خاصة على الأمور الآتية\n1. :أصول تنظيم الزيارات التفتيشية، والاتصال بأصحاب العمل والعمال\n2. . أصول تدقيق السجلات والدفاتر والحاسب الآلي وأصول تنظيم محاضر التفتيش واستجواب الأشخاص\n3. . أصول إرشاد أصحاب العمل إلى مستلزمات النصوص النظامية وفوائد تطبيقها، ومساعدتهم في هذا التطبيق\n4. . مبادئ أساسية في التقنية الصناعية، ووسائل الوقاية من إصابات العمل والأمراض المهنية-5. مبادئ أساسية في الكفاية الإنتاجية، وصلتها بمدى تأمين الشروط الصالحة لجو ممارسة العمل». هيئات تسوية الخلافات العمالية","pe":"Part 13: Work Inspection","pa":"الباب الثالث عشر"},{"n":"210","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"211","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"212","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"213","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"214","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"215","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"216","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"217","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"218","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"219","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"220","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة( 51ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 52ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 53ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 54ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 55ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 56ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 57ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 58ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 59ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 60ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 61ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"221","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"222","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"223","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"224","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"225","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"226","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"227","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"228","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة( 62ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 63ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 64ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 65ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 66ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 67ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 68ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. 69ألغيت بالمرسوم الملك0ى 1رقم )م (1/وتاريخ 1435/1/22هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ العقوبات نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 14: Commissions For Settlement Of Labor Disputes","pa":"الباب الرابع عشر"},{"n":"229","st":"","en":"1. Without prejudice to any harsher penalty provided for in any other law, any person infringing upon any of the provisions of this Law, its Regulations, or the decisions issued in implementation thereof shall be subject to one or more of the following penalties:\na) A fine not exceeding 100,000 riyals.\nb) Closure of the firm for a period not exceeding 30 days.\nc) Permanent closure of the firm.\n2. The penalty imposed on the violator may be doubled in the case of repetition.\n3. Fines shall be multiplied by the number of persons subject of the violation.","ar":"1. مع عدم الإخلال بأي عقوبة أشد ينص عليها نظام آخر، يعاقب كل من يخل بأي حكم من أحكام هذا النظام أو لائحته أو القرارات الصادرة تنفيذا له، بعقوبة أو أكثر من العقوبات الآتية:\n2. \n3. \n4. \n5. \n6. غرامة مالية لا تتجاوز مائة ألف ريال. ً إغلاق المنشأة لمدة لا تزيد على ثلاثين يوما. إغلاق المنشأة نهائًّيا. يجوز مضاعفة العقوبة الموقعة على المخالف في حال تكرار ارتكاب المخالفة. تتعدد الغرامات بتعدد الأشخاص الذين وقعت المخالفة في شأنهم.","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"229 bis","st":"added","en":"Whoever violates the provisions of Paragraph (1) of Article (30) of this law shall be punished with a fine of no less than (SR. 200,000) two hundred thousand riyals and no more than five hundred thousand riyals, without prejudice to the provisions of Article (Two Hundred Twenty-Nine Bis) thereof.","ar":"يعاقب بغرامة لاتقل عن (200).000مائتي ألف ريال وال تزيد على (500).000خمسمائة ألف ريال؛ كل من يخالف أحكام الفقرة (1)من المادة (الثلاثين) من هذا النظام، وذلك دون إخلال بما تقضي به المادة (التاسعة والعشرون بعد المائتين) منه.","pe":"","pa":"الباب الخامس عشر"},{"n":"230","st":"amended","en":"1. The Ministry, by a decision of the Minister or whomever he delegates, may impose either or both of the penalties stipulated in subparagraphs (A) and (B) of Paragraph (1) of Article Two Hundred Twenty-Nine Bis of this law, provided that neither exceeds half of the maximum prescribed limit for either. The decision imposing the penalty may be appealed before the competent administrative court.\n2. The Minister shall issue a schedule specifying the violations and their corresponding penalties, which shall not exceed half of the maximum limit for the penalties mentioned in subparagraphs (A) and (B) of Paragraph (1) of Article Two Hundred Twenty-Nine Bis of this law. The schedule shall take into account the principle of gradual escalation in determining penalty amounts and their proportionality to the severity of the violation.\n3. The Minister shall issue a schedule specifying the violations for which penalties exceed half of the maximum limit for the penalties mentioned in subparagraphs (A) and (B) of Paragraph (1) of Article Two Hundred Twenty-Nine Bis of this law. This schedule shall also define the violations subject to the penalty provided in subparagraph (C) of Paragraph (1) of the same Article.\n4. If a violation requires a penalty exceeding half of the prescribed maximum limit or falls under violations warranting the permanent closure of the establishment, as per the schedule referred to in Paragraph (3) of this article, the Ministry shall file a lawsuit before the competent court to consider the case and impose the appropriate penalty as stipulated in Article Two Hundred Twenty- Nine Bis of this law.\n5. A settlement may be reached between the Ministry and the violator by agreeing to pay a fine amount determined by the Ministry, provided that a decision approving the settlement is issued by the Minister.","ar":"1. للوزارة -بقرار من الوزير أو من ينيبه -إيقاع العقوبتين أو إحداهما المنصوص عليهما في الفقرتين الفرعيتين (أ) و(ب) من الفقرة (1)من المادة (التاسعة والعشرين بعد المائتين) من لأي منهما، ويجوز التظلم من القرار الصادر هذا النظام، بما لا يتجاوز نصف الحد الأعلى المقرر بالعقوبة أمام المحكمة الإدارية المختصة.\n2. يصدر -بقرار من الوزير -جدول تحدد فيه المخالفات والعقوبات المقابلة لها التي لا تتجاوز نصف الحد الأعلى للعقوبتين الواردتين في الفقرتين الفرعيتين (أ) و(ب) من الفقرة (1)من المادة (التاسعة والعشرين بعد المائتين) من هذا النظام، ويراعى في ذلك التدرج في تحديد مقدارها وتناسبها مع جسامة المخالفة.\n3. يصدر -بقرار من الوزير -جدول تحدد فيه المخالفات التي تتجاوز عقوباتها نصف الحد الأعلى للعقوبتين الواردتين في الفقرتين الفرعيتين (أ) و(ب) من الفقرة (1)من المادة (التاسعة والعشرين بعد المائتين) من هذا النظام، وتحدد فيه كذلك المخالفات التي تكون عقوبتها العقوبة المنصوص عليها في هذا الباب ما لم يكن هناك عقوبات أخرى أشد ينص عليها هذه المادة مضافة بموجب المرسوم الملكي رقم م 44/وتاريخ 1446/02/08ه. الواردة في الفقرة الفرعية (ج) من الفقرة (1)من المادة المذكورة.\n4. إذا كانت المخالفة تستوجب عقوبة تزيد على نصف الحد الأعلى المقرر لها، أو كانت من المخالفات التي تستوجب عقوبة الإغلاق النهائي للمنشأة، وفقا للجدول المنصوص عليه في الفقرة (3)من هذه المادة؛ فترفع الوزارة دعوى أمام المحكمة المختصة للنظر فيها وإيقاع العقوبة المناسبة المنصوص عليها في المادة (التاسعة والعشرين بعد المائتين) من هذا النظام.\n5. يجوز الاتفاق بين الوزارة والمخالف على تسوية المخالفة، وذلك بدفع مبلغ الغرامة الذي تقدره الوزارة، على أن يصدر بهذه التسوية قرار من الوزير أومن ينيبه.","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"231","st":"","en":"The violator is required to rectify the violation within a period specified by the Regulations. Otherwise, it shall be considered a new violation.","ar":"يلزم مرتكب المخالفة بإزالة المخالفة خلال مهلة تحددها اللائحة، وفي حالة عدم إزالتها تعد مخالفة جديدة.","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"232","st":"","en":"Fines prescribed under this Law shall be collected in accordance with the procedures for collecting public funds. Collected amounts shall be deposited with the Human Resources Development Fund.","ar":"ً يتم تحصيل الغرامـات المقررة بموجب هذا النظام، وفقا للإجراءات المتبعة في تحصيل الأموال العامة، وتؤول المبالغ إلى صندوق تنمية الموارد البشرية.","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"233","st":"","en":"The Minister may grant a financial reward of not more than 25% of the amount of the fine collected to inspectors and others who help in uncovering any of the violations of the provisions of this Law, its Regulations, and the decisions issued in implementation thereof.","ar":"للوزير منح مكافأة مالية لا تزيد على ) (%25من مبلغ الغرامة المحصـ ــلة لمن يسـ ــاعد -من موظفي التفتيش أو من غيرهم -في الكشـ ــف عن أي من مخالفات ً أحكام هذا النظام ولائحته والقرارات الصادرة تنفيذا له. 70عـدلـت صـ ــ ـيـاغتهمـا بعـد أن دمح 1لهمـا أحكـام المواد )الحـاديـة والثلاث 0ى]ں 1بعـد المـا ٔىت 0ى]ں(و)الثـانيـة والثلاث 0ى]ں 1بعـد المـا ٔىت 0ى]ں( و)الرابعـة والثلاث 0ى]ں 1بعـد المـا ٔىت 0ى]ں(و)لا]حـامسـ ـ ــة والثلاث 0ى]ں 1بعـد المـا ٔىت 0ى]ں(و) )الســ ـ ـادسـ ــ ـة C والثلاث 0ى]ں 1بعـد المـا ٔىت 0ى]ں(و)السـ ــ ـابعـة والثلاث 0ى]ں 1بعـد المـا ٔىت 0ى]ں(و)الثـامنـة والثلاث 0ى]ں 1بعـد المـا ٔىت 0ى]ں(و)التـاسـ ـ ـ ـعـة والثلاث 0ى]ں 1بعـد المـا ٔىت 0ى]ں(و)الحـاديـة والأربعون بعـد المـا ٔىت 0ى]ں( بـالمرسـ ـ ـ ـوم الملك0ى 1رقم )م (46/وتـاريخ 1436/6/5هـ. 71عدلت صياغتهما بعد أن دمح 1لهما أحكام المواد )الحادية والثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( و)الثانية والثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( و)الرابعة والثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( و)لا]حامسة والثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( و)السادسة C والثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( و)السابعة والثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( و)الثامنة والثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( و)التاسعة والثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( و)الحادية والأربعون بعد الما ٔىت 0ى]ں( بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 72منقولة بعد تعديلها من المادة )الأربع 0ى]ں 1بعد الما ٔىت 0ى]ں( بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 73منقولة بعد تعديلها من المادة )الثانية والأربع 0ى]ں 1بعد الما ٔىت 0ى]ں( بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 74ألغيت حكم )المادة الثلاثة والثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( مسبًmڡا بموٜحب المرسوم الملك0ى 1رقم )م (24/وتاريخ 1434/5/12هـ ثم عدلت بدمٜحها مع أحكام المادت 0ى]ں 1التاسعة والعشر ين بعد الما ٔىت 0ى]ں 1والثلاث 0ى]ں1 بعد الما ٔىت 0ى]ں، ثّم 1أضيفت بموٜحب المرسوم الملك0ى 1رقم )م (46/وتاريخ 1435/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"234","st":"","en":"A. Labor courts may not hear any claim arising from this Law or from an employment contract upon the lapse of 12 months from the date of termination of the employment relation unless the claimant provides justification acceptable to the court or the defendant admits the right subject of the claim. B. Labor suits shall be expeditiously heard.","ar":"أ-لاتقبل أمام المحاكم العمالية أي دعوى تتعلق بالمطالبة بحق من الحقوق المنصوص عليها في هذا النظام أو الناشئة عن عقد العمل بعد مضي اثني عشر ً ً شهرا من تاريخ انتهاء علاقة العمل، مالم يقدم المدعي عذرا تقبله المحكمة، أو يصدر من المدعى عليه إقرار بالحق. ب-تنظر الدعاوى العمالية على وجه الاستعجال.","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"235","st":"","en":"An employer may not, during the hearing of a suit before a labor court, alter employment conditions existing prior to the initiation of proceedings in a manner that undermines the interest of the worker in the suit.","ar":"ً لايجوز لصـ ـاحب العمل أثناء نظر الدعوى أمام المحاكم العمالية أن يغير منش ــروط التشـ ـغيل التي كانت ســ ـارية قبل بدء الإجراءات، تغييرا يترتب عليه الإضــ ـرار بموقف العامل في الدعوى.","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"236","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"237","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"238","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"239","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"240","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"241","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة(","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"242","st":"repealed","en":"Repealed","ar":")مل ـ ـ ـغاة( 75عدل حكم )المادت 0ى]ں 1الرابعة والثلاثون بعد الما ٔىت 0ى]ں 1وال]حامسة والثلاثون بعد الما ٔىت 0ى]ں( بدمٜحهم مع أحكام المادة التاسعة والعشر ين بعد الما ٔىت 0ى]ں 1والمادة الثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں 1بموٜحب المرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ ثم أضيفتا بموٜحب المرسوم الملك0ى 1رقم )م (14/وتاريخ 1440/2/22هـ. 76عدل حكم )المادت 0ى]ں 1الرابعة والثلاثون بعد الما ٔىت 0ى]ں 1وال]حامسة والثلاثون بعد الما ٔىت 0ى]ں( بدمٜحهم مع أحكام المادة التاسعة والعشر ين بعد الما ٔىت 0ى]ں 1والمادة الثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں 1بموٜحب المرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ ثم أضيفتا بموٜحب المرسوم الملك0ى 1رقم )م (14/وتاريخ 1440/2/22هـ. 77عدل حكمها مع إعادة صياغة ]ڡ0ى 1المادت 0ى]ں) 1التاسعة والعشر ين بعد الما ٔىت 0ى]ں( و)الثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 78عدل حكمها مع إعادة صياغة ]ڡ0ى 1المادت 0ى]ں) 1التاسعة والعشر ين بعد الما ٔىت 0ى]ں(و)الثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 79عدل حكمها مع إعادة صياغة ]ڡ0ى 1المادت 0ى]ں) 1التاسعة والعشر ين بعد الما ٔىت 0ى]ں(و)الثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 80عدل حكمها مع إعادة صياغة ]ڡ0ى 1المادت 0ى]ں) 1التاسعة والعشر ين بعد الما ٔىت 0ى]ں(و)الثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 81عدلت ونقلت لتكون المادة )الحادية والثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 82عدل حكمها مع إعادة صياغة ]ڡ0ى 1المادت 0ى]ں) 1التاسعة والعشر ين بعد الما ٔىت 0ى]ں(و)الثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. 83عدلت ونقلت لتكون المادة )الثانية والثلاث 0ى]ں 1بعد الما ٔىت 0ى]ں( بالمرسوم الملك0ى 1رقم )م (46/وتاريخ 1436/6/5هـ. نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ أحكام ختامية نظام العمل: الصادر بالمرسوم الملك 1 0ى رقم )م (51/وتاريخ 1426/08/23هـ المعدل بالمرسوم الملك 1 0ى رقم )م (24/وتاريخ 1434/05/12هـ المعدل بالمرسوم الملك 1 0ى رقم )م (1/وتاريخ 1435/01/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (46/وتاريخ 1436/06/05هـ المعدل بالمرسوم الملك 1 0ى رقم )م (14/وتاريخ 1440/02/22هـ المعدل بالمرسوم الملك 1 0ى رقم )م (134/وتاريخ 1440/11/27هـ المعدل بالمرسوم الملك 1 0ى رقم )م (5/وتاريخ 1442/01/07هـ","pe":"Part 15: Punishments","pa":"الباب الخامس عشر"},{"n":"243","st":"","en":"The Minister shall issue, within 180 days from this Law’s entry into force, the decisions and regulations necessary for implementing the provisions thereof. The Implementing Regulations shall be published in the Official Gazette.","ar":"ً لم بـهذا النظام، وتنشــ ــر اللوائح التنفيذية في الجريدة مانين يوما من تاريخ الع ـ ظام خلال مائة وث ـ يص ـ ــدر الوزير القرارات واللوائح اللازمة لتنفيـذ أحـكام هذا الن ـ الرسمية.","pe":"Part 16: Concluding Provisions","pa":"الباب السادس عشر"},{"n":"244","st":"","en":"This Law shall supersede the Labor and Workers’ Law promulgated by Royal Decree No. (M/21) dated 6/9/1389H and shall repeal all the provisions that are inconsistent therewith. Regulations and decisions issued prior to the effective date of this Law shall remain in effect until they are amended.","ar":"يحل هذا النظام محل نظام العمل والعمال، الصادر بالمرسوم ذي الرقم ) م (21/والتاريخ 1389/9/6هـ، ويلغي كل ما يتعارض معه من أحكام ويستمر العمل باللوائح والقرارات الصادرة قبل نفاذ هذا النظام إلى حين تعديلها.","pe":"Part 16: Concluding Provisions","pa":"الباب السادس عشر"},{"n":"245","st":"","en":"This Law shall be published in the Official Gazette and shall enter into force 180 days after the date of its publication. For More Information, Please Visit The Link. www.hrsd.gov.sa","ar":"ً ينشر هذا النظام في الجريدة الرسمية ويعمل به بعد مائة وثمانين يوما من تاريخ نشره. و الله الم و ف ق ,,, لم زيد من الم ع لو م ات www.hrsd.gov.sa","pe":"Part 16: Concluding Provisions","pa":"الباب السادس عشر"}]}; })();
+
+
+// ###########################################################################
+// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.19.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 29 — Data Validation (initial data sheet × Muqeem × GOSI)  — read-only
+ * ---------------------------------------------------------------------------
+ * The specialist drops the client's files; each is recognised by its headers:
+ *   - Initial data sheet  (Jisr "upload own sheet": Emp Id, Full Name En/Ar, ID/Iqama/Border No., salary columns…)
+ *   - Muqeem active residents, English and/or Arabic export (Iqama Number / رقم الاقامة …) — several files are combined
+ *   - GOSI active contributors (اسم المشترك، رقم الهوية، الأجر الأساسي، السكن، العمولات، البدلات الأخرى، إجمالي الأجر)
+ * Employees are matched by ID / Iqama number (names are compared, never used to match).
+ *   - Saudis (ID starts with 1 or nationality Saudi) are not expected in Muqeem.
+ *   - Name check flags only real differences: same-script names sharing less than half their words
+ *     (spelling, dots, "bin", Mohammed/Muhammad style variants are tolerated).
+ *   - Salary (when the initial sheet has it): Basic ↔ Basic, Housing ↔ Housing, Commission ↔ Commissions,
+ *     every other allowance ↔ GOSI "Other allowances", and the totals.
+ * Nothing is sent anywhere; the files are read in this browser only. Export = Excel with Summary, Employees,
+ * Salary and Log sheets.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.19.0';
+  const MODULE_ID = 'data-validation';
+  const W = unsafeWindow;
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  const slug_ = () => { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : 'client'; };
+
+  // ======================================================================= pure helpers
+  const AR_DIGITS = /[٠-٩]/g;
+  const toLatinDigits_ = (s) => String(s).replace(AR_DIGITS, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)));
+  /** ID / Iqama number -> digits only ("2.07e9", 2074666419.0, " 2074666419 " -> "2074666419"). */
+  function idKey_(v) {
+    if (v === null || v === undefined || v === '') return '';
+    if (typeof v === 'number') return Number.isFinite(v) ? String(Math.round(v)) : '';
+    const s = toLatinDigits_(v).trim().replace(/\.0+$/, '');
+    const d = s.replace(/\D/g, '');
+    return d.length >= 6 ? d : '';
+  }
+  function num_(v) {
+    if (v === null || v === undefined || v === '') return null;
+    if (typeof v === 'number') return v;
+    const s = toLatinDigits_(v).replace(/[,\s٬]/g, '').replace('٫', '.');
+    if (!s) return null;
+    const n = parseFloat(s);
+    return isNaN(n) ? null : n;
+  }
+  const normH_ = (h) => toLatinDigits_(String(h == null ? '' : h)).toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/ـ/g, '').replace(/[^a-z0-9ء-ي]+/g, ' ').trim();
+  const isArabic_ = (s) => /[؀-ۿ]/.test(String(s || ''));
+
+  // ---- names
+  const AR_STOP = new Set(['بن', 'بنت', 'ابن', 'ال']);
+  const EN_STOP = new Set(['bin', 'bint', 'ibn', 'al', 'el', 'abu', 'mr', 'mrs', 'md']);
+  function nameTokens_(s) {
+    let t = String(s || '').trim();
+    if (!t) return [];
+    if (isArabic_(t)) {
+      t = t.replace(/[ً-ْـ]/g, '').replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/ؤ/g, 'و').replace(/ئ/g, 'ي');
+      t = t.replace(/\bعبد\s+(?=ال)/g, 'عبد').replace(/(^|\s)(عبد)\s+(?=\S)/g, '$1$2');
+      return t.split(/[^ء-ي]+/).filter((w) => w && !AR_STOP.has(w)).map((w) => (w.length > 3 ? w.replace(/^ال/, '') : w));
+    }
+    t = t.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '');
+    return t.split(/[^a-z]+/).filter((w) => w && !EN_STOP.has(w));
+  }
+  const skeleton_ = (w) => (/^[a-z]+$/.test(w) ? w.replace(/ph/g, 'f').replace(/q/g, 'k').replace(/ck/g, 'k').replace(/z/g, 's').replace(/(?!^)[aeiouyhw]/g, '').replace(/(.)\1+/g, '$1') : w.replace(/(?!^)[اويه]/g, ''));
+  function lev_(a, b) {
+    if (a === b) return 0;
+    if (Math.abs(a.length - b.length) > 2) return 3;
+    const p = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      let prev = p[0]; p[0] = i;
+      for (let j = 1; j <= b.length; j++) { const tmp = p[j]; p[j] = Math.min(p[j] + 1, p[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = tmp; }
+    }
+    return p[b.length];
+  }
+  const tokEq_ = (a, b) => a === b || (a.length >= 4 && b.length >= 4 && lev_(a, b) <= 1) || (a.length >= 3 && b.length >= 3 && skeleton_(a) === skeleton_(b));
+  /** Share of X's words found in Y (a word may also match two neighbouring words written together). */
+  function cover_(X, Y) {
+    const used = new Set();
+    let hit = 0;
+    X.forEach((w) => {
+      let k = Y.findIndex((x, i) => !used.has(i) && tokEq_(w, x));
+      if (k >= 0) { used.add(k); hit++; return; }
+      k = Y.findIndex((x, i) => i + 1 < Y.length && !used.has(i) && !used.has(i + 1) && tokEq_(w, x + Y[i + 1]));
+      if (k >= 0) { used.add(k); used.add(k + 1); hit++; }
+    });
+    return X.length ? hit / X.length : 0;
+  }
+  /** Share of the shorter name's words found in the other name (0..1); null when not comparable. */
+  function nameScore_(a, b) {
+    const A = nameTokens_(a), B = nameTokens_(b);
+    if (!A.length || !B.length || isArabic_(a) !== isArabic_(b)) return null;
+    if (tokEq_(A.join(''), B.join('')) || A.join('') === B.join('')) return 1;
+    const [S, L] = A.length <= B.length ? [A, B] : [B, A];
+    const sc = cover_(S, L);
+    // a two-word name must match fully ("Mohammed Ali" vs "Mohammed Hassan" is a different person)
+    return S.length <= 2 && sc < 1 ? Math.min(sc, 0.49) : sc;
+  }
+
+  // ---- recognising the files
+  const KIND = { initial: 'initial', muqeem: 'muqeem', gosi: 'gosi' };
+  const FIELD_RES = {
+    initial: {
+      id: /^(id iqama border no|id iqama|iqama|national id|id number|رقم الهويه|رقم الاقامه|الهويه الاقامه)\b/,
+      emp: /^(emp id|employee id|employee code|emp code|الرقم الوظيفي)\b/,
+      nameEn: /^(full name en|name en|english name|full name english|الاسم بالانجليزي)/,
+      nameAr: /^(full name ar|name ar|arabic name|full name arabic|الاسم بالعربي)/,
+      nat: /^(nationality|الجنسيه)/, dob: /^(date of birth|birth date|تاريخ الميلاد)/, gender: /^(gender|الجنس)/,
+      passport: /^(passport number|passport no|رقم الجواز)/, joining: /^(joining date|تاريخ الالتحاق|تاريخ المباشره)/,
+      basic: /^(basic salary|basic|الراتب الاساسي)/, housing: /^(housing|السكن|بدل السكن)/, transport: /^(transportation|transport|بدل النقل|النقل)/,
+      commission: /^(commission|العمولات|عموله)/, education: /^(educational|education|بدل التعليم)/, food: /^(food|بدل الطعام)/,
+      mobile: /^(mobile allowance|بدل الجوال)/, col: /^(cost of living|بدل غلاء)/, remote: /^(remote work|بدل العمل عن بعد)/, other: /^(other allowances|other allowance|بدلات اخري)/,
+    },
+    muqeem: {
+      id: /^(iqama number|iqama no|رقم الاقامه)$/, name: /^(name|الاسم)$/, nat: /^(nationality|الجنسيه)$/, dob: /^(birth date|date of birth|تاريخ الميلاد)$/,
+      passport: /^(passport number|رقم الجواز)$/, iqamaExpiry: /^(iqama expiry date|تاريخ انتهاء الاقامه)$/, occupation: /^(occupation|المهنه)$/, outside: /^(outside the kingdom|خارج المملكه)$/,
+    },
+    gosi: {
+      name: /^(اسم المشترك|contributor name|subscriber name|name)$/, id: /^(رقم الهويه|id number|national id|identity number|iqama number)$/,
+      nat: /^(الجنسيه|nationality)$/, dob: /^(تاريخ الميلاد|date of birth|birth date)$/,
+      basic: /^(الاجر الاساسي|basic wage|basic salary|basic)$/, housing: /^(السكن|housing|housing allowance)$/, commission: /^(العمولات|commissions|commission)$/,
+      other: /^(البدلات الاخري|other allowances)$/, total: /^(اجمالي الاجر|total wage|total salary|total)$/, contrib: /^(الاجر الخاضع للاشتراك|contributory wage|wage subject to contribution)$/,
+      joining: /^(تاريخ الالتحاق|joining date)$/,
+    },
+  };
+  function scoreRow_(row) {
+    const h = row.map(normH_).filter(Boolean);
+    const has = (re) => h.some((x) => re.test(x));
+    return {
+      initial: (has(/^emp id\b|^employee id$/) ? 2 : 0) + (has(/^full name en|^full name ar/) ? 2 : 0) + (has(/^id iqama/) ? 2 : 0) + (has(/employement type|employment type|joining date/) ? 1 : 0),
+      muqeem: (has(/^iqama number$|^رقم الاقامه$/) ? 3 : 0) + (has(/^employer number$|^رقم صاحب العمل$/) ? 2 : 0) + (has(/^outside the kingdom$|^خارج المملكه$/) ? 1 : 0) + (has(/^passport number$|^رقم الجواز$/) ? 1 : 0),
+      gosi: (has(/^اسم المشترك$|^contributor name$/) ? 3 : 0) + (has(/^الاجر الخاضع للاشتراك$|contributory wage/) ? 2 : 0) + (has(/^اجمالي الاجر$|^total wage$/) ? 1 : 0) + (has(/^رقم الهويه$/) ? 1 : 0),
+    };
+  }
+  /** aoa of one sheet -> { kind, headerRow, cols, rows } or null. */
+  function detect_(aoa) {
+    let best = null;
+    for (let r = 0; r < Math.min(aoa.length, 20); r++) {
+      const sc = scoreRow_(aoa[r] || []);
+      Object.keys(sc).forEach((k) => { if (sc[k] >= 4 && (!best || sc[k] > best.score)) best = { kind: k, headerRow: r, score: sc[k] }; });
+    }
+    if (!best) return null;
+    const hdr = (aoa[best.headerRow] || []).map(normH_);
+    const res = FIELD_RES[best.kind];
+    const cols = {};
+    const used = new Set();
+    Object.keys(res).forEach((f) => { const i = hdr.findIndex((x, k) => x && !used.has(k) && res[f].test(x)); if (i >= 0) { cols[f] = i; used.add(i); } });
+    if (cols.id === undefined) return null;
+    const lang = best.kind === 'muqeem' ? (hdr.some((x) => /^رقم الاقامه$/.test(x)) ? 'ar' : 'en') : '';
+    return { kind: best.kind, headerRow: best.headerRow, cols, lang };
+  }
+  /** Read one source into records keyed by ID. */
+  function readSource_(aoa, det) {
+    const c = det.cols;
+    const g = (r, f) => (c[f] === undefined ? '' : r[c[f]]);
+    const out = [];
+    const dupes = [];
+    const seen = new Set();
+    aoa.slice(det.headerRow + 1).forEach((r, i) => {
+      if (!r) return;
+      const id = idKey_(g(r, 'id'));
+      if (!id) return;
+      if (seen.has(id)) { dupes.push(id); return; }
+      seen.add(id);
+      const rec = { id, row: det.headerRow + i + 2 };
+      Object.keys(c).forEach((f) => { if (f !== 'id') rec[f] = g(r, f); });
+      out.push(rec);
+    });
+    return { recs: out, dupes };
+  }
+
+  const SAL_INIT = ['basic', 'housing', 'transport', 'commission', 'education', 'food', 'mobile', 'col', 'remote', 'other'];
+  const SAL_LABEL = { basic: ['Basic', 'الأساسي'], housing: ['Housing', 'السكن'], transport: ['Transportation', 'النقل'], commission: ['Commission', 'العمولات'], education: ['Educational', 'التعليم'], food: ['Food', 'الطعام'], mobile: ['Mobile', 'الجوال'], col: ['Cost of living', 'غلاء المعيشة'], remote: ['Remote work', 'العمل عن بعد'], other: ['Other allowances', 'بدلات أخرى'] };
+  const isSaudi_ = (id, nat) => /^1/.test(id) || /saudi|سعود/i.test(String(nat || ''));
+  const fmtDate_ = (v) => {
+    if (v instanceof Date && !isNaN(v)) v = new Date(v.getTime() + 12 * 3600e3);
+    if (v instanceof Date && !isNaN(v)) return v.getFullYear() + '-' + String(v.getMonth() + 1).padStart(2, '0') + '-' + String(v.getDate()).padStart(2, '0');
+    const s = toLatinDigits_(v == null ? '' : v).trim();
+    let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/); if (m) return m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0');
+    m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/); if (m) return m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0');
+    return s;
+  };
+
+  /**
+   * The comparison. src = { initial: [recs] | null, muqeem: [recs] | null, gosi: [recs] | null }
+   * -> { rows: [...], sum: {...} }
+   */
+  function compare_(src) {
+    const by = (list) => new Map((list || []).map((r) => [r.id, r]));
+    const Ini = by(src.initial), Mq = by(src.muqeem), Gs = by(src.gosi);
+    const has = { initial: !!src.initial, muqeem: !!src.muqeem, gosi: !!src.gosi };
+    const ids = [];
+    const add = (m) => m.forEach((_, k) => { if (!ids.includes(k)) ids.push(k); });
+    add(Ini); add(Gs); add(Mq);
+    const salaryOn = has.initial && has.gosi && (src.initial || []).some((r) => num_(r.basic) !== null);
+    const rows = ids.map((id) => {
+      const a = Ini.get(id) || null, m = Mq.get(id) || null, g = Gs.get(id) || null;
+      const nat = (a && a.nat) || (m && m.nat) || (g && g.nat) || '';
+      const saudi = isSaudi_(id, nat);
+      const row = { id, emp: a ? String(a.emp == null ? '' : a.emp).replace(/\.0+$/, '') : '', nameEn: a ? String(a.nameEn || '').trim() : '', nameAr: a ? String(a.nameAr || '').trim() : '',
+        mqName: m ? String(m.name || '').trim() : '', gsName: g ? String(g.name || '').trim() : '', nat: String(nat).trim(), saudi,
+        inInit: !!a, inMq: m ? 'yes' : (saudi ? 'na' : 'no'), inGs: !!g, issues: [], nameNotes: [], other: [], sal: null };
+      const missing = [];
+      if (has.initial && !a) missing.push('init');
+      if (has.gosi && !g) missing.push('gosi');
+      if (has.muqeem && !m && !saudi) missing.push('muqeem');
+      row.missing = missing;
+      // names: compare like with like (English with English, Arabic with Arabic)
+      if (a) {
+        const pairs = [];
+        if (m) pairs.push([isArabic_(row.mqName) ? row.nameAr : row.nameEn, row.mqName, 'Muqeem']);
+        if (g) pairs.push([isArabic_(row.gsName) ? row.nameAr : row.nameEn, row.gsName, 'GOSI']);
+        pairs.forEach(([mine, theirs, where]) => {
+          if (!mine || !theirs) return;
+          const sc = nameScore_(mine, theirs);
+          if (sc !== null && sc < 0.5) row.nameNotes.push({ where, mine, theirs, sc });
+        });
+      } else if (m && g) {
+        const sc = nameScore_(row.mqName, row.gsName);
+        if (sc !== null && sc < 0.5) row.nameNotes.push({ where: 'Muqeem/GOSI', mine: row.mqName, theirs: row.gsName, sc });
+      }
+      // other details worth a look (passport, date of birth)
+      if (a && m) {
+        const p1 = String(a.passport || '').trim().toUpperCase(), p2 = String(m.passport || '').trim().toUpperCase();
+        if (p1 && p2 && p1 !== p2) row.other.push(T('Passport: sheet ', 'الجواز: الملف ') + p1 + T(' / Muqeem ', ' / مقيم ') + p2);
+        const d1 = fmtDate_(a.dob), d2 = fmtDate_(m.dob);
+        if (d1 && d2 && /^\d{4}-/.test(d1) && /^\d{4}-/.test(d2) && d1 !== d2) row.other.push(T('Birth date: sheet ', 'تاريخ الميلاد: الملف ') + d1 + T(' / Muqeem ', ' / مقيم ') + d2);
+      }
+      if (a && g && !m) {
+        const d1 = fmtDate_(a.dob), d2 = fmtDate_(g.dob);
+        if (d1 && d2 && /^\d{4}-/.test(d1) && /^\d{4}-/.test(d2) && d1 !== d2) row.other.push(T('Birth date: sheet ', 'تاريخ الميلاد: الملف ') + d1 + T(' / GOSI ', ' / التأمينات ') + d2);
+      }
+      // salary
+      if (salaryOn && a && g && num_(a.basic) !== null) {
+        const iv = {}; SAL_INIT.forEach((k) => { iv[k] = num_(a[k]) || 0; });
+        const iOther = iv.transport + iv.education + iv.food + iv.mobile + iv.col + iv.remote + iv.other;
+        const iTotal = SAL_INIT.reduce((s, k) => s + iv[k], 0);
+        const gv = { basic: num_(g.basic) || 0, housing: num_(g.housing) || 0, commission: num_(g.commission) || 0, other: num_(g.other) || 0 };
+        const gTotal = num_(g.total) !== null ? num_(g.total) : gv.basic + gv.housing + gv.commission + gv.other;
+        const lines = [
+          { k: 'basic', ini: iv.basic, gos: gv.basic },
+          { k: 'housing', ini: iv.housing, gos: gv.housing },
+          { k: 'commission', ini: iv.commission, gos: gv.commission },
+          { k: 'otherAll', ini: iOther, gos: gv.other, parts: ['transport', 'education', 'food', 'mobile', 'col', 'remote', 'other'].filter((k) => iv[k]).map((k) => [k, iv[k]]) },
+          { k: 'total', ini: iTotal, gos: gTotal },
+        ];
+        lines.forEach((l) => { l.diff = Math.round((l.ini - l.gos) * 100) / 100; l.ok = Math.abs(l.diff) < 1; });
+        const totalOk = lines[4].ok, allOk = lines.every((l) => l.ok);
+        row.sal = { lines, iv, contrib: num_(g.contrib), state: allOk ? 'match' : totalOk ? 'split' : 'differs' };
+      }
+      if (row.missing.includes('gosi')) row.issues.push('gosi');
+      if (row.missing.includes('muqeem')) row.issues.push('muqeem');
+      if (row.missing.includes('init')) row.issues.push('init');
+      if (row.nameNotes.length) row.issues.push('name');
+      if (row.sal && row.sal.state !== 'match') row.issues.push(row.sal.state === 'split' ? 'split' : 'salary');
+      return row;
+    });
+    const ini = rows.filter((r) => r.inInit);
+    const pct = (n, d) => (d ? Math.round((n / d) * 1000) / 10 : null);
+    const expat = ini.filter((r) => !r.saudi);
+    const sum = {
+      has, salaryOn, total: rows.length, initial: ini.length,
+      gosiFound: ini.filter((r) => r.inGs).length, gosiPct: has.gosi ? pct(ini.filter((r) => r.inGs).length, ini.length) : null,
+      expat: expat.length, mqFound: expat.filter((r) => r.inMq === 'yes').length, mqPct: has.muqeem ? pct(expat.filter((r) => r.inMq === 'yes').length, expat.length) : null,
+      notInInit: rows.filter((r) => !r.inInit).length,
+      allOk: ini.filter((r) => !r.missing.length).length, allPct: pct(ini.filter((r) => !r.missing.length).length, ini.length),
+      names: rows.filter((r) => r.nameNotes.length).length,
+      salCompared: rows.filter((r) => r.sal).length, salMatch: rows.filter((r) => r.sal && r.sal.state === 'match').length,
+      salSplit: rows.filter((r) => r.sal && r.sal.state === 'split').length, salDiff: rows.filter((r) => r.sal && r.sal.state === 'differs').length,
+      missGosi: rows.filter((r) => r.issues.includes('gosi')).length, missMq: rows.filter((r) => r.issues.includes('muqeem')).length,
+    };
+    if (!has.initial) { sum.gosiPct = null; sum.mqPct = null; sum.allPct = null; }
+    return { rows, sum };
+  }
+
+  // ======================================================================= Excel export
+  function exportWorkbook_(state) {
+    const { rows, sum } = state.result;
+    const wb = XLSX.utils.book_new();
+    const yes = (b) => (b ? 'Yes' : 'No');
+    const st = (r) => statusText_(r, 'en');
+    const now = new Date();
+    const stamp = now.toISOString().replace('T', ' ').slice(0, 16);
+    // Summary
+    const sumA = [
+      ['Jisr data validation — ' + slug_()], ['Run at', stamp], [],
+      ['Check', 'Result', 'Count', 'Out of'],
+      ['Employees in the initial sheet', '', sum.initial, ''],
+      ['Found in GOSI', sum.gosiPct === null ? 'n/a' : sum.gosiPct + '%', sum.gosiFound, sum.initial],
+      ['Non-Saudis found in Muqeem', sum.mqPct === null ? 'n/a' : sum.mqPct + '%', sum.mqFound, sum.expat],
+      ['In every file given', sum.allPct === null ? 'n/a' : sum.allPct + '%', sum.allOk, sum.initial],
+      ['Missing in GOSI', '', sum.missGosi, ''],
+      ['Missing in Muqeem (non-Saudis)', '', sum.missMq, ''],
+      ['In Muqeem / GOSI but not in the initial sheet', '', sum.notInInit, ''],
+      ['Names that differ (more than spelling)', '', sum.names, ''],
+    ];
+    if (sum.salaryOn) sumA.push(['Salary: breakdown matches GOSI', '', sum.salMatch, sum.salCompared], ['Salary: total matches, split differs', '', sum.salSplit, sum.salCompared], ['Salary: total differs', '', sum.salDiff, sum.salCompared]);
+    const s1 = XLSX.utils.aoa_to_sheet(sumA); s1['!cols'] = [{ wch: 46 }, { wch: 12 }, { wch: 10 }, { wch: 10 }];
+    XLSX.utils.book_append_sheet(wb, s1, 'Summary');
+    // Employees
+    const hdr = ['ID / Iqama', 'Emp ID', 'Name (EN) — initial sheet', 'Name (AR) — initial sheet', 'Name — Muqeem', 'Name — GOSI', 'Nationality', 'In initial sheet', 'In Muqeem', 'In GOSI', 'Status', 'Name check', 'Salary check', 'Other differences'];
+    const empA = [hdr].concat(rows.map((r) => [r.id, r.emp, r.nameEn, r.nameAr, r.mqName, r.gsName, r.nat, yes(r.inInit), r.inMq === 'na' ? 'Not needed (Saudi)' : yes(r.inMq === 'yes'), yes(r.inGs), st(r),
+      r.nameNotes.map((n) => n.where + ': "' + n.mine + '" vs "' + n.theirs + '"').join(' | '), r.sal ? salText_(r.sal, 'en') : '', r.other.join(' | ')]));
+    const s2 = XLSX.utils.aoa_to_sheet(empA);
+    s2['!cols'] = [{ wch: 13 }, { wch: 9 }, { wch: 30 }, { wch: 26 }, { wch: 30 }, { wch: 30 }, { wch: 13 }, { wch: 9 }, { wch: 17 }, { wch: 8 }, { wch: 34 }, { wch: 50 }, { wch: 34 }, { wch: 40 }];
+    s2['!autofilter'] = { ref: 'A1:N' + empA.length };
+    XLSX.utils.book_append_sheet(wb, s2, 'Employees');
+    // Salary
+    if (sum.salaryOn) {
+      const sh = ['ID / Iqama', 'Emp ID', 'Name', 'Basic (sheet)', 'Basic (GOSI)', 'Housing (sheet)', 'Housing (GOSI)', 'Commission (sheet)', 'Commission (GOSI)', 'Other allowances (sheet)', 'Other allowances (GOSI)', 'Total (sheet)', 'Total (GOSI)', 'Total difference', 'GOSI contributory wage', 'Sheet allowances counted as "other"', 'Result'];
+      const sa = [sh].concat(rows.filter((r) => r.sal).map((r) => { const L = r.sal.lines; return [r.id, r.emp, r.nameEn || r.nameAr, L[0].ini, L[0].gos, L[1].ini, L[1].gos, L[2].ini, L[2].gos, L[3].ini, L[3].gos, L[4].ini, L[4].gos, L[4].diff, r.sal.contrib === null ? '' : r.sal.contrib, L[3].parts.map(([k, v]) => SAL_LABEL[k][0] + ' ' + v).join(', '), salText_(r.sal, 'en')]; }));
+      const s3 = XLSX.utils.aoa_to_sheet(sa); s3['!cols'] = sh.map((h, i) => ({ wch: i === 2 ? 30 : i === 15 ? 36 : i === 16 ? 34 : 13 }));
+      s3['!autofilter'] = { ref: 'A1:Q' + sa.length };
+      XLSX.utils.book_append_sheet(wb, s3, 'Salary');
+    }
+    // Log
+    const logA = [['Data validation log'], ['Run at', stamp], ['Company (slug)', slug_()], ['Read-only', 'Nothing was sent to Jisr; the files were read in the browser only.'], [], ['File', 'Recognised as', 'Header row', 'Employees read', 'Duplicate IDs skipped']]
+      .concat(state.files.map((f) => [f.name, kindLabel_(f.kind, 'en') + (f.lang ? ' (' + f.lang.toUpperCase() + ')' : ''), f.headerRow + 1, f.recs.length, f.dupes.join(', ')]))
+      .concat([[], ['Rules'], ['Matching', 'By ID / Iqama number only; names are compared, never used to match.'], ['Muqeem', 'Saudis (ID starting with 1 or Saudi nationality) are not expected in Muqeem.'], ['Names', 'Flagged only when names in the same language share less than half their words; spelling, dots and "bin" differences are ignored.'],
+        ['Salary', 'Basic = Basic, Housing = Housing, Commission = Commissions; Transportation, Educational, Food, Mobile, Cost of living, Remote work and Other allowances together = GOSI "Other allowances"; totals compared. Differences under 1 SAR are ignored.']]);
+    const s4 = XLSX.utils.aoa_to_sheet(logA); s4['!cols'] = [{ wch: 40 }, { wch: 60 }, { wch: 11 }, { wch: 15 }, { wch: 30 }];
+    XLSX.utils.book_append_sheet(wb, s4, 'Log');
+    const fname = 'jisr-data-validation-' + slug_() + '-' + stamp.slice(0, 10) + '.xlsx';
+    XLSX.writeFile(wb, fname);
+    return fname;
+  }
+  const kindLabel_ = (k, lang) => {
+    const L = { initial: ['Initial data sheet', 'ملف البيانات الأولي'], muqeem: ['Muqeem', 'مقيم'], gosi: ['GOSI active contributors', 'المشتركون النشطون في التأمينات'] }[k] || [k, k];
+    return lang === 'en' ? L[0] : lang === 'ar' ? L[1] : T(L[0], L[1]);
+  };
+  function statusText_(r, lang) {
+    const t = (en, ar) => (lang === 'en' ? en : T(en, ar));
+    const out = [];
+    if (r.issues.includes('init')) out.push(t('Not in initial sheet', 'غير موجود في الملف الأولي'));
+    if (r.issues.includes('gosi')) out.push(t('Missing in GOSI', 'غير موجود في التأمينات'));
+    if (r.issues.includes('muqeem')) out.push(t('Missing in Muqeem', 'غير موجود في مقيم'));
+    if (r.issues.includes('name')) out.push(t('Name differs', 'الاسم مختلف'));
+    if (r.issues.includes('salary')) out.push(t('Salary differs', 'الراتب مختلف'));
+    if (r.issues.includes('split')) out.push(t('Allowance split differs', 'توزيع البدلات مختلف'));
+    return out.length ? out.join(' · ') : t('Matched', 'مطابق');
+  }
+  function salText_(sal, lang) {
+    const t = (en, ar) => (lang === 'en' ? en : T(en, ar));
+    if (sal.state === 'match') return t('Matches GOSI', 'مطابق للتأمينات');
+    const bad = sal.lines.filter((l) => !l.ok && l.k !== 'total').map((l) => (l.k === 'otherAll' ? t('other allowances', 'البدلات الأخرى') : t(SAL_LABEL[l.k][0].toLowerCase(), SAL_LABEL[l.k][1])) + ' ' + (l.diff > 0 ? '+' : '') + l.diff);
+    return (sal.state === 'split' ? t('Total matches; split differs: ', 'الإجمالي مطابق؛ التوزيع مختلف: ') : t('Total differs by ', 'الإجمالي مختلف بـ ') + (sal.lines[4].diff > 0 ? '+' : '') + sal.lines[4].diff + ' — ') + bad.join(', ');
+  }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c != null && c !== false && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-dv-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-dv-css', text: `
+      .jdv-drop { border: 1.5px dashed #c3c8d4; border-radius: 12px; padding: 14px; text-align: center; color: #5f6368; font-size: 13px; cursor: pointer; transition: background .15s, border-color .15s; }
+      .jdv-drop.over { background: #eef2fb; border-color: #3657B8; color: #1E3A8A; }
+      .jdv-slots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }
+      .jdv-slot { border: 1px solid #e8eaed; border-radius: 10px; padding: 10px 12px; min-height: 58px; }
+      .jdv-slot.on { border-color: #3657B8; background: #f6f8fd; }
+      .jdv-slot b { display: block; font-size: 12.5px; margin-bottom: 4px; }
+      .jdv-slot .f { font-size: 12px; color: #3c4043; display: flex; justify-content: space-between; gap: 6px; }
+      .jdv-slot .f span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .jdv-slot .x { border: 0; background: none; cursor: pointer; color: #8A8A8E; padding: 0 2px; }
+      .jdv-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }
+      .jdv-tile { border-radius: 12px; padding: 12px 14px; background: #0E0E11; color: #fff; }
+      .jdv-tile small { display: block; color: #9DB4F0; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+      .jdv-tile b { display: block; font-size: 24px; font-weight: 650; margin: 2px 0; }
+      .jdv-tile span { font-size: 12px; color: #C9C9CE; }
+      .jdv-bar { height: 4px; background: #2A2A30; border-radius: 3px; margin-top: 8px; overflow: hidden; }
+      .jdv-bar i { display: block; height: 100%; background: #3657B8; }
+      .jdv-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 8px; align-items: center; }
+      .jdv-chip { border: 1px solid #dadce0; background: #fff; border-radius: 14px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+      .jdv-chip.on { background: #1E3A8A; border-color: #1E3A8A; color: #fff; }
+      .jdv-chips input { margin-inline-start: auto; border: 1px solid #dadce0; border-radius: 14px; padding: 4px 10px; font-size: 12px; min-width: 200px; }
+      .jdv-wrap { max-height: 46vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jdv-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jdv-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jdv-wrap td { padding: 6px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jdv-wrap tr.r { cursor: pointer; } .jdv-wrap tr.r:hover td { background: #fafbfe; }
+      .jdv-wrap td small { display: block; color: #8A8A8E; }
+      .jdv-ok { color: #137333; font-weight: 600; } .jdv-no { color: #c5221f; font-weight: 600; } .jdv-na { color: #8A8A8E; }
+      .jdv-tag { display: inline-block; border-radius: 10px; padding: 1px 8px; font-size: 11.5px; margin: 0 4px 3px 0; background: #e6f4ea; color: #137333; }
+      .jdv-tag.bad { background: #fce8e6; color: #c5221f; } .jdv-tag.warn { background: #fef7e0; color: #b06000; }
+      .jdv-det td { background: #fafbfe; }
+      .jdv-det table { width: auto; min-width: 420px; margin: 4px 0; border: 1px solid #e8eaed; }
+      .jdv-det th, .jdv-det td td { position: static; padding: 4px 10px; }
+      .jdv-note { font-size: 12px; color: #5f6368; margin: 4px 0; }
+      @media (max-width: 860px) { .jdv-slots, .jdv-tiles { grid-template-columns: 1fr 1fr; } }
+    ` }));
+  }
+
+  function openTool_() {
+    injectCss_();
+    const S = { files: [], result: null, filter: 'all', q: '', open: new Set(), note: '', noteErr: false };
+    const body = el('div', { class: 'jbo-modal-body' });
+    const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' });
+    const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1240px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root jdv' }, [modal]);
+    const close = () => { if (offLang) offLang(); backdrop.remove(); };
+    closeBtn.addEventListener('click', close);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+    const fileIn = el('input', { type: 'file', multiple: true, accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
+    fileIn.addEventListener('change', () => addFiles_(fileIn.files));
+    const offLang = I.onChange ? I.onChange(() => { if (backdrop.isConnected) paint_(); }) : null;
+
+    async function addFiles_(list) {
+      const bad = [];
+      for (const f of Array.from(list || [])) {
+        try {
+          const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array', cellDates: true });
+          let got = null;
+          for (const sn of wb.SheetNames) {
+            const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, defval: '', raw: true });
+            const det = detect_(aoa);
+            if (det) { const rd = readSource_(aoa, det); if (rd.recs.length) { got = Object.assign({ name: f.name, sheet: sn }, det, rd); break; } }
+          }
+          if (!got) { bad.push(f.name); continue; }
+          // the same kind again replaces it, except Muqeem where EN + AR files are combined
+          S.files = S.files.filter((x) => x.name !== f.name && (got.kind === 'muqeem' || x.kind !== got.kind));
+          S.files.push(got);
+        } catch (e) { bad.push(f.name + ' (' + e.message + ')'); }
+      }
+      S.note = bad.length ? T('Not recognised as an initial data sheet, Muqeem or GOSI file: ', 'لم يُتعرَّف عليه كملف بيانات أولي أو مقيم أو التأمينات: ') + bad.join(', ') : '';
+      S.noteErr = !!bad.length;
+      run_();
+    }
+    function run_() {
+      const pick = (k) => { const fs = S.files.filter((f) => f.kind === k); if (!fs.length) return null; const m = new Map(); fs.forEach((f) => f.recs.forEach((r) => { if (!m.has(r.id)) m.set(r.id, r); })); return Array.from(m.values()); };
+      const src = { initial: pick('initial'), muqeem: pick('muqeem'), gosi: pick('gosi') };
+      S.result = S.files.length ? compare_(src) : null;
+      S.open.clear();
+      paint_();
+    }
+
+    function slot_(kind, hint) {
+      const fs = S.files.filter((f) => f.kind === kind);
+      return el('div', { class: 'jdv-slot' + (fs.length ? ' on' : ''), 'data-kind': kind }, [
+        el('b', { text: (fs.length ? '✓ ' : '') + kindLabel_(kind) }),
+        fs.length ? null : el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: hint }),
+      ].concat(fs.map((f) => {
+        const x = el('button', { class: 'x', title: T('Remove', 'إزالة'), text: '✕' });
+        x.addEventListener('click', (e) => { e.stopPropagation(); S.files = S.files.filter((y) => y !== f); run_(); });
+        return el('div', { class: 'f' }, [el('span', { title: f.name, text: f.name }), el('span', { text: f.recs.length + (f.lang ? ' · ' + f.lang.toUpperCase() : '') }), x]);
+      })));
+    }
+    function tile_(label, big, sub, pct) {
+      return el('div', { class: 'jdv-tile' }, [el('small', { text: label }), el('b', { text: big }), el('span', { text: sub }), pct == null ? null : el('div', { class: 'jdv-bar' }, [el('i', { style: { width: Math.max(0, Math.min(100, pct)) + '%' } })])]);
+    }
+    const yesNo_ = (v) => (v === 'na' ? el('span', { class: 'jdv-na', text: T('n/a', 'غير مطلوب'), title: T('Saudi — not in Muqeem', 'سعودي — لا يظهر في مقيم') }) : v ? el('span', { class: 'jdv-ok', text: '✓' }) : el('span', { class: 'jdv-no', text: '✗' }));
+
+    function paint_() {
+      titleEl.textContent = T('Data Validation', 'التحقق من البيانات');
+      body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '8px' }, text: T(
+        'Read-only check of the client\'s files before upload: the initial data sheet against Muqeem (English and/or Arabic) and the GOSI active contributors list. Employees are matched by ID / Iqama number. The files are read in this browser only; nothing is sent to Jisr.',
+        'فحص للقراءة فقط لملفات العميل قبل الرفع: ملف البيانات الأولي مقابل مقيم (إنجليزي و/أو عربي) وقائمة المشتركين النشطين في التأمينات. يُطابَق الموظفون برقم الهوية / الإقامة. تُقرأ الملفات في هذا المتصفح فقط؛ ولا يُرسل شيء إلى جسر.') }));
+      const drop = el('div', { class: 'jdv-drop', tabindex: '0' }, [el('b', { text: T('Drop the files here', 'أفلت الملفات هنا') }), ' ', T('or click to choose — each file is recognised from its headers.', 'أو اضغط للاختيار — يُتعرَّف على كل ملف من عناوين أعمدته.')]);
+      drop.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
+      drop.addEventListener('keydown', (e) => { if (e.key === 'Enter') { fileIn.value = ''; fileIn.click(); } });
+      drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+      drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+      drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); addFiles_(e.dataTransfer.files); });
+      body.appendChild(drop); body.appendChild(fileIn);
+      body.appendChild(el('div', { class: 'jdv-slots' }, [
+        slot_('initial', T('Jisr upload sheet (Emp Id, names, ID / Iqama, salary…)', 'ملف الرفع في جسر (الرقم الوظيفي، الأسماء، الهوية، الراتب…)')),
+        slot_('muqeem', T('Active residents — EN, AR or both', 'المقيمون النشطون — إنجليزي أو عربي أو كلاهما')),
+        slot_('gosi', T('Active contributors list', 'قائمة المشتركين النشطين')),
+      ]));
+      if (S.note) body.appendChild(el('div', { class: S.noteErr ? 'jbo-status-err' : 'jbo-muted', style: { margin: '4px 0' }, text: S.note }));
+      const R = S.result;
+      if (!R) { body.appendChild(el('div', { class: 'jdv-note', text: T('Add at least two files to compare. The initial data sheet is the reference; percentages are out of its employees.', 'أضف ملفين على الأقل للمقارنة. ملف البيانات الأولي هو المرجع، والنسب من موظفيه.') })); return; }
+      const s = R.sum;
+      const tiles = el('div', { class: 'jdv-tiles' });
+      if (s.has.initial) {
+        tiles.appendChild(tile_(T('Initial sheet', 'الملف الأولي'), String(s.initial), T('employees · ', 'موظف · ') + s.notInInit + T(' only in other files', ' في الملفات الأخرى فقط'), null));
+        tiles.appendChild(tile_(T('In GOSI', 'في التأمينات'), s.gosiPct === null ? '—' : s.gosiPct + '%', s.has.gosi ? s.gosiFound + T(' of ', ' من ') + s.initial + ' · ' + s.missGosi + T(' missing', ' غير موجود') : T('GOSI file not added', 'لم يُضف ملف التأمينات'), s.gosiPct));
+        tiles.appendChild(tile_(T('In Muqeem', 'في مقيم'), s.mqPct === null ? '—' : s.mqPct + '%', s.has.muqeem ? s.mqFound + T(' of ', ' من ') + s.expat + T(' non-Saudis · ', ' غير سعودي · ') + s.missMq + T(' missing', ' غير موجود') : T('Muqeem file not added', 'لم يُضف ملف مقيم'), s.mqPct));
+        tiles.appendChild(tile_(s.salaryOn ? T('Salary vs GOSI', 'الراتب مقابل التأمينات') : T('In every file', 'في كل الملفات'), s.salaryOn ? (s.salCompared ? Math.round((s.salMatch / s.salCompared) * 1000) / 10 + '%' : '—') : (s.allPct === null ? '—' : s.allPct + '%'),
+          s.salaryOn ? s.salMatch + T(' match · ', ' مطابق · ') + s.salSplit + T(' split · ', ' توزيع · ') + s.salDiff + T(' differ', ' مختلف') : s.allOk + T(' of ', ' من ') + s.initial, s.salaryOn ? (s.salCompared ? (s.salMatch / s.salCompared) * 100 : 0) : s.allPct));
+      } else {
+        tiles.appendChild(tile_(T('Employees', 'الموظفون'), String(s.total), T('add the initial data sheet for percentages', 'أضف الملف الأولي لعرض النسب'), null));
+      }
+      body.appendChild(tiles);
+      // filters
+      const F = [['all', T('All', 'الكل'), R.rows.length], ['issues', T('Needs a look', 'تحتاج مراجعة'), R.rows.filter((r) => r.issues.length).length], ['gosi', T('Missing in GOSI', 'غير موجود في التأمينات'), s.missGosi], ['muqeem', T('Missing in Muqeem', 'غير موجود في مقيم'), s.missMq],
+        ['init', T('Not in initial sheet', 'غير موجود في الملف الأولي'), s.notInInit], ['name', T('Name differs', 'الاسم مختلف'), s.names], ['salary', T('Salary differs', 'الراتب مختلف'), s.salDiff + s.salSplit], ['ok', T('Matched', 'مطابق'), R.rows.filter((r) => !r.issues.length).length]];
+      const chips = el('div', { class: 'jdv-chips' });
+      F.filter(([k, , n]) => k === 'all' || n).forEach(([k, l, n]) => { const c = el('button', { class: 'jdv-chip' + (S.filter === k ? ' on' : ''), 'data-f': k, text: l + ' · ' + n }); c.addEventListener('click', () => { S.filter = k; paint_(); }); chips.appendChild(c); });
+      const qIn = el('input', { type: 'search', placeholder: T('Search name, ID or Emp ID', 'ابحث بالاسم أو الهوية أو الرقم الوظيفي'), value: S.q });
+      qIn.addEventListener('input', () => { S.q = qIn.value; paintTable_(); });
+      chips.appendChild(qIn);
+      body.appendChild(chips);
+      const wrap = el('div', { class: 'jdv-wrap' });
+      body.appendChild(wrap);
+      function paintTable_() {
+        wrap.innerHTML = '';
+        const q = S.q.trim().toLowerCase();
+        const list = R.rows.filter((r) => (S.filter === 'all' || (S.filter === 'issues' ? r.issues.length : S.filter === 'ok' ? !r.issues.length : S.filter === 'salary' ? r.issues.includes('salary') || r.issues.includes('split') : r.issues.includes(S.filter))) &&
+          (!q || [r.id, r.emp, r.nameEn, r.nameAr, r.mqName, r.gsName].some((x) => String(x).toLowerCase().includes(q))));
+        const t = el('table');
+        const cols = ['#', T('ID / Iqama', 'الهوية / الإقامة'), T('Emp ID', 'الرقم الوظيفي'), T('Name', 'الاسم'), s.has.initial ? T('Initial', 'الأولي') : null, s.has.muqeem ? T('Muqeem', 'مقيم') : null, s.has.gosi ? T('GOSI', 'التأمينات') : null, s.salaryOn ? T('Salary', 'الراتب') : null, T('Status', 'الحالة')].filter(Boolean);
+        t.appendChild(el('tr', {}, cols.map((h) => el('th', { text: h }))));
+        list.slice(0, 3000).forEach((r, i) => {
+          const tags = r.issues.length ? statusText_(r).split(' · ').map((x) => el('span', { class: 'jdv-tag ' + (/name|split|الاسم|توزيع/i.test(x) ? 'warn' : 'bad'), text: x })) : [el('span', { class: 'jdv-tag', text: T('Matched', 'مطابق') })];
+          const salCell = !s.salaryOn ? null : el('td', {}, [r.sal ? el('span', { class: r.sal.state === 'match' ? 'jdv-ok' : r.sal.state === 'split' ? 'jdv-na' : 'jdv-no', text: r.sal.state === 'match' ? '✓' : (r.sal.lines[4].diff > 0 ? '+' : '') + r.sal.lines[4].diff }) : el('span', { class: 'jdv-na', text: '—' })]);
+          const tr = el('tr', { class: 'r', 'data-id': r.id }, [
+            el('td', { text: String(i + 1) }), el('td', { text: r.id }), el('td', { text: r.emp || '—' }),
+            el('td', {}, [r.nameEn || r.nameAr || r.mqName || r.gsName || '—', (r.nameAr && r.nameEn) ? el('small', { dir: 'rtl', text: r.nameAr }) : null]),
+            s.has.initial ? el('td', {}, [yesNo_(r.inInit)]) : null, s.has.muqeem ? el('td', {}, [yesNo_(r.inMq === 'na' ? 'na' : r.inMq === 'yes')]) : null, s.has.gosi ? el('td', {}, [yesNo_(r.inGs)]) : null,
+            salCell, el('td', {}, tags),
+          ]);
+          tr.addEventListener('click', () => { if (S.open.has(r.id)) S.open.delete(r.id); else S.open.add(r.id); paintTable_(); });
+          t.appendChild(tr);
+          if (S.open.has(r.id)) t.appendChild(detailRow_(r, cols.length));
+        });
+        if (!list.length) t.appendChild(el('tr', {}, [el('td', { colspan: String(cols.length), class: 'jbo-muted', text: T('Nothing here.', 'لا شيء هنا.') })]));
+        wrap.appendChild(t);
+      }
+      paintTable_();
+      const exB = el('button', { class: 'jbo-btn jbo-btn-primary jdv-export', text: T('⬇ Export results (.xlsx)', '⬇ تصدير النتائج (‎.xlsx)') });
+      exB.addEventListener('click', () => { const fn = exportWorkbook_(S); S.note = T('Exported ', 'تم التصدير: ') + fn; S.noteErr = false; paint_(); });
+      foot.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Click a row for the names side by side and the salary breakdown.', 'اضغط على صف لعرض الأسماء جنبًا إلى جنب وتفاصيل الراتب.') }));
+      foot.appendChild(exB);
+    }
+    function detailRow_(r, span) {
+      const box = el('div');
+      const names = el('table', {}, [el('tr', {}, [el('th', { text: T('File', 'الملف') }), el('th', { text: T('Name', 'الاسم') })])]);
+      [[T('Initial (EN)', 'الأولي (EN)'), r.nameEn], [T('Initial (AR)', 'الأولي (AR)'), r.nameAr], [T('Muqeem', 'مقيم'), r.mqName], [T('GOSI', 'التأمينات'), r.gsName]].forEach(([k, v]) => { if (v) names.appendChild(el('tr', {}, [el('td', { text: k }), el('td', { dir: isArabic_(v) ? 'rtl' : 'ltr', text: v })])); });
+      box.appendChild(names);
+      r.nameNotes.forEach((n) => box.appendChild(el('div', { class: 'jdv-note', text: '⚠ ' + n.where + ': ' + T('names share few words — check this is the same person.', 'الاسمان يشتركان في كلمات قليلة — تحقّق أنه نفس الشخص.') })));
+      r.other.forEach((o) => box.appendChild(el('div', { class: 'jdv-note', text: '• ' + o })));
+      if (r.sal) {
+        const st = el('table', {}, [el('tr', {}, [T('Component', 'البند'), T('Initial sheet', 'الملف الأولي'), T('GOSI', 'التأمينات'), T('Difference', 'الفرق')].map((h) => el('th', { text: h })))]);
+        r.sal.lines.forEach((l) => {
+          const lab = l.k === 'otherAll' ? T('Other allowances', 'البدلات الأخرى') + (l.parts.length ? ' (' + l.parts.map(([k, v]) => T(SAL_LABEL[k][0], SAL_LABEL[k][1]) + ' ' + v).join(', ') + ')' : '') : l.k === 'total' ? T('Total', 'الإجمالي') : T(SAL_LABEL[l.k][0], SAL_LABEL[l.k][1]);
+          st.appendChild(el('tr', {}, [el('td', { text: lab }), el('td', { text: String(l.ini) }), el('td', { text: String(l.gos) }), el('td', { class: l.ok ? 'jdv-ok' : 'jdv-no', text: l.ok ? '✓' : (l.diff > 0 ? '+' : '') + l.diff })]));
+        });
+        box.appendChild(st);
+        if (r.sal.contrib !== null) box.appendChild(el('div', { class: 'jdv-note', text: T('GOSI contributory wage: ', 'الأجر الخاضع للاشتراك: ') + r.sal.contrib }));
+      }
+      return el('tr', { class: 'jdv-det' }, [el('td', { colspan: String(span) }, [box])]);
+    }
+    paint_();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Data Validation (Initial · Muqeem · GOSI)', open: openTool_, version: SECTION_VERSION };
+    W.__jisrDataValidation = { idKey_, num_, nameTokens_, nameScore_, detect_, readSource_, compare_, statusText_, salText_ };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 27 — Activation Checklist sidebar  v4.19.0
+// ###########################################################################
+
+/**
+ * ===========================================================================
+ * Jisr Bulk Ops — Activation Checklist sidebar  (v4.15.0)
+ * ===========================================================================
+ * The "Activation Phase Policies Playbook" (7 sections) as a sidebar docked on the right of Jisr (15% of the screen;
+ * the Jisr page narrows to 85% while it is open). After first use a slim edge tab stays on Jisr pages and shows the
+ * completion %.
+ *  - Ticks are saved per client (slug) in this browser (Tampermonkey storage).
+ *  - Some items are checked live against Jisr. A green check ticks the item by itself ("auto"); a manual tick or
+ *    untick always wins over the live result.
+ *  - Section 7 (Possible Blockers) are flags: they do not count toward the %. It has a "Notes for HubSpot" box.
+ *  - "Copy open" / "Copy all" put a plain-text list on the clipboard, in the current language.
+ * Live checks only use endpoints the other tools already read:
+ *   /v2/employees/get_all (shared list) · /v2/organizations/countries · /v2/departments · /v2/job_titles/ · /v2/roles
+ *   /v2/letter_types · /v2/attendance/weekly_shift_templates · /v2/attendance/shifts · /v2/leaves/leave_types/
+ *   /v2/finance/paygroups/landing_page · /v2/benefits_management/flight_tickets/policies
+ * Read-only: this tool never writes to Jisr.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+
+  const SECTION_VERSION = '4.15.0';
+  const MODULE_ID = 'activation-checklist';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
+  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // ======================================================================= the playbook
+  // item: [id, titleEn, titleAr, hintEn, hintAr, opts]  opts: { live: key, tool: moduleId }
+  const SECTIONS = [
+    { id: 'need', en: 'What we need', ar: 'ما نحتاجه منكم للبدء', groups: [
+      { en: 'DOCUMENTS', ar: 'المستندات', items: [
+        ['cr', 'Commercial Registration & official numbers', 'السجل التجاري والأرقام الرسمية', 'CR (scanned copy), MOL Unified Number, and the Labor Office and GOSI establishment numbers.', 'السجل التجاري (نسخة ممسوحة)، الرقم الموحد لوزارة الموارد البشرية، ورقما المنشأة في مكتب العمل والتأمينات.'],
+        ['orgname', 'Organization name in English and Arabic', 'اسم المنشأة بالعربية والإنجليزية', 'Exactly as registered.', 'كما هو مسجّل تمامًا.'],
+        ['gosilist', 'Active GOSI contributor list', 'قائمة المشتركين النشطين في التأمينات', 'One file for each CR to be added to the system.', 'ملف لكل سجل تجاري سيُضاف إلى النظام.', { tool: 'gosi-compliance' }],
+        ['labor', 'Labor Office file', 'ملف مكتب العمل', 'The Labor Office file for your establishment.', 'ملف مكتب العمل الخاص بمنشأتكم.'],
+        ['muqeem', 'Muqeem file', 'ملف مقيم', 'Active residents in English and Arabic, one file per CR.', 'المقيمون النشطون بالعربية والإنجليزية، ملف لكل سجل تجاري.'],
+      ] },
+      { en: 'DATA', ar: 'البيانات', items: [
+        ['emplist', 'Complete employee list', 'قائمة الموظفين كاملة', 'All active employees, not partial.', 'جميع الموظفين النشطين، وليس جزءًا منهم.', { live: 'employees', tool: 'employee-id-bulk' }],
+        ['orgdata', 'Organizational structure', 'الهيكل التنظيمي', 'With reporting lines.', 'مع خطوط الارتباط الإداري.', { live: 'departments', tool: 'departments-bulk' }],
+        ['depjobs', 'Departments and job titles', 'الإدارات والمسميات الوظيفية', 'Your department and job title definitions.', 'تعريفات الإدارات والمسميات الوظيفية لديكم.', { live: 'depjobs', tool: 'job-titles-bulk' }],
+      ] },
+      { en: 'POLICY DECISIONS', ar: 'قرارات السياسات', items: [
+        ['paypol', 'Payroll policy finalized', 'اعتماد سياسة الرواتب', 'Salary structure and bonuses. See section 5.', 'هيكل الرواتب والمكافآت. انظر القسم 5.'],
+        ['leavepol', 'Leave policy defined', 'تحديد سياسة الإجازات', 'Types, accrual and limits. See section 4.', 'الأنواع والاستحقاق والحدود. انظر القسم 4.'],
+        ['attpol', 'Attendance policy confirmed', 'تأكيد سياسة الحضور', 'Shifts and overtime rules. See section 3.', 'الورديات وقواعد العمل الإضافي. انظر القسم 3.'],
+      ] },
+    ] },
+    { id: 'setup', en: 'Account Setup', ar: 'إعداد الحساب', groups: [
+      { en: '', ar: '', items: [
+        ['orgstruct', 'Org structure', 'الهيكل التنظيمي', 'Business units, departments and the reporting hierarchy.', 'وحدات الأعمال والإدارات والتسلسل الإداري.', { live: 'orgstruct', tool: 'departments-bulk' }],
+        ['roles', 'Roles & permissions', 'الأدوار والصلاحيات', 'Define the permission groups (HR, Finance, Line Manager, Employee) before assigning people to them.', 'حدّد مجموعات الصلاحيات (الموارد البشرية، المالية، المدير المباشر، الموظف) قبل إسناد الأشخاص إليها.', { live: 'roles', tool: 'roles-permissions-bulk' }],
+        ['approvals', 'Approval cycles', 'دورات الموافقة', 'Who approves each request type and in what order, and what happens when two roles resolve to the same person.', 'من يوافق على كل نوع طلب وبأي ترتيب، وماذا يحدث عندما يكون الدوران لنفس الشخص.'],
+        ['letters', 'Letter templates & assets', 'قوالب الخطابات والأصول', 'Offer letters, contracts, certificates and warnings in English and Arabic. Asset categories, if applicable.', 'خطابات العرض والعقود والشهادات والإنذارات بالعربية والإنجليزية. وفئات الأصول إن وجدت.', { live: 'letters', tool: 'letter-converter' }],
+      ] },
+    ] },
+    { id: 'attendance', en: 'Attendance', ar: 'الحضور', groups: [
+      { en: 'SHIFTS & SCHEDULING', ar: 'الورديات والجداول', items: [
+        ['shifts', 'Shifts', 'الورديات', 'Fixed shift presets, open shifts within a flexible window, and shift templates for double shifts.', 'ورديات ثابتة، وورديات مفتوحة ضمن نافذة مرنة، وقوالب ورديات للدوام المزدوج.', { live: 'shifts', tool: 'fixed-hours-bulk' }],
+        ['schedtype', 'Schedule type', 'نوع الجدول', 'Fixed schedule (default) or temporary (maximum 2 months, expires automatically).', 'جدول ثابت (افتراضي) أو مؤقت (شهران كحد أقصى، ينتهي تلقائيًا).', { tool: 'fixed-hours-bulk' }],
+      ] },
+      { en: 'POLICIES', ar: 'السياسات', items: [
+        ['overtime', 'Overtime', 'العمل الإضافي', 'Rate (1.5x, 2x or custom), daily or monthly cap, calculation base, and automatic or request-based.', 'المعدل (1.5x أو 2x أو مخصص)، الحد اليومي أو الشهري، أساس الاحتساب، وتلقائي أو بطلب.'],
+        ['excuses', 'Excuses', 'الاستئذانات', 'Personal, business, or both, with a monthly limit.', 'شخصي أو عمل أو كلاهما، مع حد شهري.'],
+        ['punchcorr', 'Punch correction', 'تصحيح البصمة', 'Allow corrections, with a limit per period.', 'السماح بالتصحيح مع حد لكل فترة.'],
+      ] },
+      { en: 'TRACKING', ar: 'التتبع', items: [
+        ['geofence', 'Geofencing', 'النطاق الجغرافي', 'Employees punch within a defined boundary.', 'يبصم الموظفون داخل نطاق محدد.', { live: 'geofence', tool: 'locations-bulk' }],
+        ['biometric', 'Biometric devices', 'أجهزة البصمة', 'ZKTeco devices only, connected through BioTime.', 'أجهزة ZKTeco فقط، عبر BioTime.'],
+      ] },
+    ] },
+    { id: 'leaves', en: 'Leaves', ar: 'الإجازات', groups: [
+      { en: 'LEAVE TYPES', ar: 'أنواع الإجازات', items: [
+        ['annual', 'Annual leave', 'الإجازة السنوية', 'Entitlement (21, 30, 0 or custom), calendar or business days, full or accumulative balance, auto-upgrade after 5 years.', 'الاستحقاق (21 أو 30 أو 0 أو مخصص)، أيام تقويمية أو أيام عمل، رصيد كامل أو تراكمي، والترقية التلقائية بعد 5 سنوات.', { live: 'annual' }],
+        ['laborlaw', 'Labor Law leaves', 'إجازات نظام العمل', 'Sick, maternity, Hajj and the other Labor Law types, each with its own balance, probation extension and attachments.', 'المرضية والوضع والحج وغيرها من أنواع نظام العمل، لكل منها رصيده وتمديد التجربة والمرفقات.', { live: 'laborlaw' }],
+        ['customleave', 'Custom leaves', 'إجازات مخصصة', 'Any extra leave types, such as study, exam or volunteering.', 'أي أنواع إضافية مثل الدراسة أو الاختبارات أو التطوع.'],
+      ] },
+      { en: 'HOLIDAYS & UPLOADS', ar: 'العطل والرفع', items: [
+        ['holidays', 'Public holidays', 'العطل الرسمية', 'Saudi holidays are pre-loaded. Tell us about any custom holidays.', 'العطل السعودية محمّلة مسبقًا. أخبرونا بأي عطل مخصصة.'],
+        ['balances', 'Leave balance sheet', 'ملف أرصدة الإجازات', 'Current leave balances, ready to upload.', 'أرصدة الإجازات الحالية جاهزة للرفع.'],
+        ['pastreq', 'Past requests', 'الطلبات السابقة', 'Historical leave requests, ready to upload.', 'طلبات الإجازات السابقة جاهزة للرفع.'],
+      ] },
+    ] },
+    { id: 'payroll', en: 'Payroll', ar: 'الرواتب', groups: [
+      { en: '', ar: '', items: [
+        ['paygroups', 'Payroll groups', 'مجموعات الرواتب', 'Each group has its own cut-off date, pay date, approval cycle and deduction rules.', 'لكل مجموعة تاريخ إقفال وتاريخ صرف ودورة موافقة وقواعد خصم خاصة بها.', { live: 'paygroups' }],
+        ['salcomp', 'Salary components', 'مكونات الراتب', 'Standard (basic, housing, transport) plus custom allowances.', 'الأساسية (الأساسي، السكن، النقل) مع البدلات المخصصة.'],
+        ['loans', 'Loans', 'السلف', 'Maximum amount, calculation base, and loan types with their own rules.', 'الحد الأقصى، أساس الاحتساب، وأنواع السلف بقواعدها المستقلة.'],
+        ['varpay', 'Variable pay', 'الأجور المتغيرة', 'Overtime base, bonuses and commissions. Can differ per group.', 'أساس العمل الإضافي والمكافآت والعمولات. قد تختلف لكل مجموعة.'],
+        ['deductions', 'Deductions', 'الخصومات', 'Absence, lateness and missing punches. Configurable per group.', 'الغياب والتأخير والبصمات المفقودة. قابلة للضبط لكل مجموعة.'],
+        ['flight', 'Flight policy', 'سياسة تذاكر الطيران', 'Annual budget per country, tickets per employee per year, eligibility by nationality.', 'الميزانية السنوية لكل دولة، عدد التذاكر لكل موظف سنويًا، والأهلية حسب الجنسية.', { live: 'flight', tool: 'flight-tickets-bulk' }],
+        ['eos', 'Final settlement (EOS)', 'المخالصة النهائية (نهاية الخدمة)', 'Calculation base, attendance reflection, and exempted employees.', 'أساس الاحتساب، وانعكاس الحضور، والموظفون المستثنون.'],
+      ] },
+    ] },
+    { id: 'integrations', en: 'Integrations', ar: 'التكاملات', groups: [
+      { en: '', ar: '', items: [
+        ['muqeemint', 'Muqeem', 'مقيم', 'Iqama & visa data sync. The client contracts directly.', 'مزامنة بيانات الإقامة والتأشيرات. يتعاقد العميل مباشرة.'],
+        ['mudad', 'Mudad', 'مدد', 'WPS salary disbursement (annual fee).', 'صرف الرواتب عبر نظام حماية الأجور (رسوم سنوية).'],
+        ['gosiint', 'GOSI', 'التأمينات الاجتماعية', 'Social insurance sync. Free. Reconciles the contributor list.', 'مزامنة التأمينات الاجتماعية مجانًا، ومطابقة قائمة المشتركين.', { tool: 'gosi-compliance' }],
+        ['biotime', 'BioTime (ZKT)', 'BioTime (ZKT)', 'Biometric punches into Jisr attendance. ZKTeco only.', 'بصمات الأجهزة إلى حضور جسر. ZKTeco فقط.'],
+        ['accounting', 'Accounting (e.g., SAP B1)', 'المحاسبة (مثل SAP B1)', 'Payroll to ERP journal entries; cut-off dates must align.', 'قيود الرواتب إلى نظام ERP؛ يجب توافق تواريخ الإقفال.'],
+      ] },
+    ] },
+    { id: 'blockers', blockers: true, en: 'Possible Blockers', ar: 'العوائق المحتملة', groups: [
+      { en: 'TICK WHAT APPLIES', ar: 'علّم ما ينطبق', items: [
+        ['rotational', 'Rotational shifts', 'الورديات الدوّارة', 'Can add 1–2 weeks to the timeline.', 'قد تضيف 1–2 أسبوع إلى المدة.'],
+        ['floating', 'Floating or flexible schedules', 'جداول عائمة أو مرنة', 'Can add 2–4 weeks to the timeline.', 'قد تضيف 2–4 أسابيع إلى المدة.'],
+        ['untracked', 'Leave balances not fully tracked', 'أرصدة إجازات غير متتبعة بالكامل', 'Needs cleanup or manual collection; delays invitations and UAT.', 'تحتاج تنظيفًا أو جمعًا يدويًا؛ تؤخر الدعوات واختبار المستخدمين.'],
+        ['apiatt', 'Attendance through API integration', 'الحضور عبر تكامل API', 'Needs the client\'s IT team. Plan 2–3 weeks.', 'يحتاج فريق تقنية المعلومات لدى العميل. خطط لـ 2–3 أسابيع.'],
+        ['unsure', 'Modules you are unsure about', 'وحدات غير محسومة', 'Late scope decisions delay configuration.', 'تأخر قرارات النطاق يؤخر الإعداد.'],
+        ['deciders', 'Decision makers and approval turnaround', 'صانعو القرار وسرعة الاعتماد', 'A primary and a backup contact, who approves policies, and the expected response time.', 'جهة اتصال رئيسية واحتياطية، ومن يعتمد السياسات، ووقت الرد المتوقع.'],
+      ] },
+    ] },
+  ];
+  const ALL_ITEMS = []; SECTIONS.forEach((s) => s.groups.forEach((g) => g.items.forEach((it) => ALL_ITEMS.push({ sec: s, id: it[0], en: it[1], ar: it[2], hen: it[3], har: it[4], opt: it[5] || {} }))));
+  const PROGRESS_ITEMS = ALL_ITEMS.filter((i) => !i.sec.blockers);
+
+  // ======================================================================= saved state (per client)
+  const key_ = () => 'checklist_' + (slug_() || 'default');
+  function load_() {
+    const s = gmGet_(key_(), null) || {};
+    return { ticks: s.ticks || {}, live: s.live || {}, notes: s.notes || '', checkedAt: s.checkedAt || 0, lang: s.lang || '' };
+  }
+  function save_(st) { gmSet_(key_(), { ticks: st.ticks, live: st.live, notes: st.notes, checkedAt: st.checkedAt, lang: st.lang }); }
+  /** done = your own tick/untick if you made one, else a green live check */
+  function isDone_(st, it) {
+    const u = st.ticks[it.id];
+    if (u === true || u === false) return u;
+    return !it.sec.blockers && !!(st.live[it.id] && st.live[it.id].ok === true);
+  }
+  function percent_(st) {
+    const d = PROGRESS_ITEMS.filter((it) => isDone_(st, it)).length;
+    return { done: d, total: PROGRESS_ITEMS.length, pct: Math.round((d * 100) / PROGRESS_ITEMS.length) };
+  }
+  function copyText_(st, all) {
+    const p = percent_(st); const ar = I.isAr();
+    const lines = [T('Activation checklist', 'قائمة التفعيل') + ' · ' + (slug_() || '') + ' · ' + p.pct + '% (' + p.done + '/' + p.total + ')'];
+    SECTIONS.forEach((s, si) => {
+      const rows = [];
+      s.groups.forEach((g) => g.items.forEach((raw) => {
+        const it = ALL_ITEMS.find((x) => x.id === raw[0]); const done = isDone_(st, it);
+        if (s.blockers) { if (done) rows.push('  ! ' + (ar ? it.ar : it.en)); return; }
+        if (!all && done) return;
+        rows.push((done ? '  ✓ ' : '  ☐ ') + (ar ? it.ar : it.en));
+      }));
+      if (rows.length) lines.push('', (si + 1) + '. ' + (ar ? s.ar : s.en) + (s.blockers ? ' — ' + T('flagged', 'مُعلَّمة') : ''), ...rows);
+    });
+    if (st.notes && st.notes.trim()) lines.push('', T('Notes', 'ملاحظات') + ':', st.notes.trim());
+    return lines.join('\n');
+  }
+
+  // ======================================================================= Jisr reads (read-only)
+  function jisrMsg_(j) { if (!j || typeof j !== 'object') return ''; const m = j.message || j.error; return m ? String(m).slice(0, 160) : ''; }
+  async function get_(path, query) {
+    const qs = new URLSearchParams(); Object.entries(query || {}).forEach(([k, v]) => qs.append(k, v)); qs.append('slug', slug_());
+    for (let a = 0; a < 3; a++) {
+      let res;
+      try { res = await fetch(apiBase_() + path + '?' + qs.toString(), { credentials: 'include', headers: { accept: 'application/json', slug: slug_(), locale: I.isAr() ? 'ar' : 'en' } }); }
+      catch (e) { await sleep_(700 * (a + 1)); continue; }
+      if (res.status === 429 || res.status >= 500) { await sleep_(900 * (a + 1)); continue; }
+      const json = await res.json().catch(() => null);
+      if (!res.ok || (json && json.success === false)) { const e = new Error('HTTP ' + res.status + (jisrMsg_(json) ? ': ' + jisrMsg_(json) : '')); e.status = res.status; throw e; }
+      return json;
+    }
+    throw new Error(T('no answer from Jisr', 'لا رد من جسر'));
+  }
+  function findList_(json, test) {
+    let out = null;
+    (function walk(v, d) { if (out || !v || typeof v !== 'object' || d > 5) return; if (Array.isArray(v)) { if (v.length && v.every((x) => x && typeof x === 'object' && test(x))) { out = v; return; } v.forEach((x) => walk(x, d + 1)); return; } Object.values(v).forEach((x) => walk(x, d + 1)); })(json, 0);
+    return out || [];
+  }
+  const hasId = (x) => x.id != null;
+  const nameOf_ = (x) => [x.name_i18n, x.name_en, x.name, x.name_ar, x.title].filter(Boolean).join(' ');
+  const plural_ = (n, en, enP, ar) => (I.isAr() ? n + ' ' + ar : n + ' ' + (n === 1 ? en : enP));
+  /** each check -> { ok: true | false | null (could not check), msg } ; results are cached for the run */
+  function makeChecks_() {
+    const memo = {};
+    const once = (k, fn) => (memo[k] = memo[k] || fn());
+    const tree = () => once('tree', async () => findList_(await get_('/v2/organizations/countries'), (x) => x.id != null && ('areas' in x || 'name_en' in x)));
+    const depts = () => once('depts', async () => findList_(await get_('/v2/departments'), hasId));
+    const jobs = () => once('jobs', async () => findList_(await get_('/v2/job_titles/', { 'filter[search]': '' }), hasId));
+    const leaveTypes = () => once('lt', async () => findList_(await get_('/v2/leaves/leave_types/'), hasId));
+    return {
+      employees: async () => { const l = await W.__jisrBulkOpsEmployees.get(false); return { ok: l.length > 0, msg: l.length ? plural_(l.length, 'employee in Jisr', 'employees in Jisr', 'موظف في جسر') : T('No employees in Jisr yet', 'لا يوجد موظفون في جسر بعد') }; },
+      departments: async () => { const d = await depts(); return { ok: d.length > 0, msg: d.length ? plural_(d.length, 'department', 'departments', 'إدارة') : T('No departments yet', 'لا توجد إدارات بعد') }; },
+      depjobs: async () => { const [d, j] = await Promise.all([depts(), jobs()]); return { ok: d.length > 0 && j.length > 0, msg: plural_(d.length, 'department', 'departments', 'إدارة') + ' · ' + plural_(j.length, 'job title', 'job titles', 'مسمى وظيفي') }; },
+      orgstruct: async () => {
+        const [d, t] = await Promise.all([depts(), tree()]); const areas = t.reduce((n, c) => n + ((c.areas || []).length), 0);
+        return { ok: d.length > 0 && areas > 0, msg: plural_(d.length, 'department', 'departments', 'إدارة') + ' · ' + plural_(areas, 'area', 'areas', 'منطقة') };
+      },
+      roles: async () => {
+        const all = findList_(await get_('/v2/roles', { search: '', 'filter[is_default]': 'false', page: 1, rpp: 50 }), hasId);
+        return { ok: all.length > 0, msg: all.length ? plural_(all.length, 'custom role', 'custom roles', 'دور مخصص') : T('Only the default roles so far', 'الأدوار الافتراضية فقط حتى الآن') };
+      },
+      letters: async () => { const l = findList_(await get_('/v2/letter_types', { locale: '' }), hasId); return { ok: l.length > 0, msg: l.length ? plural_(l.length, 'letter template', 'letter templates', 'قالب خطاب') : T('No letter templates yet', 'لا توجد قوالب خطابات بعد') }; },
+      shifts: async () => {
+        const tp = findList_(await get_('/v2/attendance/weekly_shift_templates', { name: '', page: 1, rpp: 25 }), hasId);
+        let sh = []; try { sh = findList_(await get_('/v2/attendance/shifts', { page: 1, rpp: 200 }), (x) => x.id != null && ('start_time' in x || 'end_time' in x)); } catch (e) { /* optional */ }
+        return { ok: tp.length > 0 || sh.length > 0, msg: (sh.length ? plural_(sh.length, 'shift', 'shifts', 'وردية') + ' · ' : '') + plural_(tp.length, 'fixed schedule', 'fixed schedules', 'جدول ثابت') };
+      },
+      geofence: async () => {
+        const locs = []; (await tree()).forEach((c) => (c.areas || []).forEach((a) => (a.locations || []).forEach((l) => locs.push(l))));
+        const noPin = locs.filter((l) => l.latitude == null || l.latitude === '' || l.longitude == null || l.longitude === '').length;
+        if (!locs.length) return { ok: false, msg: T('No locations yet', 'لا توجد مواقع بعد') };
+        return { ok: noPin === 0, msg: noPin ? (I.isAr() ? noPin + ' من ' + locs.length + ' مواقع بلا دبوس على الخريطة' : noPin + ' of ' + locs.length + ' locations have no map pin') : (I.isAr() ? 'جميع المواقع (' + locs.length + ') لها دبوس على الخريطة' : 'All ' + locs.length + ' locations have a map pin') };
+      },
+      annual: async () => { const l = await leaveTypes(); const a = l.find((x) => /annual|سنوي/i.test(nameOf_(x))); return { ok: !!a, msg: a ? T('Annual leave exists', 'الإجازة السنوية موجودة') : T('No annual leave type yet', 'لا يوجد نوع إجازة سنوية بعد') }; },
+      laborlaw: async () => { const l = await leaveTypes(); const s = l.some((x) => /sick|مرض/i.test(nameOf_(x))); return { ok: s, msg: plural_(l.length, 'leave type', 'leave types', 'نوع إجازة') + (s ? '' : ' · ' + T('no sick leave', 'لا توجد إجازة مرضية')) }; },
+      paygroups: async () => {
+        const d = new Date(); const ym = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+        const l = findList_(await get_('/v2/finance/paygroups/landing_page', { page: 1, rpp: 50, payrun_month: ym + '-01', search: '' }), hasId);
+        return { ok: l.length > 0, msg: l.length ? plural_(l.length, 'payroll group', 'payroll groups', 'مجموعة رواتب') : T('No payroll groups yet', 'لا توجد مجموعات رواتب بعد') };
+      },
+      flight: async () => { const l = findList_(await get_('/v2/benefits_management/flight_tickets/policies'), hasId); return { ok: l.length > 0, msg: l.length ? plural_(l.length, 'flight policy', 'flight policies', 'سياسة تذاكر') : T('No flight policy yet', 'لا توجد سياسة تذاكر بعد') }; },
+    };
+  }
+  async function runChecks_(st, onEach) {
+    const C = makeChecks_();
+    const items = ALL_ITEMS.filter((it) => it.opt.live && C[it.opt.live]);
+    await Promise.all(items.map(async (it) => {
+      let r;
+      try { r = await C[it.opt.live](); } catch (e) { r = { ok: null, msg: T('Could not check', 'تعذّر الفحص') + ' (' + String(e.message || e).slice(0, 80) + ')' }; }
+      st.live[it.id] = { ok: r.ok, msg: r.msg }; if (onEach) onEach();
+    }));
+    st.checkedAt = Date.now(); st.lang = I.isAr() ? 'ar' : 'en'; save_(st);
+  }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-ck-css')) return;
+    (document.head || document.documentElement).appendChild(el('style', { id: 'jbo-ck-css', text: `
+      :root { --jck-w: max(15vw, 260px); }
+      html.jck-shrink body { transform: translateZ(0); width: calc(100vw - var(--jck-w)) !important; min-width: 0 !important; overflow-x: hidden; margin-left: 0 !important; margin-right: auto !important; }
+      .jck-panel, .jck-tab, .jck-toast { font-family: Onest, Inter, system-ui, -apple-system, 'Segoe UI', Tahoma, sans-serif; color: #111113; font-size: 13px; line-height: 1.35; box-sizing: border-box; }
+      .jck-panel *, .jck-tab * { box-sizing: border-box; }
+      .jck-panel { position: fixed; top: 0; right: 0; bottom: 0; width: var(--jck-w); background: #fff; border-left: 1px solid #e3e8ef; display: flex; flex-direction: column; z-index: 2147483000; box-shadow: -6px 0 18px rgba(17,17,19,.06); }
+      .jck-panel[hidden] { display: none; }
+      .jck-tab { position: fixed; right: 0; top: 42%; width: 26px; padding: 10px 0; background: #111113; color: #fff; border-radius: 8px 0 0 8px; cursor: pointer; z-index: 2147483000; writing-mode: vertical-rl; display: flex; align-items: center; justify-content: center; font-size: 12px; letter-spacing: .02em; user-select: none; }
+      .jck-tab b { font-weight: 700; margin-top: 4px; }
+      .jck-tab[hidden] { display: none; }
+      .jck-hd { padding: 12px 14px 10px; border-bottom: 1px solid #e3e8ef; }
+      .jck-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+      .jck-h1 { font-size: 13.5px; font-weight: 600; margin: 0; }
+      .jck-hd .jck-row > div { display: flex; flex: none; }
+      .jck-h1 span { color: #697586; font-weight: 500; }
+      .jck-ic { border: 0; background: none; color: #697586; cursor: pointer; font-size: 15px; padding: 2px 4px; border-radius: 4px; }
+      .jck-ic:hover { background: #f1f3f6; color: #111113; }
+      .jck-client { color: #697586; font-size: 11.5px; margin-top: 2px; word-break: break-all; }
+      .jck-bar { height: 6px; background: #e3e8ef; border-radius: 4px; margin: 10px 0 4px; overflow: hidden; }
+      .jck-bar i { display: block; height: 100%; background: #111113; transition: width .2s; }
+      .jck-pc { display: flex; justify-content: space-between; font-size: 11.5px; color: #364152; }
+      .jck-flags { margin-top: 8px; font-size: 11.5px; color: #a15c07; background: #fff4e0; padding: 5px 8px; border-radius: 6px; }
+      .jck-status { font-size: 10.5px; color: #697586; padding: 6px 14px 0; }
+      .jck-body { flex: 1; overflow: auto; padding: 4px 0; }
+      .jck-sec { border-bottom: 1px solid #e3e8ef; }
+      .jck-sh { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; user-select: none; }
+      .jck-sh .n { width: 20px; height: 20px; border-radius: 50%; background: #eef1f6; font-size: 11px; display: flex; align-items: center; justify-content: center; font-weight: 600; flex: none; }
+      .jck-sh .nm { flex: 1; font-weight: 500; }
+      .jck-sh .ct { font-size: 11px; color: #697586; }
+      .jck-sh .ch { color: #697586; font-size: 9px; transition: transform .15s; }
+      .jck-sec.open .jck-sh .ch { transform: rotate(90deg); }
+      [dir=rtl] .jck-sh .ch { transform: scaleX(-1); }
+      [dir=rtl] .jck-sec.open .jck-sh .ch { transform: rotate(90deg); }
+      .jck-items { display: none; padding: 0 8px 8px; }
+      .jck-sec.open .jck-items { display: block; }
+      .jck-grp { font-size: 10px; letter-spacing: .06em; color: #697586; font-weight: 600; padding: 8px 6px 4px; }
+      .jck-it { display: flex; gap: 8px; padding: 6px; border-radius: 6px; align-items: flex-start; }
+      .jck-it:hover { background: #f6f8fb; }
+      .jck-cb { width: 15px; height: 15px; border: 1.5px solid #b7c0cd; border-radius: 4px; flex: none; margin-top: 1px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #fff; background: #fff; padding: 0; }
+      .jck-it.done .jck-cb { background: #111113; border-color: #111113; }
+      .jck-it.done .jck-cb::after { content: "✓"; }
+      .jck-it.done .jck-tt { color: #697586; text-decoration: line-through; }
+      .jck-it.bl .jck-cb { border-color: #e0b26b; }
+      .jck-it.bl.done .jck-cb { background: #a15c07; border-color: #a15c07; }
+      .jck-it.bl.done .jck-cb::after { content: "!"; }
+      .jck-it.bl.done .jck-tt { text-decoration: none; color: #a15c07; }
+      .jck-tx { flex: 1; min-width: 0; }
+      .jck-tt { font-size: 12.5px; cursor: pointer; }
+      .jck-auto { font-size: 10px; color: #12805c; margin-inline-start: 4px; text-decoration: none; display: inline-block; }
+      .jck-auto.off { color: #697586; }
+      .jck-hint { display: none; font-size: 11.5px; color: #697586; margin-top: 3px; }
+      .jck-it.showhint .jck-hint { display: block; }
+      .jck-live { display: inline-block; margin-top: 4px; font-size: 10.5px; padding: 1px 6px; border-radius: 10px; background: #f1f3f6; color: #697586; }
+      .jck-live.ok { background: #e7f6ef; color: #12805c; }
+      .jck-live.bad { background: #fdecea; color: #b42318; }
+      .jck-lk { color: #697586; font-size: 12px; flex: none; cursor: pointer; border: 0; background: none; padding: 0 2px; }
+      .jck-lk:hover { color: #1f5eff; }
+      .jck-notes { margin: 6px; }
+      .jck-notes label { display: block; font-size: 10px; letter-spacing: .06em; color: #697586; font-weight: 600; margin: 4px 0; }
+      .jck-notes textarea { width: 100%; min-height: 90px; border: 1px solid #e3e8ef; border-radius: 6px; padding: 7px; font: inherit; font-size: 12px; resize: vertical; color: #111113; }
+      .jck-notes .jck-row { margin-top: 5px; font-size: 10.5px; color: #697586; }
+      .jck-ft { border-top: 1px solid #e3e8ef; padding: 10px 14px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+      .jck-btn { border: 1px solid #e3e8ef; background: #fff; border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 11.5px; cursor: pointer; color: #364152; }
+      .jck-btn:hover { border-color: #b7c0cd; }
+      .jck-btn.pri { background: #111113; color: #fff; border-color: #111113; }
+      .jck-link { border: 0; background: none; color: #697586; font: inherit; font-size: 10.5px; cursor: pointer; text-decoration: underline; padding: 0; margin-inline-start: auto; }
+      .jck-toast { position: fixed; right: calc(var(--jck-w) + 12px); bottom: 16px; max-width: 360px; background: #111113; color: #fff; font-size: 11.5px; padding: 10px 12px; border-radius: 8px; white-space: pre-wrap; z-index: 2147483001; max-height: 60vh; overflow: auto; }
+    ` }));
+  }
+
+  const UI = { panel: null, tab: null, open: false, st: null, openSecs: new Set(['need']), checking: false, unsub: null };
+  const root_ = () => document.documentElement; // outside <body>, so the narrowed page never moves the panel
+  function setShrink_(on) { root_().classList.toggle('jck-shrink', !!on && gmGet_('checklistMode', 'shrink') === 'shrink'); }
+  function toast_(text) {
+    let t = document.getElementById('jck-toast');
+    if (!t) { t = el('div', { id: 'jck-toast', class: 'jck-toast' }); root_().appendChild(t); }
+    t.textContent = text; t.hidden = false; clearTimeout(t._h); t._h = setTimeout(() => { t.hidden = true; }, 5000);
+  }
+  async function clip_(text) {
+    try { if (typeof GM_setClipboard === 'function') { GM_setClipboard(text, 'text'); return true; } } catch (e) { /* fall through */ }
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* fall through */ }
+    try { const ta = el('textarea', { style: { position: 'fixed', opacity: '0' } }); ta.value = text; root_().appendChild(ta); ta.select(); const ok = document.execCommand('copy'); ta.remove(); return ok; } catch (e) { return false; }
+  }
+  function mountTab_() {
+    injectCss_();
+    if (!UI.tab || !UI.tab.isConnected) {
+      UI.tab = el('div', { class: 'jck-tab', id: 'jck-tab', title: 'Activation Checklist' });
+      UI.tab.addEventListener('click', () => { const g = W.__jisrBulkOps; const m = g && g.modules && g.modules[MODULE_ID]; if (m) m.open(); else openPanel_(); });
+      root_().appendChild(UI.tab);
+    }
+    paintTab_();
+  }
+  function paintTab_() {
+    if (!UI.tab) return;
+    const st = UI.st || load_();
+    UI.tab.innerHTML = ''; UI.tab.append(T('Checklist', 'قائمة التفعيل') + ' · ', el('b', { text: percent_(st).pct + '%' }));
+    UI.tab.hidden = UI.open;
+  }
+  function closePanel_() {
+    UI.open = false; if (UI.panel) UI.panel.hidden = true; setShrink_(false); paintTab_();
+    const t = document.getElementById('jck-toast'); if (t) t.hidden = true;
+  }
+  function openPanel_() {
+    injectCss_();
+    UI.st = load_(); UI.open = true;
+    gmSet_('checklistTab', true); mountTab_();
+    if (!UI.panel || !UI.panel.isConnected) { UI.panel = el('aside', { class: 'jck-panel', id: 'jck-panel' }); root_().appendChild(UI.panel); }
+    UI.panel.hidden = false; setShrink_(true);
+    if (!UI.unsub) UI.unsub = I.onChange(() => { if (UI.open) { paint_(); if (UI.st.lang !== (I.isAr() ? 'ar' : 'en')) recheck_(); } paintTab_(); });
+    paint_(); paintTab_();
+    const stale = !UI.st.checkedAt || Date.now() - UI.st.checkedAt > 2 * 60 * 1000 || UI.st.lang !== (I.isAr() ? 'ar' : 'en');
+    if (stale) recheck_();
+  }
+  async function recheck_() {
+    if (UI.checking) return; UI.checking = true; paint_();
+    try { await runChecks_(UI.st, () => paint_()); } finally { UI.checking = false; paint_(); paintTab_(); }
+  }
+  function paint_() {
+    const st = UI.st; const P = UI.panel; if (!P) return;
+    const ar = I.isAr(); P.setAttribute('dir', ar ? 'rtl' : 'ltr');
+    const keepScroll = P.querySelector('.jck-body') ? P.querySelector('.jck-body').scrollTop : 0;
+    const hadFocus = document.activeElement && document.activeElement.id === 'jck-notes';
+    const caret = hadFocus ? document.activeElement.selectionStart : null;
+    P.innerHTML = '';
+    const p = percent_(st); const flagged = ALL_ITEMS.filter((it) => it.sec.blockers && isDone_(st, it)).length;
+    const collapseB = el('button', { class: 'jck-ic', title: T('Collapse', 'طي'), text: ar ? '⟨' : '⟩' }); collapseB.addEventListener('click', closePanel_);
+    const modeB = el('button', { class: 'jck-ic', title: T('Switch between narrowing the page and floating over it', 'التبديل بين تضييق الصفحة والطفو فوقها'), text: '⇔' });
+    modeB.addEventListener('click', () => { gmSet_('checklistMode', gmGet_('checklistMode', 'shrink') === 'shrink' ? 'overlay' : 'shrink'); setShrink_(true); toast_(gmGet_('checklistMode', 'shrink') === 'shrink' ? T('The Jisr page now narrows while the checklist is open.', 'تضيق صفحة جسر الآن أثناء فتح القائمة.') : T('The checklist now floats over the Jisr page.', 'تطفو القائمة الآن فوق صفحة جسر.')); });
+    const hd = el('div', { class: 'jck-hd' }, [
+      el('div', { class: 'jck-row' }, [el('h1', { class: 'jck-h1' }, [T('Activation Checklist', 'قائمة التفعيل') + ' ', el('span', { text: '· ' + p.pct + '%' })]), el('div', {}, [modeB, collapseB])]),
+      el('div', { class: 'jck-client', text: T('Prepared for: ', 'مُعدّة لـ: ') + (slug_() || '—') }),
+      el('div', { class: 'jck-bar' }, [el('i', { style: { width: p.pct + '%' } })]),
+      el('div', { class: 'jck-pc' }, [el('span', { text: ar ? p.done + ' من ' + p.total + ' جاهز' : p.done + ' of ' + p.total + ' ready' }), el('span', { text: p.pct + '%' })]),
+      flagged ? el('div', { class: 'jck-flags', text: ar ? 'عوائق محتملة مُعلَّمة: ' + flagged : flagged + ' possible blocker' + (flagged === 1 ? '' : 's') + ' flagged' }) : null,
+    ]);
+    const status = el('div', { class: 'jck-status', text: UI.checking ? T('Checking Jisr…', 'جارٍ الفحص في جسر…') : st.checkedAt ? T('● live check · auto = ticked by a green check · last checked ', '● فحص مباشر · تلقائي = عُلّم بفحص أخضر · آخر فحص ') + new Date(st.checkedAt).toLocaleTimeString(ar ? 'ar' : 'en', { hour: '2-digit', minute: '2-digit' }) : T('Not checked yet', 'لم يُفحص بعد') });
+    const body = el('div', { class: 'jck-body' });
+    SECTIONS.forEach((s, si) => {
+      const its = ALL_ITEMS.filter((it) => it.sec === s); const dn = its.filter((it) => isDone_(st, it)).length;
+      const sec = el('div', { class: 'jck-sec' + (UI.openSecs.has(s.id) ? ' open' : ''), 'data-sec': s.id });
+      const sh = el('div', { class: 'jck-sh' }, [el('span', { class: 'n', text: String(si + 1) }), el('span', { class: 'nm', text: ar ? s.ar : s.en }), el('span', { class: 'ct', text: s.blockers ? (ar ? 'مُعلَّمة ' + dn : dn + ' flagged') : dn + '/' + its.length }), el('span', { class: 'ch', text: '▶' })]);
+      sh.addEventListener('click', () => { if (UI.openSecs.has(s.id)) UI.openSecs.delete(s.id); else UI.openSecs.add(s.id); sec.classList.toggle('open'); });
+      const box = el('div', { class: 'jck-items' });
+      s.groups.forEach((g) => {
+        if (g.en) box.appendChild(el('div', { class: 'jck-grp', text: ar ? g.ar : g.en }));
+        g.items.forEach((raw) => {
+          const it = ALL_ITEMS.find((x) => x.id === raw[0]); const done = isDone_(st, it); const lv = st.live[it.id]; const u = st.ticks[it.id];
+          const row = el('div', { class: 'jck-it' + (done ? ' done' : '') + (s.blockers ? ' bl' : ''), 'data-id': it.id });
+          const cb = el('button', { class: 'jck-cb', title: s.blockers ? T('Flag as applies', 'علّم أنه ينطبق') : T('Tick', 'علامة') });
+          cb.addEventListener('click', () => { st.ticks[it.id] = !isDone_(st, it); save_(st); paint_(); paintTab_(); });
+          const tt = el('div', { class: 'jck-tt', text: ar ? it.ar : it.en });
+          if (!s.blockers && lv && lv.ok === true) tt.appendChild(el('span', { class: 'jck-auto' + (u === false ? ' off' : ''), text: u === false ? T('unticked by you', 'أزلتَ العلامة') : u === true ? T('ticked', 'معلّم') : T('auto', 'تلقائي') }));
+          tt.addEventListener('click', () => row.classList.toggle('showhint'));
+          const tx = el('div', { class: 'jck-tx' }, [tt, el('div', { class: 'jck-hint', text: ar ? it.har : it.hen })]);
+          if (lv && lv.msg) tx.appendChild(el('span', { class: 'jck-live ' + (lv.ok === true ? 'ok' : lv.ok === false ? 'bad' : ''), text: '● ' + lv.msg }));
+          if (u === true || u === false) {
+            const rs = el('button', { class: 'jck-link', style: { marginInlineStart: '6px', fontSize: '10px' }, text: T('reset', 'إعادة'), title: T('Forget your tick and follow the live check again', 'تجاهل علامتك واتبع الفحص المباشر') });
+            if (it.opt.live) { rs.addEventListener('click', () => { delete st.ticks[it.id]; save_(st); paint_(); paintTab_(); }); tx.appendChild(rs); }
+          }
+          row.append(cb, tx);
+          const g2 = W.__jisrBulkOps; const tool = it.opt.tool && g2 && g2.modules && g2.modules[it.opt.tool];
+          if (tool) { const lk = el('button', { class: 'jck-lk', title: T('Open the Bulk Ops tool: ', 'فتح أداة Bulk Ops: ') + tool.title, text: '↗' }); lk.addEventListener('click', () => { try { tool.open(); } catch (e) { toast_(String(e.message || e)); } }); row.appendChild(lk); }
+          box.appendChild(row);
+        });
+      });
+      if (s.blockers) {
+        const ta = el('textarea', { id: 'jck-notes', placeholder: T('Feedback and requests to add to HubSpot later…', 'ملاحظات وطلبات لإضافتها إلى HubSpot لاحقًا…') }); ta.value = st.notes || '';
+        let tm = null; const saved = el('span', { text: T('Saved for this client', 'محفوظة لهذا العميل') });
+        ta.addEventListener('input', () => { st.notes = ta.value; clearTimeout(tm); tm = setTimeout(() => save_(st), 300); });
+        ta.addEventListener('blur', () => save_(st));
+        const cn = el('button', { class: 'jck-btn', text: T('Copy notes', 'نسخ الملاحظات') });
+        cn.addEventListener('click', async () => { save_(st); const ok = await clip_(st.notes || ''); toast_(ok ? T('Notes copied for HubSpot.', 'نُسخت الملاحظات لـ HubSpot.') : T('Could not copy — select the text and copy it.', 'تعذّر النسخ — حدّد النص وانسخه.')); });
+        box.appendChild(el('div', { class: 'jck-notes' }, [el('label', { text: T('NOTES FOR HUBSPOT', 'ملاحظات لـ HUBSPOT') }), ta, el('div', { class: 'jck-row' }, [saved, cn])]));
+      }
+      sec.append(sh, box); body.appendChild(sec);
+    });
+    const cOpen = el('button', { class: 'jck-btn pri', text: T('Copy open', 'نسخ المفتوح'), title: T('Copy the open points', 'نسخ النقاط المفتوحة') });
+    const cAll = el('button', { class: 'jck-btn', text: T('Copy all', 'نسخ الكل'), title: T('Copy open and closed points', 'نسخ النقاط المفتوحة والمغلقة') });
+    const reB = el('button', { class: 'jck-btn', text: '↻', title: T('Check Jisr again', 'أعد الفحص في جسر') });
+    const hideTab = el('button', { class: 'jck-link', text: T('Hide edge tab', 'إخفاء اللسان الجانبي') });
+    cOpen.addEventListener('click', async () => { const t = copyText_(st, false); const ok = await clip_(t); toast_((ok ? T('Copied:', 'تم النسخ:') : T('Could not copy:', 'تعذّر النسخ:')) + '\n\n' + t); });
+    cAll.addEventListener('click', async () => { const t = copyText_(st, true); const ok = await clip_(t); toast_((ok ? T('Copied:', 'تم النسخ:') : T('Could not copy:', 'تعذّر النسخ:')) + '\n\n' + t); });
+    reB.addEventListener('click', () => recheck_());
+    hideTab.addEventListener('click', () => { gmSet_('checklistTab', false); closePanel_(); if (UI.tab) UI.tab.remove(); UI.tab = null; toast_(T('Edge tab hidden. Open the checklist again from the Bulk Ops menu.', 'أُخفي اللسان. افتح القائمة مجددًا من قائمة Bulk Ops.')); });
+    P.append(hd, status, body, el('div', { class: 'jck-ft' }, [cOpen, cAll, reB, hideTab]));
+    body.scrollTop = keepScroll;
+    if (hadFocus) { const ta = P.querySelector('#jck-notes'); if (ta) { ta.focus(); try { ta.setSelectionRange(caret, caret); } catch (e) { /* ignore */ } } }
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Activation Checklist', open: openPanel_, version: SECTION_VERSION };
+    W.__jisrChecklist = { SECTIONS, ALL_ITEMS, isDone_, percent_, copyText_, load_, close: closePanel_ };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+  // after first use, the edge tab stays on Jisr pages
+  function boot_() { try { if (gmGet_('checklistTab', false)) mountTab_(); } catch (e) { /* ignore */ } }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot_); else boot_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.19.0
+// ###########################################################################
+
+/**
+ * ===========================================================================
+ * Jisr Bulk Ops — Jisr Letter Converter launcher  (v4.8.0)
+ * The converter itself is a separate single-file HTML tool (runs fully in the browser).
+ * This entry opens it in a new tab, or downloads the .html to keep and open offline.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.14.0';
+  const MODULE_ID = 'letter-converter';
+  const W = unsafeWindow;
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en };
+  const T = (en, ar) => I.t(en, ar);
+  const HTML = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Jisr Letter Converter</title>\n<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n<link href=\"https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap\" rel=\"stylesheet\">\n<script src=\"https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js\"><\/script>\n<style>\n  :root { --ink:#111113; --muted:#5f6368; --line:#e3e6ea; --bg:#f6f7f9; --ok:#137333; --okbg:#e6f4ea; --bad:#c5221f; --badbg:#fce8e6; --warn:#8a5a00; --warnbg:#fef7e0; --acc:#1a5d57; }\n  * { box-sizing: border-box; }\n  body { margin:0; font: 13.5px/1.45 system-ui, -apple-system, \"Segoe UI\", Roboto, Arial, \"Tajawal\", sans-serif; color:var(--ink); background:var(--bg); }\n  header.top { display:flex; align-items:center; gap:12px; padding:10px 16px; background:#fff; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }\n  header.top h1 { font-size:16px; margin:0; font-weight:650; }\n  header.top .sub { color:var(--muted); font-size:12.5px; }\n  .banner { margin:0; padding:7px 16px; background:var(--warnbg); color:var(--warn); border-bottom:1px solid #f3dfa6; font-size:12.5px; }\n  .banner.hide { display:none; }\n  main { display:grid; grid-template-columns: minmax(380px, 46%) 1fr; gap:0; height: calc(100vh - 92px); }\n  .left { overflow:auto; border-right:1px solid var(--line); background:#fff; }\n  .right { overflow:auto; position:relative; }\n  nav.tabs { display:flex; flex-wrap:wrap; gap:2px; padding:8px 10px 0; border-bottom:1px solid var(--line); position:sticky; top:0; background:#fff; z-index:3; }\n  nav.tabs button { border:0; background:none; padding:8px 10px; font:inherit; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; }\n  nav.tabs button.on { color:var(--ink); border-bottom-color:var(--ink); font-weight:600; }\n  section.pane { display:none; padding:14px 16px 40px; }\n  section.pane.on { display:block; }\n  h2 { font-size:14px; margin:14px 0 6px; }\n  h2:first-child { margin-top:0; }\n  p.hint, .hint { color:var(--muted); font-size:12.5px; margin:4px 0 8px; }\n  label.f { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }\n  input[type=text], input[type=number], select, textarea { font:inherit; border:1px solid #cfd4da; border-radius:6px; padding:5px 7px; background:#fff; color:var(--ink); }\n  textarea { width:100%; min-height:90px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }\n  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }\n  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; }\n  .grid4 { display:grid; grid-template-columns:repeat(4,1fr); gap:6px 10px; }\n  .btn { font:inherit; border:1px solid #c9ced4; background:#fff; border-radius:6px; padding:6px 11px; cursor:pointer; color:var(--ink); }\n  .btn:hover { background:#f2f3f5; }\n  .btn.pri { background:var(--ink); color:#fff; border-color:var(--ink); }\n  .btn.pri:hover { background:#2b2b2f; }\n  .btn.sm { padding:3px 8px; font-size:12px; }\n  a.btn { text-decoration:none; display:inline-block; }\n  .btn:disabled { opacity:.45; cursor:default; }\n  .card { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:8px 0; background:#fff; }\n  .drop { border:1.5px dashed #c3c8ce; border-radius:8px; padding:16px; text-align:center; color:var(--muted); cursor:pointer; background:#fbfbfc; }\n  .drop.over { border-color:var(--acc); background:#eef6f5; }\n  table.t { width:100%; border-collapse:collapse; font-size:12.5px; }\n  table.t th { text-align:start; font-weight:600; color:var(--muted); border-bottom:1px solid var(--ink); padding:4px 6px 4px 0; }\n  table.t td { border-bottom:1px solid var(--line); padding:5px 6px 5px 0; vertical-align:top; }\n  table.t select { max-width:230px; }\n  .tag { display:inline-block; font-size:11px; padding:1px 6px; border-radius:10px; background:#eef0f2; color:#3c4043; white-space:nowrap; }\n  .tag.ok { background:var(--okbg); color:var(--ok); } .tag.bad { background:var(--badbg); color:var(--bad); } .tag.warn { background:var(--warnbg); color:var(--warn); }\n  .msg { padding:7px 10px; border-radius:6px; font-size:12.5px; margin:6px 0; }\n  .msg.err { background:var(--badbg); color:var(--bad); } .msg.ok { background:var(--okbg); color:var(--ok); } .msg.warn { background:var(--warnbg); color:var(--warn); } .msg.info { background:#eef3f8; color:#1d3d5c; }\n  .assign { border:1px solid var(--line); border-radius:8px; padding:12px 14px; max-height:340px; overflow:auto; background:#fff; font-family: Arial, \"Tajawal\", sans-serif; }\n  .assign [data-jv] { background:#fff1b8; outline:1px solid #e8c547; border-radius:3px; cursor:pointer; }\n  .assign [data-jv].keep { background:#f1f3f4; outline-color:#c8ccd0; }\n  .assign [data-jv].sel { outline:2px solid var(--acc); }\n  .assign img, .assign .imgph { max-width:100%; }\n  .assign .chip { background:#fff1b8; border:1px solid #e8c547; border-radius:4px; padding:0 3px; white-space:nowrap; font-size:.92em; }\n  .assign .chip.keep { background:#f1f3f4; border-color:#c8ccd0; }\n  .assign { cursor:pointer; }\n  /* Word-like letter editor */\n  .ed { position:fixed; inset:0; z-index:50; background:#e9ebee; display:flex; flex-direction:column; }\n  .ed[hidden] { display:none; }\n  .edbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:7px 12px; background:#fff; border-bottom:1px solid var(--line); }\n  .edgrp { display:inline-flex; gap:2px; border-left:1px solid var(--line); padding-left:8px; }\n  .edgrp button { border:1px solid transparent; background:none; border-radius:5px; min-width:30px; padding:3px 7px; cursor:pointer; font:inherit; color:var(--ink); }\n  .edgrp button:hover { background:#f2f3f5; border-color:#d5d9de; }\n  .edgrp button:disabled { opacity:.35; cursor:default; }\n  .edmain { flex:1; display:grid; grid-template-columns: 1fr 310px; min-height:0; }\n  .edcanvas { overflow:auto; padding:24px 16px 60px; }\n  .edpage { margin:0 auto; background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.22); box-sizing:content-box; }\n  .edlbl { font:600 10.5px system-ui, sans-serif; color:#8a9199; text-transform:uppercase; letter-spacing:.06em; margin:8px 0 2px; user-select:none; }\n  .edlbl:first-child { margin-top:0; }\n  .edpart { outline:1px dashed #d5d9de; min-height:26px; display:flow-root; }\n  .edpart:focus { outline:1px solid var(--acc); }\n  .edpart:empty::before { content:'Empty: type here or drop a variable'; color:#b0b5bb; font:12px system-ui, sans-serif; }\n  .edpart td, .edpart th { box-shadow: inset 0 0 0 1px #eef0f2; min-width:20px; }\n  .edpart img:not([src]) { outline:1.5px dashed #8a9199; background:#f6f7f8; }\n  .edpart .chip { background:#fff1b8; border:1px solid #e8c547; border-radius:4px; padding:0 3px; cursor:grab; white-space:nowrap; font-size:.92em; }\n  .edpart .chip.keep { background:#f1f3f4; border-color:#c8ccd0; }\n  .edpart .chip.sel { outline:2px solid var(--acc); outline-offset:1px; }\n  .edpart .dropt { background:#e3f2ef !important; box-shadow: inset 0 0 0 2px var(--acc) !important; }\n  .edpal { border-left:1px solid var(--line); background:#fff; overflow:auto; padding:10px 12px 30px; }\n  .pv { padding:5px 8px; border:1px solid var(--line); border-radius:6px; margin:4px 0; cursor:grab; font-size:12.5px; background:#fff; user-select:none; }\n  .pv:hover { border-color:var(--acc); background:#f4faf9; }\n  .pv small { color:var(--muted); display:block; }\n  .pv code { display:block; font-size:10.5px; color:#8a9199; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }\n  .edpalhead { position:sticky; top:-10px; background:#fff; z-index:2; padding:10px 0 4px; margin-top:-10px; border-bottom:1px solid var(--line); }\n  .pvg { font-size:11px; font-weight:600; color:var(--muted); margin:12px 0 2px; text-transform:uppercase; }\n  @media (max-width: 900px) { .edmain { grid-template-columns:1fr; grid-template-rows: 1fr 40vh; } .edpal { border-left:0; border-top:1px solid var(--line); } }\n  .code { width:100%; min-height:120px; }\n  /* fit status */\n  .fitbar { position:sticky; top:0; z-index:4; background:#fff; border-bottom:1px solid var(--line); padding:9px 14px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }\n  .fitbig { font-weight:650; padding:4px 10px; border-radius:6px; }\n  .fitbig.ok { background:var(--okbg); color:var(--ok); } .fitbig.bad { background:var(--badbg); color:var(--bad); } .fitbig.idle { background:#eef0f2; color:var(--muted); }\n  .fitbar .meta { color:var(--muted); font-size:12.5px; }\n  .fixes { display:flex; flex-wrap:wrap; gap:6px; padding:8px 14px; border-bottom:1px solid var(--line); background:#fcfcfd; }\n  .pages { padding:18px; display:flex; flex-direction:column; align-items:center; gap:16px; }\n  .pagewrap { position:relative; }\n  .page { position:absolute; top:0; left:0; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.18); transform-origin:0 0; overflow:hidden; }\n  .page .pa { position:absolute; border:1px dashed #b9c3cc; pointer-events:none; }\n  .page .vp { position:absolute; overflow:hidden; }\n  .page .lbl { position:absolute; right:6px; bottom:4px; font:11px system-ui, sans-serif; color:#9aa0a6; }\n  .pagewrap.over .page { box-shadow:0 0 0 2px var(--bad); }\n  .pagewrap.over .lbl { color:var(--bad); font-weight:600; }\n  .pagewrap .cut { position:absolute; left:0; right:0; border-top:1px dashed var(--bad); }\n  .stream { font-family: Arial, \"Tajawal\", sans-serif; font-size:12pt; color:#000; }\n  .stream > div { display:flow-root; }\n  .stream img, #measure img { max-width:100%; }\n  .imgph { display:inline-flex; align-items:center; justify-content:center; border:1.5px dashed #8a9199; color:#5f6368; font:11px system-ui, sans-serif; background:#f6f7f8; vertical-align:middle; text-align:center; overflow:hidden; }\n  .vhl { background:#fff4c2; }\n  #measure { position:absolute; left:-100000px; top:0; visibility:hidden; }\n  .kbd { font-family: ui-monospace, Menlo, Consolas, monospace; font-size:12px; background:#f1f3f4; padding:1px 4px; border-radius:4px; }\n  details { margin:6px 0; } summary { cursor:pointer; font-weight:600; }\n  ul.tight { margin:4px 0 8px 18px; padding:0; } ul.tight li { margin:2px 0; }\n  .imgrow { display:grid; grid-template-columns: 90px 1fr; gap:10px; align-items:start; border-bottom:1px solid var(--line); padding:8px 0; }\n  .imgrow .thumb { width:90px; height:60px; object-fit:contain; border:1px solid var(--line); border-radius:4px; background:#fafafa; }\n  .srow { display:grid; grid-template-columns: 116px 1fr auto; gap:8px; align-items:center; padding:5px 8px; border-left:4px solid #c8ccd0; border-bottom:1px solid var(--line); background:#fff; }\n  .srow.r-header { border-left-color:#1a5d57; background:#f2f8f7; } .srow.r-body { border-left-color:#9aa0a6; } .srow.r-footer { border-left-color:#8a5a00; background:#fdf8ee; } .srow.r-skip { opacity:.5; text-decoration: line-through; }\n  .srow .txt { font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }\n  .srow .txt.muted { color:#9aa0a6; font-style:italic; }\n  .srow .org { font-size:10.5px; color:var(--muted); display:block; }\n  .srow .acts { display:flex; gap:4px; }\n  .srow .acts button { font-size:11px; padding:2px 6px; }\n  .fixstate { font-size:12px; color:var(--muted); }\n  .tabsep { width:1px; background:var(--line); margin:6px 6px 8px; }\n  .nextrow { margin-top:16px; padding-top:10px; border-top:1px solid var(--line); justify-content:flex-end; }\n  @media (max-width: 900px) { main { grid-template-columns: 1fr; height:auto; } .left { border-right:0; } }\n</style>\n</head>\n<body>\n<header class=\"top\">\n  <h1>Jisr Letter Converter</h1>\n  <span class=\"sub\">Word (.docx) → Jisr letter template HTML (header · body · footer), with fit-to-page check. Runs fully in your browser.</span>\n</header>\n<p class=\"banner\" id=\"calBanner\">Using assumed A4 geometry (20 mm margins, header and footer flow with the body), results are estimates. Calibrate to Jisr once to make them exact.</p>\n<main>\n  <div class=\"left\">\n    <nav class=\"tabs\" id=\"tabs\">\n      <button data-p=\"import\" class=\"on\">1 · Import</button>\n      <button data-p=\"struct\">2 · Structure</button>\n      <button data-p=\"vars\">3 · Variables</button>\n      <button data-p=\"images\">4 · Images</button>\n      <button data-p=\"fit\">5 · Page &amp; fit</button>\n      <button data-p=\"out\">6 · Output</button>\n      <span class=\"tabsep\"></span>\n      <button data-p=\"jisr\">Jisr templates</button>\n      <button data-p=\"cal\">Calibrate</button>\n      <button data-p=\"reverse\">Fix existing template</button>\n      <button data-p=\"help\">Help</button>\n    </nav>\n\n    <!-- 1 IMPORT -->\n    <section class=\"pane on\" id=\"p-import\">\n      <h2>Word letter (.docx)</h2>\n      <div class=\"drop\" id=\"docxDrop\">Drop a .docx here or click to choose<input type=\"file\" id=\"docxIn\" accept=\".docx\" hidden></div>\n      <div id=\"importMsg\"></div>\n      <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn sm\" id=\"sampleBtn\">Load a built-in sample letter</button></div>\n\n      <h2>Header / footer as images (optional)</h2>\n      <p class=\"hint\">Use this when the Word file has an empty footer or a full-page letterhead background. The image replaces that part and becomes a <span class=\"kbd\">{{{letter_attachment_ID}}}</span> placeholder (set the ID in step 3).</p>\n      <div class=\"grid2\">\n        <div><label class=\"f\">Header image</label><input type=\"file\" id=\"hdrImgIn\" accept=\"image/*\"></div>\n        <div><label class=\"f\">Footer image</label><input type=\"file\" id=\"ftrImgIn\" accept=\"image/*\"></div>\n        <div><label class=\"f\">Header image height (mm)</label><input type=\"number\" id=\"hdrImgH\" value=\"25\" min=\"5\" max=\"80\" step=\"1\"></div>\n        <div><label class=\"f\">Footer image height (mm)</label><input type=\"number\" id=\"ftrImgH\" value=\"15\" min=\"5\" max=\"60\" step=\"1\"></div>\n      </div>\n\n      <p class=\"hint\" style=\"margin-top:14px\">Already have a template in Jisr that breaks? Use the <b>Fix existing template</b> tab instead.</p>\n      <div class=\"row nextrow\"><button class=\"btn sm pri\" data-goto=\"struct\">Next: 2 · Structure →</button></div>\n    </section>\n\n    <!-- 2 STRUCTURE -->\n    <section class=\"pane\" id=\"p-struct\">\n      <h2>Header, body and footer</h2>\n      <p class=\"hint\">Each line below is one paragraph, table or image from the Word file, in order. Choose where each one goes in Jisr. Word's own header and footer are pre-selected; \"Leave out\" removes a line from all three parts.</p>\n      <div class=\"row\" style=\"margin-bottom:8px\"><button class=\"btn sm\" id=\"structReset\">Reset to the Word structure</button><span class=\"hint\" id=\"structSummary\" style=\"margin:0\"></span></div>\n      <div id=\"structList\"><p class=\"hint\">Import a letter first.</p></div>\n      <div class=\"row nextrow\"><button class=\"btn sm pri\" data-goto=\"vars\">Next: 3 · Variables →</button></div>\n    </section>\n\n    <!-- 3 VARIABLES -->\n    <section class=\"pane\" id=\"p-vars\">\n      <h2>Detected placeholders</h2>\n      <p class=\"hint\">Found from <span class=\"kbd\">[Employee Name]</span>, <span class=\"kbd\">{{name}}</span>, <span class=\"kbd\">&lt;&lt;name&gt;&gt;</span>, highlighted text and ALL-CAPS tokens. Confirm or change each one. Output uses three braces: <span class=\"kbd\">{{{key}}}</span>.</p>\n      <div id=\"varsMsg\"></div>\n      <table class=\"t\" id=\"varTable\"><thead><tr><th>Placeholder</th><th>Where</th><th>Jisr variable</th><th>Match</th></tr></thead><tbody></tbody></table>\n      <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn sm\" id=\"confirmAll\">Confirm all proposed</button></div>\n\n      <h2>Edit the letter and place variables</h2>\n      <p class=\"hint\">Opens the letter as an editable page, like Word. Drag a variable from the list into any open space (an empty table cell, after a label, mid-sentence), or click in the letter and then click a variable. Labels and titles stay as they are. You can also type, delete and format text.</p>\n      <div class=\"row\" style=\"margin-bottom:6px\"><button class=\"btn pri\" id=\"edOpen\">Open the letter editor</button><span class=\"hint\" id=\"edSummary\" style=\"margin:0\"></span></div>\n      <div class=\"assign\" id=\"assignView\" dir=\"auto\" title=\"Click to open the letter editor\"></div>\n      <datalist id=\"keyList\"></datalist>\n\n      <h2>Sample values for the preview</h2>\n      <p class=\"hint\">One <span class=\"kbd\">key = value</span> per line. Arabic names are included to test right-to-left text. These never leave your browser.</p>\n      <div class=\"row\"><button class=\"btn sm\" id=\"sampleEn\">English names</button><button class=\"btn sm\" id=\"sampleAr\">Arabic names</button><label class=\"hint\" style=\"margin:0\"><input type=\"checkbox\" id=\"hlVars\" checked> highlight variables in preview</label></div>\n      <textarea id=\"samples\" spellcheck=\"false\" style=\"min-height:160px\"></textarea>\n\n      <h2>Variable catalog</h2>\n      <details><summary>Edit catalog / add client-specific allowances</summary>\n        <p class=\"hint\">Tenant-specific keys (e.g. <span class=\"kbd\">benefit_type_62740</span>) differ per client. Paste <span class=\"kbd\">Label, key</span> lines to add them.</p>\n        <textarea id=\"extraKeys\" spellcheck=\"false\" placeholder=\"Housing allowance, benefit_type_62740&#10;بدل السكن, benefit_type_62740\"></textarea>\n        <div class=\"row\" style=\"margin:6px 0\"><button class=\"btn sm\" id=\"addKeys\">Add these keys</button></div>\n        <label class=\"f\">Full catalog (JSON)</label>\n        <textarea id=\"catalogJson\" spellcheck=\"false\" style=\"min-height:200px\"></textarea>\n        <div class=\"row\" style=\"margin-top:6px\"><button class=\"btn sm\" id=\"saveCatalog\">Save catalog</button><button class=\"btn sm\" id=\"resetCatalog\">Reset to default</button></div>\n      </details>\n      <div class=\"row nextrow\"><button class=\"btn sm pri\" data-goto=\"images\">Next: 4 · Images →</button></div>\n    </section>\n\n    <!-- 3 IMAGES -->\n    <section class=\"pane\" id=\"p-images\">\n      <h2>Images in this letter</h2>\n      <p class=\"hint\">By default each image is <b>embedded in the source code</b>, so you only paste the code. If the image is already uploaded in Jisr, choose \"Jisr attachment ID\" and type its number to use <span class=\"kbd\">{{{letter_attachment_ID}}}</span> instead.</p>\n      <div id=\"imgList\"></div>\n      <h2>Convert an image to source code</h2>\n      <p class=\"hint\">A logo, stamp, signature or letterhead strip as PNG / JPG. Get its source code to paste anywhere, or add it to the letter.</p>\n      <div class=\"grid2\">\n        <div><label class=\"f\">Image file</label><input type=\"file\" id=\"convImg\" accept=\"image/*\"></div>\n        <div><label class=\"f\">Width (mm)</label><input type=\"number\" id=\"convW\" value=\"50\" min=\"5\" max=\"190\" step=\"1\"></div>\n        <div><label class=\"f\">Alignment</label><select id=\"convAlign\"><option value=\"center\">Center</option><option value=\"left\">Left</option><option value=\"right\">Right</option></select></div>\n        <div><label class=\"f\">Add to the letter</label><select id=\"convTo\"><option value=\"\">No, only give me the code</option><option value=\"header\">Add to the end of the Header</option><option value=\"body\">Add to the end of the Body</option><option value=\"footer\">Add to the end of the Footer</option></select></div>\n      </div>\n      <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn pri\" id=\"convBtn\">Convert</button><button class=\"btn sm\" id=\"convCopy\" disabled>Copy code</button><span class=\"hint\" id=\"convInfo\" style=\"margin:0\"></span></div>\n      <textarea id=\"convOut\" class=\"code\" readonly spellcheck=\"false\" style=\"min-height:80px;margin-top:6px\"></textarea>\n      <div class=\"row nextrow\"><button class=\"btn sm pri\" data-goto=\"fit\">Next: 5 · Page &amp; fit →</button></div>\n    </section>\n\n    <!-- 4 FIT -->\n    <section class=\"pane\" id=\"p-fit\">\n      <h2>Page geometry</h2>\n      <div class=\"row\"><select id=\"profileSel\" style=\"flex:1\"></select><button class=\"btn sm\" id=\"delProfile\">Delete profile</button></div>\n      <div id=\"profileInfo\" class=\"hint\"></div>\n      <div class=\"grid2\">\n        <div><label class=\"f\">Intended pages</label><input type=\"number\" id=\"targetPages\" value=\"1\" min=\"1\" max=\"10\"></div>\n        <div><label class=\"f\">Base font size when none is set (pt)</label><input type=\"number\" id=\"baseFont\" value=\"12\" min=\"6\" max=\"20\" step=\"0.5\"></div>\n      </div>\n      <h2>Adjustments (never change wording)</h2>\n      <div class=\"grid2\">\n        <div><label class=\"f\">Empty spacer paragraphs</label><select id=\"spacerMode\"><option value=\"collapse\">Collapse into one margin (same space)</option><option value=\"keep\">Keep as is</option><option value=\"remove\">Remove</option></select></div>\n        <div><label class=\"f\">Paragraph &amp; table spacing</label><select id=\"spacingScale\"><option value=\"1\">100%</option><option value=\"0.75\">75%</option><option value=\"0.5\">50%</option><option value=\"0.25\">25%</option><option value=\"0\">None</option></select></div>\n        <div><label class=\"f\">Font size</label><select id=\"fontScale\"></select></div>\n        <div><label class=\"f\">Images / logo size</label><select id=\"imgScale\"><option value=\"1\">100%</option><option value=\"0.9\">90%</option><option value=\"0.8\">80%</option><option value=\"0.7\">70%</option><option value=\"0.6\">60%</option><option value=\"0.5\">50%</option></select></div>\n      </div>\n      <div class=\"row\" style=\"margin-top:10px\"><button class=\"btn pri\" id=\"autoFit\">Auto-fit to intended pages</button><button class=\"btn\" id=\"undoFixB\">↶ Undo last</button><button class=\"btn\" id=\"resetFix\">Reset adjustments</button></div>\n      <div id=\"autoFitMsg\"></div>\n      <h2>Fit report</h2>\n      <div id=\"fitReport\" class=\"card hint\">Import a letter to see the report.</div>\n      <div class=\"row nextrow\"><button class=\"btn sm pri\" data-goto=\"out\">Next: 6 · Output →</button></div>\n    </section>\n\n    <!-- 5 OUTPUT -->\n    <section class=\"pane\" id=\"p-out\">\n      <h2>Paste into Jisr</h2>\n      <p class=\"hint\">Settings › Requests &amp; tasks › Letter templates › open the template. Paste each part into its own editor: Header box → Header editor, Body box → Body editor, Footer box → Footer editor (View › Source code, select all, paste, Save). Pasting replaces only that editor's content.</p>\n      <div id=\"outWarn\"></div>\n      <div class=\"card\" id=\"rfBox\">\n        <div class=\"row\"><b>Reflect in Jisr</b><span class=\"hint\" style=\"margin:0\">Writes the code straight into a letter template, no copy and paste.</span></div>\n        <div id=\"rfOff\" class=\"hint\">Available when this tool is opened from Bulk Ops (Utilities › Jisr Letter Converter) while you are logged in to the company in Jisr.</div>\n        <div id=\"rfOn\" style=\"display:none\">\n          <div class=\"row\" style=\"margin-top:6px\"><label class=\"hint\" style=\"margin:0\" for=\"rfTarget\">Template</label><select id=\"rfTarget\" style=\"flex:1;min-width:200px\"></select></div>\n          <div class=\"grid2\" id=\"rfNew\" style=\"display:none\"><div><label class=\"f\">New template name (English)</label><input type=\"text\" id=\"rfName\" style=\"width:100%\"></div><div><label class=\"f\">New template name (Arabic)</label><input type=\"text\" id=\"rfNameAr\" dir=\"rtl\" style=\"width:100%\"></div></div>\n          <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn pri\" id=\"rfAll\">Reflect all three parts in Jisr</button><span class=\"hint\" id=\"rfInfo\" style=\"margin:0\"></span></div>\n        </div>\n        <div id=\"rfMsg\"></div>\n      </div>\n      <div class=\"row\"><b>Header HTML</b><button class=\"btn sm\" data-copy=\"header\">Copy</button><button class=\"btn sm\" data-reflect=\"header\">Reflect in Jisr</button></div>\n      <textarea class=\"code\" id=\"outH\" readonly spellcheck=\"false\"></textarea>\n      <div class=\"row\" style=\"margin-top:8px\"><b>Body HTML</b><button class=\"btn sm\" data-copy=\"body\">Copy</button><button class=\"btn sm\" data-reflect=\"body\">Reflect in Jisr</button></div>\n      <textarea class=\"code\" id=\"outB\" readonly spellcheck=\"false\" style=\"min-height:200px\"></textarea>\n      <div class=\"row\" style=\"margin-top:8px\"><b>Footer HTML</b><button class=\"btn sm\" data-copy=\"footer\">Copy</button><button class=\"btn sm\" data-reflect=\"footer\">Reflect in Jisr</button></div>\n      <textarea class=\"code\" id=\"outF\" readonly spellcheck=\"false\"></textarea>\n      <div class=\"row\" style=\"margin-top:10px\"><button class=\"btn pri\" id=\"dlZip\">Download .zip</button><span class=\"hint\">header.html, body.html, footer.html, variables-used.csv, fit-report.json</span></div>\n    </section>\n\n    <!-- JISR TEMPLATES -->\n    <section class=\"pane\" id=\"p-jisr\">\n      <div id=\"jisrOff\" class=\"msg info\">To create and edit templates directly in Jisr, open this tool from Bulk Ops (the J button › Utilities › Jisr Letter Converter) while you are logged in to the company in Jisr. Opened as a file, it can only convert and copy.</div>\n      <div id=\"jisrOn\" style=\"display:none\">\n        <h2>Connected to <span id=\"jisrSlug\"></span></h2>\n        <div class=\"row\"><button class=\"btn sm\" id=\"jisrRefresh\">Load templates</button><span class=\"hint\" id=\"jisrInfo\" style=\"margin:0\"></span></div>\n        <h2>Templates in Jisr</h2>\n        <table class=\"t\" id=\"tplTable\"><thead><tr><th style=\"width:24px\"><input type=\"checkbox\" id=\"tplAll\"></th><th>Name</th><th>Arabic name</th><th>Check</th><th></th></tr></thead><tbody></tbody></table>\n        <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn sm\" id=\"tplCheck\">Check fit of ticked</button><button class=\"btn sm\" id=\"tplAutofix\">Auto-fit &amp; save ticked…</button><button class=\"btn sm\" id=\"tplDupSel\">Duplicate ticked</button></div>\n        <div id=\"tplMsg\"></div>\n        <details style=\"margin-top:10px\"><summary>Copy templates to another company</summary>\n          <p class=\"hint\">1. Here, tick the templates and download them. 2. Open this tool from Bulk Ops in the other company and import the file. Images are copied when Jisr allows reading them; otherwise add the logo again. Names that already exist get a number.</p>\n          <div class=\"row\"><button class=\"btn sm\" id=\"tplExport\">Download ticked for another company</button><button class=\"btn sm\" id=\"tplImportBtn\">Import templates from a file…</button><input type=\"file\" id=\"tplImport\" accept=\".json,application/json\" hidden></div>\n        </details>\n        <h2>Current letter</h2>\n        <div id=\"curInfo\"></div>\n        <div class=\"grid2\"><div><label class=\"f\">Template name (English)</label><input type=\"text\" id=\"tplName\" style=\"width:100%\"></div><div><label class=\"f\">Template name (Arabic)</label><input type=\"text\" id=\"tplNameAr\" dir=\"rtl\" style=\"width:100%\"></div></div>\n        <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn pri\" id=\"tplCreate\">Create as new template</button><button class=\"btn\" id=\"tplSave\" style=\"display:none\">Save changes</button><button class=\"btn\" id=\"tplRestore\" style=\"display:none\">Restore original</button></div>\n        <div id=\"saveMsg\"></div>\n        <h2>Bulk create from Word files</h2>\n        <p class=\"hint\">Each Word file becomes one template. Fill the English and Arabic names; use Review to open a file in steps 2 to 6 (structure, variables, images, fit) before creating.</p>\n        <div class=\"drop\" id=\"bulkDrop\">Drop several .docx files here or click to choose<input type=\"file\" id=\"bulkIn\" accept=\".docx\" multiple hidden></div>\n        <table class=\"t\" id=\"bulkTable\" style=\"margin-top:8px\"><thead><tr><th>File</th><th>English name</th><th>Arabic name</th><th>Check</th><th></th></tr></thead><tbody></tbody></table>\n        <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn pri\" id=\"bulkCreate\">Create all in Jisr</button></div>\n        <div id=\"bulkMsg\"></div>\n      </div>\n    </section>\n\n    <!-- FIX EXISTING (reverse) -->\n    <section class=\"pane\" id=\"p-reverse\">\n      <h2>Fix an existing Jisr template</h2>\n      <p class=\"hint\">Use this only for a template that is already in Jisr. Copy the Source code of each Jisr editor (View › Source code) into the matching box, then Load. The letter opens in steps 2 to 5 to fix it, and the cleaned code to paste back is in <b>6 · Output</b>.</p>\n      <div class=\"msg info\" id=\"revHint\">Tip: when this tool is opened from Bulk Ops, the <b>Jisr templates</b> tab opens and saves templates directly, without copying.</div>\n      <label class=\"f\">1. Header editor's source code</label><textarea id=\"revH\" spellcheck=\"false\"></textarea>\n      <label class=\"f\">2. Body editor's source code</label><textarea id=\"revB\" spellcheck=\"false\" style=\"min-height:140px\"></textarea>\n      <label class=\"f\">3. Footer editor's source code</label><textarea id=\"revF\" spellcheck=\"false\"></textarea>\n      <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn pri\" id=\"revBtn\">Load pasted template</button></div>\n      <div id=\"revMsg\"></div>\n    </section>\n\n    <!-- CALIBRATE -->\n    <section class=\"pane\" id=\"p-cal\">\n      <h2>Calibrate to Jisr</h2>\n      <p class=\"hint\">Jisr's preview / PDF renderer could not be observed, so measure it once with this test template and save the result as a profile.</p>\n      <ol class=\"tight\">\n        <li>Create a test letter template in Jisr. Paste the three parts below into Header, Body and Footer (View › Source code).</li>\n        <li>Click Preview (or generate the letter for any employee).</li>\n        <li>Fill in what you see and save the profile.</li>\n      </ol>\n      <div class=\"row\"><button class=\"btn sm\" data-calcopy=\"header\">Copy header</button><button class=\"btn sm\" data-calcopy=\"body\">Copy body</button><button class=\"btn sm\" data-calcopy=\"footer\">Copy footer</button><button class=\"btn sm\" id=\"calDl\">Download test template</button></div>\n      <div class=\"grid2\" style=\"margin-top:8px\">\n        <div><label class=\"f\">Profile name</label><input type=\"text\" id=\"calName\" value=\"Jisr default A4\"></div>\n        <div><label class=\"f\">Paper size</label><select id=\"calPaper\"><option value=\"A4\">A4 (210 × 297 mm)</option><option value=\"Letter\">Letter (216 × 279 mm)</option></select></div>\n        <div><label class=\"f\">Last body line fully on page 1 (number)</label><input type=\"number\" id=\"calLines\" min=\"1\" max=\"80\" placeholder=\"e.g. 41\"></div>\n        <div><label class=\"f\">Do header and footer repeat on every page?</label><select id=\"calRepeat\"><option value=\"flow\">No: header on page 1, footer after the body</option><option value=\"repeat\">Yes: on every page</option></select></div>\n      </div>\n      <label class=\"f\">Visible margins (mm): top, bottom, left, right</label>\n      <div class=\"grid4\"><input type=\"number\" id=\"calMT\" value=\"20\"><input type=\"number\" id=\"calMB\" value=\"20\"><input type=\"number\" id=\"calML\" value=\"20\"><input type=\"number\" id=\"calMR\" value=\"20\"></div>\n      <div class=\"grid2\">\n        <div><label class=\"f\">Did the page break marker start page 2 at \"PAGE BREAK TEST\"?</label><select id=\"calPB\"><option value=\"unknown\">Not tested</option><option value=\"yes\">Yes</option><option value=\"no\">No</option></select></div>\n      </div>\n      <div class=\"row\" style=\"margin-top:10px\"><button class=\"btn pri\" id=\"calSave\">Save profile</button></div>\n      <div id=\"calMsg\"></div>\n    </section>\n\n    <!-- HELP -->\n    <section class=\"pane\" id=\"p-help\">\n      <h2>How to use</h2>\n      <ol class=\"tight\">\n        <li><b>Import</b> the Word letter. The Word header and footer become the Jisr Header and Footer; everything else is the Body.</li>\n        <li><b>Variables</b>: confirm each detected placeholder, or open the letter editor and drag variables into any open space (empty table cells included). Arabic and English labels both match.</li>\n        <li><b>Images</b>: images are embedded in the source code by default; or use an image already uploaded in Jisr by its attachment ID. You can also convert any image file to source code here.</li>\n        <li><b>Page &amp; fit</b>: set the intended number of pages. Red means it does not fit; use Auto-fit or the individual adjustments. Wording is never changed.</li>\n        <li><b>Output</b>: copy each part into the matching Jisr editor's Source code view, or download the .zip.</li>\n        <li>Run <b>Calibrate</b> once per Jisr environment so the fit numbers match Jisr's real preview.</li>\n        <li><b>Jisr templates</b> (when opened from Bulk Ops on a Jisr page): create the current letter as a template, create many from Word files at once, open an existing template to fix it and save it back, or check and auto-fit several templates. Images are uploaded for you and their IDs filled in. Every save is read back and compared; editing downloads a backup first and can be restored.</li>\n      </ol>\n      <h2>Known unknowns</h2>\n      <ul class=\"tight\">\n        <li><b>Jisr's preview / PDF renderer</b>: which engine, default font, default paragraph margins and any shrink-to-fit scaling are not known. Until calibrated, heights are browser estimates at 96 dpi. Horizontal scaling (how many words fit per line) is not calibrated.</li>\n        <li><b>Exact margins</b>: assumed 20 mm on A4 until you calibrate.</li>\n        <li><b>Header/footer behaviour</b>: assumed to flow with the body (header at the top of page 1, footer after the last line), which matches \"the footer spills onto page 2\". Calibration confirms it.</li>\n        <li><b>Embedded images</b>: your capture shows Jisr's editor uploading pasted images itself (letter_attachments); that it does the same for images embedded in pasted source code is expected but not yet confirmed. The attachment-ID option remains as a fallback.</li>\n        <li><b>Source code sanitizing</b>: whether TinyMCE's Source code view strips tags or attributes (colgroup, page break comments, certain styles) is not verified. Re-open Source code after saving to check.</li>\n        <li><b>Template API</b>: creating a template and uploading images are confirmed from your captures. The names of the body and footer fields are read from an existing template, and editing uses PUT (PATCH as fallback); both are verified by reading the template back after each save.</li>\n        <li><b>Page break marker</b>: <span class=\"kbd\">&lt;!-- pagebreak --&gt;</span> is TinyMCE's default; the calibration template tests it.</li>\n      </ul>\n    </section>\n  </div>\n\n  <div class=\"right\">\n    <div class=\"fitbar\"><span class=\"fitbig idle\" id=\"fitBig\">No letter yet</span><span class=\"meta\" id=\"fitMeta\"></span></div>\n    <div class=\"fixes\"><span class=\"hint\" style=\"margin:0\">Quick fixes:</span>\n      <button class=\"btn sm\" data-fix=\"spacers\">Remove spacer paragraphs</button>\n      <button class=\"btn sm\" data-fix=\"spacing\">Tighten spacing</button>\n      <button class=\"btn sm\" data-fix=\"font\">Font −5%</button>\n      <button class=\"btn sm\" data-fix=\"logo\">Logo −10%</button>\n      <button class=\"btn sm pri\" data-fix=\"auto\">Auto-fit</button>\n      <button class=\"btn sm\" id=\"undoFix\" title=\"Undo the last adjustment\">↶ Undo</button>\n      <button class=\"btn sm\" id=\"resetFix2\" title=\"Back to how the letter was imported\">Reset</button>\n      <span class=\"fixstate\" id=\"fixState\"></span>\n      <span style=\"flex:1\"></span>\n      <label class=\"hint\" style=\"margin:0\">Zoom <select id=\"zoom\"><option value=\"0.5\">50%</option><option value=\"0.65\" selected>65%</option><option value=\"0.8\">80%</option><option value=\"1\">100%</option></select></label>\n    </div>\n    <div class=\"pages\" id=\"pages\"><p class=\"hint\">Import a .docx, load the sample, or paste Jisr HTML to start.</p></div>\n  </div>\n</main>\n\n<div class=\"ed\" id=\"ed\" hidden>\n  <div class=\"edbar\">\n    <b>Letter editor</b>\n    <span class=\"edgrp\"><button data-cmd=\"bold\" title=\"Bold (Ctrl+B)\"><b>B</b></button><button data-cmd=\"italic\" title=\"Italic (Ctrl+I)\"><i>I</i></button><button data-cmd=\"underline\" title=\"Underline (Ctrl+U)\"><u>U</u></button></span>\n    <span class=\"edgrp\"><button data-cmd=\"justifyLeft\" title=\"Align left\">⇤</button><button data-cmd=\"justifyCenter\" title=\"Center\">≡</button><button data-cmd=\"justifyRight\" title=\"Align right\">⇥</button><button id=\"edDir\" title=\"Switch the paragraph between right-to-left and left-to-right\">⇄ RTL/LTR</button></span>\n    <span class=\"edgrp\"><button id=\"edUndo\" title=\"Undo (Ctrl+Z)\">↶ Undo</button><button id=\"edRedo\" title=\"Redo (Ctrl+Y)\">↷ Redo</button><button id=\"edRevert\" title=\"Back to the letter as it was when you opened the editor\">Revert all</button></span>\n    <span class=\"tag\" id=\"edFit\"></span>\n    <span style=\"flex:1\"></span>\n    <button class=\"btn sm pri\" id=\"edDone\">Done</button>\n  </div>\n  <div class=\"edmain\">\n    <div class=\"edcanvas\"><div class=\"edpage stream\" id=\"edPage\">\n      <div class=\"edlbl\">Header</div><div class=\"edpart\" data-part=\"header\" contenteditable=\"true\" spellcheck=\"false\"></div>\n      <div class=\"edlbl\">Body</div><div class=\"edpart\" data-part=\"body\" contenteditable=\"true\" spellcheck=\"false\"></div>\n      <div class=\"edlbl\">Footer</div><div class=\"edpart\" data-part=\"footer\" contenteditable=\"true\" spellcheck=\"false\"></div>\n    </div></div>\n    <aside class=\"edpal\">\n      <div class=\"edpalhead\">\n        <div id=\"edSelBar\"></div>\n        <input type=\"text\" id=\"edSearch\" placeholder=\"Search variables (English or Arabic)…\" style=\"width:100%;box-sizing:border-box\">\n        <p class=\"hint\">Drag a variable into the letter, or click in the letter and then click a variable. Selected text is replaced by the variable.</p>\n        <div id=\"edMsg\"></div>\n      </div>\n      <div id=\"edList\"></div>\n      <div class=\"pvg\">Other key</div>\n      <div class=\"row\"><input type=\"text\" id=\"edCustom\" placeholder=\"e.g. benefit_type_12345\" style=\"flex:1;min-width:0\"><button class=\"btn sm\" id=\"edCustomBtn\">Insert</button></div>\n    </aside>\n  </div>\n</div>\n<div id=\"measure\"></div>\n\n<script>\n'use strict';\n/* =====================================================================================\n * Jisr Letter Converter, v1.0.0\n * Single self-contained file. External: JSZip 3.10.1 (cdnjs), Tajawal font (preview only).\n * No backend. Nothing is uploaded anywhere.\n * ===================================================================================== */\nconst VERSION = '1.5.0';\nconst MM = 96 / 25.4; // px per mm at 96 dpi\nconst LS = { get(k, f) { try { const v = localStorage.getItem(k); return v == null ? f : JSON.parse(v); } catch (e) { return f; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } } };\nconst $ = (s, r) => (r || document).querySelector(s);\nconst $$ = (s, r) => Array.from((r || document).querySelectorAll(s));\nconst esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');\nconst round = (n, d) => { const f = Math.pow(10, d == null ? 2 : d); return Math.round(n * f) / f; };\nconst AR_RE = /[\\u0600-\\u06FF\\u0750-\\u077F\\uFB50-\\uFDFF\\uFE70-\\uFEFF]/g;\nconst LAT_RE = /[A-Za-z]/g;\nconst isArabicText = (s) => { const a = (String(s).match(AR_RE) || []).length; const l = (String(s).match(LAT_RE) || []).length; return a > 0 && a >= l; };\n\n/* ===================================================================== VARIABLE CATALOG */\n// [key, English label, Arabic label, aliases...]\nconst CATALOG_SRC = [\n  ['request', [\n    ['request_reason', 'Request reason', 'سبب الطلب'], ['request_date', 'Request date', 'تاريخ الطلب', 'date', 'letter date', 'issue date', 'التاريخ'], ['request_date_hijri', 'Request date (Hijri)', 'تاريخ الطلب هجري', 'hijri date', 'التاريخ الهجري'],\n    ['request_type', 'Request type', 'نوع الطلب'], ['directed_to_ar', 'Directed to (Arabic)', 'موجه إلى', 'الى من يهمه الامر', 'الجهة'], ['directed_to_en', 'Directed to', 'موجه إلى (إنجليزي)', 'to', 'addressed to', 'to whom it may concern', 'recipient']]],\n  ['employee', [\n    ['employee_code', 'Employee ID', 'الرقم الوظيفي', 'employee number', 'employee no', 'emp no', 'staff id', 'employee code'],\n    ['employee_first_name', 'First name', 'الاسم الأول'], ['employee_middle_name', 'Middle name', 'اسم الأب', 'father name'], ['employee_last_name', 'Last name', 'اسم العائلة', 'family name', 'surname'],\n    ['employee_first_name_ar', 'First name (Arabic)', 'الاسم الأول'], ['employee_middle_name_ar', 'Middle name (Arabic)', 'اسم الأب'], ['employee_last_name_ar', 'Last name (Arabic)', 'اسم العائلة'],\n    ['employee_email', 'Work email', 'البريد الإلكتروني', 'email'], ['employee_personal_email', 'Personal email', 'البريد الشخصي'],\n    ['employee_date_of_birth', 'Date of birth', 'تاريخ الميلاد', 'dob', 'birth date'],\n    ['employee_joining_date', 'Joining date', 'تاريخ الالتحاق', 'hire date', 'date of joining', 'start date', 'joined on', 'employment date', 'تاريخ المباشرة', 'تاريخ التعيين'],\n    ['employee_joining_date_hijri', 'Joining date (Hijri)', 'تاريخ الالتحاق هجري'], ['employee_last_working_day', 'Last working day', 'آخر يوم عمل', 'end date', 'leaving date'],\n    ['employee_gender_en', 'Gender', 'الجنس (إنجليزي)'], ['employee_gender_ar', 'Gender (Arabic)', 'الجنس'],\n    ['employee_marital_status_en', 'Marital status', 'الحالة الاجتماعية (إنجليزي)'], ['employee_marital_status_ar', 'Marital status (Arabic)', 'الحالة الاجتماعية'],\n    ['employee_mobile_number', 'Mobile number', 'رقم الجوال', 'phone', 'mobile'],\n    ['employee_iqama_profession_en', 'Iqama profession', 'المهنة في الإقامة (إنجليزي)', 'profession'], ['employee_iqama_profession_ar', 'Iqama profession (Arabic)', 'المهنة في الإقامة', 'المهنة'],\n    ['employee_payment_type', 'Payment type', 'طريقة الدفع'], ['employee_cr_name_en', 'CR name', 'اسم السجل التجاري (إنجليزي)'], ['employee_cr_name_ar', 'CR name (Arabic)', 'اسم السجل التجاري'],\n    ['employee_mol_no', 'MOL number', 'رقم مكتب العمل'], ['commercial_registration_number', 'Commercial registration number', 'رقم السجل التجاري', 'cr number']]],\n  ['insurance', [\n    ['employee_insurance_number', 'Insurance number', 'رقم التأمين'], ['employee_insurance_policy_number', 'Insurance policy number', 'رقم وثيقة التأمين'],\n    ['employee_insurance_effective_date', 'Insurance effective date', 'تاريخ سريان التأمين'], ['employee_insurance_category', 'Insurance category', 'فئة التأمين', 'insurance class'],\n    ['employee_insurance_cost', 'Insurance cost', 'تكلفة التأمين'], ['employee_insurance_availability_in_cchi', 'Available in CCHI', 'متوفر في مجلس الضمان'], ['employee_insurance_cchi_effective_date', 'CCHI effective date', 'تاريخ سريان مجلس الضمان']]],\n  ['identification', [\n    ['identification_nationality', 'Nationality', 'الجنسية (إنجليزي)'], ['identification_nationality_ar', 'Nationality (Arabic)', 'الجنسية'],\n    ['identification_religion_en', 'Religion', 'الديانة (إنجليزي)'], ['identification_religion_ar', 'Religion (Arabic)', 'الديانة'],\n    ['identification_document_type', 'ID document type', 'نوع الهوية'],\n    ['identification_document_number', 'ID number', 'رقم الهوية', 'iqama number', 'iqama no', 'id no', 'national id', 'national id number', 'iqama', 'رقم الإقامة', 'رقم الهوية الوطنية', 'السجل المدني', 'رقم الاقامة'],\n    ['identification_passport_number', 'Passport number', 'رقم الجواز', 'passport no', 'passport'],\n    ['identification_iqama_issue_date', 'Iqama issue date', 'تاريخ إصدار الإقامة'], ['identification_iqama_issue_date_hijri', 'Iqama issue date (Hijri)', 'تاريخ إصدار الإقامة هجري'], ['identification_iqama_issue_place', 'Iqama issue place', 'مكان إصدار الإقامة'],\n    ['identification_iqama_expiry_date', 'Iqama expiry date', 'تاريخ انتهاء الإقامة (ميلادي)', 'id expiry date'], ['identification_iqama_expiry_date_ar', 'Iqama expiry date (Hijri)', 'تاريخ انتهاء الإقامة', 'تاريخ انتهاء الهوية'],\n    ['identification_passport_issue_place', 'Passport issue place', 'مكان إصدار الجواز'], ['identification_passport_issue_date', 'Passport issue date', 'تاريخ إصدار الجواز'], ['identification_passport_expiry_date', 'Passport expiry date', 'تاريخ انتهاء الجواز'],\n    ['identification_employer_number', 'Employer number', 'رقم صاحب العمل'], ['identification_outside_kingdom', 'Outside the Kingdom', 'خارج المملكة']]],\n  ['bank', [\n    ['bank_account_type', 'Bank account type', 'نوع الحساب'], ['bank_account_name', 'Bank account name', 'اسم صاحب الحساب (إنجليزي)'], ['bank_account_name_ar', 'Bank account name (Arabic)', 'اسم صاحب الحساب'],\n    ['bank_name', 'Bank name', 'اسم البنك'], ['bank_branch_name', 'Bank branch', 'الفرع (إنجليزي)'], ['bank_branch_name_ar', 'Bank branch (Arabic)', 'اسم الفرع'],\n    ['bank_swift_code', 'SWIFT code', 'رمز السويفت'], ['bank_sort_code', 'Sort code', 'رمز الفرز'], ['bank_account_number', 'Account number', 'رقم الحساب'], ['bank_iban', 'IBAN', 'رقم الآيبان', 'ايبان']]],\n  ['gosi', [\n    ['registered_in_gosi', 'Registered in GOSI', 'مسجل في التأمينات'], ['gosi_subscription', 'GOSI subscription', 'اشتراك التأمينات'],\n    ['company_contribution_percentage', 'Company GOSI contribution %', 'نسبة مساهمة الشركة'], ['employe_contribution_percentage', 'Employee GOSI contribution %', 'نسبة مساهمة الموظف'],\n    ['company_contribution_value', 'Company GOSI contribution', 'قيمة مساهمة الشركة'], ['employe_contribution_value', 'Employee GOSI contribution', 'قيمة مساهمة الموظف'],\n    ['gosi_employee_number', 'GOSI employee number', 'رقم المشترك في التأمينات'], ['amount_registered_in_gosi', 'Amount registered in GOSI', 'الأجر المسجل في التأمينات', 'gosi salary'], ['gosi_effective_date', 'GOSI effective date', 'تاريخ التسجيل في التأمينات']]],\n  ['organization', [\n    ['organization_job_title', 'Job title', 'المسمى الوظيفي (إنجليزي)', 'position', 'designation', 'title', 'occupation', 'job'], ['organization_job_title_ar', 'Job title (Arabic)', 'المسمى الوظيفي', 'الوظيفة'],\n    ['organization_department', 'Department', 'القسم (إنجليزي)', 'dept'], ['organization_department_ar', 'Department (Arabic)', 'القسم', 'الإدارة'],\n    ['organization_parent_department', 'Parent department', 'الإدارة الأم (إنجليزي)'], ['organization_parent_department_ar', 'Parent department (Arabic)', 'الإدارة الأم'],\n    ['organization_location', 'Location', 'الموقع (إنجليزي)', 'branch', 'work location'], ['organization_location_ar', 'Location (Arabic)', 'الموقع', 'مقر العمل'],\n    ['organization_home_address', 'Home address', 'عنوان السكن', 'address'], ['organization_area', 'Area', 'المنطقة (إنجليزي)'], ['organization_area_ar', 'Area (Arabic)', 'المنطقة'],\n    ['organization_line_manager', 'Line manager', 'المدير المباشر', 'manager', 'direct manager'],\n    ['organization_employment_type', 'Employment type', 'نوع التوظيف (إنجليزي)'], ['organization_employment_type_ar', 'Employment type (Arabic)', 'نوع التوظيف'],\n    ['organization_business_unit_en', 'Business unit', 'وحدة الأعمال (إنجليزي)'], ['organization_business_unit_ar', 'Business unit (Arabic)', 'وحدة الأعمال'],\n    ['organization_contract_type_en', 'Contract type', 'نوع العقد (إنجليزي)'], ['organization_contract_type_ar', 'Contract type (Arabic)', 'نوع العقد'],\n    ['organization_contract_period_en', 'Contract period', 'مدة العقد (إنجليزي)'], ['organization_contract_period_ar', 'Contract period (Arabic)', 'مدة العقد'],\n    ['organization_contract_start', 'Contract start date', 'تاريخ بداية العقد'], ['organization_contract_start_hijri', 'Contract start date (Hijri)', 'تاريخ بداية العقد هجري'],\n    ['organization_contract_end', 'Contract end date', 'تاريخ نهاية العقد'], ['organization_contract_end_hijri', 'Contract end date (Hijri)', 'تاريخ نهاية العقد هجري'],\n    ['organization_probation_start', 'Probation start', 'بداية فترة التجربة'], ['organization_probation_end', 'Probation end', 'نهاية فترة التجربة']]],\n  ['compensation', [\n    ['compensation_basic_salary', 'Basic salary', 'الراتب الأساسي', 'basic'], ['compensation_full_package', 'Total salary (full package)', 'إجمالي الراتب', 'total salary', 'gross salary', 'total package', 'monthly salary', 'salary', 'الراتب الإجمالي', 'الراتب'],\n    ['compensation_grade', 'Grade', 'الدرجة'], ['compensation_currency_symbol_en', 'Currency symbol', 'رمز العملة (إنجليزي)'], ['compensation_currency_symbol_ar', 'Currency symbol (Arabic)', 'رمز العملة'],\n    ['compensation_currency_name_en', 'Currency', 'العملة (إنجليزي)', 'currency name'], ['compensation_currency_name_ar', 'Currency (Arabic)', 'العملة']]],\n  ['company', [\n    ['company_name', 'Company name', 'اسم الشركة (إنجليزي)', 'company', 'employer', 'organization name'], ['company_name_ar', 'Company name (Arabic)', 'اسم الشركة', 'المنشأة', 'الشركة'],\n    ['company_address_1', 'Company address', 'عنوان الشركة (إنجليزي)'], ['company_address_1_ar', 'Company address (Arabic)', 'عنوان الشركة'],\n    ['company_city', 'City', 'المدينة (إنجليزي)'], ['company_city_ar', 'City (Arabic)', 'المدينة'], ['company_country', 'Country', 'الدولة (إنجليزي)'], ['company_country_ar', 'Country (Arabic)', 'الدولة'],\n    ['company_po_box', 'P.O. Box', 'صندوق البريد', 'po box'], ['company_postal_code', 'Postal code', 'الرمز البريدي', 'zip'], ['company_fax_number', 'Fax number', 'رقم الفاكس', 'fax'], ['company_website', 'Website', 'الموقع الإلكتروني', 'web']]],\n  ['benefits (tenant-specific, example IDs)', [\n    ['benefit_type_62740', 'Housing allowance', 'بدل السكن', 'housing'], ['benefit_type_62780', 'Transportation allowance', 'بدل النقل', 'transport', 'transportation'], ['benefit_type_62783', 'Food allowance', 'بدل الطعام', 'food']]],\n  ['composite', [\n    ['@employee_full_name', 'Employee full name', 'اسم الموظف (إنجليزي)', 'employee name', 'name', 'full name', 'employee full name'],\n    ['@employee_full_name_ar', 'Employee full name (Arabic)', 'اسم الموظف', 'الاسم', 'الاسم الكامل', 'اسم الموظف الكامل']]],\n];\nconst COMPOSITE = {\n  '@employee_full_name': '{{{employee_first_name}}} {{{employee_middle_name}}} {{{employee_last_name}}}',\n  '@employee_full_name_ar': '{{{employee_first_name_ar}}} {{{employee_middle_name_ar}}} {{{employee_last_name_ar}}}',\n};\nfunction defaultCatalog_() {\n  const out = [];\n  CATALOG_SRC.forEach(([group, items]) => items.forEach(([key, en, ar, ...aliases]) => out.push({ key, en, ar, group, aliases })));\n  return out;\n}\nlet CATALOG = LS.get('jlc_catalog_v1', null) || defaultCatalog_();\nconst catByKey = () => new Map(CATALOG.map((c) => [c.key, c]));\n\n/* ===================================================================== FUZZY MATCHING */\nconst SYN = { dob: 'birth', iqama: 'id', 'هويه': 'id', 'اقامه': 'id', 'الاقامه': 'id', phone: 'mobile', 'جوال': 'mobile', position: 'title', designation: 'title', occupation: 'title', dept: 'department', mgr: 'manager', emp: 'employee', staff: 'employee', no: 'number', num: 'number', nbr: 'number', 'رقم': 'number', gross: 'total', fullname: 'full name' };\nconst STOP = new Set(['the', 'of', 'a', 'an', 'mr', 'mrs', 'ms', 'his', 'her', 'and', 'in']);\nfunction normTxt(s) {\n  return String(s || '').toLowerCase()\n    .replace(/[\\u064B-\\u065F\\u0670\\u0640]/g, '').replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي')\n    .replace(/[_\\-.\\/:()\\[\\]{}<>«»'\"،,]+/g, ' ').replace(/[^a-z0-9\\u0600-\\u06ff ]+/g, ' ').replace(/\\s+/g, ' ').trim();\n}\nfunction toks(s) {\n  return normTxt(s).split(' ').map((t) => (t.length > 3 && /^ال/.test(t) ? t.slice(2) : t)).filter((t) => t && !STOP.has(t)).map((t) => SYN[t] || t).join(' ').split(' ').filter(Boolean);\n}\nfunction lev(a, b) {\n  if (a === b) return 0; const m = a.length, n = b.length; if (!m || !n) return m || n;\n  let prev = Array.from({ length: n + 1 }, (_, j) => j);\n  for (let i = 1; i <= m; i++) { const cur = [i]; for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = cur; }\n  return prev[n];\n}\nconst tokEq = (a, b) => a === b || (a.length >= 4 && b.length >= 4 && lev(a, b) <= (Math.min(a.length, b.length) >= 7 ? 2 : 1));\nfunction dice(A, B) {\n  if (!A.length || !B.length) return 0;\n  const used = new Array(B.length).fill(false); let m = 0;\n  A.forEach((a) => { const j = B.findIndex((b, k) => !used[k] && tokEq(a, b)); if (j >= 0) { used[j] = true; m++; } });\n  return (2 * m) / (A.length + B.length);\n}\nfunction matchVar(label) {\n  const A = toks(label); const n = normTxt(label).replace(/ /g, '_');\n  const ar = isArabicText(label);\n  let best = null, score = 0;\n  CATALOG.forEach((c) => {\n    let s = 0;\n    if (n === c.key || n === c.key.replace(/^@/, '')) s = 1;\n    else {\n      const texts = [c.en, c.ar, c.key.replace(/^@/, '').replace(/_/g, ' ')].concat(c.aliases || []);\n      texts.forEach((t) => { if (!t) return; const v = normTxt(t) === normTxt(label) ? 0.98 : dice(A, toks(t)); if (v > s) s = v; });\n    }\n    if (s > 0) {\n      const isAr = /_ar$/.test(c.key);\n      if (ar && isAr) s += 0.04; else if (ar && !isAr && c.key.replace(/^@/, '') + '_ar' && CATALOG.some((x) => x.key === c.key + '_ar')) s -= 0.06;\n      if (!ar && isAr) s -= 0.08;\n    }\n    if (s > score) { score = s; best = c; }\n  });\n  return { key: best ? best.key : null, score: round(Math.max(0, Math.min(1, score)), 2) };\n}\n\n/* ===================================================================== STATE */\nconst S = {\n  source: null, // 'docx' | 'html' | 'sample'\n  fileName: '',\n  parts: { header: '', body: '', footer: '' }, // internal HTML with data-jv / data-jimg markers\n  vars: new Map(), // id -> { id, label, raw, kind, key, score, status, parts:Set, count }\n  images: [], // { n, name, dataUrl, w, h, attId, part, background }\n  notes: [],\n  wordGeom: null,\n  fix: { spacerMode: 'collapse', spacingScale: 1, fontScale: 1, imgScale: 1 },\n  target: 1,\n  baseFont: 12,\n  lastFit: null,\n  blocks: [], // [{ id, html, origin, role }] top-level blocks; role decides header / body / footer / skip\n  fixHistory: [],\n  fixBase: null,\n};\n\n/* ===================================================================== DOCX READER (OOXML walker) */\nconst W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';\nconst kids = (el, n) => (el ? Array.from(el.children).filter((c) => c.localName === n) : []);\nconst kid = (el, n) => (el ? Array.from(el.children).find((c) => c.localName === n) || null : null);\nconst desc = (el, n) => (el ? Array.from(el.getElementsByTagNameNS('*', n)) : []);\nconst wv = (el, a) => { if (!el) return null; const v = el.getAttribute('w:' + (a || 'val')); return v != null ? v : el.getAttributeNS(W_NS, a || 'val'); };\nconst onOff = (el) => { if (!el) return undefined; const v = wv(el); return !(v === '0' || v === 'false' || v === 'off'); };\nconst twPt = (tw) => (tw == null || isNaN(tw) ? null : tw / 20);\n\nfunction readPPr(pPr) {\n  const o = {}; if (!pPr) return o;\n  const jc = kid(pPr, 'jc'); if (jc) o.jc = wv(jc);\n  const bidi = kid(pPr, 'bidi'); if (bidi) o.bidi = onOff(bidi);\n  const sp = kid(pPr, 'spacing');\n  if (sp) { ['before', 'after', 'line'].forEach((k) => { const v = wv(sp, k); if (v != null) o[k] = +v; }); const lr = wv(sp, 'lineRule'); if (lr) o.lineRule = lr; if (onOff(sp) && (wv(sp, 'beforeAutospacing') === '1')) o.before = 280; if (wv(sp, 'afterAutospacing') === '1') o.after = 280; }\n  const ind = kid(pPr, 'ind');\n  if (ind) { const g = (k) => { const v = wv(ind, k); return v == null ? null : +v; }; const l = g('left') != null ? g('left') : g('start'); const r = g('right') != null ? g('right') : g('end'); if (l != null) o.indL = l; if (r != null) o.indR = r; if (g('firstLine') != null) o.first = g('firstLine'); if (g('hanging') != null) o.hang = g('hanging'); }\n  const num = kid(pPr, 'numPr'); if (num) { o.numId = wv(kid(num, 'numId')); o.ilvl = +(wv(kid(num, 'ilvl')) || 0); }\n  if (onOff(kid(pPr, 'pageBreakBefore'))) o.pbb = true;\n  const ps = kid(pPr, 'pStyle'); if (ps) o.style = wv(ps);\n  return o;\n}\nfunction readRPr(rPr) {\n  const o = {}; if (!rPr) return o;\n  ['b', 'bCs', 'i', 'iCs', 'strike', 'dstrike', 'caps', 'vanish'].forEach((k) => { const e = kid(rPr, k); if (e) o[k] = onOff(e); });\n  const u = kid(rPr, 'u'); if (u) o.u = wv(u) !== 'none';\n  const sz = kid(rPr, 'sz'); if (sz) o.sz = +wv(sz) / 2;\n  const szc = kid(rPr, 'szCs'); if (szc) o.szCs = +wv(szc) / 2;\n  const c = kid(rPr, 'color'); if (c) { const v = wv(c); if (v && v !== 'auto' && !/^0{6}$/.test(v)) o.color = '#' + v; else o.color = null; }\n  const hl = kid(rPr, 'highlight'); if (hl) { const v = wv(hl); if (v && v !== 'none') o.hl = v; }\n  const shd = kid(rPr, 'shd'); if (shd) { const f = wv(shd, 'fill'); if (f && f !== 'auto' && !/^f{6}$/i.test(f)) o.shd = '#' + f; }\n  const rtl = kid(rPr, 'rtl'); if (rtl) o.rtl = onOff(rtl);\n  const rs = kid(rPr, 'rStyle'); if (rs) o.style = wv(rs);\n  const va = kid(rPr, 'vertAlign'); if (va) o.va = wv(va);\n  return o;\n}\nconst merge = (...objs) => Object.assign({}, ...objs.filter(Boolean));\n\nasync function readDocx(file) {\n  if (typeof JSZip === 'undefined') throw new Error('JSZip did not load (check the internet connection, it comes from cdnjs).');\n  const zip = await JSZip.loadAsync(file);\n  const parse = async (p) => { const f = zip.file(p); if (!f) return null; return new DOMParser().parseFromString(await f.async('string'), 'application/xml'); };\n  const doc = await parse('word/document.xml');\n  if (!doc) throw new Error('This is not a Word .docx file (word/document.xml is missing).');\n  const relsOf = async (partPath) => {\n    const dir = partPath.replace(/[^/]+$/, ''); const name = partPath.split('/').pop();\n    const x = await parse(dir + '_rels/' + name + '.rels'); const m = {};\n    if (x) Array.from(x.getElementsByTagName('Relationship')).forEach((r) => { let t = r.getAttribute('Target'); if (r.getAttribute('TargetMode') === 'External') { m[r.getAttribute('Id')] = { ext: t }; return; } t = t.startsWith('/') ? t.slice(1) : (dir + t).replace(/[^/]+\\/\\.\\.\\//g, ''); m[r.getAttribute('Id')] = { path: t, type: r.getAttribute('Type') }; });\n    return m;\n  };\n  // styles\n  const stylesX = await parse('word/styles.xml');\n  const styles = {}; let defPara = null; let docDefP = {}, docDefR = {};\n  if (stylesX) {\n    const dd = desc(stylesX, 'docDefaults')[0];\n    if (dd) { docDefP = readPPr(desc(dd, 'pPr')[0]); docDefR = readRPr(desc(dd, 'rPr')[0]); }\n    desc(stylesX, 'style').forEach((s) => {\n      const id = wv(s, 'styleId'); const type = wv(s, 'type');\n      const tblPr = kid(s, 'tblPr');\n      styles[id] = { type, basedOn: wv(kid(s, 'basedOn')), pPr: readPPr(kid(s, 'pPr')), rPr: readRPr(kid(s, 'rPr')), tblBorders: tblPr ? kid(tblPr, 'tblBorders') : null, name: wv(kid(s, 'name')) };\n      if (type === 'paragraph' && (s.getAttribute('w:default') === '1' || s.getAttributeNS(W_NS, 'default') === '1')) defPara = id;\n    });\n  }\n  const chain = (id, field, seen) => { const st = styles[id]; if (!st || (seen = seen || new Set()).has(id)) return {}; seen.add(id); return merge(chain(st.basedOn, field, seen), st[field]); };\n  const styleBorders = (id) => { let st = styles[id], n = 0; while (st && n++ < 10) { if (st.tblBorders) return st.tblBorders; st = styles[st.basedOn]; } return null; };\n  // numbering\n  const numX = await parse('word/numbering.xml');\n  const numFmt = (numId, ilvl) => {\n    if (!numX) return 'bullet';\n    const num = desc(numX, 'num').find((n) => wv(n, 'numId') === String(numId)); if (!num) return 'bullet';\n    const absId = wv(kid(num, 'abstractNumId'));\n    const abs = desc(numX, 'abstractNum').find((a) => wv(a, 'abstractNumId') === absId); if (!abs) return 'bullet';\n    const lvl = kids(abs, 'lvl').find((l) => wv(l, 'ilvl') === String(ilvl)) || kids(abs, 'lvl')[0];\n    return (lvl && wv(kid(lvl, 'numFmt'))) || 'bullet';\n  };\n  // section / geometry\n  const body = desc(doc, 'body')[0];\n  const sect = kids(body, 'sectPr').pop() || desc(body, 'sectPr').pop();\n  const geom = { pageW: 210, pageH: 297, mT: 25.4, mB: 25.4, mL: 25.4, mR: 25.4 };\n  if (sect) {\n    const pg = kid(sect, 'pgSz'); if (pg) { geom.pageW = round(+wv(pg, 'w') / 1440 * 25.4, 1); geom.pageH = round(+wv(pg, 'h') / 1440 * 25.4, 1); }\n    const mg = kid(sect, 'pgMar'); if (mg) { geom.mT = round(Math.abs(+wv(mg, 'top')) / 1440 * 25.4, 1); geom.mB = round(Math.abs(+wv(mg, 'bottom')) / 1440 * 25.4, 1); geom.mL = round(+wv(mg, 'left') / 1440 * 25.4, 1); geom.mR = round(+wv(mg, 'right') / 1440 * 25.4, 1); }\n  }\n  const textWidthTw = (geom.pageW - geom.mL - geom.mR) / 25.4 * 1440;\n  const images = []; const notes = [];\n  const mediaCache = {};\n  const mediaUrl = async (path) => {\n    if (mediaCache[path] !== undefined) return mediaCache[path];\n    const f = zip.file(path); if (!f) return (mediaCache[path] = null);\n    const ext = path.split('.').pop().toLowerCase();\n    const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp', svg: 'image/svg+xml', webp: 'image/webp' }[ext];\n    if (!mime) { notes.push('Image ' + path.split('/').pop() + ' is in a format browsers cannot show (' + ext + '); a placeholder box is used.'); return (mediaCache[path] = null); }\n    return (mediaCache[path] = 'data:' + mime + ';base64,' + (await f.async('base64')));\n  };\n\n  // ---- block walker for one part (body, header or footer)\n  async function walkPart(rootEl, partName, rels) {\n    const out = [];\n    const listStack = []; // [{tag, numId, ilvl}]\n    const closeLists = (toDepth) => { while (listStack.length > toDepth) out.push('</' + listStack.pop().tag + '>'); };\n    async function blocks(container, ctx) {\n      const children = Array.from(container.children);\n      for (const el of children) {\n        const ln = el.localName;\n        if (ln === 'p') {\n          const r = await para(el, ctx);\n          if (r.pageBreakBefore && !ctx.inTable) { closeLists(0); out.push('<!-- pagebreak -->'); }\n          if (r.list && !ctx.inTable) {\n            const fmt = numFmt(r.list.numId, r.list.ilvl);\n            const tag = fmt === 'bullet' || fmt === 'none' ? 'ul' : 'ol';\n            const depth = r.list.ilvl + 1;\n            if (listStack.length >= depth && (listStack[depth - 1].numId !== r.list.numId || listStack[depth - 1].tag !== tag)) closeLists(depth - 1);\n            closeLists(depth);\n            while (listStack.length < depth) {\n              const lst = { decimal: 'decimal', lowerLetter: 'lower-alpha', upperLetter: 'upper-alpha', lowerRoman: 'lower-roman', upperRoman: 'upper-roman' }[fmt];\n              out.push('<' + tag + ' style=\"margin: 0 0 ' + (r.marginBottom || 0) + 'pt 0; ' + (r.rtl ? 'padding-right' : 'padding-left') + ': 24pt;' + (lst ? ' list-style-type: ' + lst + ';' : '') + '\"' + (r.rtl ? ' dir=\"rtl\"' : '') + '>');\n              listStack.push({ tag, numId: r.list.numId });\n            }\n            out.push('<li style=\"' + r.liStyle + '\">' + (r.inner || '&nbsp;') + '</li>');\n          } else {\n            if (!ctx.inTable) closeLists(0);\n            out.push(r.html);\n          }\n          r.after.forEach((h) => out.push(h));\n          if (r.pageBreakAfter && !ctx.inTable) { closeLists(0); out.push('<!-- pagebreak -->'); }\n        } else if (ln === 'tbl') { closeLists(0); out.push(await table(el, ctx)); }\n        else if (ln === 'sdt') { await blocks(kid(el, 'sdtContent') || el, ctx); }\n        else if (ln === 'customXml' || ln === 'ins' || ln === 'smartTag') { await blocks(el, ctx); }\n      }\n    }\n    async function para(p, ctx) {\n      const direct = readPPr(kid(p, 'pPr'));\n      const stId = direct.style || defPara;\n      const pp = merge(docDefP, ctx.tblStyle ? chain(ctx.tblStyle, 'pPr') : null, chain(stId, 'pPr'), direct);\n      const baseR = merge(docDefR, ctx.tblStyle ? chain(ctx.tblStyle, 'rPr') : null, chain(stId, 'rPr'));\n      const segs = []; const after = []; let pageBreakAfter = false;\n      const fld = { instr: false };\n      async function walkRuns(node) {\n        for (const c of Array.from(node.children)) {\n          const ln = c.localName;\n          if (ln === 'r') await run(c);\n          else if (['hyperlink', 'ins', 'smartTag', 'customXml', 'fldSimple', 'moveTo', 'sdtContent', 'dir', 'bdo'].includes(ln)) await walkRuns(c);\n          else if (ln === 'sdt') await walkRuns(kid(c, 'sdtContent') || c);\n        }\n      }\n      async function run(r) {\n        const rd = readRPr(kid(r, 'rPr'));\n        const rp = merge(baseR, rd.style ? chain(rd.style, 'rPr') : null, rd);\n        if (rp.vanish) return;\n        for (const c of Array.from(r.children)) {\n          const ln = c.localName;\n          if (ln === 'fldChar') { const t = wv(c, 'fldCharType'); fld.instr = t === 'begin'; continue; }\n          if (ln === 'instrText' || fld.instr) continue;\n          if (ln === 't') segs.push({ t: c.textContent, p: rp });\n          else if (ln === 'tab' || ln === 'ptab') segs.push({ t: '\\u00a0\\u00a0\\u00a0\\u00a0', p: rp });\n          else if (ln === 'br' || ln === 'cr') { if (wv(c, 'type') === 'page') { if (segs.length) pageBreakAfter = true; else pageBreakAfter = pageBreakAfter || false, segs.push({ pb: true }); } else segs.push({ br: true }); }\n          else if (ln === 'noBreakHyphen') segs.push({ t: '-', p: rp });\n          else if (ln === 'sym') { const ch = parseInt(wv(c, 'char') || '20', 16); segs.push({ t: ch >= 0xF000 ? '\\u2022' : String.fromCharCode(ch), p: rp }); }\n          else if (ln === 'drawing' || ln === 'pict' || ln === 'object') await drawing(c, rp);\n        }\n      }\n      async function drawing(d, rp) {\n        const anchor = desc(d, 'anchor')[0];\n        const ext = desc(d, 'extent')[0];\n        let w = ext ? Math.round(+ext.getAttribute('cx') / 9525) : 0, h = ext ? Math.round(+ext.getAttribute('cy') / 9525) : 0;\n        const blip = desc(d, 'blip')[0] || desc(d, 'imagedata')[0];\n        const rid = blip ? (blip.getAttribute('r:embed') || blip.getAttribute('r:id') || blip.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'embed')) : null;\n        const tx = desc(d, 'txbxContent')[0];\n        if (tx) { const sub = await walkPartInner(tx, ctx); after.push(...sub); }\n        if (!rid) return;\n        if (!w || !h) { const shape = desc(d, 'shape')[0]; const st = shape ? shape.getAttribute('style') || '' : ''; const mw = st.match(/width:([\\d.]+)pt/), mh = st.match(/height:([\\d.]+)pt/); if (mw) w = Math.round(+mw[1] * 96 / 72); if (mh) h = Math.round(+mh[1] * 96 / 72); }\n        const rel = rels[rid]; const path = rel && rel.path;\n        const dataUrl = path ? await mediaUrl(path) : null;\n        const pageWpx = geom.pageW * MM, pageHpx = geom.pageH * MM;\n        const behind = anchor && (anchor.getAttribute('behindDoc') === '1');\n        const background = !!anchor && ((w >= pageWpx * 0.7 && h >= pageHpx * 0.5) || (behind && w >= pageWpx * 0.6));\n        const n = images.length;\n        images.push({ n, name: (path || 'image').split('/').pop(), dataUrl, w: w || 120, h: h || 60, attId: '', part: partName, background });\n        if (background) { notes.push('“' + images[n].name + '” is a full-page background / letterhead image in the Word ' + partName + '. Jisr letters have no page background: upload the letterhead top and bottom as Header / Footer images instead. It was left out of the HTML.'); return; }\n        segs.push({ img: n, p: rp });\n      }\n      await walkRuns(p);\n      // paragraph direction + font size\n      const text = segs.map((s) => s.t || '').join('');\n      const rtl = pp.bidi !== undefined ? !!pp.bidi : ((text.match(AR_RE) || []).length > 0 && !(text.match(LAT_RE) || []).length); // Word's own direction; purely Arabic text falls back to RTL\n      const sizeOf = (rp) => { const cs = (rp.rtl || isArabicText(text)) && rp.szCs; return cs || rp.sz || 10; };\n      const tally = {}; segs.forEach((s) => { if (s.t && s.p) { const k = sizeOf(s.p); tally[k] = (tally[k] || 0) + s.t.length; } });\n      let pSize = sizeOf(baseR); let best = -1; Object.keys(tally).forEach((k) => { if (tally[k] > best) { best = tally[k]; pSize = +k; } });\n      // runs -> html\n      let inner = ''; let curKey = null; let buf = ''; let curP = null;\n      const fmtKey = (rp) => { const cs = rp.rtl || isArabicText(text); return JSON.stringify({ b: cs && rp.bCs !== undefined ? rp.bCs : rp.b, i: cs && rp.iCs !== undefined ? rp.iCs : rp.i, u: rp.u, s: rp.strike || rp.dstrike, sz: sizeOf(rp), c: rp.color || null, hl: rp.hl || rp.shd || null, va: rp.va || null, caps: rp.caps || false }); };\n      const flush = () => {\n        if (!buf) return;\n        const k = JSON.parse(curKey); let h = esc(k.caps ? buf.toUpperCase() : buf).replace(/ {2}/g, ' &nbsp;').replace(/^ /, '&nbsp;');\n        const st = [];\n        if (k.sz && k.sz !== pSize) st.push('font-size: ' + k.sz + 'pt;');\n        if (k.c) st.push('color: ' + k.c + ';');\n        if (k.s) st.push('text-decoration: line-through;');\n        if (st.length) h = '<span style=\"' + st.join(' ') + '\">' + h + '</span>';\n        if (k.u) h = '<span style=\"text-decoration: underline;\">' + h + '</span>';\n        if (k.i) h = '<em>' + h + '</em>';\n        if (k.b) h = '<strong>' + h + '</strong>';\n        if (k.va === 'superscript') h = '<sup>' + h + '</sup>'; else if (k.va === 'subscript') h = '<sub>' + h + '</sub>';\n        if (k.hl) h = '<span data-hl=\"1\">' + h + '</span>';\n        inner += h; buf = '';\n      };\n      let lead = false;\n      segs.forEach((s) => {\n        if (s.pb) { lead = true; return; }\n        if (s.br) { flush(); curKey = null; inner += '<br>'; return; }\n        if (s.img != null) {\n          flush(); curKey = null; const im = images[s.img];\n          inner += '<img data-jimg=\"' + s.img + '\" width=\"' + im.w + '\" height=\"' + im.h + '\" alt=\"\">'; return;\n        }\n        const k = fmtKey(s.p);\n        if (k !== curKey) { flush(); curKey = k; curP = s.p; }\n        buf += s.t;\n      });\n      flush();\n      const empty = !text.replace(/[\\s\\u00a0]/g, '') && !/<img /.test(inner);\n      // paragraph style\n      const st = [];\n      const logical = { left: 'start', start: 'start', right: 'end', end: 'end', center: 'center', both: 'justify', distribute: 'justify', lowKashida: 'justify', mediumKashida: 'justify', highKashida: 'justify', thaiDistribute: 'justify' }[pp.jc];\n      let align = null;\n      if (logical === 'center' || logical === 'justify') align = logical;\n      else if (logical === 'end') align = rtl ? 'left' : 'right';\n      else if (logical === 'start' && rtl) align = 'right';\n      if (align) st.push('text-align: ' + align + ';');\n      const mt = twPt(pp.before) || 0, mb = twPt(pp.after) || 0;\n      const iL = twPt(pp.indL) || 0, iR = twPt(pp.indR) || 0;\n      const ms = rtl ? [mt, iL, mb, iR] : [mt, iR, mb, iL];\n      st.push('margin: ' + ms.map((v) => (v ? round(v, 1) + 'pt' : '0')).join(' ') + ';');\n      if (pp.first) st.push('text-indent: ' + round(twPt(pp.first), 1) + 'pt;'); else if (pp.hang) st.push('text-indent: -' + round(twPt(pp.hang), 1) + 'pt;');\n      if (pp.line) { if (!pp.lineRule || pp.lineRule === 'auto') { const lh = round(pp.line / 240, 2); if (lh !== 1) st.push('line-height: ' + lh + ';'); } else st.push('line-height: ' + round(twPt(pp.line), 1) + 'pt;'); }\n      st.push('font-size: ' + pSize + 'pt;');\n      const dirA = ' dir=\"' + (rtl ? 'rtl' : 'ltr') + '\"';\n      const emptyA = empty ? ' data-empty=\"1\"' : '';\n      const html = '<p' + dirA + emptyA + ' style=\"' + st.join(' ') + '\">' + (empty ? '&nbsp;' : inner) + '</p>';\n      const liStyle = st.filter((x) => !/^margin|^text-indent/.test(x)).join(' ') + ' margin: 0 0 ' + round(mb, 1) + 'pt 0;';\n      const list = pp.numId && pp.numId !== '0' && !ctx.inTable ? { numId: pp.numId, ilvl: pp.ilvl || 0 } : null;\n      return { html, inner: empty ? '' : inner, empty, rtl, list, liStyle, marginBottom: round(mb, 1), pageBreakBefore: !!pp.pbb || lead, pageBreakAfter, after };\n    }\n    async function walkPartInner(el, ctx) {\n      const save = out.length; await blocks(el, Object.assign({}, ctx, { inTable: true }));\n      return out.splice(save);\n    }\n    function borderCss(b) {\n      if (!b) return null; const v = wv(b); if (!v || v === 'nil' || v === 'none') return 'none';\n      const sz = +(wv(b, 'sz') || 4) / 8; const col = wv(b, 'color'); const px = Math.max(1, Math.round(sz * 96 / 72));\n      return px + 'px ' + (v === 'double' ? 'double' : v === 'dotted' ? 'dotted' : v === 'dashed' ? 'dashed' : 'solid') + ' ' + (col && col !== 'auto' ? '#' + col : '#000');\n    }\n    async function table(tbl, ctx) {\n      const tblPr = kid(tbl, 'tblPr');\n      const tStyle = tblPr && wv(kid(tblPr, 'tblStyle'));\n      const grid = kids(kid(tbl, 'tblGrid'), 'gridCol').map((g) => +wv(g, 'w') || 0);\n      const total = grid.reduce((a, b) => a + b, 0) || 1;\n      let widthPct = 100;\n      const tw = tblPr && kid(tblPr, 'tblW');\n      if (tw) { const type = wv(tw, 'type'), w = +wv(tw, 'w'); if (type === 'pct') widthPct = w > 100 ? w / 50 : w; else if (type === 'dxa' && w) widthPct = (w / textWidthTw) * 100; else widthPct = Math.min(100, (total / textWidthTw) * 100); }\n      else widthPct = Math.min(100, (total / textWidthTw) * 100);\n      widthPct = Math.max(10, Math.min(100, round(widthPct, 1)));\n      const jc = tblPr && wv(kid(tblPr, 'jc'));\n      const rtl = !!(tblPr && onOff(kid(tblPr, 'bidiVisual')));\n      const tb = (tblPr && kid(tblPr, 'tblBorders')) || (tStyle && styleBorders(tStyle));\n      const tbs = {}; if (tb) ['top', 'left', 'bottom', 'right', 'insideH', 'insideV', 'start', 'end'].forEach((k) => { const b = kid(tb, k); if (b) tbs[k] = borderCss(b); });\n      const rows = kids(tbl, 'tr');\n      // grid matrix for vertical merges\n      const matrix = rows.map((tr) => { let col = 0; return kids(tr, 'tc').map((tc) => { const tcPr = kid(tc, 'tcPr'); const span = +(wv(kid(tcPr, 'gridSpan')) || 1); const vmEl = kid(tcPr, 'vMerge'); const vm = vmEl ? (wv(vmEl) === 'restart' ? 'restart' : 'continue') : null; const c = { tc, tcPr, col, span, vm }; col += span; return c; }); });\n      const ctxT = Object.assign({}, ctx, { inTable: true, tblStyle: tStyle || null });\n      let html = '<table' + (rtl ? ' dir=\"rtl\"' : '') + ' style=\"width: ' + widthPct + '%; border-collapse: collapse;' + (jc === 'center' ? ' margin-left: auto; margin-right: auto;' : '') + '\">';\n      if (grid.length > 1) html += '<colgroup>' + grid.map((g) => '<col style=\"width: ' + round((g / total) * 100, 1) + '%;\">').join('') + '</colgroup>';\n      html += '<tbody>';\n      for (let ri = 0; ri < rows.length; ri++) {\n        html += '<tr>';\n        for (const c of matrix[ri]) {\n          if (c.vm === 'continue') continue;\n          let rowspan = 1;\n          if (c.vm === 'restart') { for (let k = ri + 1; k < rows.length; k++) { const d = matrix[k].find((x) => x.col === c.col); if (d && d.vm === 'continue') rowspan++; else break; } }\n          const pct = round((grid.slice(c.col, c.col + c.span).reduce((a, b) => a + b, 0) / total) * 100, 1);\n          const st = ['width: ' + pct + '%;', 'padding: 2pt 5pt;'];\n          const va = wv(kid(c.tcPr, 'vAlign')); if (va) st.push('vertical-align: ' + (va === 'center' ? 'middle' : va) + ';'); else st.push('vertical-align: top;');\n          const shd = kid(c.tcPr, 'shd'); if (shd) { const f = wv(shd, 'fill'); if (f && f !== 'auto' && !/^f{6}$/i.test(f)) st.push('background-color: #' + f + ';'); }\n          const cb = kid(c.tcPr, 'tcBorders');\n          const side = (name, fallback) => { const own = cb && kid(cb, name); return own ? borderCss(own) : fallback; };\n          const top = side('top', ri === 0 ? tbs.top : tbs.insideH), bottom = side('bottom', ri === rows.length - 1 ? tbs.bottom : tbs.insideH);\n          const first = c.col === 0, last = c.col + c.span >= grid.length;\n          const left = side('left', side('start', first ? (tbs.left || tbs.start) : tbs.insideV)), right = side('right', side('end', last ? (tbs.right || tbs.end) : tbs.insideV));\n          [['top', top], ['right', right], ['bottom', bottom], ['left', left]].forEach(([k, v]) => { if (v && v !== 'none') st.push('border-' + k + ': ' + v + ';'); });\n          const saveLen = out.length; await blocks(c.tc, ctxT); const inner = out.splice(saveLen).join('');\n          html += '<td' + (c.span > 1 ? ' colspan=\"' + c.span + '\"' : '') + (rowspan > 1 ? ' rowspan=\"' + rowspan + '\"' : '') + ' style=\"' + st.join(' ') + '\">' + (inner || '&nbsp;') + '</td>';\n        }\n        html += '</tr>';\n      }\n      return html + '</tbody></table>';\n    }\n    await blocks(rootEl, { inTable: false, tblStyle: null });\n    closeLists(0);\n    return out.join('\\n');\n  }\n\n  const bodyRels = await relsOf('word/document.xml');\n  const parts = { header: '', body: '', footer: '' };\n  parts.body = await walkPart(body, 'body', bodyRels);\n  if (sect) {\n    const titlePg = !!onOff(kid(sect, 'titlePg'));\n    for (const [tag, key] of [['headerReference', 'header'], ['footerReference', 'footer']]) {\n      const refs = kids(sect, tag);\n      const ref = (titlePg && refs.find((r) => wv(r, 'type') === 'first')) || refs.find((r) => wv(r, 'type') === 'default') || refs[0];\n      if (!ref) continue;\n      const rid = ref.getAttribute('r:id') || ref.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');\n      const rel = bodyRels[rid]; if (!rel || !rel.path) continue;\n      const x = await parse(rel.path); if (!x) continue;\n      const pr = await relsOf(rel.path);\n      parts[key] = await walkPart(x.documentElement, key, pr);\n    }\n  }\n  return { parts, images, notes, geom };\n}\n\n/* ===================================================================== SANITIZER (both directions) */\nconst KEEP_TAGS = new Set(['P', 'BR', 'STRONG', 'EM', 'SPAN', 'TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TD', 'TH', 'COLGROUP', 'COL', 'UL', 'OL', 'LI', 'IMG', 'A', 'SUP', 'SUB', 'HR']);\nconst KEEP_STYLE = /^(text-align|font-size|font-weight|font-style|text-decoration|color|background-color|margin(-top|-bottom|-left|-right)?|padding(-top|-bottom|-left|-right)?|width|height|border(-top|-bottom|-left|-right)?(-width|-style|-color)?|border-collapse|vertical-align|line-height|text-indent|list-style-type|display|direction)$/i;\nfunction parseStyle(s) { const m = new Map(); String(s || '').split(';').forEach((d) => { const i = d.indexOf(':'); if (i < 0) return; const k = d.slice(0, i).trim().toLowerCase(), v = d.slice(i + 1).trim(); if (k && v) m.set(k, v); }); return m; }\nconst styleStr = (m) => Array.from(m.entries()).map(([k, v]) => k + ': ' + v + ';').join(' ');\nfunction sanitizeInto(root, printWmm) {\n  const printWpx = (printWmm || 170) * MM;\n  const walk = (node) => {\n    Array.from(node.childNodes).forEach((n) => {\n      if (n.nodeType === 8) { if (!/pagebreak/i.test(n.nodeValue)) n.remove(); return; }\n      if (n.nodeType !== 1) return;\n      let el = n; const tag = el.tagName;\n      if (['SCRIPT', 'STYLE', 'LINK', 'META', 'TITLE', 'HEAD', 'XML', 'O:P', 'NOSCRIPT', 'IFRAME', 'OBJECT', 'SVG'].includes(tag) || /^O:|^V:|^W:/.test(tag)) { el.remove(); return; }\n      // page-break styles -> marker\n      const pst = parseStyle(el.getAttribute('style'));\n      if (/always|page/.test(pst.get('page-break-before') || pst.get('break-before') || '')) el.parentNode.insertBefore(document.createComment(' pagebreak '), el);\n      if (/^H[1-6]$/.test(tag)) { const p = document.createElement('p'); const sz = { H1: 18, H2: 16, H3: 14, H4: 13, H5: 12, H6: 12 }[tag]; const m = parseStyle(el.getAttribute('style')); if (!m.has('font-size')) m.set('font-size', sz + 'pt'); m.set('font-weight', 'bold'); p.setAttribute('style', styleStr(m)); if (el.getAttribute('dir')) p.setAttribute('dir', el.getAttribute('dir')); while (el.firstChild) p.appendChild(el.firstChild); el.replaceWith(p); el = p; }\n      else if (tag === 'B') { el = rename(el, 'strong'); }\n      else if (tag === 'I') { el = rename(el, 'em'); }\n      else if (tag === 'U') { el = rename(el, 'span'); const m = parseStyle(el.getAttribute('style')); m.set('text-decoration', 'underline'); el.setAttribute('style', styleStr(m)); }\n      else if (tag === 'FONT') { const s = document.createElement('span'); const m = new Map(); if (el.getAttribute('color')) m.set('color', el.getAttribute('color')); s.setAttribute('style', styleStr(m)); while (el.firstChild) s.appendChild(el.firstChild); el.replaceWith(s); el = s; }\n      else if (tag === 'DIV' || tag === 'SECTION' || tag === 'ARTICLE' || tag === 'CENTER' || tag === 'BLOCKQUOTE') {\n        const hasBlock = Array.from(el.children).some((c) => /^(P|DIV|TABLE|UL|OL|H[1-6]|SECTION|BLOCKQUOTE)$/.test(c.tagName));\n        if (hasBlock) { walk(el); const parent = el.parentNode; while (el.firstChild) parent.insertBefore(el.firstChild, el); el.remove(); return; }\n        const p = rename(el, 'p'); if (tag === 'CENTER') { const m = parseStyle(p.getAttribute('style')); m.set('text-align', 'center'); p.setAttribute('style', styleStr(m)); } el = p;\n      } else if (!KEEP_TAGS.has(tag)) { walk(el); const parent = el.parentNode; while (el.firstChild) parent.insertBefore(el.firstChild, el); el.remove(); return; }\n      // attributes\n      Array.from(el.attributes).forEach((a) => {\n        const nm = a.name.toLowerCase();\n        if (nm === 'style' || nm === 'dir' || nm === 'colspan' || nm === 'rowspan' || nm === 'data-jv' || nm === 'data-jimg' || nm === 'data-empty' || nm === 'data-hl') return;\n        if (el.tagName === 'IMG' && (nm === 'src' || nm === 'alt' || nm === 'width' || nm === 'height')) return;\n        if (el.tagName === 'A' && nm === 'href') return;\n        if ((el.tagName === 'TD' || el.tagName === 'TH' || el.tagName === 'TABLE' || el.tagName === 'COL') && nm === 'width') { const m = parseStyle(el.getAttribute('style')); if (!m.has('width')) m.set('width', /%$/.test(a.value) ? a.value : a.value + 'px'); el.setAttribute('style', styleStr(m)); }\n        if (el.tagName === 'TABLE' && nm === 'border' && +a.value > 0) el.setAttribute('data-border', '1');\n        el.removeAttribute(a.name);\n      });\n      const m = parseStyle(el.getAttribute('style'));\n      Array.from(m.keys()).forEach((k) => { if (/^mso-/.test(k) || !KEEP_STYLE.test(k)) m.delete(k); });\n      if (m.has('display') && !/^(block|inline-block|inline|table|none)$/.test(m.get('display'))) m.delete('display');\n      if (pst.get('float') && el.tagName === 'IMG') { m.set('display', 'block'); if (pst.get('float') === 'right') m.set('margin-left', 'auto'); else m.set('margin-right', 'auto'); }\n      if (el.tagName === 'TABLE') {\n        const w = m.get('width'); const px = w && /px$/.test(w) ? parseFloat(w) : null;\n        if (!w || (px && px > printWpx)) m.set('width', '100%'); else if (px) m.set('width', round((px / printWpx) * 100, 1) + '%');\n        if (!m.has('border-collapse')) m.set('border-collapse', 'collapse');\n      }\n      if ((el.tagName === 'TD' || el.tagName === 'TH') && el.closest('table') && el.closest('table').getAttribute('data-border') && !Array.from(m.keys()).some((k) => /^border/.test(k))) m.set('border', '1px solid #000');\n      if (el.tagName === 'IMG') { const w = +el.getAttribute('width') || parseFloat(m.get('width')) || 0; if (w > printWpx) { const h = +el.getAttribute('height') || 0; el.setAttribute('width', Math.round(printWpx)); if (h) el.setAttribute('height', Math.round((h * printWpx) / w)); } m.delete('width'); m.delete('height'); }\n      if (m.size) el.setAttribute('style', styleStr(m)); else el.removeAttribute('style');\n      walk(el);\n      if (el.tagName === 'SPAN' && !el.attributes.length) { const parent = el.parentNode; while (el.firstChild) parent.insertBefore(el.firstChild, el); el.remove(); }\n      else if ((el.tagName === 'SPAN' || el.tagName === 'STRONG' || el.tagName === 'EM') && !el.textContent && !el.querySelector('img,br') && !el.getAttribute('data-jv')) el.remove();\n    });\n  };\n  walk(root);\n  root.querySelectorAll('table[data-border]').forEach((t) => t.removeAttribute('data-border'));\n  // mark empty paragraphs\n  root.querySelectorAll('p').forEach((p) => { if (!p.textContent.replace(/[\\s\\u00a0]/g, '') && !p.querySelector('img,[data-jv]')) p.setAttribute('data-empty', '1'); });\n  return root;\n}\nfunction rename(el, tag) { const n = document.createElement(tag); Array.from(el.attributes).forEach((a) => n.setAttribute(a.name, a.value)); while (el.firstChild) n.appendChild(el.firstChild); el.replaceWith(n); return n; }\n\n/* ===================================================================== VARIABLE DETECTION */\nconst RX = [\n  { kind: 'jisr', re: /\\{\\{\\{\\s*([A-Za-z0-9_@]+)\\s*\\}\\}\\}/ },\n  { kind: 'curly', re: /\\{\\{\\s*([^{}]{1,60}?)\\s*\\}\\}/ },\n  { kind: 'angle', re: /(?:<<|«)\\s*([^<>«»]{1,60}?)\\s*(?:>>|»)/ },\n  { kind: 'square', re: /\\[\\s*([^\\[\\]\\n]{2,60}?)\\s*\\]/ },\n  { kind: 'caps', re: /(?<![A-Za-z0-9])(?:[A-Z][A-Z0-9]+(?:[_ ][A-Z0-9]+)+|[A-Z][A-Z0-9]*_[A-Z0-9_]+)(?![A-Za-z0-9])/ },\n];\nconst varId = (label) => 'v_' + normTxt(label).replace(/ /g, '_').slice(0, 60);\nfunction registerVar(label, raw, kind, part) {\n  let id = varId(label); if (id === 'v_') id = 'v_' + Math.random().toString(36).slice(2, 7);\n  let v = S.vars.get(id);\n  if (!v) {\n    let key = null, score = 0, status = 'auto';\n    const cat = catByKey();\n    if (kind === 'jisr') { key = label; score = 1; status = cat.has(label) ? 'confirmed' : 'unknown'; }\n    else if (kind === 'curly' && cat.has(label.trim())) { key = label.trim(); score = 1; status = 'auto'; }\n    else { const m = matchVar(label); key = m.key; score = m.score; if (score < 0.5) { key = null; status = 'unmapped'; } }\n    v = { id, label, raw, kind, key, score, status, parts: new Set(), count: 0 };\n    S.vars.set(id, v);\n  }\n  v.parts.add(part); v.count++;\n  return v;\n}\nfunction detectVars(root, part) {\n  // 1) highlighted spans as whole candidates (unless they contain a bracket pattern)\n  root.querySelectorAll('span[data-hl]').forEach((sp) => {\n    const t = sp.textContent.trim();\n    if (!t || RX.slice(0, 4).some((r) => r.re.test(t)) || t.length > 60) { unwrap(sp); return; }\n    const v = registerVar(t, sp.textContent, 'highlight', part);\n    sp.removeAttribute('data-hl'); sp.setAttribute('data-jv', v.id);\n  });\n  // 2) text patterns\n  const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (n.parentElement && n.parentElement.closest('[data-jv]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT) });\n  const nodes = []; while (tw.nextNode()) nodes.push(tw.currentNode);\n  nodes.forEach((node) => {\n    let txt = node.nodeValue; let cur = node;\n    for (let guard = 0; guard < 200; guard++) {\n      let best = null;\n      RX.forEach((r) => { const m = r.re.exec(txt); if (m && (!best || m.index < best.m.index)) best = { r, m }; });\n      if (!best) break;\n      const { r, m } = best; const label = (m[1] || m[0]).trim();\n      let accept = true;\n      if (r.kind === 'square' && (/^\\d+$/.test(label) || /^[\\s.\\-_]+$/.test(label))) accept = false;\n      if (r.kind === 'caps') { const mv = matchVar(m[0]); accept = m[0].length >= 5 && mv.score >= 0.75; }\n      if (!accept) { // skip this match, continue after it\n        const before = txt.slice(0, m.index + m[0].length); const rest = txt.slice(m.index + m[0].length);\n        // move past by splitting text node\n        const tail = cur.splitText(before.length); cur = tail; txt = rest; continue;\n      }\n      const startNode = m.index ? cur.splitText(m.index) : cur;\n      const after = startNode.splitText(m[0].length);\n      const v = registerVar(r.kind === 'caps' ? m[0] : label, m[0], r.kind, part);\n      const sp = document.createElement('span'); sp.setAttribute('data-jv', v.id); sp.textContent = m[0];\n      startNode.replaceWith(sp); cur = after; txt = after.nodeValue;\n    }\n  });\n  root.querySelectorAll('span[data-hl]').forEach(unwrap);\n}\nfunction unwrap(el) { const p = el.parentNode; if (!p) return; while (el.firstChild) p.insertBefore(el.firstChild, el); el.remove(); }\n\n/* ===================================================================== LOAD INTO STATE */\nfunction partDom(html) { const d = document.createElement('div'); d.innerHTML = html || ''; return d; }\nlet blockSeq = 0;\nfunction splitBlocks(html, origin) {\n  const d = partDom(html); const out = [];\n  Array.from(d.childNodes).forEach((n) => {\n    if (n.nodeType === 8) { if (/pagebreak/i.test(n.nodeValue)) out.push('<!-- pagebreak -->'); return; }\n    if (n.nodeType === 3) { if (n.nodeValue.trim()) out.push('<p>' + esc(n.nodeValue.trim()) + '</p>'); return; }\n    if (n.nodeType === 1) out.push(n.outerHTML);\n  });\n  return out.map((h) => ({ id: ++blockSeq, html: h, origin, role: origin }));\n}\nfunction recomputeParts() { ['header', 'body', 'footer'].forEach((p) => { S.parts[p] = S.blocks.filter((b) => b.role === p).map((b) => b.html).join('\\n'); }); }\n/** Replace the blocks currently in one part (keeps their place and origin when the count is unchanged). */\nfunction setPartHtml(part, html, origin) {\n  const old = S.blocks.filter((b) => b.role === part);\n  const nb = splitBlocks(html, origin || part);\n  if (!origin && nb.length === old.length) nb.forEach((b, i) => { b.id = old[i].id; b.origin = old[i].origin; });\n  nb.forEach((b) => { b.role = part; });\n  const firstIdx = S.blocks.findIndex((b) => b.role === part);\n  const keep = S.blocks.filter((b) => b.role !== part);\n  let at;\n  if (firstIdx >= 0) at = S.blocks.slice(0, firstIdx).filter((b) => b.role !== part).length;\n  else if (part === 'header') at = 0;\n  else if (part === 'footer') at = keep.length;\n  else { at = keep.findIndex((b) => b.role === 'footer'); if (at < 0) at = keep.length; }\n  keep.splice(at, 0, ...nb); S.blocks = keep; recomputeParts();\n}\nfunction loadParts(parts, images, opts) {\n  S.vars = new Map(); S.images = images || []; S.notes = (opts && opts.notes) || []; S.blocks = [];\n  const prof = activeProfile();\n  ['header', 'body', 'footer'].forEach((k) => {\n    const d = partDom(parts[k]);\n    sanitizeInto(d, prof.pageW - prof.mL - prof.mR);\n    // images coming from pasted HTML\n    d.querySelectorAll('img:not([data-jimg])').forEach((img) => {\n      const src = img.getAttribute('src') || ''; const m = src.match(/\\{\\{\\{\\s*letter_attachment_(\\w+)\\s*\\}\\}\\}/);\n      const n = S.images.length;\n      S.images.push({ n, name: m ? 'letter_attachment_' + m[1] : (src.slice(0, 40) || 'image'), dataUrl: /^data:image\\//.test(src) ? src : null, w: +img.getAttribute('width') || 120, h: +img.getAttribute('height') || 60, attId: m ? m[1] : '', part: k, background: false, styleKeep: img.getAttribute('style') || '' });\n      img.setAttribute('data-jimg', n); img.removeAttribute('src');\n      if (!img.getAttribute('width')) img.setAttribute('width', S.images[n].w); if (!img.getAttribute('height')) img.setAttribute('height', S.images[n].h);\n    });\n    detectVars(d, k);\n    S.blocks.push(...splitBlocks(d.innerHTML, k));\n  });\n  recomputeParts();\n  S.fixBase = Object.assign({}, S.fix); S.fixHistory = [];\n  if (opts && opts.wordGeom) S.wordGeom = opts.wordGeom;\n  renderAll(true);\n}\n\n/* ===================================================================== BUILD (output / preview) */\nfunction sampleMap() {\n  const m = new Map();\n  String($('#samples').value || '').split('\\n').forEach((l) => { const i = l.indexOf('='); if (i > 0) m.set(l.slice(0, i).trim(), l.slice(i + 1).trim()); });\n  return m;\n}\nconst varText = (v) => (!v || !v.key || v.status === 'keep' || v.status === 'unmapped') ? null : (COMPOSITE[v.key] || '{{{' + v.key + '}}}');\nfunction build(mode) {\n  const out = {}; const prof = activeProfile();\n  const samples = mode === 'preview' ? sampleMap() : null;\n  const hl = $('#hlVars') ? $('#hlVars').checked : true;\n  const used = new Map(); const warn = []; const embedded = [];\n  ['header', 'body', 'footer'].forEach((part) => {\n    const d = partDom(S.parts[part]);\n    // variables\n    d.querySelectorAll('[data-jv]').forEach((sp) => {\n      const v = S.vars.get(sp.getAttribute('data-jv'));\n      const t = varText(v);\n      if (!t) { unwrap(sp); sp.removeAttribute && sp.removeAttribute('data-jv'); return; }\n      (t.match(/\\{\\{\\{\\s*([A-Za-z0-9_]+)\\s*\\}\\}\\}/g) || []).forEach((tok) => { const k = tok.replace(/[{}\\s]/g, ''); const u = used.get(k) || { key: k, count: 0, parts: new Set() }; u.count++; u.parts.add(part); used.set(k, u); });\n      if (mode === 'preview') {\n        const txt = t.replace(/\\{\\{\\{\\s*([A-Za-z0-9_]+)\\s*\\}\\}\\}/g, (_, k) => (samples.has(k) ? samples.get(k) : '[' + ((catByKey().get(k) || {}).en || k) + ']'));\n        const s = document.createElement('span'); if (hl) s.className = 'vhl'; s.textContent = txt; sp.replaceWith(s);\n        if (isArabicText(txt)) { s.setAttribute('dir', 'auto'); }\n      } else { sp.replaceWith(document.createTextNode(t)); }\n    });\n    // images\n    d.querySelectorAll('img[data-jimg]').forEach((img) => {\n      const im = S.images[+img.getAttribute('data-jimg')]; if (!im) { img.remove(); return; }\n      const w = Math.round(im.w * S.fix.imgScale), h = Math.round(im.h * S.fix.imgScale);\n      const p = img.parentElement; const block = p && p.tagName === 'P' && p.textContent.replace(/[\\s\\u00a0]/g, '') === '' && p.querySelectorAll('img').length === 1;\n      if (mode === 'preview') {\n        if (im.dataUrl || im.url) { img.setAttribute('src', im.dataUrl || im.url); img.setAttribute('width', w); img.setAttribute('height', h); img.removeAttribute('data-jimg'); }\n        else { const box = document.createElement('span'); box.className = 'imgph'; box.style.width = w + 'px'; box.style.height = h + 'px'; box.textContent = '{{{letter_attachment_' + (im.attId || '?') + '}}}'; img.replaceWith(box); }\n      } else {\n        const id = String(im.attId || '').trim();\n        const mode = imgMode(im);\n        if (mode === 'embed' && (im.embedUrl || im.dataUrl)) { img.setAttribute('src', im.embedUrl || im.dataUrl); embedded.push(im); }\n        else if (id) img.setAttribute('src', '{{{letter_attachment_' + id + '}}}');\n        else {\n          warn.push('Image “' + im.name + '” (' + part + ') is left out: ' + (im.dataUrl ? 'type its Jisr attachment ID in step 4, or switch it to \"Embed in the source code\".' : 'it has no picture to embed; type its Jisr attachment ID in step 4.'));\n          const holder = block ? p : null; img.remove(); if (holder && !holder.textContent.replace(/[\\s\\u00a0]/g, '') && !holder.querySelector('img')) holder.remove();\n          return;\n        }\n        img.setAttribute('width', w); img.setAttribute('height', h); img.removeAttribute('data-jimg'); img.removeAttribute('alt');\n        const m = parseStyle(im.styleKeep || '');\n        if (block && p) { const ps = parseStyle(p.getAttribute('style')); const al = ps.get('text-align'); m.set('display', 'block'); if (al === 'center' || !al) { m.set('margin-left', 'auto'); m.set('margin-right', 'auto'); } else if (al === 'right') m.set('margin-left', 'auto'); }\n        if (m.size) img.setAttribute('style', styleStr(m));\n      }\n    });\n    applyFixes(d, part);\n    // strip internal markers\n    d.querySelectorAll('[data-empty],[data-hl]').forEach((e) => { e.removeAttribute('data-empty'); e.removeAttribute('data-hl'); });\n    if (mode === 'output') {\n      // generic font on top-level blocks\n      Array.from(d.children).forEach((el) => { const m = parseStyle(el.getAttribute('style')); if (!m.has('font-family')) { m.set('font-family', 'Arial, sans-serif'); el.setAttribute('style', styleStr(m)); } });\n      out[part] = serialize(d);\n    } else out[part] = d.innerHTML;\n  });\n  return { parts: out, used, warn, embedded };\n}\nfunction tidyStyles(d) {\n  d.querySelectorAll('[style]').forEach((el) => {\n    const m = parseStyle(el.getAttribute('style'));\n    if (m.has('margin') && /^(0(pt|px)?\\s*){1,4}$/.test(m.get('margin').trim() + ' ')) m.set('margin', '0');\n    const sides = ['top', 'right', 'bottom', 'left'].map((k) => m.get('border-' + k));\n    if (sides[0] && sides.every((x) => x === sides[0])) { ['top', 'right', 'bottom', 'left'].forEach((k) => m.delete('border-' + k)); m.set('border', sides[0]); }\n    el.setAttribute('style', styleStr(m));\n  });\n}\nfunction serialize(d) {\n  tidyStyles(d);\n  const out = [];\n  Array.from(d.childNodes).forEach((n) => {\n    if (n.nodeType === 8) { if (/pagebreak/i.test(n.nodeValue)) out.push('<!-- pagebreak -->'); return; }\n    if (n.nodeType === 3) { if (n.nodeValue.trim()) out.push(esc(n.nodeValue.trim())); return; }\n    out.push(n.outerHTML.replace(/>\\s*\\n\\s*</g, '><').replace(/\\n/g, ' '));\n  });\n  return out.join('\\n');\n}\nfunction scaleLen(v, f) { return String(v).replace(/(-?[\\d.]+)(pt|px|em|mm)/g, (_, n, u) => round(+n * f, 2) + u); }\nfunction applyFixes(d, part) {\n  const F = S.fix;\n  // spacer paragraphs (top-level and inside cells)\n  const containers = [d].concat(Array.from(d.querySelectorAll('td,th')));\n  containers.forEach((c) => {\n    const ch = Array.from(c.children);\n    let run = [];\n    const flushRun = (next) => {\n      if (!run.length) return;\n      if (F.spacerMode === 'keep') { run = []; return; }\n      let hpt = 0;\n      run.forEach((p) => {\n        const m = parseStyle(p.getAttribute('style')); const fs = parseFloat(m.get('font-size')) || S.baseFont; const lhRaw = m.get('line-height'); const lh = lhRaw ? (/pt$/.test(lhRaw) ? parseFloat(lhRaw) / fs : parseFloat(lhRaw)) : 1.15;\n        let mg = 0; if (m.has('margin')) { const q = m.get('margin').split(/\\s+/); mg = (parseFloat(q[0]) || 0) + (parseFloat(q.length >= 3 ? q[2] : q[0]) || 0); } else if (m.has('margin-top') || m.has('margin-bottom')) mg = (parseFloat(m.get('margin-top')) || 0) + (parseFloat(m.get('margin-bottom')) || 0); else mg = fs; // browser default 1em (collapsed)\n        hpt += fs * lh + mg;\n      });\n      run.forEach((p) => p.remove());\n      if (F.spacerMode === 'collapse' && next) {\n        const m = parseStyle(next.getAttribute('style'));\n        if (m.has('margin')) { const q = m.get('margin').split(/\\s+/); while (q.length < 4) q.push(q.length === 1 ? q[0] : q[q.length === 3 ? 1 : 0]); q[0] = round((parseFloat(q[0]) || 0) + hpt, 1) + 'pt'; m.set('margin', q.join(' ')); }\n        else m.set('margin-top', round((parseFloat(m.get('margin-top')) || 0) + hpt, 1) + 'pt');\n        next.setAttribute('style', styleStr(m));\n      }\n      run = [];\n    };\n    ch.forEach((el, i) => {\n      if (el.tagName === 'P' && el.getAttribute('data-empty') === '1') { run.push(el); return; }\n      flushRun(el);\n    });\n    flushRun(null); // trailing spacers are dropped (they only push the footer)\n  });\n  // spacing\n  if (F.spacingScale !== 1) {\n    d.querySelectorAll('p,ul,ol,li,table,td,th').forEach((el) => {\n      const m = parseStyle(el.getAttribute('style'));\n      ['margin', 'margin-top', 'margin-bottom', 'padding', 'padding-top', 'padding-bottom'].forEach((k) => { if (m.has(k)) { if (k === 'margin' || k === 'padding') { const p4 = m.get(k).split(/\\s+/); if (p4.length === 4) { p4[0] = scaleLen(p4[0], F.spacingScale); p4[2] = scaleLen(p4[2], F.spacingScale); m.set(k, p4.join(' ')); } else if (p4.length === 2) { p4[0] = scaleLen(p4[0], F.spacingScale); m.set(k, p4.join(' ')); } else m.set(k, scaleLen(m.get(k), F.spacingScale)); } else m.set(k, scaleLen(m.get(k), F.spacingScale)); } });\n      if (el.tagName === 'P' && !m.has('margin') && !m.has('margin-top') && !m.has('margin-bottom')) m.set('margin', round(S.baseFont * F.spacingScale, 1) + 'pt 0');\n      el.setAttribute('style', styleStr(m));\n    });\n  }\n  // font size\n  if (F.fontScale !== 1) {\n    d.querySelectorAll('[style*=\"font-size\"]').forEach((el) => { const m = parseStyle(el.getAttribute('style')); m.set('font-size', scaleLen(m.get('font-size'), F.fontScale)); el.setAttribute('style', styleStr(m)); });\n    Array.from(d.children).forEach((el) => { if (/^(P|UL|OL|TABLE)$/.test(el.tagName)) { const m = parseStyle(el.getAttribute('style')); if (!m.has('font-size')) { m.set('font-size', round(S.baseFont * F.fontScale, 1) + 'pt'); el.setAttribute('style', styleStr(m)); } } });\n  }\n}\n\n/* ===================================================================== PROFILES */\nconst PAPER = { A4: [210, 297], Letter: [215.9, 279.4] };\nconst ASSUMED = { name: 'Assumed A4 (not calibrated)', paper: 'A4', pageW: 210, pageH: 297, mT: 20, mB: 20, mL: 20, mR: 20, mode: 'flow', calibrated: false, printH: null, pagebreak: 'unknown' };\nconst LH12 = (12 * 1.15) / 72 * 25.4; // mm per calibration line\nfunction profiles() { const p = LS.get('jlc_profiles_v1', []); return [ASSUMED].concat(Array.isArray(p) ? p : []); }\nfunction activeProfile() { const n = LS.get('jlc_active_profile', ASSUMED.name); return profiles().find((p) => p.name === n) || ASSUMED; }\nfunction printH(p) { return p.printH || (p.pageH - p.mT - p.mB); }\n\n/* ===================================================================== FIT ENGINE */\nasync function measure(parts, prof) {\n  const host = $('#measure');\n  const printW = prof.pageW - prof.mL - prof.mR;\n  host.style.width = printW * MM + 'px';\n  host.innerHTML = '<div class=\"stream\" style=\"font-size:' + S.baseFont + 'pt\"><div class=\"m-h\">' + parts.header + '</div><div class=\"m-b\">' + parts.body + '</div><div class=\"m-f\">' + parts.footer + '</div></div>';\n  await Promise.all($$('img', host).map((im) => (im.complete ? Promise.resolve() : new Promise((r) => { im.onload = im.onerror = r; }))));\n  const stream = host.firstChild; const top0 = stream.getBoundingClientRect().top;\n  const H = $('.m-h', host), B = $('.m-b', host), F = $('.m-f', host);\n  const rel = (el) => { const r = el.getBoundingClientRect(); return { top: r.top - top0, bottom: r.bottom - top0, h: r.height }; };\n  const hR = rel(H), bR = rel(B), fR = rel(F);\n  const units = []; let forced = false;\n  Array.from(B.childNodes).forEach((n) => {\n    if (n.nodeType === 8 && /pagebreak/i.test(n.nodeValue)) { forced = true; return; }\n    if (n.nodeType !== 1) return;\n    const list = n.tagName === 'TABLE' ? $$('tr', n) : (n.tagName === 'UL' || n.tagName === 'OL') ? $$(':scope > li', n) : [n];\n    list.forEach((el, i) => { const r = rel(el); units.push({ top: r.top, bottom: r.bottom, forced: forced && i === 0, kind: 'body' }); });\n    forced = false;\n  });\n  const capMm = printH(prof);\n  const cap = capMm * MM;\n  const mode = prof.mode;\n  let all;\n  if (mode === 'flow') {\n    all = [];\n    if (hR.h > 0.5) all.push({ top: hR.top, bottom: hR.bottom, kind: 'header' });\n    units.forEach((u) => all.push(u));\n    if (fR.h > 0.5) all.push({ top: fR.top, bottom: fR.bottom, kind: 'footer' });\n  } else all = units;\n  const pageCap = mode === 'flow' ? cap : Math.max(20 * MM, cap - hR.h - fR.h);\n  const pages = paginate(all, pageCap);\n  const total = all.length ? all[all.length - 1].bottom - all[0].top : 0;\n  let footerPushed = false, footerPage = null;\n  if (mode === 'flow' && fR.h > 0.5) {\n    footerPage = pages.findIndex((pg) => pg.units.some((u) => u.kind === 'footer')) + 1;\n    const lastBodyPage = pages.reduce((acc, pg, i) => (pg.units.some((u) => u.kind !== 'footer') ? i + 1 : acc), 0);\n    footerPushed = footerPage > lastBodyPage;\n  }\n  const n = pages.length || 1;\n  const target = S.target;\n  const usedLast = pages.length ? pages[pages.length - 1].end - pages[pages.length - 1].start : 0;\n  const overflowMm = Math.max(0, (total - target * pageCap) / MM);\n  const fits = n <= target;\n  return {\n    pages, pageCap, cap, mode, printW, capMm, n, target, fits, footerPushed, footerPage,\n    headerMm: round(hR.h / MM, 1), bodyMm: round(bR.h / MM, 1), footerMm: round(fR.h / MM, 1), totalMm: round(total / MM, 1),\n    overflowMm: round(overflowMm, 1), spareMm: fits ? round((pageCap - usedLast) / MM, 1) : 0,\n    tallest: units.reduce((m, u) => Math.max(m, u.bottom - u.top), 0) / MM,\n  };\n}\nfunction paginate(units, cap) {\n  const pages = []; if (!units.length) return [{ start: 0, end: 0, units: [] }];\n  let cur = { start: units[0].top, end: units[0].top, units: [] };\n  units.forEach((u) => {\n    if (cur.units.length && (u.forced || u.bottom - cur.start > cap + 0.5)) { pages.push(cur); cur = { start: u.top, end: u.top, units: [] }; }\n    while (u.bottom - cur.start > cap + 0.5 && !cur.units.length) { // a single unit taller than a page\n      pages.push({ start: cur.start, end: cur.start + cap, units: [u], split: true }); cur = { start: cur.start + cap, end: cur.start + cap, units: [] };\n      if (u.bottom - cur.start <= cap) break;\n    }\n    cur.units.push(u); cur.end = Math.max(cur.end, u.bottom);\n  });\n  pages.push(cur);\n  return pages;\n}\n\n/* ===================================================================== PREVIEW */\nfunction renderPages(previewParts, fit, prof) {\n  const box = $('#pages'); box.innerHTML = '';\n  const z = +$('#zoom').value;\n  const pw = prof.pageW * MM, ph = prof.pageH * MM;\n  const stream = '<div class=\"stream\" style=\"font-size:' + S.baseFont + 'pt\"><div class=\"m-h\">' + previewParts.header + '</div><div class=\"m-b\">' + previewParts.body + '</div><div class=\"m-f\">' + previewParts.footer + '</div></div>';\n  const capPx = printH(prof) * MM;\n  const top = prof.mT * MM;\n  fit.pages.forEach((pg, i) => {\n    const wrap = document.createElement('div'); wrap.className = 'pagewrap' + (i + 1 > fit.target ? ' over' : '');\n    wrap.style.width = pw * z + 'px'; wrap.style.height = ph * z + 'px';\n    const page = document.createElement('div'); page.className = 'page'; page.style.width = pw + 'px'; page.style.height = ph + 'px'; page.style.transform = 'scale(' + z + ')';\n    const pa = document.createElement('div'); pa.className = 'pa'; pa.style.left = prof.mL * MM + 'px'; pa.style.top = top + 'px'; pa.style.width = (prof.pageW - prof.mL - prof.mR) * MM + 'px'; pa.style.height = capPx + 'px';\n    page.appendChild(pa);\n    const vp = (y, h, html, shift) => { const v = document.createElement('div'); v.className = 'vp'; v.style.left = prof.mL * MM + 'px'; v.style.top = y + 'px'; v.style.width = (prof.pageW - prof.mL - prof.mR) * MM + 'px'; v.style.height = Math.max(0, h) + 'px'; v.innerHTML = html; if (shift) v.firstChild.style.transform = 'translateY(' + -shift + 'px)'; page.appendChild(v); return v; };\n    if (fit.mode === 'flow') vp(top, pg.end - pg.start, stream, pg.start);\n    else {\n      const hh = fit.headerMm * MM, fh = fit.footerMm * MM;\n      const hv = vp(top, hh, stream, 0); hv.querySelector('.m-b').style.display = 'none'; hv.querySelector('.m-f').style.display = 'none';\n      const bv = vp(top + hh, pg.end - pg.start, stream, pg.start); bv.querySelector('.m-h').style.visibility = 'hidden'; bv.querySelector('.m-f').style.display = 'none';\n      // body coordinates in repeat mode are measured inside the stream including the header height\n      const fv = vp(top + capPx - fh, fh, stream, 0); fv.querySelector('.m-h').style.display = 'none'; fv.querySelector('.m-b').style.display = 'none';\n    }\n    const lbl = document.createElement('div'); lbl.className = 'lbl'; lbl.textContent = 'Page ' + (i + 1) + (i + 1 > fit.target ? ' · over the intended ' + fit.target : '') + (pg.split ? ' · content taller than a page' : '');\n    page.appendChild(lbl);\n    wrap.appendChild(page); box.appendChild(wrap);\n  });\n}\n\n/* ===================================================================== RENDER CYCLE */\nlet renderTimer = null, renderSeq = 0;\nfunction renderAll(now) { clearTimeout(renderTimer); renderTimer = setTimeout(doRender, now ? 0 : 160); }\nfunction hasContent() { return !!(S.parts.header || S.parts.body || S.parts.footer); }\nlet quietDepth = 0;\nasync function doRender() {\n  if (quietDepth) return;\n  prepareEmbeds();\n  const seq = ++renderSeq;\n  renderVarTable(); renderAssign(); renderImages(); renderProfileInfo(); renderStruct(); renderFixState(); if (typeof renderJisr === 'function') renderJisr();\n  if (!hasContent()) return;\n  const prof = activeProfile();\n  const prev = build('preview');\n  const fit = await measure(prev.parts, prof);\n  if (seq !== renderSeq) return;\n  S.lastFit = fit;\n  renderPages(prev.parts, fit, prof);\n  renderFitStatus(fit, prof);\n  if (ED.open) edFitBadge(fit);\n  renderOutput();\n}\nfunction renderFixState() {\n  const base = S.fixBase || { spacerMode: 'collapse', spacingScale: 1, fontScale: 1, imgScale: 1 };\n  const changed = JSON.stringify(base) !== JSON.stringify(S.fix);\n  $('#fixState').textContent = hasContent() ? (changed ? 'Now: ' + describeFix() : 'No adjustments') : '';\n  $('#undoFix').disabled = $('#undoFixB').disabled = !S.fixHistory.length;\n  $('#resetFix2').disabled = !changed;\n}\nfunction renderFitStatus(fit, prof) {\n  const big = $('#fitBig'); const ok = fit.fits && !(fit.footerPushed && fit.footerPage > fit.target);\n  big.className = 'fitbig ' + (ok ? 'ok' : 'bad');\n  big.textContent = ok ? 'Fits on ' + fit.n + ' page' + (fit.n > 1 ? 's' : '') : 'Overflows: ' + fit.n + ' pages, intended ' + fit.target;\n  const bits = [fit.overflowMm > 0 ? 'over by ' + fit.overflowMm + ' mm' : (fit.fits ? fit.spareMm + ' mm spare on the last page' : 'page breaks waste space')];\n  if (fit.footerPushed) bits.push('⚠ footer pushed to page ' + fit.footerPage);\n  bits.push('header ' + fit.headerMm + ' mm · body ' + fit.bodyMm + ' mm · footer ' + fit.footerMm + ' mm · page area ' + round(fit.pageCap / MM, 1) + ' mm');\n  if (!prof.calibrated) bits.push('estimate (not calibrated)');\n  $('#fitMeta').textContent = bits.join(' · ');\n  const rep = $('#fitReport'); rep.className = 'card';\n  rep.innerHTML = '<div class=\"msg ' + (ok ? 'ok' : 'err') + '\">' + esc(big.textContent) + '</div>' +\n    '<table class=\"t\"><tbody>' +\n    [['Profile', prof.name + (prof.calibrated ? '' : ' (estimate)')], ['Header / footer', prof.mode === 'flow' ? 'flow with the body (header on page 1, footer after the body)' : 'repeat on every page'],\n      ['Printable area', round(prof.pageW - prof.mL - prof.mR, 1) + ' × ' + round(printH(prof), 1) + ' mm'], ['Pages used / intended', fit.n + ' / ' + fit.target],\n      ['Overflow', fit.overflowMm + ' mm'], ['Footer pushed to next page', fit.footerPushed ? 'yes, page ' + fit.footerPage : 'no'],\n      ['Header · body · footer height', fit.headerMm + ' · ' + fit.bodyMm + ' · ' + fit.footerMm + ' mm'],\n      ['Adjustments', describeFix()]].map(([a, b]) => '<tr><td>' + esc(a) + '</td><td>' + esc(b) + '</td></tr>').join('') + '</tbody></table>' +\n    (fit.tallest > fit.pageCap / MM ? '<div class=\"msg warn\">One block (a table row or paragraph) is taller than a whole page.</div>' : '') +\n    S.notes.map((n) => '<div class=\"msg warn\">' + esc(n) + '</div>').join('');\n}\nfunction describeFix() {\n  const F = S.fix; const a = [];\n  a.push({ collapse: 'spacers collapsed', keep: 'spacers kept', remove: 'spacers removed' }[F.spacerMode]);\n  if (F.spacingScale !== 1) a.push('spacing ' + Math.round(F.spacingScale * 100) + '%');\n  if (F.fontScale !== 1) a.push('font ' + Math.round(F.fontScale * 100) + '%');\n  if (F.imgScale !== 1) a.push('images ' + Math.round(F.imgScale * 100) + '%');\n  return a.join(', ');\n}\n\n/* ===================================================================== STRUCTURE UI */\nconst ROLE_LABEL = { header: 'Header', body: 'Body', footer: 'Footer', skip: 'Leave out' };\nfunction blockLabel(h) {\n  if (/^<!--\\s*pagebreak/.test(h)) return { t: '— page break —', muted: true };\n  const el = partDom(h).firstElementChild; if (!el) return { t: '(empty)', muted: true };\n  const txt = el.textContent.replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();\n  if (el.tagName === 'TABLE') return { t: 'Table · ' + el.querySelectorAll('tr').length + ' rows · ' + txt.slice(0, 90), rtl: isArabicText(txt) };\n  const imgs = el.querySelectorAll('img').length;\n  if (!txt && imgs) return { t: '[image]' };\n  if (!txt) return { t: '(empty line)', muted: true };\n  return { t: (imgs ? '[image] ' : '') + txt.slice(0, 140) + (txt.length > 140 ? '…' : ''), rtl: isArabicText(txt) };\n}\nfunction renderStruct() {\n  const box = $('#structList');\n  if (!S.blocks.length) { box.innerHTML = '<p class=\"hint\">Import a letter first.</p>'; $('#structSummary').textContent = ''; return; }\n  const n = (r) => S.blocks.filter((b) => b.role === r).length;\n  $('#structSummary').textContent = 'Header ' + n('header') + ' · Body ' + n('body') + ' · Footer ' + n('footer') + (n('skip') ? ' · Left out ' + n('skip') : '');\n  box.innerHTML = S.blocks.map((b) => {\n    const l = blockLabel(b.html);\n    return '<div class=\"srow r-' + b.role + '\"><select data-blk=\"' + b.id + '\">' + ['header', 'body', 'footer', 'skip'].map((r) => '<option value=\"' + r + '\"' + (r === b.role ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('') + '</select>' +\n      '<div style=\"min-width:0\"><span class=\"org\">from Word ' + esc(b.origin) + '</span><div class=\"txt' + (l.muted ? ' muted' : '') + '\"' + (l.rtl ? ' dir=\"rtl\"' : '') + ' title=\"' + esc(l.t) + '\">' + esc(l.t) + '</div></div>' +\n      '<div class=\"acts\"><button class=\"btn sm\" data-hdrto=\"' + b.id + '\" title=\"This line and everything above it become the Header\">Header up to here</button><button class=\"btn sm\" data-ftrfrom=\"' + b.id + '\" title=\"This line and everything below it become the Footer\">Footer from here</button></div></div>';\n  }).join('');\n}\nfunction restructure(fn) { fn(); recomputeParts(); renderAll(true); }\n$('#structList').addEventListener('change', (e) => { const id = +e.target.getAttribute('data-blk'); if (!id) return; restructure(() => { S.blocks.find((b) => b.id === id).role = e.target.value; }); });\n$('#structList').addEventListener('click', (e) => {\n  const h = e.target.getAttribute('data-hdrto'), f = e.target.getAttribute('data-ftrfrom');\n  if (h) restructure(() => { const i = S.blocks.findIndex((b) => b.id === +h); S.blocks.forEach((b, k) => { if (b.role === 'skip') return; if (k <= i) b.role = 'header'; else if (b.role === 'header') b.role = 'body'; }); });\n  if (f) restructure(() => { const i = S.blocks.findIndex((b) => b.id === +f); S.blocks.forEach((b, k) => { if (b.role === 'skip') return; if (k >= i) b.role = 'footer'; else if (b.role === 'footer') b.role = 'body'; }); });\n});\n$('#structReset').addEventListener('click', () => restructure(() => { S.blocks.forEach((b) => { b.role = b.origin.split(' ')[0]; }); }));\n\n/* ===================================================================== VARIABLES UI */\nfunction keyOptions(sel) {\n  const groups = {}; CATALOG.forEach((c) => { (groups[c.group] = groups[c.group] || []).push(c); });\n  return '<option value=\"\">— not a variable (keep text) —</option>' + Object.keys(groups).map((g) => '<optgroup label=\"' + esc(g) + '\">' + groups[g].map((c) => '<option value=\"' + esc(c.key) + '\"' + (c.key === sel ? ' selected' : '') + '>' + esc(c.en) + ' · ' + esc(c.key) + '</option>').join('') + '</optgroup>').join('') +\n    (sel && !catByKey().has(sel) ? '<option value=\"' + esc(sel) + '\" selected>' + esc(sel) + ' (not in catalog)</option>' : '');\n}\nfunction renderVarTable() {\n  const tb = $('#varTable tbody'); const vs = Array.from(S.vars.values());\n  $('#varsMsg').innerHTML = !hasContent() ? '<div class=\"msg info\">Import a letter first.</div>' : (!vs.length ? '<div class=\"msg info\">No placeholders found. Open the letter editor below to place variables.</div>' : '');\n  tb.innerHTML = vs.map((v) => {\n    const tag = v.status === 'confirmed' || v.status === 'manual' ? '<span class=\"tag ok\">confirmed</span>' : v.status === 'unknown' ? '<span class=\"tag bad\">not in catalog</span>' : v.status === 'unmapped' || !v.key ? '<span class=\"tag warn\">no match</span>' : v.status === 'keep' ? '<span class=\"tag\">kept as text</span>' : '<span class=\"tag warn\">proposed ' + Math.round(v.score * 100) + '%</span>';\n    const kindNote = v.kind === 'curly' && (S.source === 'html' || S.source === 'jisr') ? ' <span class=\"tag warn\">two braces</span>' : '';\n    return '<tr data-v=\"' + esc(v.id) + '\"><td dir=\"auto\"><b>' + esc(v.raw) + '</b>' + kindNote + '<div class=\"hint\">' + esc(v.kind) + ' · ' + v.count + '×</div></td><td>' + esc(['header', 'body', 'footer'].filter((p) => (S.parts[p] || '').indexOf('data-jv=\"' + v.id + '\"') >= 0).join(', ') || 'left out') + '</td><td><select data-vsel=\"' + esc(v.id) + '\">' + keyOptions(v.status === 'keep' ? '' : v.key) + '</select></td><td>' + tag + '</td></tr>';\n  }).join('');\n}\n$('#varTable').addEventListener('change', (e) => {\n  const id = e.target.getAttribute('data-vsel'); if (!id) return; const v = S.vars.get(id);\n  if (!e.target.value) { v.status = 'keep'; } else { v.key = e.target.value; v.status = 'confirmed'; }\n  renderAll();\n});\n$('#confirmAll').addEventListener('click', () => { S.vars.forEach((v) => { if (v.key && v.status === 'auto') v.status = 'confirmed'; }); renderAll(); });\nfunction fillKeyList() { $('#keyList').innerHTML = CATALOG.map((c) => '<option value=\"' + esc(c.key) + '\">' + esc(c.en + ' · ' + c.ar) + '</option>').join(''); }\n/* ===================================================================== LETTER EDITOR (Word-like, v1.4)\n   The three parts are shown on one page as editable areas. Variables are chips\n   (<span data-jv contenteditable=false>) that can be dropped or clicked into any spot,\n   including empty table cells. Edits are written back with setPartHtml(). */\nconst ED = { open: false, undo: [], redo: [], base: null, caret: null, sel: null, typingAt: 0, timer: null, written: {}, drag: null, dropEl: null };\nconst PARTS3 = ['header', 'body', 'footer'];\nconst edPart = (p) => $('#edPage .edpart[data-part=\"' + p + '\"]');\nconst blankTxt = (t) => !String(t || '').replace(/[\\s ​]/g, '');\nfunction chipLabel(v) {\n  if (!v) return '?';\n  const t = varText(v); if (!t) return v.raw;\n  const c = catByKey().get(v.key); return c ? c.en : '{{{' + v.key + '}}}';\n}\nfunction chipify(sp, editable) {\n  const v = S.vars.get(sp.getAttribute('data-jv'));\n  if (!sp.hasAttribute('data-raw')) sp.setAttribute('data-raw', sp.textContent);\n  sp.textContent = chipLabel(v);\n  sp.className = 'chip' + (v && varText(v) ? '' : ' keep');\n  sp.title = v && varText(v) ? varText(v) : 'Kept as text: ' + sp.getAttribute('data-raw');\n  if (editable) { sp.setAttribute('contenteditable', 'false'); sp.setAttribute('draggable', 'true'); }\n  return sp;\n}\nfunction decorate(html, editable) {\n  const d = partDom(html);\n  d.querySelectorAll('img[data-jimg]').forEach((img) => { const im = S.images[+img.getAttribute('data-jimg')]; if (im && (im.dataUrl || im.url)) img.setAttribute('src', im.dataUrl || im.url); else img.setAttribute('alt', '[image]'); if (editable) img.setAttribute('draggable', 'false'); });\n  d.querySelectorAll('[data-jv]').forEach((sp) => chipify(sp, editable));\n  return d.innerHTML;\n}\nconst INLINE = /^(SPAN|B|I|U|S|STRONG|EM|SUB|SUP|A|BR|IMG|FONT|MARK)$/;\nfunction undecorate(el) {\n  const d = partDom(el.innerHTML);\n  d.querySelectorAll('[data-jv]').forEach((sp) => {\n    const id = sp.getAttribute('data-jv'); const v = S.vars.get(id);\n    const raw = sp.getAttribute('data-raw');\n    const n = document.createElement('span'); n.setAttribute('data-jv', id); n.textContent = raw != null ? raw : (v ? v.raw : '');\n    sp.replaceWith(n);\n  });\n  d.querySelectorAll('img').forEach((img) => { if (img.hasAttribute('data-jimg')) { img.removeAttribute('src'); img.removeAttribute('alt'); } img.removeAttribute('draggable'); });\n  d.querySelectorAll('.dropt').forEach((x) => x.classList.remove('dropt'));\n  d.querySelectorAll('[class=\"\"]').forEach((x) => x.removeAttribute('class'));\n  // Chrome may create <div> lines; Jisr letters use <p>\n  Array.from(d.children).forEach((c) => { if (c.tagName === 'DIV' && !c.attributes.length) { const p = document.createElement('p'); while (c.firstChild) p.appendChild(c.firstChild); c.replaceWith(p); } });\n  // loose inline content at the top level is wrapped in a paragraph\n  let run = null;\n  Array.from(d.childNodes).forEach((n) => {\n    const inline = n.nodeType === 3 ? !!n.nodeValue.trim() || !!run : (n.nodeType === 1 && INLINE.test(n.tagName));\n    if (inline) { if (!run) { run = document.createElement('p'); n.before(run); } run.appendChild(n); } else run = null;\n  });\n  d.querySelectorAll('p').forEach((p) => { if (blankTxt(p.textContent) && !p.querySelector('img,[data-jv]')) p.setAttribute('data-empty', '1'); else p.removeAttribute('data-empty'); });\n  return d.innerHTML;\n}\nfunction ensureInsVar(key) {\n  const id = 'ins_' + key.replace(/[^A-Za-z0-9_@]/g, '_');\n  let v = S.vars.get(id);\n  if (!v) { const c = catByKey().get(key); v = { id, label: c ? c.en : key, raw: '{{{' + key + '}}}', kind: 'inserted', key, score: 1, status: 'manual', parts: new Set(), count: 0 }; S.vars.set(id, v); }\n  v.key = key; v.status = 'manual';\n  return v;\n}\nfunction makeChip(key) {\n  const v = ensureInsVar(key); const sp = document.createElement('span');\n  sp.setAttribute('data-jv', v.id); sp.setAttribute('data-raw', v.raw);\n  return chipify(sp, true);\n}\nfunction recountVars() {\n  S.vars.forEach((v, id) => {\n    const parts = PARTS3.filter((p) => (S.parts[p] || '').indexOf('data-jv=\"' + id + '\"') >= 0);\n    if (v.kind !== 'inserted') return;\n    if (!parts.length) { S.vars.delete(id); return; }\n    v.parts = new Set(parts); v.count = PARTS3.reduce((n, p) => n + (S.parts[p] || '').split('data-jv=\"' + id + '\"').length - 1, 0);\n  });\n}\nfunction edSync() {\n  clearTimeout(ED.timer); ED.timer = null;\n  if (!ED.open) return false;\n  let changed = false;\n  PARTS3.forEach((p) => { const h = undecorate(edPart(p)); if (h !== ED.written[p]) { ED.written[p] = h; setPartHtml(p, h); changed = true; } });\n  if (changed) { recountVars(); renderAll(); }\n  return changed;\n}\nfunction edSoon() { clearTimeout(ED.timer); ED.timer = setTimeout(edSync, 350); }\nconst edSnap = () => PARTS3.map((p) => edPart(p).innerHTML);\nfunction edBtns() { $('#edUndo').disabled = !ED.undo.length; $('#edRedo').disabled = !ED.redo.length; }\nfunction edPush() { ED.undo.push(edSnap()); if (ED.undo.length > 150) ED.undo.shift(); ED.redo = []; edBtns(); }\nfunction edRestore(snap) { PARTS3.forEach((p, i) => { edPart(p).innerHTML = snap[i]; }); ED.caret = null; edSelChip(null); edSoon(); edBtns(); }\nfunction edUndo() { if (!ED.undo.length) return; ED.redo.push(edSnap()); edRestore(ED.undo.pop()); }\nfunction edRedo() { if (!ED.redo.length) return; ED.undo.push(edSnap()); edRestore(ED.redo.pop()); }\nfunction edFitBadge(fit) {\n  const b = $('#edFit'); if (!b) return;\n  if (!fit) { b.textContent = ''; b.className = 'tag'; return; }\n  b.textContent = fit.fits ? '✓ Fits ' + fit.n + ' page' + (fit.n === 1 ? '' : 's') : '✗ ' + fit.n + ' pages, intended ' + fit.target;\n  b.className = 'tag ' + (fit.fits ? 'ok' : 'bad');\n}\nfunction edMsg(t, kind) { $('#edMsg').innerHTML = t ? '<div class=\"msg ' + (kind || 'info') + '\">' + t + '</div>' : ''; }\nfunction renderPalette() {\n  const q = normTxt($('#edSearch').value);\n  const groups = {};\n  CATALOG.forEach((c) => {\n    if (q && ![c.en, c.ar, c.key].concat(c.aliases || []).some((x) => normTxt(x).indexOf(q) >= 0)) return;\n    (groups[c.group] = groups[c.group] || []).push(c);\n  });\n  const g = Object.keys(groups);\n  $('#edList').innerHTML = g.length ? g.map((k) => '<div class=\"pvg\">' + esc(k) + '</div>' + groups[k].map((c) => '<div class=\"pv\" draggable=\"true\" data-key=\"' + esc(c.key) + '\" title=\"{{{' + esc(c.key) + '}}}\">' + esc(c.en) + '<small dir=\"rtl\" style=\"text-align:left\">' + esc(c.ar || '') + '</small><code>{{{' + esc(c.key) + '}}}</code></div>').join('')).join('') : '<p class=\"hint\">No variable matches. Use \"Other key\" below.</p>';\n}\nfunction edSelChip(chip) {\n  $$('#edPage .chip.sel').forEach((x) => x.classList.remove('sel'));\n  ED.sel = chip || null;\n  const bar = $('#edSelBar');\n  if (!chip) { bar.innerHTML = ''; return; }\n  chip.classList.add('sel');\n  const v = S.vars.get(chip.getAttribute('data-jv'));\n  const raw = chip.getAttribute('data-raw') || '';\n  const canText = v && v.kind !== 'inserted' && raw && !/^\\{\\{\\{/.test(raw);\n  bar.innerHTML = '<div class=\"msg info\">Selected: <b>' + esc(chip.textContent) + '</b> <span class=\"kbd\">' + esc(chip.title) + '</span>' +\n    '<div class=\"row\" style=\"margin-top:6px\">' + (canText ? '<button class=\"btn sm\" id=\"edChipText\">Turn back into text “' + esc(raw.slice(0, 30)) + '”</button>' : '') + '<button class=\"btn sm\" id=\"edChipDel\">Delete</button></div>' +\n    '<div class=\"hint\" style=\"margin:4px 0 0\">Click a variable below to swap it. Drag the chip to move it.</div></div>';\n}\nfunction edDeleteChip(chip, asText) {\n  if (!chip) return;\n  edPush();\n  if (asText) chip.replaceWith(document.createTextNode(chip.getAttribute('data-raw') || '')); else chip.remove();\n  edSelChip(null); edSoon();\n}\nfunction inEditor(n) { const el = n && (n.nodeType === 1 ? n : n.parentElement); return el ? el.closest('#edPage .edpart') : null; }\nfunction caretFromPoint(x, y) {\n  if (document.caretRangeFromPoint) return document.caretRangeFromPoint(x, y);\n  if (document.caretPositionFromPoint) { const p = document.caretPositionFromPoint(x, y); if (!p) return null; const r = document.createRange(); r.setStart(p.offsetNode, p.offset); r.collapse(true); return r; }\n  return null;\n}\n/** Put a chip at a range. Empty paragraphs and empty table cells are filled instead of split. */\nfunction placeNode(range, node) {\n  if (!range || !inEditor(range.startContainer)) return false;\n  let r = range;\n  const startEl = (n) => (n.nodeType === 1 ? n : n.parentElement);\n  const chipAnc = startEl(r.startContainer).closest('.chip');\n  if (chipAnc && chipAnc !== node) { r = document.createRange(); r.setStartAfter(chipAnc); r.collapse(true); }\n  if (!r.collapsed) r.deleteContents();\n  const host = startEl(r.startContainer);\n  const part = host.closest('.edpart');\n  const blk = host.closest('p,td,th,li,h1,h2,h3,h4,h5,h6');\n  if (blk && part.contains(blk) && blankTxt(blk.textContent) && !blk.querySelector('img,.chip,table')) {\n    const inner = blk.matches('td,th') ? (blk.querySelector('p,div') || blk) : blk;\n    Array.from(inner.childNodes).forEach((c) => { if (c.nodeType === 3 || (c.nodeType === 1 && c.tagName === 'BR')) c.remove(); });\n    inner.appendChild(node); inner.removeAttribute('data-empty');\n  } else if (host === part) {\n    const p = document.createElement('p'); p.appendChild(node); r.insertNode(p);\n  } else {\n    let before = '', after = '';\n    if (r.startContainer.nodeType === 3) { const t = r.startContainer.nodeValue; before = t.charAt(r.startOffset - 1); after = t.charAt(r.startOffset); }\n    r.insertNode(node);\n    if (before && !/[\\s (\\[«\"'\\/]/.test(before)) node.before(document.createTextNode(' '));\n    if (after && !/[\\s )\\]».,:;!?،؛\"'\\/]/.test(after)) node.after(document.createTextNode(' '));\n  }\n  const c = document.createRange(); c.setStartAfter(node); c.collapse(true);\n  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(c); ED.caret = c.cloneRange();\n  return true;\n}\n/** Test/automation hook: insert key into an element of the editor (e.g. an empty td). */\nfunction edInsertAt(el, key) { const r = document.createRange(); r.selectNodeContents(el); r.collapse(false); edPush(); const ok = placeNode(r, makeChip(key)); if (!ok) ED.undo.pop(); edSoon(); return ok; }\nfunction edInsertKey(key) {\n  key = String(key || '').trim().replace(/^\\{+|\\}+$/g, '');\n  if (!/^[A-Za-z0-9_@]+$/.test(key)) { edMsg('That is not a valid key. Use letters, digits and _ only.', 'err'); return; }\n  if (ED.sel && document.contains(ED.sel)) { edPush(); const n = makeChip(key); ED.sel.replaceWith(n); edSelChip(n); edSoon(); edMsg(''); return; }\n  const r = ED.caret && document.contains(ED.caret.startContainer) && inEditor(ED.caret.startContainer) ? ED.caret.cloneRange() : null;\n  if (!r) { edMsg('Click in the letter where the variable should go, then click the variable. Or drag it in.', 'warn'); return; }\n  edPush(); if (!placeNode(r, makeChip(key))) ED.undo.pop(); edMsg(''); edSoon();\n}\nfunction edOpen() {\n  if (!hasContent()) { alert('Import a letter first.'); return; }\n  const prof = activeProfile(); const pg = $('#edPage');\n  pg.style.width = (prof.pageW - prof.mL - prof.mR) + 'mm';\n  pg.style.padding = prof.mT + 'mm ' + prof.mR + 'mm ' + prof.mB + 'mm ' + prof.mL + 'mm';\n  pg.style.minHeight = (prof.pageH - prof.mT - prof.mB) + 'mm';\n  pg.style.fontSize = S.baseFont + 'pt';\n  PARTS3.forEach((p) => { edPart(p).innerHTML = decorate(S.parts[p], true); });\n  PARTS3.forEach((p) => { ED.written[p] = undecorate(edPart(p)); });\n  ED.base = edSnap(); ED.undo = []; ED.redo = []; ED.caret = null; ED.open = true;\n  edSelChip(null); edMsg(''); renderPalette(); edBtns(); edFitBadge(S.lastFit);\n  $('#ed').hidden = false;\n  try { document.execCommand('defaultParagraphSeparator', false, 'p'); document.execCommand('styleWithCSS', false, true); } catch (e) { /* older browsers */ }\n}\nfunction edClose() { edSync(); ED.open = false; $('#ed').hidden = true; ED.caret = null; renderAll(true); }\nfunction renderAssign() {\n  const el = $('#assignView'); if (!el) return;\n  if (!hasContent()) { el.innerHTML = '<p class=\"hint\">Import a letter first.</p>'; $('#edSummary').textContent = ''; return; }\n  el.innerHTML = PARTS3.filter((p) => S.parts[p]).map((p) => '<div class=\"edlbl\">' + ROLE_LABEL[p] + '</div>' + decorate(S.parts[p], false)).join('');\n  const n = el.querySelectorAll('.chip:not(.keep)').length;\n  $('#edSummary').textContent = n + ' variable' + (n === 1 ? '' : 's') + ' in the letter';\n}\n$('#edOpen').addEventListener('click', edOpen);\n$('#assignView').addEventListener('click', () => { if (hasContent()) edOpen(); });\n$('#edDone').addEventListener('click', edClose);\n$('#edUndo').addEventListener('click', edUndo);\n$('#edRedo').addEventListener('click', edRedo);\n$('#edRevert').addEventListener('click', () => { if (!ED.base) return; edPush(); edRestore(ED.base); });\n$('#edSearch').addEventListener('input', renderPalette);\n$('#edCustomBtn').addEventListener('click', () => edInsertKey($('#edCustom').value));\n$('#edSelBar').addEventListener('click', (e) => {\n  if (e.target.id === 'edChipDel') edDeleteChip(ED.sel, false);\n  if (e.target.id === 'edChipText') edDeleteChip(ED.sel, true);\n});\n// keep the caret / selection when clicking toolbar and palette\n$$('.edbar button, #edSelBar').forEach((b) => b.addEventListener('mousedown', (e) => { if (!e.target.closest('input')) e.preventDefault(); }));\n$('.edbar').addEventListener('click', (e) => {\n  const b = e.target.closest('button[data-cmd]'); if (!b) return;\n  if (ED.caret && document.contains(ED.caret.startContainer)) { const s = window.getSelection(); s.removeAllRanges(); s.addRange(ED.caret); }\n  edPush(); document.execCommand(b.getAttribute('data-cmd')); edSoon();\n});\n$('#edDir').addEventListener('click', () => {\n  const r = ED.caret; if (!r || !inEditor(r.startContainer)) { edMsg('Click in a paragraph first.', 'warn'); return; }\n  const el = (r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement).closest('p,td,th,li,h1,h2,h3,h4,h5,h6');\n  if (!el || !inEditor(el)) return;\n  edPush();\n  const rtl = (el.getAttribute('dir') || getComputedStyle(el).direction) === 'rtl';\n  el.setAttribute('dir', rtl ? 'ltr' : 'rtl'); el.style.textAlign = rtl ? 'left' : 'right'; edSoon();\n});\n$('#edList').addEventListener('click', (e) => { const it = e.target.closest('.pv'); if (it) edInsertKey(it.getAttribute('data-key')); });\n$('#edList').addEventListener('dragstart', (e) => {\n  const it = e.target.closest('.pv'); if (!it) return;\n  ED.drag = { kind: 'new', key: it.getAttribute('data-key') };\n  e.dataTransfer.setData('text/plain', '{{{' + ED.drag.key + '}}}'); e.dataTransfer.effectAllowed = 'copyMove';\n});\ndocument.addEventListener('selectionchange', () => {\n  if (!ED.open) return;\n  const s = window.getSelection();\n  if (s.rangeCount && inEditor(s.anchorNode) && inEditor(s.focusNode)) ED.caret = s.getRangeAt(0).cloneRange();\n});\n(function wirePage() {\n  const page = $('#edPage');\n  const clearDrop = () => { if (ED.dropEl) ED.dropEl.classList.remove('dropt'); ED.dropEl = null; };\n  page.addEventListener('mousedown', (e) => { const c = e.target.closest('.chip'); edSelChip(c && inEditor(c) ? c : null); });\n  page.addEventListener('dragstart', (e) => {\n    const t = e.target.nodeType === 3 ? e.target.parentElement : e.target;\n    const c = t && t.closest && t.closest('.chip'); if (!c) { if (t && t.tagName === 'IMG') e.preventDefault(); return; }\n    ED.drag = { kind: 'move', chip: c };\n    e.dataTransfer.setData('text/plain', c.title || ''); e.dataTransfer.effectAllowed = 'move';\n  });\n  page.addEventListener('dragover', (e) => {\n    if (!ED.drag) return; e.preventDefault();\n    e.dataTransfer.dropEffect = ED.drag.kind === 'move' ? 'move' : 'copy';\n    const t = e.target.closest && e.target.closest('td,th,p,li,h1,h2,h3,h4,h5,h6');\n    if (t !== ED.dropEl) { clearDrop(); if (t && inEditor(t)) { ED.dropEl = t; t.classList.add('dropt'); } }\n  });\n  page.addEventListener('dragleave', (e) => { if (e.relatedTarget && !page.contains(e.relatedTarget)) clearDrop(); });\n  page.addEventListener('drop', (e) => {\n    if (!ED.drag) return; e.preventDefault();\n    const tgt = ED.dropEl || (e.target.closest && e.target.closest('td,th,p,li'));\n    clearDrop();\n    let r = caretFromPoint(e.clientX, e.clientY);\n    const blk = tgt && inEditor(tgt) ? tgt : null;\n    // dropped on cell padding or an empty cell: use the cell\n    if (blk && (!r || !blk.contains(r.startContainer))) { r = document.createRange(); r.selectNodeContents(blk.matches('td,th') ? (blk.querySelector('p') || blk) : blk); r.collapse(false); }\n    if (!r || !inEditor(r.startContainer)) {\n      const part = e.target.closest && e.target.closest('.edpart');\n      if (!part) { ED.drag = null; return; }\n      r = document.createRange(); r.selectNodeContents(part); r.collapse(false);\n    }\n    const d = ED.drag; ED.drag = null;\n    if (d.kind === 'move' && d.chip.contains(r.startContainer)) return;\n    edPush();\n    let node;\n    if (d.kind === 'move') { node = d.chip; node.classList.remove('sel'); node.remove(); } else node = makeChip(d.key);\n    if (!placeNode(r, node)) { ED.undo.pop(); edBtns(); return; }\n    edSelChip(d.kind === 'move' ? node : null); edSoon();\n  });\n  document.addEventListener('dragend', () => { ED.drag = null; clearDrop(); });\n  page.addEventListener('beforeinput', (e) => {\n    if (/^history/.test(e.inputType)) { e.preventDefault(); if (e.inputType === 'historyUndo') edUndo(); else edRedo(); return; }\n    const now = Date.now(); if (now - ED.typingAt > 1000) edPush(); ED.typingAt = now;\n  });\n  page.addEventListener('input', edSoon);\n  page.addEventListener('paste', (e) => {\n    e.preventDefault(); const t = (e.clipboardData || window.clipboardData).getData('text/plain'); if (!t) return;\n    edPush(); ED.typingAt = Date.now(); document.execCommand('insertText', false, t); edSoon();\n  });\n  page.addEventListener('keydown', (e) => {\n    const mod = e.ctrlKey || e.metaKey;\n    if (mod && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); edUndo(); return; }\n    if (mod && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) { e.preventDefault(); edRedo(); return; }\n    if (ED.sel && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); edDeleteChip(ED.sel, false); }\n  });\n})();\ndocument.addEventListener('keydown', (e) => { if (ED.open && e.key === 'Escape') edClose(); });\n\n/* ===================================================================== SAMPLES */\nconst SAMPLE_COMMON = {\n  employee_code: 'E1043', employee_email: 'employee@example.com', employee_personal_email: 'name@example.com', employee_date_of_birth: '1990-04-12', employee_joining_date: '2021-03-01', employee_joining_date_hijri: '1442/07/17', employee_last_working_day: '2026-12-31',\n  employee_gender_en: 'Male', employee_gender_ar: 'ذكر', employee_marital_status_en: 'Married', employee_marital_status_ar: 'متزوج', employee_mobile_number: '0500000000', employee_iqama_profession_en: 'Accountant', employee_iqama_profession_ar: 'محاسب',\n  employee_payment_type: 'Bank transfer', employee_cr_name_en: 'Example Trading Co.', employee_cr_name_ar: 'شركة المثال التجارية', employee_mol_no: '7-1234567', commercial_registration_number: '1010000000',\n  employee_first_name_ar: 'أحمد', employee_middle_name_ar: 'صالح', employee_last_name_ar: 'الحربي',\n  identification_nationality: 'Saudi', identification_nationality_ar: 'سعودي', identification_religion_en: 'Muslim', identification_religion_ar: 'مسلم', identification_document_type: 'National ID', identification_document_number: '1000000001',\n  identification_passport_number: 'A0000000', identification_iqama_issue_date: '2020-01-01', identification_iqama_issue_date_hijri: '1441/05/06', identification_iqama_issue_place: 'Riyadh', identification_iqama_expiry_date: '2030-01-01', identification_iqama_expiry_date_ar: '1451/08/28',\n  identification_passport_issue_place: 'Riyadh', identification_passport_issue_date: '2022-05-01', identification_passport_expiry_date: '2032-05-01', identification_employer_number: '700000000', identification_outside_kingdom: 'No',\n  bank_account_type: 'Current', bank_account_name: 'Ahmed Saleh Alharbi', bank_account_name_ar: 'أحمد صالح الحربي', bank_name: 'Example Bank', bank_branch_name: 'Olaya', bank_branch_name_ar: 'العليا', bank_swift_code: 'EXMPSARI', bank_sort_code: '000000', bank_account_number: '0000000000', bank_iban: 'SA0000000000000000000000',\n  registered_in_gosi: 'Yes', gosi_subscription: 'Annuities and occupational hazards', company_contribution_percentage: '11.75%', employe_contribution_percentage: '9.75%', company_contribution_value: '1,175.00', employe_contribution_value: '975.00', gosi_employee_number: '400000000', amount_registered_in_gosi: '10,000.00', gosi_effective_date: '2021-03-01',\n  organization_job_title: 'Senior Accountant', organization_job_title_ar: 'محاسب أول', organization_department: 'Finance', organization_department_ar: 'المالية', organization_parent_department: 'Shared Services', organization_parent_department_ar: 'الخدمات المشتركة', organization_location: 'Riyadh HQ', organization_location_ar: 'المقر الرئيسي بالرياض', organization_home_address: 'Riyadh', organization_area: 'Central', organization_area_ar: 'الوسطى', organization_line_manager: 'Khalid Al-Otaibi',\n  organization_employment_type: 'Full time', organization_employment_type_ar: 'دوام كامل', organization_business_unit_en: 'Corporate', organization_business_unit_ar: 'الشركة', organization_contract_type_en: 'Indefinite', organization_contract_type_ar: 'غير محدد المدة', organization_contract_period_en: '2 years', organization_contract_period_ar: 'سنتان',\n  organization_contract_start: '2021-03-01', organization_contract_start_hijri: '1442/07/17', organization_contract_end: '2027-02-28', organization_contract_end_hijri: '1448/09/11', organization_probation_start: '2021-03-01', organization_probation_end: '2021-05-29',\n  compensation_basic_salary: '10,000.00', compensation_full_package: '14,500.00', compensation_grade: 'G7', compensation_currency_symbol_en: 'SAR', compensation_currency_symbol_ar: 'ر.س', compensation_currency_name_en: 'Saudi Riyal', compensation_currency_name_ar: 'ريال سعودي',\n  company_name: 'Example Company Ltd.', company_name_ar: 'شركة المثال المحدودة', company_address_1: 'King Fahd Road', company_address_1_ar: 'طريق الملك فهد', company_city: 'Riyadh', company_city_ar: 'الرياض', company_country: 'Saudi Arabia', company_country_ar: 'المملكة العربية السعودية', company_po_box: '12345', company_postal_code: '11564', company_fax_number: '011 000 0000', company_website: 'www.example.com',\n  benefit_type_62740: '2,500.00', benefit_type_62780: '1,000.00', benefit_type_62783: '1,000.00',\n  request_reason: 'Bank requirement', request_date: '2026-10-13', request_date_hijri: '1448/04/22', request_type: 'Salary certificate', directed_to_ar: 'إلى من يهمه الأمر', directed_to_en: 'To whom it may concern',\n};\nfunction samplesText(arabicNames) {\n  const names = arabicNames ? { employee_first_name: 'أحمد', employee_middle_name: 'صالح', employee_last_name: 'الحربي' } : { employee_first_name: 'Ahmed', employee_middle_name: 'Saleh', employee_last_name: 'Alharbi' };\n  const all = Object.assign({}, names, SAMPLE_COMMON);\n  return Object.keys(all).map((k) => k + ' = ' + all[k]).join('\\n');\n}\n$('#samples').value = LS.get('jlc_samples_v1', null) || samplesText(false);\n$('#samples').addEventListener('input', () => { LS.set('jlc_samples_v1', $('#samples').value); renderAll(); });\n$('#sampleEn').addEventListener('click', () => { $('#samples').value = samplesText(false); LS.set('jlc_samples_v1', $('#samples').value); renderAll(); });\n$('#sampleAr').addEventListener('click', () => { $('#samples').value = samplesText(true); LS.set('jlc_samples_v1', $('#samples').value); renderAll(); });\n$('#hlVars').addEventListener('change', () => renderAll());\n\n/* ===================================================================== CATALOG UI */\nfunction showCatalog() { $('#catalogJson').value = JSON.stringify(CATALOG, null, 1); fillKeyList(); }\n$('#saveCatalog').addEventListener('click', () => { try { const c = JSON.parse($('#catalogJson').value); if (!Array.isArray(c) || !c.every((x) => x && x.key)) throw new Error('Each entry needs a \"key\".'); CATALOG = c; LS.set('jlc_catalog_v1', CATALOG); fillKeyList(); renderAll(); alert('Catalog saved (' + c.length + ' variables).'); } catch (e) { alert('Catalog not saved: ' + e.message); } });\n$('#resetCatalog').addEventListener('click', () => { CATALOG = defaultCatalog_(); LS.set('jlc_catalog_v1', null); showCatalog(); renderAll(); });\n$('#addKeys').addEventListener('click', () => {\n  let added = 0;\n  $('#extraKeys').value.split('\\n').forEach((l) => { const m = l.split(/[,\\t;]/); if (m.length < 2) return; const label = m[0].trim(); const key = m[m.length - 1].trim().replace(/[{}]/g, ''); if (!label || !/^[A-Za-z0-9_]+$/.test(key)) return; const ex = CATALOG.find((c) => c.key === key); const ar = isArabicText(label); if (ex) { if (ar) ex.ar = label; else ex.en = label; } else CATALOG.push({ key, en: ar ? key : label, ar: ar ? label : '', group: 'client-specific', aliases: [] }); added++; });\n  LS.set('jlc_catalog_v1', CATALOG); showCatalog();\n  S.vars.forEach((v) => { if (v.status === 'unmapped' || v.status === 'auto') { const m = matchVar(v.label); if (m.score >= 0.5) { v.key = m.key; v.score = m.score; v.status = 'auto'; } } });\n  renderAll(); alert(added + ' key(s) added.');\n});\n\n/* ===================================================================== IMAGES UI */\nconst imgMode = (im) => im.mode || (im.attId ? 'id' : (im.dataUrl ? 'embed' : 'id'));\nfunction loadImg(url) { return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; }); }\n/** A lighter copy of the image for embedding: at most 2× the size it is shown at, PNG when it has transparency, otherwise the smaller of PNG / JPEG. */\nasync function makeEmbed(dataUrl, showW) {\n  if (!dataUrl || /^data:image\\/svg/.test(dataUrl)) return dataUrl;\n  try {\n    const img = await loadImg(dataUrl);\n    const scale = Math.min(1, (Math.max(40, showW) * 2) / img.naturalWidth);\n    const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.naturalWidth * scale)); c.height = Math.max(1, Math.round(img.naturalHeight * scale));\n    const g = c.getContext('2d'); g.drawImage(img, 0, 0, c.width, c.height);\n    const px = g.getImageData(0, 0, c.width, c.height).data; let alpha = false; for (let i = 3; i < px.length; i += 16) { if (px[i] < 250) { alpha = true; break; } }\n    const png = c.toDataURL('image/png'); if (alpha) return png.length < dataUrl.length ? png : dataUrl;\n    const g2 = document.createElement('canvas'); g2.width = c.width; g2.height = c.height; const x = g2.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(c, 0, 0);\n    const jpg = g2.toDataURL('image/jpeg', 0.9);\n    return [png, jpg, dataUrl].sort((a, b) => a.length - b.length)[0];\n  } catch (e) { return dataUrl; }\n}\nlet embedBusy = false;\nasync function prepareEmbeds() {\n  if (embedBusy) return; embedBusy = true; let changed = false;\n  try { for (const im of S.images) { if (im.dataUrl && !im.embedUrl && !im.background) { im.embedUrl = await makeEmbed(im.dataUrl, im.w); changed = true; } } } finally { embedBusy = false; }\n  if (changed) renderAll();\n}\nconst kb = (s) => Math.round((String(s || '').length * 3) / 4 / 1024);\nfunction renderImages() {\n  const box = $('#imgList');\n  if (!S.images.length) { box.innerHTML = '<p class=\"hint\">No images in this letter.</p>'; return; }\n  box.innerHTML = S.images.map((im) => '<div class=\"imgrow\"><div>' + ((im.dataUrl || im.url) ? '<img class=\"thumb\" src=\"' + esc(im.dataUrl || im.url) + '\" alt=\"\">' : '<div class=\"thumb imgph\" style=\"width:90px;height:60px\">no preview</div>') + '</div><div>' +\n    '<div><b>' + esc(im.name) + '</b> <span class=\"hint\">' + esc(im.part) + ' · ' + im.w + ' × ' + im.h + ' px' + (im.background ? ' · full-page background (left out)' : '') + '</span></div>' +\n    (im.background ? '' : '<div class=\"row\" style=\"margin-top:4px\"><select data-imode=\"' + im.n + '\">' + (im.dataUrl ? '<option value=\"embed\"' + (imgMode(im) === 'embed' ? ' selected' : '') + '>Embed in the source code' + (im.embedUrl ? ' (' + kb(im.embedUrl) + ' KB)' : '') + '</option>' : '') + '<option value=\"id\"' + (imgMode(im) === 'id' ? ' selected' : '') + '>Jisr attachment ID</option></select>' +\n      (imgMode(im) === 'id' ? '<input type=\"text\" data-att=\"' + im.n + '\" value=\"' + esc(im.attId) + '\" placeholder=\"e.g. 33331\" style=\"width:110px\"><span class=\"kbd\">{{{letter_attachment_' + esc(im.attId || 'ID') + '}}}</span>' : '<span class=\"hint\" style=\"margin:0\">no upload or ID needed</span>') + '</div>') +\n    (im.dataUrl ? '<div style=\"margin-top:4px\"><a class=\"btn sm\" download=\"' + esc(im.name.replace(/\\.[^.]+$/, '') || 'image') + '.' + ((im.dataUrl.match(/^data:image\\/(\\w+)/) || [])[1] || 'png').replace('jpeg', 'jpg') + '\" href=\"' + im.dataUrl + '\">Download image</a></div>' : '') +\n    '</div></div>').join('');\n}\n$('#imgList').addEventListener('change', (e) => {\n  const n = e.target.getAttribute('data-att'), md = e.target.getAttribute('data-imode');\n  if (md != null) { S.images[+md].mode = e.target.value; renderAll(true); return; }\n  if (n == null) return; S.images[+n].attId = e.target.value.trim().replace(/\\D+/g, ''); renderAll();\n});\nlet convCode = '';\n$('#convBtn').addEventListener('click', async () => {\n  const f = $('#convImg').files && $('#convImg').files[0]; const info = $('#convInfo');\n  if (!f) { info.textContent = 'Choose an image first.'; return; }\n  const url = await fileToDataUrl(f); const [nw, nh] = await imgSize(url);\n  const prof = activeProfile(); const maxMm = prof.pageW - prof.mL - prof.mR;\n  const wmm = Math.min(maxMm, Math.max(5, +$('#convW').value || 50)); const w = Math.round(wmm * MM), h = Math.round((nh / nw) * w);\n  const embed = await makeEmbed(url, w);\n  const al = $('#convAlign').value;\n  const ist = 'display: block; ' + (al === 'center' ? 'margin-left: auto; margin-right: auto;' : al === 'right' ? 'margin-left: auto;' : 'margin-right: auto;');\n  convCode = '<p dir=\"ltr\" style=\"text-align: ' + al + '; margin: 0; font-family: Arial, sans-serif;\"><img src=\"' + embed + '\" width=\"' + w + '\" height=\"' + h + '\" style=\"' + ist + '\"></p>';\n  $('#convOut').value = convCode; $('#convCopy').disabled = false;\n  info.textContent = f.name + ' → ' + w + ' × ' + h + ' px, ' + kb(embed) + ' KB of source code';\n  const to = $('#convTo').value;\n  if (to) {\n    const n = S.images.length; S.images.push({ n, name: f.name, dataUrl: url, embedUrl: embed, w, h, attId: '', part: to, background: false, mode: 'embed' });\n    setPartHtml(to, (S.parts[to] ? S.parts[to] + '\\n' : '') + '<p dir=\"ltr\" style=\"text-align: ' + al + '; margin: 0; font-size: 1pt; line-height: 1;\"><img data-jimg=\"' + n + '\" width=\"' + w + '\" height=\"' + h + '\" alt=\"\"></p>');\n    if (!S.source) S.source = 'images'; if (!S.fixBase) S.fixBase = Object.assign({}, S.fix);\n    info.textContent += ' · added to the ' + to;\n    renderAll(true);\n  }\n});\n$('#convCopy').addEventListener('click', (e) => copyText(convCode, e.target));\nasync function fileToDataUrl(f) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); }); }\nasync function imgSize(url) { return new Promise((res) => { const i = new Image(); i.onload = () => res([i.naturalWidth, i.naturalHeight]); i.onerror = () => res([300, 80]); i.src = url; }); }\nasync function setPartImage(part, file, hmm) {\n  if (!file) return;\n  const url = await fileToDataUrl(file); const [nw, nh] = await imgSize(url);\n  const prof = activeProfile(); const maxW = (prof.pageW - prof.mL - prof.mR) * MM;\n  let h = hmm * MM, w = (nw / nh) * h; if (w > maxW) { w = maxW; h = (nh / nw) * w; }\n  const n = S.images.length; S.images.push({ n, name: file.name, dataUrl: url, w: Math.round(w), h: Math.round(h), attId: '', part, background: false });\n  setPartHtml(part, '<p dir=\"ltr\" style=\"text-align: center; margin: 0; font-size: 1pt; line-height: 1;\"><img data-jimg=\"' + n + '\" width=\"' + Math.round(w) + '\" height=\"' + Math.round(h) + '\" alt=\"\"></p>', part + ' image');\n  if (!S.fixBase) { S.fixBase = Object.assign({}, S.fix); }\n  if (!S.source) S.source = 'images';\n  renderAll(true);\n}\n$('#hdrImgIn').addEventListener('change', (e) => setPartImage('header', e.target.files[0], +$('#hdrImgH').value || 25));\n$('#ftrImgIn').addEventListener('change', (e) => setPartImage('footer', e.target.files[0], +$('#ftrImgH').value || 15));\n\n/* ===================================================================== FIT UI */\n(function fontOpts() { const s = $('#fontScale'); for (let v = 100; v >= 70; v -= 5) s.insertAdjacentHTML('beforeend', '<option value=\"' + v / 100 + '\">' + v + '%</option>'); })();\nfunction syncFixUi() { $('#spacerMode').value = S.fix.spacerMode; $('#spacingScale').value = String(S.fix.spacingScale); $('#fontScale').value = String(S.fix.fontScale); $('#imgScale').value = String(S.fix.imgScale); }\n[['spacerMode', (v) => v], ['spacingScale', Number], ['fontScale', Number], ['imgScale', Number]].forEach(([id, cast]) => $('#' + id).addEventListener('change', (e) => { pushFix(); S.fix[id] = cast(e.target.value); renderAll(); }));\n$('#targetPages').addEventListener('change', (e) => { S.target = Math.max(1, +e.target.value || 1); renderAll(); });\n$('#baseFont').addEventListener('change', (e) => { S.baseFont = Math.max(6, +e.target.value || 12); renderAll(); });\nfunction pushFix() { S.fixHistory.push(Object.assign({}, S.fix)); if (S.fixHistory.length > 40) S.fixHistory.shift(); }\nfunction undoFix() { if (!S.fixHistory.length) return; S.fix = S.fixHistory.pop(); syncFixUi(); $('#autoFitMsg').innerHTML = ''; renderAll(true); }\nfunction resetFix() { const base = S.fixBase || { spacerMode: 'collapse', spacingScale: 1, fontScale: 1, imgScale: 1 }; if (JSON.stringify(base) !== JSON.stringify(S.fix)) pushFix(); S.fix = Object.assign({}, base); syncFixUi(); $('#autoFitMsg').innerHTML = ''; renderAll(true); }\n$('#resetFix').addEventListener('click', resetFix); $('#resetFix2').addEventListener('click', resetFix);\n$('#undoFix').addEventListener('click', undoFix); $('#undoFixB').addEventListener('click', undoFix);\nconst STEP = (arr, cur) => { const i = arr.indexOf(cur); return arr[Math.min(arr.length - 1, (i < 0 ? 0 : i + 1))]; };\nconst SPACING = [1, 0.75, 0.5, 0.25, 0], FONTS = [1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7], IMGS = [1, 0.9, 0.8, 0.7, 0.6, 0.5];\nasync function fitNow() { const prev = build('preview'); return measure(prev.parts, activeProfile()); }\nasync function autoFit() {\n  if (!hasContent()) return;\n  const r = await autoFitCore();\n  if (JSON.stringify(r.startFix) !== JSON.stringify(S.fix)) { S.fixHistory.push(r.startFix); if (S.fixHistory.length > 40) S.fixHistory.shift(); }\n  syncFixUi();\n  $('#autoFitMsg').innerHTML = '<div class=\"msg ' + (r.ok ? 'ok' : 'err') + '\">' + (r.ok ? 'Fits on ' + r.f.n + ' page(s)' : 'Still ' + r.f.n + ' pages after the allowed adjustments (font not below 75%). Shorten the text or raise the intended pages.') + (r.steps.length ? ': ' + esc(r.steps.join(' → ')) : '') + '. Wording was not changed.</div>';\n  renderAll(true);\n  return r.ok;\n}\nasync function autoFitCore() {\n  const steps = [];\n  const startFix = Object.assign({}, S.fix);\n  const ok = (f) => f.fits && !(f.footerPushed && f.footerPage > f.target);\n  let f = await fitNow();\n  const plan = [\n    () => { if (S.fix.spacerMode === 'keep') { S.fix.spacerMode = 'collapse'; return 'collapsed spacer paragraphs'; } },\n    () => { if (S.fix.spacerMode !== 'remove') { S.fix.spacerMode = 'remove'; return 'removed spacer paragraphs'; } },\n    () => { if (S.fix.spacingScale > 0.5) { S.fix.spacingScale = STEP(SPACING, S.fix.spacingScale); return 'spacing ' + Math.round(S.fix.spacingScale * 100) + '%'; } },\n    () => { if (S.fix.spacingScale > 0.5) { S.fix.spacingScale = STEP(SPACING, S.fix.spacingScale); return 'spacing ' + Math.round(S.fix.spacingScale * 100) + '%'; } },\n    () => { if (S.images.some((i) => !i.background) && S.fix.imgScale > 0.8) { S.fix.imgScale = STEP(IMGS, S.fix.imgScale); return 'images ' + Math.round(S.fix.imgScale * 100) + '%'; } },\n    () => { if (S.images.some((i) => !i.background) && S.fix.imgScale > 0.8) { S.fix.imgScale = STEP(IMGS, S.fix.imgScale); return 'images ' + Math.round(S.fix.imgScale * 100) + '%'; } },\n  ];\n  for (let i = 0; i < 6; i++) plan.push(() => { if (S.fix.fontScale > 0.75) { S.fix.fontScale = STEP(FONTS, S.fix.fontScale); return 'font ' + Math.round(S.fix.fontScale * 100) + '%'; } });\n  for (const p of plan) { if (ok(f)) break; const did = p(); if (did) { steps.push(did); f = await fitNow(); } }\n  return { ok: ok(f), f, steps, startFix };\n}\n$('#autoFit').addEventListener('click', autoFit);\n$$('[data-fix]').forEach((b) => b.addEventListener('click', () => {\n  const k = b.getAttribute('data-fix');\n  if (k !== 'auto') pushFix();\n  if (k === 'spacers') S.fix.spacerMode = 'remove';\n  else if (k === 'spacing') S.fix.spacingScale = STEP(SPACING, S.fix.spacingScale);\n  else if (k === 'font') S.fix.fontScale = STEP(FONTS, S.fix.fontScale);\n  else if (k === 'logo') S.fix.imgScale = STEP(IMGS, S.fix.imgScale);\n  else if (k === 'auto') { autoFit(); return; }\n  syncFixUi(); renderAll(true);\n}));\n$('#zoom').addEventListener('change', () => renderAll(true));\n\n/* ===================================================================== PROFILES UI */\nfunction renderProfileInfo() {\n  const sel = $('#profileSel'); const act = activeProfile();\n  sel.innerHTML = profiles().map((p) => '<option' + (p.name === act.name ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('');\n  $('#profileInfo').textContent = act.paper + ' · margins ' + [act.mT, act.mB, act.mL, act.mR].join(' / ') + ' mm · page area ' + round(printH(act), 1) + ' mm high · header/footer ' + (act.mode === 'flow' ? 'flow with body' : 'repeat') + (act.calibrated ? ' · calibrated' + (act.lines ? ' (' + act.lines + ' lines)' : '') + (act.pagebreak !== 'unknown' ? ' · page break marker ' + (act.pagebreak === 'yes' ? 'works' : 'does NOT work') : '') : ' · not calibrated') + (S.wordGeom ? ' · Word file: ' + S.wordGeom.pageW + ' × ' + S.wordGeom.pageH + ' mm, margins ' + [S.wordGeom.mT, S.wordGeom.mB, S.wordGeom.mL, S.wordGeom.mR].join(' / ') : '');\n  $('#calBanner').classList.toggle('hide', !!act.calibrated);\n  $('#delProfile').disabled = act.name === ASSUMED.name;\n}\n$('#profileSel').addEventListener('change', (e) => { LS.set('jlc_active_profile', e.target.value); renderAll(true); });\n$('#delProfile').addEventListener('click', () => { const act = activeProfile(); if (act.name === ASSUMED.name) return; LS.set('jlc_profiles_v1', profiles().slice(1).filter((p) => p.name !== act.name)); LS.set('jlc_active_profile', ASSUMED.name); renderAll(true); });\n\n/* ===================================================================== CALIBRATION */\nfunction calTemplate() {\n  const header = '<p dir=\"ltr\" style=\"height: 40mm; border: 1px solid #000; margin: 0; box-sizing: border-box; text-align: center; font-size: 12pt; font-family: Arial, sans-serif;\">CALIBRATION HEADER · 40 mm tall box</p>';\n  const lines = []; for (let i = 1; i <= 80; i++) { lines.push('<p dir=\"ltr\" style=\"font-size: 12pt; line-height: 1.15; margin: 0; font-family: Arial, sans-serif;\">Line ' + String(i).padStart(2, '0') + '</p>'); if (i === 80) { lines.push('<!-- pagebreak -->'); lines.push('<p dir=\"ltr\" style=\"font-size: 12pt; line-height: 1.15; margin: 0; font-family: Arial, sans-serif;\">PAGE BREAK TEST</p>'); } }\n  const footer = '<p dir=\"ltr\" style=\"height: 20mm; border: 1px solid #000; margin: 0; box-sizing: border-box; text-align: center; font-size: 12pt; font-family: Arial, sans-serif;\">CALIBRATION FOOTER · 20 mm tall box</p>';\n  return { header, body: lines.join('\\n'), footer };\n}\n$$('[data-calcopy]').forEach((b) => b.addEventListener('click', () => copyText(calTemplate()[b.getAttribute('data-calcopy')], b)));\n$('#calDl').addEventListener('click', () => { const t = calTemplate(); download('jisr-calibration-template.txt', new Blob(['=== HEADER (paste into Header › Source code) ===\\n' + t.header + '\\n\\n=== BODY (paste into Body › Source code) ===\\n' + t.body + '\\n\\n=== FOOTER (paste into Footer › Source code) ===\\n' + t.footer + '\\n'], { type: 'text/plain' })); });\n$('#calSave').addEventListener('click', () => {\n  const name = $('#calName').value.trim(); const lines = +$('#calLines').value;\n  const msg = $('#calMsg');\n  if (!name || name === ASSUMED.name) { msg.innerHTML = '<div class=\"msg err\">Give the profile a name.</div>'; return; }\n  if (!lines || lines < 1 || lines > 80) { msg.innerHTML = '<div class=\"msg err\">Enter the number of the last body line fully on page 1 (1 to 80).</div>'; return; }\n  const paper = $('#calPaper').value; const [pw, ph] = PAPER[paper];\n  const mode = $('#calRepeat').value;\n  const p = { name, paper, pageW: pw, pageH: ph, mT: +$('#calMT').value || 0, mB: +$('#calMB').value || 0, mL: +$('#calML').value || 0, mR: +$('#calMR').value || 0, mode, calibrated: true, lines, pagebreak: $('#calPB').value };\n  p.printH = round(lines * LH12 + (mode === 'flow' ? 40 : 60), 1);\n  const list = profiles().slice(1).filter((x) => x.name !== name); list.push(p);\n  LS.set('jlc_profiles_v1', list); LS.set('jlc_active_profile', name);\n  const geomH = round(ph - p.mT - p.mB, 1);\n  msg.innerHTML = '<div class=\"msg ok\">Saved “' + esc(name) + '”: usable height ' + p.printH + ' mm' + (Math.abs(geomH - p.printH) > 8 ? ' (the margins you entered give ' + geomH + ' mm; the line count is used because it is what Jisr actually printed)' : '') + '.</div>';\n  renderAll(true);\n});\n\n/* ===================================================================== OUTPUT */\nlet lastOut = null;\nfunction renderOutput() {\n  const o = build('output'); lastOut = o;\n  $('#outH').value = o.parts.header; $('#outB').value = o.parts.body; $('#outF').value = o.parts.footer;\n  const w = o.warn.slice();\n  S.vars.forEach((v) => { if (v.status === 'auto' && v.key) w.push('“' + v.raw + '” → {{{' + v.key + '}}} is only proposed; confirm it in step 2.'); if (v.status === 'unknown') w.push('{{{' + v.key + '}}} is not in the catalog; check the spelling in Jisr › Options › Variables.'); if (v.kind === 'curly' && v.key && (S.source === 'html' || S.source === 'jisr')) w.push('“' + v.raw + '” used two braces; the output uses three.'); });\n  if (S.lastFit && !S.lastFit.fits) w.unshift('Does not fit the intended ' + S.lastFit.target + ' page(s) yet.');\n  if (S.lastFit && S.lastFit.footerPushed) w.unshift('The footer is pushed to page ' + S.lastFit.footerPage + '.');\n  const prof = activeProfile(); if (prof.pagebreak === 'no' && /pagebreak/.test(o.parts.body)) w.push('This profile says the page break marker does not work in Jisr.');\n  $('#outWarn').innerHTML = (w.map((x) => '<div class=\"msg warn\">' + esc(x) + '</div>').join('') || (hasContent() ? '<div class=\"msg ok\">Ready to paste.</div>' : '')) + (o.embedded.length ? '<div class=\"msg info\">' + o.embedded.length + ' image(s) are embedded in the source code (' + o.embedded.reduce((a, im) => a + kb(im.embedUrl || im.dataUrl), 0) + ' KB). Jisr\\'s editor normally uploads embedded images when you save the template; re-open Source code after saving to see it.</div>' : '');\n}\nfunction copyText(t, btn) {\n  const done = () => { if (btn) { const o = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = o; }, 1200); } };\n  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(done, () => fallback());\n  else fallback();\n  function fallback() { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); done(); } catch (e) { /* ignore */ } ta.remove(); }\n}\n$$('[data-copy]').forEach((b) => b.addEventListener('click', () => { renderOutput(); copyText(lastOut.parts[b.getAttribute('data-copy')], b); }));\n$$('[data-reflect]').forEach((b) => b.addEventListener('click', () => { if (JISR) doReflect([b.getAttribute('data-reflect')]); }));\n$('#rfAll').addEventListener('click', () => { if (JISR) doReflect(['header', 'body', 'footer']); });\n$('#rfTarget').addEventListener('change', (e) => { if (JISR) { JISR.rfChoice = { key: rfKey(), id: e.target.value }; $('#rfMsg').innerHTML = ''; renderReflect(); } });\nfunction download(name, blob) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); }\nfunction fitReport() {\n  const f = S.lastFit || {}; const p = activeProfile();\n  return { tool: 'Jisr Letter Converter', version: VERSION, created: new Date().toISOString(), source: S.source, file: S.fileName, profile: p, calibrated: !!p.calibrated, intendedPages: S.target, pagesUsed: f.n, fits: f.fits, overflowMm: f.overflowMm, spareMm: f.spareMm, footerPushed: f.footerPushed, footerPage: f.footerPage, headerMm: f.headerMm, bodyMm: f.bodyMm, footerMm: f.footerMm, pageAreaMm: f.capMm, adjustments: S.fix, baseFontPt: S.baseFont, notes: S.notes };\n}\n$('#dlZip').addEventListener('click', async () => {\n  if (!hasContent()) return; renderOutput();\n  const zip = new JSZip(); const o = lastOut;\n  zip.file('header.html', o.parts.header); zip.file('body.html', o.parts.body); zip.file('footer.html', o.parts.footer);\n  const cat = catByKey();\n  const csv = [['key', 'label', 'occurrences', 'parts']].concat(Array.from(o.used.values()).map((u) => [u.key, (cat.get(u.key) || {}).en || '', u.count, Array.from(u.parts).join(' ')]));\n  zip.file('variables-used.csv', '\\ufeff' + csv.map((r) => r.map((c) => '\"' + String(c).replace(/\"/g, '\"\"') + '\"').join(',')).join('\\r\\n'));\n  zip.file('fit-report.json', JSON.stringify(fitReport(), null, 2));\n  const base = (S.fileName || 'letter').replace(/\\.[^.]+$/, '').replace(/[^\\w\\-]+/g, '-');\n  download(base + '-jisr.zip', await zip.generateAsync({ type: 'blob' }));\n});\n\n/* ===================================================================== IMPORT UI */\nasync function onDocx(file) {\n  const msg = $('#importMsg'); msg.innerHTML = '<div class=\"msg info\">Reading ' + esc(file.name) + '…</div>';\n  try {\n    const r = await readDocx(file);\n    syncQueueBack(); S.jisrTpl = null; S.queueId = null; S.source = 'docx'; S.fileName = file.name; S.fix = { spacerMode: 'collapse', spacingScale: 1, fontScale: 1, imgScale: 1 }; syncFixUi();\n    loadParts(r.parts, r.images, { notes: r.notes, wordGeom: r.geom });\n    const cnt = (h) => (h.match(/<(p|li|tr)\\b/g) || []).length;\n    msg.innerHTML = '<div class=\"msg ok\">' + esc(file.name) + ': header ' + cnt(r.parts.header) + ' block(s), body ' + cnt(r.parts.body) + ', footer ' + cnt(r.parts.footer) + ', ' + r.images.length + ' image(s), ' + S.vars.size + ' placeholder(s). Check the structure in step 2 and the variables in step 3.</div>' + r.notes.map((n) => '<div class=\"msg warn\">' + esc(n) + '</div>').join('');\n  } catch (e) { msg.innerHTML = '<div class=\"msg err\">' + esc(e.message || String(e)) + '</div>'; console.error(e); }\n}\n$('#docxDrop').addEventListener('click', () => $('#docxIn').click());\n$('#docxIn').addEventListener('change', (e) => { if (e.target.files[0]) onDocx(e.target.files[0]); e.target.value = ''; });\n['dragover', 'dragenter'].forEach((t) => $('#docxDrop').addEventListener(t, (e) => { e.preventDefault(); $('#docxDrop').classList.add('over'); }));\n['dragleave', 'drop'].forEach((t) => $('#docxDrop').addEventListener(t, (e) => { e.preventDefault(); $('#docxDrop').classList.remove('over'); if (t === 'drop' && e.dataTransfer.files[0]) onDocx(e.dataTransfer.files[0]); }));\n$('#revBtn').addEventListener('click', () => {\n  syncQueueBack(); S.jisrTpl = null; S.queueId = null; S.source = 'html'; S.fileName = 'pasted-template'; S.wordGeom = null;\n  S.fix = { spacerMode: 'keep', spacingScale: 1, fontScale: 1, imgScale: 1 }; syncFixUi();\n  loadParts({ header: $('#revH').value, body: $('#revB').value, footer: $('#revF').value }, [], { notes: [] });\n  $('#revMsg').innerHTML = '<div class=\"msg ok\">Template loaded as it is today (spacers kept); the preview on the right shows how it behaves. Fix it in steps 2 to 5, then copy the cleaned code from 6 · Output.</div><div class=\"row\" style=\"margin-top:6px\"><button class=\"btn sm\" data-goto=\"fit\">Go to 5 · Page &amp; fit</button><button class=\"btn sm pri\" data-goto=\"out\">Go to 6 · Output</button></div>';\n});\n$('#sampleBtn').addEventListener('click', () => {\n  syncQueueBack(); S.jisrTpl = null; S.queueId = null; S.source = 'sample'; S.fileName = 'sample-employment-certificate'; S.wordGeom = null;\n  S.fix = { spacerMode: 'collapse', spacingScale: 1, fontScale: 1, imgScale: 1 }; syncFixUi();\n  const logo = 'data:image/svg+xml;base64,' + btoa('<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"208\" height=\"80\"><rect width=\"208\" height=\"80\" fill=\"#1a5d57\"/><text x=\"104\" y=\"48\" font-family=\"Arial\" font-size=\"22\" fill=\"#fff\" text-anchor=\"middle\">LOGO</text></svg>');\n  const images = [{ n: 0, name: 'logo.svg', dataUrl: logo, w: 208, h: 80, attId: '', part: 'header', background: false }];\n  loadParts({\n    header: '<p style=\"text-align: center; margin: 0;\"><img data-jimg=\"0\" width=\"208\" height=\"80\"></p>',\n    body: '<p dir=\"ltr\" style=\"text-align: center; margin: 0 0 12pt; font-size: 16pt;\"><strong>EMPLOYMENT CERTIFICATE</strong></p><p dir=\"ltr\" style=\"margin: 0 0 8pt; font-size: 12pt;\">Date: [Request Date]</p><p>&nbsp;</p><p dir=\"ltr\" style=\"margin: 0 0 8pt; font-size: 12pt;\">To whom it may concern,</p><p dir=\"ltr\" style=\"text-align: justify; margin: 0 0 8pt; font-size: 12pt;\">This is to certify that Mr. [Employee Name], Nationality ( [Nationality] ), Holding ID No. ( [ID Number] ), has been working with [Company Name] since [Joining Date] as [Job Title].</p><p>&nbsp;</p><p>&nbsp;</p><p dir=\"ltr\" style=\"margin: 0 0 8pt; font-size: 12pt;\">This certificate was issued upon his request without any liability on the company.</p><p>&nbsp;</p><p dir=\"ltr\" style=\"text-align: center; margin: 0; font-size: 12pt;\"><strong>Human Resources Manager</strong></p>',\n    footer: '<p dir=\"ltr\" style=\"text-align: center; margin: 0; font-size: 9pt;\">[Company Address] · P.O. Box [PO Box] · Tel 011 000 0000</p>',\n  }, images, { notes: [] });\n  $('#importMsg').innerHTML = '<div class=\"msg ok\">Sample letter loaded.</div>';\n});\n\n/* ===================================================================== JISR TEMPLATES (create / edit / bulk)\n * Only active when the tool is opened from Bulk Ops on a Jisr page (same origin as Jisr, uses your login).\n * Confirmed (invenu, 2026-10-13):\n *   GET  /v2/letter_types?locale=&slug=                         list of templates\n *   POST /v2/letter_types?slug=  { letter_type: { name, name_ar, header, letter_attachments: { letter_attachment_<id>: <url> } } }  -> 201\n *   POST /v2/letter_attachments?slug= { letter_attachment: { attachment: { data: \"data:image/png;base64,…\", filename } } } -> 201\n * Not captured (detected at runtime / assumed, every save is read back and compared):\n *   names of the body and footer fields (read from an existing template), the list/response shapes,\n *   editing = PUT /v2/letter_types/{id} (PATCH tried if PUT is refused), detail = GET /v2/letter_types/{id}.\n * ===================================================================== */\nconst JISR = (() => {\n  let origin = ''; try { origin = location.origin; } catch (e) { /* ignore */ }\n  const m = /^https:\\/\\/([a-z0-9-]+)\\.(jisr\\.net|jisr\\.net\\.sa)$/i.exec(origin || '');\n  if (!m) return null;\n  const hp = new URLSearchParams(String(location.hash || '').replace(/^#/, ''));\n  return { slug: hp.get('jisr') || m[1], api: /\\.sa$/i.test(m[2]) ? 'https://api.jisr.net.sa/api' : 'https://apis.jisr.net/api', fields: { header: 'header', body: 'body', footer: 'footer' }, fieldsFrom: 'assumed', templates: [], loaded: false, backedUp: new Set(), rfChoice: null };\n})();\nasync function jreq(method, path, query, body) {\n  const qs = new URLSearchParams(Object.assign({}, query || {}, { slug: JISR.slug }));\n  let res;\n  try {\n    res = await fetch(JISR.api + path + '?' + qs, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: JISR.slug, locale: 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });\n  } catch (e) { const err = new Error('No answer from Jisr (network). ' + (method !== 'GET' ? 'Check in Jisr whether it was saved before retrying.' : '')); err.unknown = method !== 'GET'; throw err; }\n  const json = await res.json().catch(() => null);\n  if (res.status === 401) throw new Error('Not logged in to Jisr (HTTP 401). Log in again in the Jisr tab, then retry.');\n  const msg = json && (json.message || json.error || (json.errors && (Array.isArray(json.errors) ? json.errors.join('; ') : JSON.stringify(json.errors))));\n  return { status: res.status, ok: res.ok && !(json && json.success === false), json, msg: msg ? String(msg).slice(0, 300) : '' };\n}\nconst looksHtml = (v) => typeof v === 'string' && /<[a-z][^>]*>/i.test(v);\nfunction findTemplateList(json) {\n  let out = null;\n  (function walk(v, d) { if (out || !v || typeof v !== 'object' || d > 5) return; if (Array.isArray(v)) { if (v.length && v.every((x) => x && typeof x === 'object' && x.id != null && ('name' in x || 'name_i18n' in x || 'name_ar' in x))) { out = v; return; } v.forEach((x) => walk(x, d + 1)); return; } Object.keys(v).forEach((k) => walk(v[k], d + 1)); })(json, 0);\n  return out || [];\n}\nfunction findTemplateObj(json, id) {\n  let out = null;\n  (function walk(v, d) { if (out || !v || typeof v !== 'object' || d > 6) return; if (!Array.isArray(v) && String(v.id) === String(id) && ('name' in v || 'name_ar' in v || 'header' in v)) { out = v; return; } (Array.isArray(v) ? v : Object.values(v)).forEach((x) => walk(x, d + 1)); })(json, 0);\n  return out;\n}\nfunction detectFields(t) {\n  const keys = Object.keys(t || {}).filter((k) => looksHtml(t[k]) || /header|footer|body|content/i.test(k));\n  const pick = (res, dflt) => { for (const re of res) { const k = keys.find((x) => re.test(x) && !/_ar$|attachment/i.test(x)); if (k) return k; } return dflt; };\n  return { header: pick([/^header$/i, /header/i], 'header'), body: pick([/^body$/i, /^content$/i, /^template$/i, /body|content/i], 'body'), footer: pick([/^footer$/i, /footer/i], 'footer') };\n}\nfunction attMap(t) {\n  const m = {}; const a = t && t.letter_attachments;\n  if (a && !Array.isArray(a) && typeof a === 'object') Object.keys(a).forEach((k) => { const id = (k.match(/(\\d+)$/) || [])[1]; if (id) m[id] = typeof a[k] === 'string' ? a[k] : (a[k] && (a[k].url || a[k].file_url)) || ''; });\n  if (Array.isArray(a)) a.forEach((x) => { if (x && x.id != null) m[String(x.id)] = x.url || x.file_url || x.attachment_url || ''; });\n  return m;\n}\nasync function loadTemplates() {\n  const r = await jreq('GET', '/v2/letter_types', { locale: '' });\n  if (!r.ok) throw new Error('Could not read the letter templates (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n  JISR.templates = findTemplateList(r.json).map((t) => ({ id: t.id, name: t.name || t.name_i18n || '', name_ar: t.name_ar || '', raw: t }));\n  JISR.loaded = true;\n  const withHtml = JISR.templates.find((t) => looksHtml(t.raw.header) || Object.keys(t.raw).some((k) => looksHtml(t.raw[k])));\n  if (withHtml) { JISR.fields = detectFields(withHtml.raw); JISR.fieldsFrom = 'the list'; }\n  else if (JISR.templates[0]) { try { const d = await templateDetail(JISR.templates[0].id); if (d) { JISR.fields = detectFields(d); JISR.fieldsFrom = '“' + (d.name || 'a template') + '”'; } } catch (e) { /* keep assumed */ } }\n  return JISR.templates;\n}\nasync function templateDetail(id) {\n  const cached = JISR.templates.find((t) => String(t.id) === String(id));\n  if (cached && looksHtml(cached.raw[JISR.fields.header] || cached.raw[JISR.fields.body] || '')) return cached.raw;\n  const r = await jreq('GET', '/v2/letter_types/' + encodeURIComponent(id), { locale: '' });\n  const t = r.ok ? findTemplateObj(r.json, id) : null;\n  if (t) { if (!JISR.fieldsFrom || JISR.fieldsFrom === 'assumed') { JISR.fields = detectFields(t); JISR.fieldsFrom = '“' + (t.name || 'a template') + '”'; } return t; }\n  if (cached) return cached.raw;\n  throw new Error('Could not open template ' + id + ' (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n}\nfunction partsOf(t) { const F = JISR.fields; return { header: t[F.header] || '', body: t[F.body] || '', footer: t[F.footer] || '' }; }\nasync function uploadImages() {\n  const usedIdx = new Set(); ['header', 'body', 'footer'].forEach((p) => { (S.parts[p] || '').replace(/data-jimg=\"(\\d+)\"/g, (_, n) => usedIdx.add(+n)); });\n  const done = [];\n  for (const im of S.images) {\n    if (!usedIdx.has(im.n) || im.background || im.attId || !im.dataUrl) continue;\n    const ext = ((im.dataUrl.match(/^data:image\\/(\\w+)/) || [])[1] || 'png').replace('jpeg', 'jpg').replace('svg+xml', 'svg');\n    const filename = (im.name || 'image').replace(/\\.[^.]+$/, '') + '.' + ext;\n    const r = await jreq('POST', '/v2/letter_attachments', null, { letter_attachment: { attachment: { data: im.dataUrl, filename } } });\n    if (!r.ok) throw new Error('Image “' + im.name + '” could not be uploaded (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n    let id = null, url = '';\n    (function walk(v, d) { if (!v || typeof v !== 'object' || d > 5) return; if (!Array.isArray(v) && v.id != null && id == null) { id = v.id; Object.keys(v).forEach((k) => { if (!url && typeof v[k] === 'string' && /^https?:\\/\\//.test(v[k])) url = v[k]; }); (function deep(o, dd) { if (url || !o || typeof o !== 'object' || dd > 3) return; Object.values(o).forEach((x) => { if (!url && typeof x === 'string' && /^https?:\\/\\//.test(x)) url = x; else deep(x, dd + 1); }); })(v, 0); } (Array.isArray(v) ? v : Object.values(v)).forEach((x) => walk(x, d + 1)); })(r.json, 0);\n    if (id == null) throw new Error('Jisr accepted image “' + im.name + '” but its ID was not found in the answer.');\n    im.attId = String(id); im.url = url; im.mode = 'id'; done.push(im.name + ' → ' + id);\n  }\n  return done;\n}\nfunction templatePayload(name, nameAr, out, prevAtts) {\n  const F = JISR.fields; const lt = { name, name_ar: nameAr };\n  lt[F.header] = out.parts.header; lt[F.body] = out.parts.body; lt[F.footer] = out.parts.footer;\n  const atts = {}; const all = out.parts.header + out.parts.body + out.parts.footer;\n  (all.match(/letter_attachment_(\\d+)/g) || []).forEach((k) => { const id = k.replace('letter_attachment_', ''); const im = S.images.find((x) => String(x.attId) === id); const url = (im && im.url) || (prevAtts && prevAtts[id]) || ''; atts['letter_attachment_' + id] = url; });\n  lt.letter_attachments = atts;\n  return { letter_type: lt };\n}\nconst normHtml = (h) => String(h || '').replace(/\\s+/g, ' ').replace(/>\\s+</g, '><').trim();\nasync function verifySaved(id, payload, only) {\n  let t = null; try { t = await templateDetail(id); } catch (e) { t = null; }\n  if (!t || String(t.id) !== String(id)) { try { await loadTemplates(); t = (JISR.templates.find((x) => String(x.id) === String(id)) || {}).raw; } catch (e) { /* ignore */ } }\n  if (!t) return { ok: false, msg: 'saved, but could not be read back to verify' };\n  const F = JISR.fields; const bad = (only || ['header', 'body', 'footer']).filter((p) => normHtml(t[F[p]]) !== normHtml(payload.letter_type[F[p]]));\n  if (!bad.length && t.name === payload.letter_type.name) return { ok: true, msg: 'saved and verified' };\n  return { ok: false, msg: 'saved, but Jisr returned different ' + (bad.length ? bad.join(', ') : 'name') + ' (field names may differ; check in Jisr)' };\n}\nasync function createTemplate(name, nameAr) {\n  await uploadImages();\n  const out = build('output');\n  const payload = templatePayload(name, nameAr, out, null);\n  const r = await jreq('POST', '/v2/letter_types', null, payload);\n  if (!r.ok) throw new Error('Jisr refused the template (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n  const created = findTemplateObj(r.json, (findTemplateList(r.json)[0] || {}).id) || (function first(v, d) { if (!v || typeof v !== 'object' || d > 4) return null; if (!Array.isArray(v) && v.id != null) return v; for (const x of Object.values(v)) { const f = first(x, d + 1); if (f) return f; } return null; })(r.json, 0);\n  const id = created && created.id;\n  const ver = id != null ? await verifySaved(id, payload) : { ok: false, msg: 'created (no ID in Jisr’s answer to verify)' };\n  return { id, ver };\n}\nasync function updateTemplate(tpl, name, nameAr) {\n  await uploadImages();\n  const out = build('output');\n  const payload = templatePayload(name, nameAr, out, tpl.atts);\n  let r = await jreq('PUT', '/v2/letter_types/' + encodeURIComponent(tpl.id), null, payload);\n  if (r.status === 404 || r.status === 405) r = await jreq('PATCH', '/v2/letter_types/' + encodeURIComponent(tpl.id), null, payload);\n  if (!r.ok) throw new Error('Jisr refused the change (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n  return verifySaved(tpl.id, payload);\n}\nfunction downloadBackup(list, label) {\n  const blob = new Blob([JSON.stringify({ tool: 'Jisr Letter Converter', company: JISR.slug, saved: new Date().toISOString(), fields: JISR.fields, templates: list }, null, 2)], { type: 'application/json' });\n  download('jisr-letter-templates-backup-' + JISR.slug + '-' + label + '-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '') + '.json', blob);\n}\n\n/* ---- state snapshots (current letter, queued Word files, temporary analysis) */\nfunction snapState() { return { blocks: S.blocks, vars: S.vars, images: S.images, fix: Object.assign({}, S.fix), fixBase: S.fixBase && Object.assign({}, S.fixBase), fixHistory: S.fixHistory.slice(), notes: S.notes, wordGeom: S.wordGeom, fileName: S.fileName, source: S.source, jisrTpl: S.jisrTpl || null, queueId: S.queueId || null }; }\nfunction useState(x, render) { Object.assign(S, { blocks: x.blocks, vars: x.vars, images: x.images, fix: Object.assign({}, x.fix), fixBase: x.fixBase, fixHistory: x.fixHistory || [], notes: x.notes || [], wordGeom: x.wordGeom, fileName: x.fileName, source: x.source, jisrTpl: x.jisrTpl || null, queueId: x.queueId || null }); recomputeParts(); if (render) { syncFixUi(); renderAll(true); } }\nasync function withState(x, fn) { const prev = snapState(); quietDepth++; useState(x, false); try { return await fn(); } finally { const now = snapState(); useState(prev, false); Object.assign(x, now); quietDepth--; if (!quietDepth) renderAll(true); } }\nfunction quietLoad(parts, images, opts) { loadParts(parts, images, opts); }\n\n/* ---- v1.5: Reflect in Jisr (Output), Duplicate, copy to another company */\nfunction createdId(json) {\n  const listId = (findTemplateList(json)[0] || {}).id;\n  const obj = findTemplateObj(json, listId) || (function first(v, d) { if (!v || typeof v !== 'object' || d > 4) return null; if (!Array.isArray(v) && v.id != null) return v; for (const x of Object.values(v)) { const f = first(x, d + 1); if (f) return f; } return null; })(json, 0);\n  return obj ? obj.id : null;\n}\nasync function putTemplate(id, payload) {\n  let r = await jreq('PUT', '/v2/letter_types/' + encodeURIComponent(id), null, payload);\n  if (r.status === 404 || r.status === 405) r = await jreq('PATCH', '/v2/letter_types/' + encodeURIComponent(id), null, payload);\n  if (!r.ok) throw new Error('Jisr refused the change (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n  return r;\n}\nfunction linkTemplate(t, name, nameAr) {\n  const same = S.jisrTpl && String(S.jisrTpl.id) === String(t.id);\n  S.jisrTpl = { id: t.id, name: name != null ? name : t.name || '', name_ar: nameAr != null ? nameAr : t.name_ar || '', atts: Object.assign({}, same ? S.jisrTpl.atts : {}, attMap(t)), original: same && S.jisrTpl.original ? S.jisrTpl.original : JSON.parse(JSON.stringify(t)), savedOnce: true };\n  JISR.backedUp.add(String(t.id)); S.source = 'jisr';\n}\n/** Write some or all parts of the current letter into an existing template. Parts not chosen keep what Jisr has. */\nasync function reflectParts(id, which) {\n  await loadTemplates().catch(() => {});\n  const t = await templateDetail(id);\n  if (!JISR.backedUp.has(String(id)) && !(S.jisrTpl && String(S.jisrTpl.id) === String(id) && S.jisrTpl.savedOnce)) { downloadBackup([t], 'before-reflect'); JISR.backedUp.add(String(id)); }\n  await uploadImages();\n  const out = build('output'); const cur = partsOf(t); const parts = {};\n  PARTS3.forEach((p) => { parts[p] = which.indexOf(p) >= 0 ? out.parts[p] : cur[p]; });\n  const payload = templatePayload(t.name || '', t.name_ar || '', { parts }, attMap(t));\n  await putTemplate(id, payload);\n  const ver = await verifySaved(id, payload, which);\n  linkTemplate(t);\n  return { t, ver };\n}\nconst rfKey = () => (S.fileName || '') + '|' + (S.jisrTpl ? S.jisrTpl.id : '');\nfunction rfTarget() { if (JISR.rfChoice && JISR.rfChoice.key === rfKey()) return JISR.rfChoice.id; return S.jisrTpl ? String(S.jisrTpl.id) : '__new'; }\nfunction renderReflect() {\n  const on = !!JISR;\n  $('#rfOff').style.display = on ? 'none' : ''; $('#rfOn').style.display = on ? '' : 'none';\n  $$('[data-reflect]').forEach((b) => { b.disabled = !on || !hasContent(); b.title = on ? 'Write only this part into the template chosen under “Reflect in Jisr”' : 'Open the tool from Bulk Ops while logged in to Jisr to use this'; });\n  if (!on) return;\n  if (JISR.rfMsgKey && JISR.rfMsgKey !== rfKey()) { $('#rfMsg').innerHTML = ''; JISR.rfMsgKey = null; }\n  const sel = $('#rfTarget'); const want = rfTarget();\n  const open = S.jisrTpl ? String(S.jisrTpl.id) : '';\n  sel.innerHTML = '<option value=\"__new\">+ New template…</option>' + JISR.templates.map((t) => '<option value=\"' + esc(t.id) + '\">' + esc(t.name) + (t.name_ar ? ' · ' + esc(t.name_ar) : '') + ' (#' + esc(t.id) + ')' + (open === String(t.id) ? ' — open now' : '') + '</option>').join('');\n  sel.value = Array.from(sel.options).some((o) => o.value === want) ? want : '__new';\n  const isNew = sel.value === '__new';\n  $('#rfNew').style.display = isNew ? '' : 'none';\n  if (isNew && JISR.rfNameKey !== rfKey()) { JISR.rfNameKey = rfKey(); $('#rfName').value = String(S.fileName || '').replace(/\\.docx$/i, '').replace(/[-_]+/g, ' ').trim(); $('#rfNameAr').value = ''; }\n  $('#rfAll').disabled = !hasContent();\n  $('#rfAll').textContent = isNew ? 'Create in Jisr' : 'Reflect all three parts in Jisr';\n  $('#rfInfo').textContent = !JISR.loaded ? 'Templates not loaded yet (Jisr templates › Load templates).' : isNew ? 'Per-part buttons need an existing template.' : '';\n}\nfunction warnLines() { const c = checkCurrent(S.lastFit); return (c.fits ? '' : '\\n\\nWarning: it does not fit the intended pages yet.') + (c.proposed || c.unmapped ? '\\n\\nVariables: ' + c.proposed + ' only proposed, ' + c.unmapped + ' not mapped.' : ''); }\nasync function doReflect(which) {\n  const m = $('#rfMsg'); const id = $('#rfTarget').value; const label = { header: 'Header', body: 'Body', footer: 'Footer' };\n  if (!hasContent()) return;\n  if (id === '__new') {\n    if (which.length < 3) { m.innerHTML = '<div class=\"msg warn\">Choose an existing template to reflect one part, or use “Create in Jisr” for a new template.</div>'; return; }\n    const name = $('#rfName').value.trim(), nameAr = $('#rfNameAr').value.trim();\n    if (!name || !nameAr) { m.innerHTML = '<div class=\"msg err\">Enter both names for the new template.</div>'; return; }\n    if (JISR.templates.some((t) => (t.name || '').trim().toLowerCase() === name.toLowerCase())) { m.innerHTML = '<div class=\"msg err\">A template named “' + esc(name) + '” already exists. Choose it in the list to replace it, or use another name.</div>'; return; }\n    if (!confirm('Create the template “' + name + '” in ' + JISR.slug + ' with this letter?' + warnLines() + '\\n\\nImages without an ID are uploaded to Jisr first.')) return;\n    m.innerHTML = '<div class=\"msg info\">Creating…</div>';\n    try {\n      const r = await createTemplate(name, nameAr);\n      await loadTemplates().catch(() => {});\n      const t = r.id != null && JISR.templates.find((x) => String(x.id) === String(r.id));\n      if (r.id != null) { linkTemplate(t ? t.raw : { id: r.id, name, name_ar: nameAr }, name, nameAr); JISR.rfChoice = { key: rfKey(), id: String(r.id) }; $('#tplName').value = name; $('#tplNameAr').value = nameAr; }\n      m.innerHTML = '<div class=\"msg ' + (r.ver.ok ? 'ok' : 'warn') + '\">Created “' + esc(name) + '”' + (r.id != null ? ' (#' + esc(r.id) + ')' : '') + ': ' + esc(r.ver.msg) + '.</div>';\n    } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n    JISR.rfMsgKey = rfKey(); renderAll(true); return;\n  }\n  const t = JISR.templates.find((x) => String(x.id) === String(id)); const tn = t ? t.name : '#' + id;\n  const what = which.length === 3 ? 'the Header, Body and Footer' : 'only the ' + label[which[0]];\n  const keep = which.length === 3 ? '' : '\\nThe ' + PARTS3.filter((p) => which.indexOf(p) < 0).map((p) => label[p]).join(' and ') + ' in Jisr stay as they are.';\n  const firstTime = !JISR.backedUp.has(String(id)) && !(S.jisrTpl && String(S.jisrTpl.id) === String(id) && S.jisrTpl.savedOnce);\n  if (!confirm('Replace ' + what + ' of “' + tn + '” in ' + JISR.slug + ' with this letter?' + keep + (which.length === 3 ? warnLines() : '') + (firstTime ? '\\n\\nA backup of the current version is downloaded first.' : ''))) return;\n  m.innerHTML = '<div class=\"msg info\">Writing ' + esc(what) + ' to “' + esc(tn) + '”…</div>';\n  try {\n    const r = await reflectParts(id, which);\n    JISR.rfChoice = { key: rfKey(), id: String(id) };\n    m.innerHTML = '<div class=\"msg ' + (r.ver.ok ? 'ok' : 'warn') + '\">' + esc(what.charAt(0).toUpperCase() + what.slice(1)) + ' of “' + esc(tn) + '”: ' + esc(r.ver.msg) + '.' + (firstTime ? ' Backup downloaded; Jisr templates › Restore original puts it back.' : '') + '</div>';\n  } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n  JISR.rfMsgKey = rfKey(); renderAll(true);\n}\n\n/* ---- images when copying templates */\nasync function fetchDataUrl(url) {\n  if (!url) return null; if (/^data:image\\//.test(url)) return url;\n  try {\n    const r = await fetch(url, { credentials: 'omit' }); if (!r.ok) return null;\n    const b = await r.blob(); if (!/^image\\//.test(b.type)) return null;\n    return await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(null); fr.readAsDataURL(b); });\n  } catch (e) { return null; }\n}\nasync function uploadDataUrl(dataUrl, base) {\n  const ext = ((dataUrl.match(/^data:image\\/(\\w+)/) || [])[1] || 'png').replace('jpeg', 'jpg').replace('svg+xml', 'svg');\n  const r = await jreq('POST', '/v2/letter_attachments', null, { letter_attachment: { attachment: { data: dataUrl, filename: base + '.' + ext } } });\n  if (!r.ok) throw new Error('Image could not be uploaded (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n  let id = null, url = '';\n  (function walk(v, d) { if (id != null || !v || typeof v !== 'object' || d > 5) return; if (!Array.isArray(v) && v.id != null) { id = v.id; (function deep(o, dd) { if (url || !o || typeof o !== 'object' || dd > 3) return; Object.values(o).forEach((x) => { if (!url && typeof x === 'string' && /^https?:\\/\\//.test(x)) url = x; else deep(x, dd + 1); }); })(v, 0); return; } (Array.isArray(v) ? v : Object.values(v)).forEach((x) => walk(x, d + 1)); })(r.json, 0);\n  if (id == null) throw new Error('Jisr accepted an image but its ID was not found in the answer.');\n  return { id: String(id), url };\n}\nconst attIds = (parts) => { const s = new Set(); PARTS3.forEach((p) => (String(parts[p] || '').match(/letter_attachment_(\\d+)/g) || []).forEach((k) => s.add(k.slice(18)))); return Array.from(s); };\n/** Give the copy its own images: re-upload each one. If an image cannot be read: same company → share the original's; other company → leave it out. */\nasync function copyImages(parts, atts, sameCompany) {\n  const out = Object.assign({}, parts); const map = {}; const notes = []; let shared = [];\n  for (const id of attIds(out)) {\n    const re = new RegExp('letter_attachment_' + id + '(?!\\\\d)', 'g');\n    const data = await fetchDataUrl(atts[id]);\n    if (data) { const up = await uploadDataUrl(data, 'letter-image-' + id); PARTS3.forEach((p) => { out[p] = out[p].replace(re, 'letter_attachment_' + up.id); }); map['letter_attachment_' + up.id] = up.url; }\n    else if (sameCompany) { map['letter_attachment_' + id] = atts[id] || ''; shared.push(id); notes.push('image ' + id + ' could not be read, so the copy uses the same image as the original'); }\n    else { PARTS3.forEach((p) => { out[p] = out[p].replace(new RegExp('<img[^>]*letter_attachment_' + id + '(?!\\\\d)[^>]*>', 'g'), ''); }); notes.push('image ' + id + ' could not be copied: add the logo again'); }\n  }\n  return { parts: out, atts: map, notes, shared };\n}\nfunction uniqueName(base, field, extra) {\n  const names = new Set(JISR.templates.map((t) => String(t[field] || '').trim().toLowerCase()).concat(extra || []));\n  let n = base; let i = 2; while (names.has(n.trim().toLowerCase())) n = base + ' ' + i++;\n  return n;\n}\nasync function createFromParts(name, nameAr, parts, atts) {\n  const lt = { name, name_ar: nameAr }; PARTS3.forEach((p) => { lt[JISR.fields[p]] = parts[p] || ''; }); lt.letter_attachments = atts;\n  const payload = { letter_type: lt };\n  const r = await jreq('POST', '/v2/letter_types', null, payload);\n  if (!r.ok) throw new Error('Jisr refused “' + name + '” (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n  const id = createdId(r.json);\n  const ver = id != null ? await verifySaved(id, payload) : { ok: false, msg: 'created (no ID in Jisr’s answer to verify)' };\n  return { id, ver };\n}\nasync function duplicateTemplate(id) {\n  const t = await templateDetail(id);\n  const name = uniqueName((t.name || 'Template').trim() + ' dup', 'name'), nameAr = uniqueName((t.name_ar || t.name || '').trim() + ' dup', 'name_ar');\n  const c = await copyImages(partsOf(t), attMap(t), true);\n  const r = await createFromParts(name, nameAr, c.parts, c.atts);\n  if (c.shared.length) { // make sure the original still has its images\n    await loadTemplates().catch(() => {}); const o = await templateDetail(id).catch(() => null); const still = o ? attMap(o) : {};\n    if (c.shared.some((x) => !(x in still))) c.notes.push('check the original in Jisr: its image link may have moved to the copy');\n  }\n  JISR.templates.push({ id: r.id, name, name_ar: nameAr, raw: { id: r.id, name, name_ar: nameAr } });\n  return { id: r.id, name, nameAr, ver: r.ver, notes: c.notes };\n}\nasync function exportForCompany(ids) {\n  const list = [];\n  for (const id of ids) {\n    const t = await templateDetail(id); const atts = attMap(t); const images = {};\n    for (const a of attIds(partsOf(t))) images[a] = await fetchDataUrl(atts[a]);\n    list.push({ name: t.name || '', name_ar: t.name_ar || '', parts: partsOf(t), images });\n  }\n  const blob = new Blob([JSON.stringify({ tool: 'Jisr Letter Converter', kind: 'letter-templates', from: JISR.slug, exported: new Date().toISOString(), templates: list }, null, 2)], { type: 'application/json' });\n  download('jisr-letter-templates-from-' + JISR.slug + '.json', blob);\n  return list;\n}\nasync function importPackage(pkg) {\n  const entries = (pkg.templates || []).map((t) => t.parts ? { name: t.name, name_ar: t.name_ar, parts: t.parts, atts: t.images || {} }\n    : { name: t.name, name_ar: t.name_ar, parts: (function () { const F = pkg.fields || JISR.fields; return { header: t[F.header] || '', body: t[F.body] || '', footer: t[F.footer] || '' }; })(), atts: attMap(t) });\n  const same = pkg.from && pkg.from === JISR.slug; const res = []; const taken = [];\n  for (const e of entries) {\n    try {\n      const name = uniqueName(String(e.name || 'Template').trim(), 'name', taken), nameAr = uniqueName(String(e.name_ar || e.name || '').trim(), 'name_ar');\n      taken.push(name.toLowerCase());\n      const c = await copyImages(e.parts, e.atts, same);\n      const r = await createFromParts(name, nameAr, c.parts, c.atts);\n      JISR.templates.push({ id: r.id, name, name_ar: nameAr, raw: { id: r.id, name, name_ar: nameAr } });\n      res.push({ ok: true, text: '“' + name + '”' + (r.id != null ? ' #' + r.id : '') + ' · ' + r.ver.msg + (c.notes.length ? ' · ' + c.notes.join('; ') : '') });\n    } catch (err) { res.push({ ok: false, text: '“' + e.name + '”: ' + err.message }); }\n  }\n  return res;\n}\n\n/* ---- UI */\nconst QUEUE = []; let queueSeq = 0;\nfunction okFit(f) { return f && f.fits && !(f.footerPushed && f.footerPage > f.target); }\nfunction checkCurrent(f) {\n  const vs = Array.from(S.vars.values()).filter((v) => ['header', 'body', 'footer'].some((p) => (S.parts[p] || '').indexOf('data-jv=\"' + v.id + '\"') >= 0));\n  return { pages: f ? f.n : null, fits: okFit(f), proposed: vs.filter((v) => v.status === 'auto' && v.key).length, unmapped: vs.filter((v) => !v.key || v.status === 'unmapped').length, unknown: vs.filter((v) => v.status === 'unknown').length, images: S.images.filter((i) => !i.background).length };\n}\nconst checkText = (c) => !c ? '—' : (c.fits ? '✓ ' : '✗ ') + c.pages + ' page(s)' + (c.proposed ? ' · ' + c.proposed + ' proposed' : '') + (c.unmapped ? ' · ' + c.unmapped + ' not mapped' : '') + (c.unknown ? ' · ' + c.unknown + ' unknown' : '');\nfunction renderJisr() {\n  renderReflect();\n  if (!JISR) { $('#jisrOff').style.display = ''; $('#jisrOn').style.display = 'none'; return; }\n  $('#jisrOff').style.display = 'none'; $('#jisrOn').style.display = '';\n  $('#jisrSlug').textContent = JISR.slug;\n  $('#jisrInfo').textContent = JISR.loaded ? JISR.templates.length + ' template(s) · fields: header → ' + JISR.fields.header + ', body → ' + JISR.fields.body + ', footer → ' + JISR.fields.footer + ' (' + (JISR.fieldsFrom === 'assumed' ? 'assumed, no template with content yet' : 'read from ' + JISR.fieldsFrom) + ')' : 'Templates not loaded yet.';\n  const tb = $('#tplTable tbody');\n  tb.innerHTML = JISR.templates.map((t) => '<tr data-tid=\"' + esc(t.id) + '\"><td><input type=\"checkbox\" data-tsel=\"' + esc(t.id) + '\"' + (t.sel ? ' checked' : '') + '></td><td>' + esc(t.name) + '</td><td dir=\"rtl\">' + esc(t.name_ar) + '</td><td>' + esc(t.checkText || '') + '</td><td style=\"white-space:nowrap\"><button class=\"btn sm\" data-tedit=\"' + esc(t.id) + '\">Edit</button> <button class=\"btn sm\" data-tdup=\"' + esc(t.id) + '\" title=\"Make a copy named “… dup” with the same header, body, footer and images\">Duplicate</button></td></tr>').join('') || '<tr><td colspan=\"5\" class=\"hint\">' + (JISR.loaded ? 'No templates yet.' : 'Click “Load templates”.') + '</td></tr>';\n  const cur = S.jisrTpl;\n  $('#curInfo').innerHTML = !hasContent() ? '<div class=\"msg info\">No letter open. Import a Word file, or Edit a template above.</div>' : cur ? '<div class=\"msg info\">Editing Jisr template <b>' + esc(cur.name) + '</b> (#' + esc(cur.id) + '). Save writes the three parts and the names back to it.</div>' : '<div class=\"msg info\">Current letter: ' + esc(S.fileName || 'untitled') + (S.queueId ? ' (from the bulk list)' : '') + '. Create it as a new template, or add Word files below to create many.</div>';\n  $('#tplSave').style.display = cur ? '' : 'none'; $('#tplRestore').style.display = cur && cur.savedOnce ? '' : 'none';\n  $('#tplSave').textContent = cur ? 'Save changes to “' + cur.name + '”' : 'Save';\n  $('#tplCreate').disabled = !hasContent();\n  $('#bulkTable tbody').innerHTML = QUEUE.map((q) => '<tr data-qid=\"' + q.id + '\"><td>' + esc(q.fileName) + (S.queueId === q.id ? ' <span class=\"tag ok\">open</span>' : '') + '</td><td><input type=\"text\" data-qname=\"' + q.id + '\" value=\"' + esc(q.name) + '\" style=\"width:100%\"></td><td><input type=\"text\" dir=\"rtl\" data-qnamear=\"' + q.id + '\" value=\"' + esc(q.nameAr) + '\" style=\"width:100%\"></td><td>' + esc(checkText(q.check)) + (q.msg ? '<div class=\"' + (q.state === 'done' ? 'tag ok' : q.state === 'failed' ? 'tag bad' : 'hint') + '\">' + esc(q.msg) + '</div>' : '') + '</td><td style=\"white-space:nowrap\"><button class=\"btn sm\" data-qreview=\"' + q.id + '\">Review</button> <button class=\"btn sm\" data-qdel=\"' + q.id + '\">✕</button></td></tr>').join('') || '<tr><td colspan=\"5\" class=\"hint\">No Word files added.</td></tr>';\n  $('#bulkCreate').disabled = !QUEUE.some((q) => q.state !== 'done');\n}\nfunction syncQueueBack() { if (!S.queueId) return; const q = QUEUE.find((x) => x.id === S.queueId); if (q) q.snap = snapState(); }\nasync function refreshTemplates() {\n  const m = $('#tplMsg'); m.innerHTML = '<div class=\"msg info\">Loading templates…</div>';\n  try { await loadTemplates(); m.innerHTML = ''; } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n  renderJisr();\n}\nasync function openTemplate(id) {\n  const m = $('#tplMsg'); m.innerHTML = '<div class=\"msg info\">Opening…</div>';\n  try {\n    const t = await templateDetail(id);\n    syncQueueBack();\n    S.source = 'jisr'; S.fileName = t.name || 'template-' + id; S.wordGeom = null; S.queueId = null;\n    S.fix = { spacerMode: 'keep', spacingScale: 1, fontScale: 1, imgScale: 1 }; syncFixUi();\n    const atts = attMap(t);\n    loadParts(partsOf(t), [], { notes: [] });\n    S.images.forEach((im) => { if (im.attId && atts[im.attId]) im.url = atts[im.attId]; });\n    S.jisrTpl = { id: t.id, name: t.name || '', name_ar: t.name_ar || '', atts, original: JSON.parse(JSON.stringify(t)), savedOnce: JISR.backedUp.has(String(t.id)) };\n    $('#tplName').value = t.name || ''; $('#tplNameAr').value = t.name_ar || '';\n    m.innerHTML = '<div class=\"msg ok\">Opened “' + esc(t.name) + '”. It is shown as it is today (spacers kept). Adjust it, then Save changes below.</div>';\n    renderAll(true);\n  } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n}\nasync function analyzeTemplates(ids, autoFix) {\n  const m = $('#tplMsg'); const backups = []; let saved = 0, failed = 0;\n  for (const [i, id] of ids.entries()) {\n    const row = JISR.templates.find((t) => String(t.id) === String(id));\n    m.innerHTML = '<div class=\"msg info\">' + (autoFix ? 'Fixing' : 'Checking') + ' ' + (i + 1) + ' / ' + ids.length + ': ' + esc(row ? row.name : id) + '…</div>';\n    try {\n      const t = await templateDetail(id); const atts = attMap(t);\n      const tmp = { blocks: [], vars: new Map(), images: [], fix: { spacerMode: 'keep', spacingScale: 1, fontScale: 1, imgScale: 1 }, fixHistory: [], notes: [], fileName: t.name, source: 'jisr', jisrTpl: { id: t.id, name: t.name, name_ar: t.name_ar, atts } };\n      await withState(tmp, async () => {\n        quietLoad(partsOf(t), [], { notes: [] });\n        S.images.forEach((im) => { if (im.attId && atts[im.attId]) im.url = atts[im.attId]; });\n        let f = await fitNow(); const before = checkCurrent(f);\n        if (autoFix && !okFit(f)) {\n          const r = await autoFitCore(); f = r.f;\n          if (okFit(f)) { backups.push(JSON.parse(JSON.stringify(t))); const ver = await updateTemplate(S.jisrTpl, t.name || '', t.name_ar || ''); saved++; row.checkText = 'fixed: ' + before.pages + ' → ' + f.n + ' page(s) · ' + r.steps.join(', ') + ' · ' + ver.msg; }\n          else row.checkText = '✗ still ' + f.n + ' page(s) after auto-fit, not saved';\n        } else row.checkText = checkText(before) + (before.fits ? '' : ' · footer ' + (f.footerPushed ? 'pushed to page ' + f.footerPage : 'ok'));\n      });\n    } catch (e) { failed++; if (row) row.checkText = '✗ ' + e.message; }\n    renderJisr();\n  }\n  m.innerHTML = '<div class=\"msg ' + (failed ? 'warn' : 'ok') + '\">' + (autoFix ? saved + ' template(s) fixed and saved' : 'Checked ' + ids.length + ' template(s)') + (failed ? ', ' + failed + ' failed' : '') + '. ' + (autoFix && backups.length ? 'A backup of the originals was downloaded.' : '') + '</div>';\n  return backups;\n}\n\nif (JISR) {\n  $('#jisrRefresh').addEventListener('click', refreshTemplates);\n  $('#tplTable').addEventListener('click', async (e) => {\n    const id = e.target.getAttribute('data-tedit'); if (id) openTemplate(id);\n    const dup = e.target.getAttribute('data-tdup'); if (!dup) return;\n    const t = JISR.templates.find((x) => String(x.id) === dup); const m = $('#tplMsg');\n    if (!confirm('Duplicate “' + (t ? t.name : '#' + dup) + '” in ' + JISR.slug + '?\\n\\nThe copy is named “' + uniqueName(((t && t.name) || 'Template').trim() + ' dup', 'name') + '” and has the same header, body, footer and images. It then opens here so you can change the company name and logo.')) return;\n    m.innerHTML = '<div class=\"msg info\">Duplicating…</div>';\n    try {\n      const r = await duplicateTemplate(dup);\n      await loadTemplates().catch(() => {});\n      if (r.id != null) await openTemplate(r.id);\n      m.innerHTML = '<div class=\"msg ' + (r.ver.ok && !r.notes.length ? 'ok' : 'warn') + '\">Created “' + esc(r.name) + '”' + (r.id != null ? ' (#' + esc(r.id) + ')' : '') + ': ' + esc(r.ver.msg) + (r.notes.length ? ' · ' + esc(r.notes.join('; ')) : '') + '.' + (r.id != null ? ' It is open now: change the company name (3 · Variables › Open the letter editor) and the logo (4 · Images), rename it below if needed, then Save changes or use Reflect in Jisr in 6 · Output.' : '') + '</div>';\n    } catch (err) { m.innerHTML = '<div class=\"msg err\">' + esc(err.message) + '</div>'; }\n    renderAll(true);\n  });\n  $('#tplDupSel').addEventListener('click', async () => {\n    const ids = JISR.templates.filter((t) => t.sel).map((t) => t.id); const m = $('#tplMsg');\n    if (!ids.length) { m.innerHTML = '<div class=\"msg warn\">Tick the templates to duplicate.</div>'; return; }\n    if (!confirm('Duplicate ' + ids.length + ' template(s) in ' + JISR.slug + '? Each copy is named “… dup”.')) return;\n    const out = [];\n    for (const [i, id] of ids.entries()) {\n      m.innerHTML = '<div class=\"msg info\">Duplicating ' + (i + 1) + ' / ' + ids.length + '…</div>';\n      try { const r = await duplicateTemplate(id); out.push({ ok: r.ver.ok && !r.notes.length, text: '“' + r.name + '” #' + r.id + ' · ' + r.ver.msg + (r.notes.length ? ' · ' + r.notes.join('; ') : '') }); } catch (err) { out.push({ ok: false, text: err.message }); }\n    }\n    JISR.templates.forEach((t) => { t.sel = false; });\n    await loadTemplates().catch(() => {});\n    m.innerHTML = '<div class=\"msg ' + (out.every((x) => x.ok) ? 'ok' : 'warn') + '\">' + out.filter((x) => x.ok).length + ' of ' + ids.length + ' duplicated.<ul class=\"tight\">' + out.map((x) => '<li>' + esc(x.text) + '</li>').join('') + '</ul></div>';\n    renderJisr();\n  });\n  $('#tplExport').addEventListener('click', async () => {\n    const ids = JISR.templates.filter((t) => t.sel).map((t) => t.id); const m = $('#tplMsg');\n    if (!ids.length) { m.innerHTML = '<div class=\"msg warn\">Tick the templates to copy.</div>'; return; }\n    m.innerHTML = '<div class=\"msg info\">Reading ' + ids.length + ' template(s)…</div>';\n    try { const list = await exportForCompany(ids); const miss = list.reduce((n, t) => n + Object.values(t.images).filter((x) => !x).length, 0); m.innerHTML = '<div class=\"msg ' + (miss ? 'warn' : 'ok') + '\">Downloaded ' + list.length + ' template(s). Open the tool in the other company and use Import.' + (miss ? ' ' + miss + ' image(s) could not be read and will need to be added again there.' : '') + '</div>'; } catch (err) { m.innerHTML = '<div class=\"msg err\">' + esc(err.message) + '</div>'; }\n  });\n  $('#tplImportBtn').addEventListener('click', () => $('#tplImport').click());\n  $('#tplImport').addEventListener('change', async (e) => {\n    const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return; const m = $('#tplMsg');\n    let pkg; try { pkg = JSON.parse(await f.text()); } catch (err) { m.innerHTML = '<div class=\"msg err\">That file is not a template file from this tool.</div>'; return; }\n    if (!pkg || !Array.isArray(pkg.templates) || !pkg.templates.length) { m.innerHTML = '<div class=\"msg err\">No templates found in that file.</div>'; return; }\n    if (!JISR.loaded) { try { await loadTemplates(); } catch (err) { m.innerHTML = '<div class=\"msg err\">' + esc(err.message) + '</div>'; return; } }\n    if (!confirm('Create ' + pkg.templates.length + ' template(s) in ' + JISR.slug + (pkg.from ? ' (copied from ' + pkg.from + ')' : '') + '?\\n\\n' + pkg.templates.map((t) => '• ' + t.name).slice(0, 15).join('\\n') + '\\n\\nNames that already exist get a number. Images are uploaded to this company.')) return;\n    m.innerHTML = '<div class=\"msg info\">Creating…</div>';\n    const res = await importPackage(pkg);\n    await loadTemplates().catch(() => {});\n    m.innerHTML = '<div class=\"msg ' + (res.every((x) => x.ok) ? 'ok' : 'warn') + '\">' + res.filter((x) => x.ok).length + ' of ' + res.length + ' created.<ul class=\"tight\">' + res.map((x) => '<li>' + esc(x.text) + '</li>').join('') + '</ul></div>';\n    renderJisr();\n  });\n  $('#tplTable').addEventListener('change', (e) => { const id = e.target.getAttribute('data-tsel'); if (id) { const t = JISR.templates.find((x) => String(x.id) === id); if (t) t.sel = e.target.checked; } });\n  $('#tplAll').addEventListener('change', (e) => { JISR.templates.forEach((t) => { t.sel = e.target.checked; }); renderJisr(); });\n  $('#tplCheck').addEventListener('click', async () => { const ids = JISR.templates.filter((t) => t.sel).map((t) => t.id); if (!ids.length) { $('#tplMsg').innerHTML = '<div class=\"msg warn\">Tick the templates to check.</div>'; return; } await analyzeTemplates(ids, false); renderAll(true); });\n  $('#tplAutofix').addEventListener('click', async () => {\n    const ids = JISR.templates.filter((t) => t.sel).map((t) => t.id); if (!ids.length) { $('#tplMsg').innerHTML = '<div class=\"msg warn\">Tick the templates to fix.</div>'; return; }\n    if (!confirm('Auto-fit and save ' + ids.length + ' template(s) in ' + JISR.slug + '?\\n\\nOnly templates that do not fit are changed (spacing, then font, never wording). A backup of the originals is downloaded first.')) return;\n    const backups = await analyzeTemplates(ids, true);\n    if (backups.length) downloadBackup(backups, 'auto-fit');\n    renderAll(true);\n  });\n  $('#tplCreate').addEventListener('click', async () => {\n    const name = $('#tplName').value.trim(), nameAr = $('#tplNameAr').value.trim(); const m = $('#saveMsg');\n    if (!name || !nameAr) { m.innerHTML = '<div class=\"msg err\">Enter both template names (English and Arabic).</div>'; return; }\n    if (!JISR.loaded) { try { await loadTemplates(); } catch (e) { /* checked below */ } }\n    if (JISR.templates.some((t) => (t.name || '').trim().toLowerCase() === name.toLowerCase())) { m.innerHTML = '<div class=\"msg err\">A template named “' + esc(name) + '” already exists. Edit that one, or choose another name.</div>'; return; }\n    const c = checkCurrent(S.lastFit);\n    if (!confirm('Create the template “' + name + '” in ' + JISR.slug + '?' + (c.fits ? '' : '\\n\\nWarning: it does not fit the intended pages yet.') + (c.proposed || c.unmapped ? '\\n\\nVariables: ' + c.proposed + ' only proposed, ' + c.unmapped + ' not mapped.' : '') + '\\n\\nImages without an ID are uploaded to Jisr first.')) return;\n    m.innerHTML = '<div class=\"msg info\">Creating…</div>';\n    try {\n      const r = await createTemplate(name, nameAr);\n      m.innerHTML = '<div class=\"msg ' + (r.ver.ok ? 'ok' : 'warn') + '\">Template “' + esc(name) + '” created' + (r.id != null ? ' (#' + esc(r.id) + ')' : '') + ': ' + esc(r.ver.msg) + '.</div>';\n      if (S.queueId) { const q = QUEUE.find((x) => x.id === S.queueId); if (q) { q.state = 'done'; q.msg = 'created #' + r.id; } }\n      await loadTemplates().catch(() => {});\n      if (r.id != null) { const t = JISR.templates.find((x) => String(x.id) === String(r.id)); S.jisrTpl = { id: r.id, name, name_ar: nameAr, atts: t ? attMap(t.raw) : {}, original: t ? JSON.parse(JSON.stringify(t.raw)) : null, savedOnce: false }; S.source = 'jisr'; }\n    } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n    renderAll(true);\n  });\n  $('#tplSave').addEventListener('click', async () => {\n    const cur = S.jisrTpl; if (!cur) return; const m = $('#saveMsg');\n    const name = $('#tplName').value.trim() || cur.name, nameAr = $('#tplNameAr').value.trim() || cur.name_ar;\n    if (!confirm('Save the changes to “' + cur.name + '” in ' + JISR.slug + '?' + (cur.savedOnce ? '' : '\\n\\nA backup of the current version is downloaded first.'))) return;\n    m.innerHTML = '<div class=\"msg info\">Saving…</div>';\n    try {\n      if (!cur.savedOnce && cur.original) downloadBackup([cur.original], 'before-edit');\n      const ver = await updateTemplate(cur, name, nameAr);\n      cur.savedOnce = true; cur.name = name; cur.name_ar = nameAr; JISR.backedUp.add(String(cur.id));\n      m.innerHTML = '<div class=\"msg ' + (ver.ok ? 'ok' : 'warn') + '\">“' + esc(name) + '”: ' + esc(ver.msg) + '. Use Restore original to undo.</div>';\n      await loadTemplates().catch(() => {});\n    } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n    renderAll(true);\n  });\n  $('#tplRestore').addEventListener('click', async () => {\n    const cur = S.jisrTpl; if (!cur || !cur.original) return; const m = $('#saveMsg');\n    if (!confirm('Put back the original version of “' + (cur.original.name || cur.name) + '” in Jisr?')) return;\n    try {\n      const o = cur.original; const lt = { name: o.name, name_ar: o.name_ar }; ['header', 'body', 'footer'].forEach((p) => { lt[JISR.fields[p]] = o[JISR.fields[p]] || ''; }); if (o.letter_attachments) lt.letter_attachments = o.letter_attachments;\n      let r = await jreq('PUT', '/v2/letter_types/' + encodeURIComponent(cur.id), null, { letter_type: lt });\n      if (r.status === 404 || r.status === 405) r = await jreq('PATCH', '/v2/letter_types/' + encodeURIComponent(cur.id), null, { letter_type: lt });\n      if (!r.ok) throw new Error('Jisr refused (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n      m.innerHTML = '<div class=\"msg ok\">Original version restored.</div>'; await openTemplate(cur.id);\n    } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n  });\n  // ---- bulk create from Word files\n  async function addWordFiles(files) {\n    const m = $('#bulkMsg'); syncQueueBack(); const prev = snapState();\n    for (const file of files) {\n      m.innerHTML = '<div class=\"msg info\">Reading ' + esc(file.name) + '…</div>';\n      const q = { id: ++queueSeq, fileName: file.name, name: file.name.replace(/\\.docx$/i, '').replace(/[-_]+/g, ' ').trim(), nameAr: '', snap: null, check: null, state: '', msg: '' };\n      try {\n        const r = await readDocx(file);\n        q.snap = { blocks: [], vars: new Map(), images: [], fix: { spacerMode: 'collapse', spacingScale: 1, fontScale: 1, imgScale: 1 }, fixHistory: [], notes: [], fileName: file.name, source: 'docx', queueId: q.id, wordGeom: r.geom };\n        await withState(q.snap, async () => { quietLoad(r.parts, r.images, { notes: r.notes, wordGeom: r.geom }); S.queueId = q.id; S.source = 'docx'; S.fileName = file.name; q.check = checkCurrent(await fitNow()); });\n        QUEUE.push(q);\n      } catch (e) { q.state = 'failed'; q.msg = e.message; QUEUE.push(q); }\n    }\n    useState(prev, true);\n    m.innerHTML = '<div class=\"msg ok\">' + files.length + ' file(s) added. Fill the names, Review any file that needs it, then Create all.</div>';\n    renderJisr();\n  }\n  $('#bulkDrop').addEventListener('click', () => $('#bulkIn').click());\n  $('#bulkIn').addEventListener('change', (e) => { const fs = Array.from(e.target.files || []); e.target.value = ''; if (fs.length) addWordFiles(fs); });\n  ['dragover', 'dragenter'].forEach((t) => $('#bulkDrop').addEventListener(t, (e) => { e.preventDefault(); $('#bulkDrop').classList.add('over'); }));\n  ['dragleave', 'drop'].forEach((t) => $('#bulkDrop').addEventListener(t, (e) => { e.preventDefault(); $('#bulkDrop').classList.remove('over'); if (t === 'drop') { const fs = Array.from(e.dataTransfer.files || []).filter((f) => /\\.docx$/i.test(f.name)); if (fs.length) addWordFiles(fs); } }));\n  $('#bulkTable').addEventListener('input', (e) => { const a = e.target.getAttribute('data-qname'), b = e.target.getAttribute('data-qnamear'); const q = QUEUE.find((x) => x.id === +(a || b)); if (!q) return; if (a) q.name = e.target.value; else q.nameAr = e.target.value; });\n  $('#bulkTable').addEventListener('click', async (e) => {\n    const rv = +e.target.getAttribute('data-qreview'), del = +e.target.getAttribute('data-qdel');\n    if (rv) { const q = QUEUE.find((x) => x.id === rv); if (!q || !q.snap) return; syncQueueBack(); useState(q.snap, true); $('#tplName').value = q.name; $('#tplNameAr').value = q.nameAr; $$('#tabs button').forEach((x) => x.classList.toggle('on', x.getAttribute('data-p') === 'struct')); $$('section.pane').forEach((p) => p.classList.toggle('on', p.id === 'p-struct')); }\n    if (del) { const i = QUEUE.findIndex((x) => x.id === del); if (i >= 0) { if (S.queueId === del) S.queueId = null; QUEUE.splice(i, 1); renderJisr(); } }\n  });\n  $('#bulkCreate').addEventListener('click', async () => {\n    syncQueueBack();\n    const m = $('#bulkMsg'); const todo = QUEUE.filter((q) => q.state !== 'done' && q.snap);\n    if (!JISR.loaded) { try { await loadTemplates(); } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; return; } }\n    const existing = new Set(JISR.templates.map((t) => (t.name || '').trim().toLowerCase())); const seen = new Set(); const problems = [];\n    todo.forEach((q) => { const n = (q.name || '').trim().toLowerCase(); q.msg = ''; if (!q.name.trim() || !q.nameAr.trim()) q.msg = 'needs both names'; else if (existing.has(n)) q.msg = 'a template with this name exists'; else if (seen.has(n)) q.msg = 'same name as another file'; seen.add(n); if (q.msg) { q.state = 'blocked'; problems.push(q.fileName + ': ' + q.msg); } else q.state = ''; });\n    const ready = todo.filter((q) => q.state !== 'blocked');\n    renderJisr();\n    if (!ready.length) { m.innerHTML = '<div class=\"msg err\">Nothing to create. ' + esc(problems.join(' · ')) + '</div>'; return; }\n    for (const q of ready) await withState(q.snap, async () => { q.check = checkCurrent(await fitNow()); });\n    const notFit = ready.filter((q) => !q.check.fits).length, prop = ready.reduce((a, q) => a + q.check.proposed + q.check.unmapped, 0);\n    if (!confirm('Create ' + ready.length + ' template(s) in ' + JISR.slug + '?' + (problems.length ? '\\n\\n' + problems.length + ' file(s) are skipped (see the list).' : '') + (notFit ? '\\n\\n' + notFit + ' do not fit the intended pages.' : '') + (prop ? '\\n\\n' + prop + ' variable(s) are only proposed or not mapped; proposed ones are used as proposed.' : '') + '\\n\\nImages are uploaded to Jisr first.')) return;\n    let ok = 0;\n    for (const [i, q] of ready.entries()) {\n      m.innerHTML = '<div class=\"msg info\">Creating ' + (i + 1) + ' / ' + ready.length + ': ' + esc(q.name) + '…</div>';\n      try { const r = await withState(q.snap, () => createTemplate(q.name.trim(), q.nameAr.trim())); q.state = 'done'; q.msg = 'created' + (r.id != null ? ' #' + r.id : '') + ' · ' + r.ver.msg; ok++; existing.add(q.name.trim().toLowerCase()); }\n      catch (e) { q.state = 'failed'; q.msg = e.message; }\n      renderJisr();\n    }\n    await loadTemplates().catch(() => {});\n    m.innerHTML = '<div class=\"msg ' + (ok === ready.length ? 'ok' : 'warn') + '\">' + ok + ' of ' + ready.length + ' template(s) created.</div>';\n    renderJisr();\n  });\n  loadTemplates().then(renderJisr).catch(() => renderJisr());\n}\n\n/* ===================================================================== TABS + INIT */\nfunction gotoTab(id) { $$('#tabs button').forEach((x) => x.classList.toggle('on', x.getAttribute('data-p') === id)); $$('section.pane').forEach((p) => p.classList.toggle('on', p.id === 'p-' + id)); if (id === 'vars') renderAssign(); $('.left').scrollTop = 0; }\ndocument.addEventListener('click', (e) => { const g = e.target.closest('[data-goto]'); if (g) gotoTab(g.getAttribute('data-goto')); });\n$('#tabs').addEventListener('click', (e) => { const b = e.target.closest('button[data-p]'); if (!b) return; $$('#tabs button').forEach((x) => x.classList.toggle('on', x === b)); $$('section.pane').forEach((p) => p.classList.toggle('on', p.id === 'p-' + b.getAttribute('data-p'))); if (b.getAttribute('data-p') === 'vars') renderAssign(); });\nshowCatalog(); syncFixUi(); renderProfileInfo();\nwindow.__jlc = { S, ED, edOpen, edClose, edSync, edInsertAt, JISR: typeof JISR !== 'undefined' ? JISR : null, readDocx, loadParts, build, measure, matchVar, autoFit, activeProfile, sanitizeInto, renderAll, fitNow, VERSION };\n<\/script>\n</body>\n</html>\n";
+  function slug_() { try { const o = GM_getValue('jisrBulkOps_slugOverride', ''); if (o) return o; } catch (e) { /* ignore */ } const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  const blobUrl_ = () => URL.createObjectURL(new Blob([HTML], { type: 'text/html' }));
+  // the tab inherits this Jisr page's origin, so it can create / edit letter templates with your login
+  const toolUrl_ = () => blobUrl_() + '#jisr=' + encodeURIComponent(slug_());
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => { if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v; else if (k === 'style') Object.assign(n.style, v); else n.setAttribute(k, v); });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function openTool_() {
+    const openB = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('Open in a new tab', 'فتح في تبويب جديد') });
+    const dlB = el('button', { class: 'jbo-btn', text: T('Download the tool (.html)', 'تنزيل الأداة (‎.html)') });
+    const note = el('div', { class: 'jbo-muted', style: { fontSize: '12px', marginTop: '8px' } });
+    const closeB = el('button', { class: 'jbo-icon-btn', text: '✕' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(560px, 94vw)' } }, [
+      el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('Jisr Letter Converter', 'محوّل خطابات جسر') }), closeB]),
+      el('div', { class: 'jbo-modal-body' }, [
+        el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T('Turn Word (.docx) letters into Jisr letter templates (header, body, footer) with variables wired in, check they fit the page, and create or edit templates in this company directly, one at a time or in bulk.', 'حوّل خطابات Word (‎.docx) إلى قوالب خطابات جسر (الترويسة والمتن والتذييل) مع ربط المتغيرات، وتحقّق من ملاءمتها للصفحة، وأنشئ القوالب أو عدّلها في هذه الشركة مباشرة، فرديًا أو دفعة واحدة.') }),
+        el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [openB, dlB]), note,
+      ]),
+    ]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => backdrop.remove();
+    closeB.addEventListener('click', close);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    openB.addEventListener('click', () => {
+      const w = W.open(toolUrl_(), '_blank');
+      note.textContent = w ? T('Opened in a new tab. Nothing is sent anywhere; it runs in your browser.', 'فُتحت في تبويب جديد. لا يُرسل شيء؛ تعمل في متصفحك.') : T('The browser blocked the new tab. Allow pop-ups for this site, or use Download.', 'منع المتصفح التبويب الجديد. اسمح بالنوافذ المنبثقة لهذا الموقع أو استخدم التنزيل.');
+    });
+    dlB.addEventListener('click', () => { const a = document.createElement('a'); a.href = blobUrl_(); a.download = 'jisr-letter-converter.html'; document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 500); });
+    document.body.appendChild(backdrop);
+  }
+  const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+  g.modules[MODULE_ID] = { title: 'Jisr Letter Converter', open: openTool_, version: SECTION_VERSION };
+  if (g._rerender) g._rerender();
+})();
+
+
+// ###########################################################################
+// ##### HIDDEN TOOLS (v4.3, v4.14.2) — Flight Ticket Policy, Bulk Offboarding and Final Settlement are hidden until they are reworked; their code stays in place
+// ###########################################################################
+
+(function () { try { if (GM_getValue('jisrBulkOps_showHiddenTools', false)) return; const H = ['flight-tickets-bulk', 'offboarding-bulk', 'final-settlement-bulk']; const g = unsafeWindow.__jisrBulkOps; if (g && g.modules) H.forEach((id) => { delete g.modules[id]; }); } catch (e) { /* ignore */ } })();
 
 
 // ###########################################################################
