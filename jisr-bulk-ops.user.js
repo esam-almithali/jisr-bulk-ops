@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.50.0
+// @version      4.51.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @updateURL    https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
 // @downloadURL  https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
@@ -68,7 +68,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.50.0
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.51.0
 // ###########################################################################
 
 /*
@@ -1090,7 +1090,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0c — Google sign-in (company accounts only)  v4.50.0
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.51.0
 // ###########################################################################
 
 /*
@@ -1314,7 +1314,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.50.0
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.51.0
 // ###########################################################################
 
 /*
@@ -27500,7 +27500,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.50.0
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.51.0
 // ###########################################################################
 
 /*
@@ -29075,7 +29075,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.50.0
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.51.0
 // ###########################################################################
 
 /*
@@ -29724,7 +29724,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v4.50.0
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.51.0
 // ###########################################################################
 
 /*
@@ -30592,7 +30592,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.50.0
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.51.0
 // ###########################################################################
 
 /*
@@ -32180,7 +32180,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.50.0
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.51.0
 // ###########################################################################
 
 /*
@@ -32650,7 +32650,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 20 — Employee Documents bulk upload  v4.50.0
+// ##### SECTION 20 — Employee Documents bulk upload  v4.51.0
 // ###########################################################################
 
 /*
@@ -33482,7 +33482,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 21 — Bulk Offboarding  v4.50.0
+// ##### SECTION 21 — Bulk Offboarding  v4.51.0
 // ###########################################################################
 
 /**
@@ -34130,7 +34130,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 22 — Bulk Final Settlement  v4.50.0
+// ##### SECTION 22 — Bulk Final Settlement  v4.51.0
 // ###########################################################################
 
 /**
@@ -34615,7 +34615,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 24 — Bulk Payroll Transactions  v4.50.0
+// ##### SECTION 24 — Bulk Payroll Transactions  v4.51.0
 // ###########################################################################
 
 /**
@@ -35287,7 +35287,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.50.0
+// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.51.0
 // ###########################################################################
 
 /**
@@ -35726,7 +35726,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.50.0
+// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.51.0
 // ###########################################################################
 
 /*
@@ -36346,7 +36346,7 @@
 })();
 
 // ###########################################################################
-// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.50.0
+// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.51.0
 // ###########################################################################
 
 /**
@@ -36942,7 +36942,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.50.0
+// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.51.0
 // ###########################################################################
 
 /**
@@ -37016,7 +37016,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.50.0
+// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.51.0
 // ###########################################################################
 
 /**
@@ -37029,7 +37029,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.50.0
+// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.51.0
 // ###########################################################################
 
 /*
@@ -37765,7 +37765,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.50.0
+// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.51.0
 // ###########################################################################
 
 /*
@@ -38263,7 +38263,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.50.0
+// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.51.0
 // ###########################################################################
 
 /*
@@ -38894,12 +38894,15 @@
       type: f.type, frequency: f.frequency || undefined, period_start_date: f.period_start_date || undefined, period_end_date: f.period_end_date || undefined,
       start_date: f.start_date || undefined, evaluation_start_date: f.evaluation_start_date || undefined, evaluation_submission_date: f.evaluation_submission_date || undefined } };
   }
-  function formGroupsBody_(t, form, oldIds) {
+  function formGroupsBody_(t, form, oldIds, keepBack) {
     const types = (form.evaluation_review_types || []).filter((x) => x.is_enabled).map((x) => ({ is_group_included: true, evaluation_review_type_id: Number(x.evaluation_review_type_id != null ? x.evaluation_review_type_id : x.id) }));
-    return { evaluation_review_types: types.length ? types : [{ is_group_included: true, evaluation_review_type_id: 1 }],
-      groups: t.groups.map((g) => ({ name_en: g.en, name_ar: g.ar || g.en, weight: wStr_(g.weight), rating_method: g.rating || 'percentage', status: 'completed',
-        criterions: g.criteria.map((c) => ({ name_en: c.en, name_ar: c.ar || c.en, require_remarks: !!c.remarks, weight: wStr_(c.weight) })) })),
-      deleted_group_ids: oldIds || [] };
+    const back = (keepBack || []).map((g) => ({ name_en: clean_(g.name_en || g.name || g.name_ar), name_ar: clean_(g.name_ar || g.name_en || g.name), weight: wStr_(num_(g.weight) || 0), rating_method: g.rating_method || 'percentage', status: 'completed',
+      criterions: (g.criterions || []).map((c) => ({ name_en: clean_(c.name_en || c.name || c.name_ar), name_ar: clean_(c.name_ar || c.name_en || c.name), require_remarks: !!(c.require_remarks || c.requires_remarks), weight: wStr_(num_(c.weight) || 0) })) }));
+    const body = { evaluation_review_types: types.length ? types : [{ is_group_included: true, evaluation_review_type_id: 1 }],
+      groups: back.concat(t.groups.map((g) => ({ name_en: g.en, name_ar: g.ar || g.en, weight: wStr_(g.weight), rating_method: g.rating || 'percentage', status: 'completed',
+        criterions: g.criteria.map((c) => ({ name_en: c.en, name_ar: c.ar || c.en, require_remarks: !!c.remarks, weight: wStr_(c.weight) })) }))) };
+    if (oldIds && oldIds.length) body.deleted_group_ids = oldIds; // Jisr: "deleted_group_ids cannot be blank"
+    return body;
   }
   /** Does what Jisr shows match what was asked? '' = yes, else the difference. */
   function evalCheck_(t, form, groups, empId, kept) {
@@ -38989,7 +38992,7 @@
     injectCss_();
     const S = { mode: '', sheets: [], ours: null, rows: [], busy: '', note: '', noteErr: false, dryDone: false, running: false, stop: false,
       def: { access: 'admins', evalType: 'calendar', frequency: 'annually', startDay: 1, startMonth: 1, endDay: 31, endMonth: 12, scopes: ['downward'], anonymous: false, remarks: false, probStart: 30, probEnd: 10, structure: 'asis', description: '', title: '', titleAr: '',
-        patEn: '{{{title}}} - {{{employee_full_name}}} {{{employee_code}}}', patAr: '{{{title_ar}}} - {{{employee_full_name_ar}}} {{{employee_code}}}' }, ids: null, fileName: '', sheetFilter: '', jisr: null, lastPat: 'en', tpls: null, src: null, emp: null, fill: 'groups', only: '', target: new Map(), tgtInfo: {}, out: 'templates', base: '', empMap: null };
+        patEn: '{{{title}}} - {{{employee_full_name}}} {{{employee_code}}}', patAr: '{{{title_ar}}} - {{{employee_full_name_ar}}} {{{employee_code}}}' }, ids: null, fileName: '', sheetFilter: '', jisr: null, lastPat: 'en', tpls: null, src: null, emp: null, fill: 'groups', only: '', target: new Map(), tgtInfo: {}, out: 'templates', base: '', empMap: null, evalOpt: { tpl: 'keep', same: 'merge' } };
     const body = el('div', { class: 'jbo-modal-body' });
     const foot = el('div', { class: 'jbo-modal-foot' });
     const titleEl = el('div', { class: 'jbo-modal-title' });
@@ -39131,7 +39134,7 @@
           const okT = Math.abs(gSum - 100) <= 0.05, over = gSum > 100.05;
           box.appendChild(el('div', { style: { display: 'flex', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap' } }, [
             el('b', { style: { fontSize: '12.5px' }, text: T('Groups in this template', 'مجموعات هذا النموذج') + ' (' + bi.groups.length + ')' }),
-            el('span', { class: 'jpt-base-total', style: { fontSize: '12px', color: over ? '#c5221f' : okT ? '#137333' : '#1a73e8' }, text: T('Groups total: ', 'مجموع المجموعات: ') + gSum + '%' + (okT ? ' ✓' : over ? T(' ✗ more than 100%', ' ✗ أكثر من 100%') : T(' — each employee\'s sheet adds the other ', ' — ورقة كل موظف تضيف ') + r2_(100 - gSum) + T('% (these groups are kept in every evaluation)', '% الباقية (تبقى هذه المجموعات في كل تقييم)')) })]));
+            el('span', { class: 'jpt-base-total', style: { fontSize: '12px', color: over ? '#c5221f' : okT ? '#137333' : '#1a73e8' }, text: T('Groups total: ', 'مجموع المجموعات: ') + gSum + '%' + (okT ? ' ✓' : over ? T(' ✗ more than 100%', ' ✗ أكثر من 100%') : (S.evalOpt.tpl === 'replace' ? T(' — replaced by each employee\'s groups (option below)', ' — تُستبدل بمجموعات كل موظف (الخيار أدناه)') : T(' — each employee\'s sheet adds the other ', ' — ورقة كل موظف تضيف ') + r2_(100 - gSum) + T('% (these groups are kept in every evaluation)', '% الباقية (تبقى هذه المجموعات في كل تقييم)'))) })]));
           if (bi.got && bi.got.length) box.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px' }, text: T('Settings read from this template (shown below): ', 'الإعدادات المقروءة من هذا النموذج (أدناه): ') + bi.got.join(', ') }));
           if (!bi.groups.length) box.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('This template has no groups in Jisr yet — each employee\'s groups come from the uploaded file.', 'هذا النموذج بلا مجموعات في جسر — مجموعات كل موظف تأتي من الملف المرفوع.') }));
           const tree = el('ul', { class: 'jpt-tree jpt-base-tree' });
@@ -39147,6 +39150,14 @@
             'Rule: each group has a weight, and its criteria must add up to exactly that weight (e.g. Group A 30% → criterion 1 15% + criterion 2 15%). The template\'s groups plus the employee\'s groups must add up to 100% (a group with the same name in the sheet replaces the template\'s). Dry Run checks this for every employee.',
             'القاعدة: لكل مجموعة وزن، ويجب أن يساوي مجموع أوزان معاييرها هذا الوزن تمامًا (مثال: المجموعة أ 30% ← المعيار 1 = 15% + المعيار 2 = 15%). ومجموع مجموعات النموذج ومجموعات الموظف 100% (المجموعة التي لها نفس الاسم في الورقة تحل محل مجموعة النموذج). يفحص التشغيل التجريبي ذلك لكل موظف.') }));
           if (bi.groups.length) {
+            // v4.51: keep the template's groups and add the sheet's (default), or replace; and what a same-name group does
+            const o1 = el('select', { class: 'jpt-eopt-tpl' }, [['keep', T('Keep them — add each employee\'s groups to them', 'أبقِها — أضف مجموعات كل موظف إليها')], ['replace', T('Replace them with each employee\'s groups', 'استبدلها بمجموعات كل موظف')]].map(([v, l]) => el('option', { value: v, selected: S.evalOpt.tpl === v, text: l })));
+            const o2 = el('select', { class: 'jpt-eopt-same' }, [['merge', T('Use that group — add the sheet\'s criteria to it (same-name criteria get the sheet\'s weight)', 'استخدم تلك المجموعة — أضف معايير الورقة إليها (المعيار بنفس الاسم يأخذ وزن الورقة)')], ['replace', T('Replace that group with the sheet\'s version', 'استبدل تلك المجموعة بنسخة الورقة')]].map(([v, l]) => el('option', { value: v, selected: S.evalOpt.same === v, text: l })));
+            o1.addEventListener('change', () => { S.evalOpt.tpl = o1.value; out_(); invalidate_(); });
+            o2.addEventListener('change', () => { S.evalOpt.same = o2.value; invalidate_(); });
+            const optRow = (lab, sel) => el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '6px', fontSize: '12px' } }, [el('b', { text: lab }), sel]);
+            box.appendChild(optRow(T('The template\'s groups:', 'مجموعات النموذج:'), o1));
+            if (S.evalOpt.tpl === 'keep') box.appendChild(optRow(T('A sheet group with the same name as a template group:', 'مجموعة في الورقة بنفس اسم مجموعة في النموذج:'), o2));
             const xb = el('button', { class: 'jbo-btn jpt-base-xlsx', type: 'button', text: T('⬇ Employee Excel with these groups', '⬇ ملف الموظفين بهذه المجموعات') });
             xb.addEventListener('click', async () => {
               const t = (S.tpls || []).find((x) => String(x.id) === String(S.base)) || {};
@@ -39434,26 +39445,45 @@
       S.busy = ''; paint_();
     }
     // ---------------- build the plan rows from either input
-    /** v4.50 (evaluation mode): the base template's groups stay in each evaluation unless the sheet repeats them (same name).
-     *  The sheet's groups then fill the rest: template 30% + sheet 70% = 100%. A sheet that alone adds up to 100% replaces them (as before). */
+    /** v4.51 (evaluation mode): what happens to the base template's groups.
+     *  S.evalOpt.tpl: 'keep' (default) = they stay in every evaluation and the sheet's groups are ADDED; 'replace' = the sheet's groups replace them.
+     *  S.evalOpt.same (when keeping): a sheet group with the same name as a template group -> 'merge' (default) = the sheet's criteria are added to it
+     *  (a criterion with the same name updates that criterion's weight), or 'replace' = the sheet's version replaces that one group.
+     *  Returns { mode, kept (template groups not touched), total (room left for the sheet), names, merged, gr (groups to use) }. */
     function evalPlan_(groupsRaw) {
       const bi = S.baseInfo && String(S.baseInfo.id) === String(S.base) ? S.baseInfo : null;
       if (!bi || !bi.groups.length) return null;
-      const names = new Set(); (groupsRaw || []).forEach((g) => [g.en, g.ar].filter(Boolean).forEach((n) => names.add(gKey_(n))));
-      const kept = bi.groups.filter((g) => ![g.en, g.ar].filter(Boolean).some((n) => names.has(gKey_(n))));
-      const ws = (groupsRaw || []).map((g) => weight_(g.wRaw));
-      const rawSum = ws.length && ws.every((w) => typeof w === 'number') ? r2_(ws.reduce((a, b) => a + b, 0)) : null;
-      if (!kept.length || (rawSum != null && Math.abs(rawSum - 100) <= 0.05)) return { mode: 'replace', kept: [], total: 100, names };
-      return { mode: 'keep', kept, total: r2_(100 - kept.reduce((a, g) => a + (g.weight || 0), 0)), names };
+      if (S.evalOpt.tpl === 'replace') return { mode: 'replace', kept: [], total: 100, names: new Set(), merged: new Set(), gr: groupsRaw };
+      const keys = (g) => [g.en, g.ar].filter(Boolean).map(gKey_);
+      const tplBy = new Map(); bi.groups.forEach((g) => keys(g).forEach((k) => tplBy.set(k, g)));
+      const names = new Set(), merged = new Set();
+      const gr = (groupsRaw || []).map((g) => {
+        const t = keys(g).map((k) => tplBy.get(k)).find(Boolean);
+        if (!t) return g;
+        keys(t).forEach((k) => names.add(k));
+        if (S.evalOpt.same !== 'merge') return g;
+        keys(t).forEach((k) => merged.add(k));
+        const crit = t.criteria.map((c) => ({ en: c.en || c.ar, ar: c.ar, wRaw: c.weight == null ? '' : c.weight, rRaw: c.remarks ? 'Yes' : 'No' }));
+        (g.criteria || []).forEach((c) => {
+          const ck = [c.en, c.ar].filter(Boolean).map(gKey_);
+          const i = crit.findIndex((x) => [x.en, x.ar].filter(Boolean).some((n) => ck.includes(gKey_(n))));
+          if (i < 0) { crit.push(c); return; }
+          if (clean_(c.wRaw) !== '') crit[i].wRaw = c.wRaw;
+          if (clean_(c.rRaw) !== '') crit[i].rRaw = c.rRaw;
+        });
+        return Object.assign({}, g, { en: t.en || g.en, ar: t.ar || g.ar, wRaw: clean_(g.wRaw) !== '' ? g.wRaw : (t.weight == null ? '' : t.weight), criteria: crit });
+      });
+      const kept = bi.groups.filter((t) => !keys(t).some((k) => names.has(k)));
+      return { mode: 'keep', kept, total: r2_(100 - kept.reduce((x, g) => x + (g.weight || 0), 0)), names, merged, gr };
     }
     function build_() {
       const keep = new Map(S.rows.map((r) => [r.key, r]));
       const rows = [];
       // v4.36: a row sent into an existing template only gets the group weight that template has left
       S.evalPlans = new Map();
-      const dfs = (key, base, groupsRaw) => {
-        if (S.out === 'evaluations') { const pl = evalPlan_(groupsRaw); S.evalPlans.set(key, pl); return Object.assign({}, base, pl ? { groupTotal: pl.total } : {}); } // v4.50
-        const id = S.target.get(key); const inf = id ? S.tgtInfo[id] : null; return Object.assign({}, base, inf ? { groupTotal: r2_(100 - inf.sum) } : {});
+      const dfs = (key, base, groupsRaw) => { // -> { d: defaults, gr: groups to use }
+        if (S.out === 'evaluations') { const pl = evalPlan_(groupsRaw); S.evalPlans.set(key, pl); return { d: Object.assign({}, base, pl ? { groupTotal: pl.total } : {}), gr: pl ? pl.gr : groupsRaw }; } // v4.50/4.51
+        const id = S.target.get(key); const inf = id ? S.tgtInfo[id] : null; return { d: Object.assign({}, base, inf ? { groupTotal: r2_(100 - inf.sum) } : {}), gr: groupsRaw };
       };
       if (S.mode === 'any') S.sheets.forEach((sh) => {
         if (!sh.nameEdited) { const vv = varsOf_(sh.name, sh.info || {}, { title: S.def.title, title_ar: S.def.titleAr, jisr: S.jisr }); sh.en = nameFromVars_(S.def.patEn, vv); sh.ar = nameFromVars_(S.def.patAr, vv); if (!sh.en && !sh.ar) { if (isAr_(vv.sheet)) sh.ar = vv.sheet; else sh.en = vv.sheet; } }
@@ -39461,17 +39491,19 @@
         const { groups, rowGroups, kinds } = sheetToGroups_(sh.aoa, sh.hRow, sh.roles, sh.ov);
         sh.rowGroups = rowGroups; sh.kinds = kinds;
         const gr = groups.map((g) => ({ en: g.en, ar: g.ar, wRaw: g.wRaw, criteria: g.criteria }));
-        sh.parsed = finish_({ src: T('sheet ', 'ورقة ') + sh.name, en: sh.en, ar: sh.ar, groupsRaw: gr }, dfs('sheet:' + sh.name, S.def, gr));
+        const dd = dfs('sheet:' + sh.name, S.def, gr);
+        sh.parsed = finish_({ src: T('sheet ', 'ورقة ') + sh.name, en: sh.en, ar: sh.ar, groupsRaw: dd.gr }, dd.d);
         if (!sh.roles.includes('cen') && !sh.roles.includes('car')) sh.parsed.errors.unshift(T('Choose which column holds the criteria', 'اختر العمود الذي يحتوي على المعايير'));
         rows.push({ key: 'sheet:' + sh.name, p: sh.parsed, empCode: (varsOf_(sh.name, sh.info || {}, {}).employee_code) || '' });
       });
-      if (S.mode === 'ours' && S.ours) S.ours.forEach((raw) => rows.push({ key: raw.src, p: finish_(raw, dfs(raw.src, S.def, raw.groupsRaw)) }));
+      if (S.mode === 'ours' && S.ours) S.ours.forEach((raw) => { const dd = dfs(raw.src, S.def, raw.groupsRaw); rows.push({ key: raw.src, p: finish_(Object.assign({}, raw, { groupsRaw: dd.gr }), dd.d) }); });
       if (S.mode === 'existing' && S.src && S.emp) S.emp.forEach((emp) => {
         if (!emp.rows.some((r) => r.en || r.ar)) return; // no criteria -> no template
         const vv = empVars_(emp, S.def, S.jisr);
         const name = { en: emp.en || nameFromVars_(S.def.patEn, vv), ar: emp.ar || nameFromVars_(S.def.patAr, vv) };
         const er = empRaw_(emp, S.src, name);
-        rows.push({ key: 'emp:' + digits_(emp.code), empCode: emp.code, p: finish_(er, dfs('emp:' + digits_(emp.code), Object.assign({}, S.def, { structure: 'asis' }), er.groupsRaw)) });
+        const dd = dfs('emp:' + digits_(emp.code), Object.assign({}, S.def, { structure: 'asis' }), er.groupsRaw);
+        rows.push({ key: 'emp:' + digits_(emp.code), empCode: emp.code, p: finish_(Object.assign({}, er, { groupsRaw: dd.gr }), dd.d) });
       });
       S.rows = rows.map((x) => Object.assign(keep.get(x.key) && /done|failed|check/.test(keep.get(x.key).state) ? keep.get(x.key) : { state: '', msg: '' }, { key: x.key, p: x.p, tgt: S.out === 'evaluations' ? '' : S.target.get(x.key) || '', empCode: x.empCode || '', plan: S.evalPlans.get(x.key) || null }));
     }
@@ -39696,7 +39728,7 @@
           }
           if (errs.length) { r.state = 'error'; r.msg = '✗ ' + Array.from(new Set(errs)).join('\n✗ '); continue; }
           r.state = 'ready'; r.msg = T('ready — evaluation "', 'جاهز — تقييم "') + (x.en || x.ar) + T('" for ', '" للموظف ') + (r.emp.name || code) + ' · ' + x.groups.length + T(' group(s), ', ' مجموعة، ') + x.groups.reduce((a, g) => a + g.criteria.length, 0) + T(' criteria', ' معيار') +
-            x.groups.map((g) => '\n  ' + (g.en || g.ar) + ' ' + g.weight + '% = ' + g.criteria.map((c) => c.weight + '%').join(' + ') + (groupCheck_(g).ok ? ' ✓' : ' ✗')).join('') +
+            x.groups.map((g) => '\n  ' + (g.en || g.ar) + ' ' + g.weight + '% = ' + g.criteria.map((c) => c.weight + '%').join(' + ') + (groupCheck_(g).ok ? ' ✓' : ' ✗') + (r.plan && r.plan.merged && [g.en, g.ar].filter(Boolean).some((n) => r.plan.merged.has(gKey_(n))) ? ' ' + T('(template group + sheet criteria)', '(مجموعة النموذج + معايير الورقة)') : '')).join('') +
             (r.plan && r.plan.mode === 'keep' ? r.plan.kept.map((g) => '\n  ' + (g.en || g.ar) + ' ' + g.weight + '% ' + T('(kept from the template)', '(من النموذج)')).join('') + '\n  ' + T('Total ', 'المجموع ') + r2_(x.groups.reduce((a, g) => a + g.weight, 0) + r.plan.kept.reduce((a, g) => a + (g.weight || 0), 0)) + '%' : '');
         }
         S.dryDone = true;
@@ -39721,8 +39753,11 @@
       if (!as || !as.ok) return fail(T('assign employee: ', 'إسناد الموظف: ') + (as ? jisrMsg_(as.json) || 'HTTP ' + as.status : T('no answer', 'لا رد')));
       const old = await request_('GET', '/v2/forms/' + id + '/form_groups', { pagination: 'false' }).catch(() => null);
       const oldGs = old && old.ok ? listIn_(old.json, (z) => z.id != null && Array.isArray(z.criterions)) : [];
-      const oldIds = (r.plan && r.plan.mode === 'keep' ? oldGs.filter((g) => [g.name_en, g.name_ar, g.name].filter(Boolean).some((n) => r.plan.names.has(gKey_(n)))) : oldGs).map((g) => g.id); // v4.50
-      const gi = await request_('POST', '/v2/forms/' + id + '/form_groups/bulk_import', null, formGroupsBody_(x, form, oldIds)).catch(() => null);
+      // v4.51: Jisr refuses an empty deleted_group_ids, so the copied groups are always swapped in one call: the template's groups
+      // that stay are sent back exactly as they are (names, weights, criteria, remarks) next to the employee's groups.
+      const oldIds = oldGs.map((g) => g.id);
+      const keepBack = r.plan && r.plan.mode === 'keep' ? oldGs.filter((g) => ![g.name_en, g.name_ar, g.name].filter(Boolean).some((n) => r.plan.names.has(gKey_(n)))) : [];
+      const gi = await request_('POST', '/v2/forms/' + id + '/form_groups/bulk_import', null, formGroupsBody_(x, form, oldIds, keepBack)).catch(() => null);
       if (!gi || !gi.ok) return fail(T('groups: ', 'المجموعات: ') + (gi ? jisrMsg_(gi.json) || 'HTTP ' + gi.status : T('no answer', 'لا رد')));
       // read back everything and compare with the sheet
       const f1 = await request_('GET', '/v2/forms/' + id, null).catch(() => null);
@@ -39836,7 +39871,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.50.0
+// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.51.0
 // ###########################################################################
 
 /*
@@ -40143,7 +40178,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.50.0
+// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.51.0
 // ###########################################################################
 
 /** Business trip city catalogue (v4.22): Saudi regions, cities, towns and villages (homaily/Saudi-Arabia-Regions-Cities-and-Districts) and world cities with population over ~15,000 (datasets/world-cities, GeoNames) by country (dr5hn/countries-states-cities-database). Read-only reference data. */
@@ -40151,7 +40186,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.50.0
+// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.51.0
 // ###########################################################################
 
 /*
@@ -40690,7 +40725,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.50.0
+// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.51.0
 // ###########################################################################
 
 /*
@@ -41260,7 +41295,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 27 — Activation Checklist sidebar  v4.50.0
+// ##### SECTION 27 — Activation Checklist sidebar  v4.51.0
 // ###########################################################################
 
 /**
@@ -41724,7 +41759,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.50.0
+// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.51.0
 // ###########################################################################
 
 /**
