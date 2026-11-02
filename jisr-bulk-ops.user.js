@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.48.0
+// @version      4.49.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @updateURL    https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
 // @downloadURL  https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
@@ -68,7 +68,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.48.0
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.49.0
 // ###########################################################################
 
 /*
@@ -1090,7 +1090,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0c — Google sign-in (company accounts only)  v4.48.0
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.49.0
 // ###########################################################################
 
 /*
@@ -1314,7 +1314,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.48.0
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.49.0
 // ###########################################################################
 
 /*
@@ -27500,7 +27500,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.48.0
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.49.0
 // ###########################################################################
 
 /*
@@ -29075,7 +29075,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.48.0
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.49.0
 // ###########################################################################
 
 /*
@@ -29724,7 +29724,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v4.48.0
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.49.0
 // ###########################################################################
 
 /*
@@ -30592,7 +30592,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.48.0
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.49.0
 // ###########################################################################
 
 /*
@@ -32180,7 +32180,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.48.0
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.49.0
 // ###########################################################################
 
 /*
@@ -32650,7 +32650,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 20 — Employee Documents bulk upload  v4.48.0
+// ##### SECTION 20 — Employee Documents bulk upload  v4.49.0
 // ###########################################################################
 
 /*
@@ -33482,7 +33482,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 21 — Bulk Offboarding  v4.48.0
+// ##### SECTION 21 — Bulk Offboarding  v4.49.0
 // ###########################################################################
 
 /**
@@ -34130,7 +34130,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 22 — Bulk Final Settlement  v4.48.0
+// ##### SECTION 22 — Bulk Final Settlement  v4.49.0
 // ###########################################################################
 
 /**
@@ -34615,7 +34615,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 24 — Bulk Payroll Transactions  v4.48.0
+// ##### SECTION 24 — Bulk Payroll Transactions  v4.49.0
 // ###########################################################################
 
 /**
@@ -35287,7 +35287,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.48.0
+// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.49.0
 // ###########################################################################
 
 /**
@@ -35726,7 +35726,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.48.0
+// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.49.0
 // ###########################################################################
 
 /*
@@ -36346,7 +36346,7 @@
 })();
 
 // ###########################################################################
-// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.48.0
+// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.49.0
 // ###########################################################################
 
 /**
@@ -36942,7 +36942,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.48.0
+// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.49.0
 // ###########################################################################
 
 /**
@@ -37016,7 +37016,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.48.0
+// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.49.0
 // ###########################################################################
 
 /**
@@ -37029,7 +37029,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.48.0
+// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.49.0
 // ###########################################################################
 
 /*
@@ -37765,7 +37765,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.48.0
+// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.49.0
 // ###########################################################################
 
 /*
@@ -38263,7 +38263,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.48.0
+// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.49.0
 // ###########################################################################
 
 /*
@@ -38357,6 +38357,15 @@
   function day_(v) { const t = clean_(v); if (!t) return null; const n = Number(t); return Number.isInteger(n) && n >= 1 && n <= 31 ? n : undefined; }
   const DAYS_IN_ = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
+  /** v4.49: criteria of a group must add up to the group weight (Group A 30% = 15% + 15%). */
+  function groupCheck_(g) {
+    const crit = g.criteria || [];
+    if (!crit.length) return { ok: false, text: T('no criteria yet', 'لا توجد معايير بعد') };
+    if (crit.some((c) => c.weight == null)) return { ok: false, text: T('some criteria have no weight', 'بعض المعايير بلا وزن') };
+    const sum = r2_(crit.reduce((a, c) => a + c.weight, 0));
+    if (g.weight != null && Math.abs(sum - g.weight) <= 0.05) return { ok: true, text: T('criteria total ', 'مجموع المعايير ') + sum + '% ✓' };
+    return { ok: false, text: T('criteria total ', 'مجموع المعايير ') + sum + '% ✗ ' + T('must equal ', 'يجب أن يساوي ') + (g.weight == null ? '?' : g.weight) + '%' };
+  }
   /** Weights: fill blanks, scale criteria to the group weight; returns { groups, notes[], errors[] } (does not mutate input). */
   function normalizeWeights_(groupsIn, total) {
     const TOT = total == null ? 100 : r2_(total);
@@ -38387,7 +38396,7 @@
         notes.push(T('Group "', 'المجموعة "') + g.en + T('": criteria weights (out of 100) scaled to the group weight ', '": أوزان المعايير (من 100) حُوّلت إلى وزن المجموعة ') + g.weight);
         return;
       }
-      errors.push(T('Group "', 'المجموعة "') + g.en + T('": criteria weights add up to ', '": مجموع أوزان المعايير ') + cSum + T(' — they must add up to the group weight (', ' — يجب أن يساوي وزن المجموعة (') + g.weight + T(') or to 100', ') أو 100'));
+      errors.push(T('Group "', 'المجموعة "') + g.en + '" ' + g.weight + T('%: its criteria add up to ', '%: مجموع معاييرها ') + cSum + T('% — the criteria must add up to exactly the group weight (', '% — يجب أن يساوي مجموع المعايير وزن المجموعة تمامًا (') + g.weight + '%)');
     });
     return { groups, notes, errors };
   }
@@ -39105,11 +39114,48 @@
           S.base = bs.value;
           const t = (S.tpls || []).find((x) => String(x.id) === String(S.base));
           if (t && (!S.def.title || (prev && S.def.title === (prev.en || prev.ar)))) { S.def.title = t.en || t.ar; S.def.titleAr = t.ar || t.en; }
-          settings_(); invalidate_();
+          out_(); settings_(); invalidate_();
         });
         row.push(bs);
       }
       outEl.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, row));
+      // v4.49: show the base template's groups (weights + criteria) and check that each group's criteria add up to the group weight
+      if (ev && S.base) {
+        const bi = S.baseInfo && String(S.baseInfo.id) === String(S.base) ? S.baseInfo : null;
+        const box = el('div', { class: 'jpt-sheet jpt-base-groups', style: { padding: '8px 10px', marginTop: '6px' } });
+        if (!bi) { box.appendChild(el('div', { class: 'jbo-muted', text: T('Reading the template\'s groups…', 'جارٍ قراءة مجموعات النموذج…') })); if (!S.baseLoading) loadBase_(S.base); }
+        else if (bi.err) box.appendChild(el('div', { style: { color: '#c5221f', fontSize: '12px' }, text: bi.err }));
+        else {
+          const gSum = r2_(bi.groups.reduce((a, g) => a + (g.weight || 0), 0));
+          const okT = Math.abs(gSum - 100) <= 0.05;
+          box.appendChild(el('div', { style: { display: 'flex', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap' } }, [
+            el('b', { style: { fontSize: '12.5px' }, text: T('Groups in this template', 'مجموعات هذا النموذج') + ' (' + bi.groups.length + ')' }),
+            el('span', { class: 'jpt-base-total', style: { fontSize: '12px', color: okT ? '#137333' : '#c5221f' }, text: T('Groups total: ', 'مجموع المجموعات: ') + gSum + '%' + (okT ? ' ✓' : T(' ✗ must be 100%', ' ✗ يجب أن يكون 100%')) })]));
+          if (!bi.groups.length) box.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('This template has no groups in Jisr yet — each employee\'s groups come from the uploaded file.', 'هذا النموذج بلا مجموعات في جسر — مجموعات كل موظف تأتي من الملف المرفوع.') }));
+          const tree = el('ul', { class: 'jpt-tree jpt-base-tree' });
+          bi.groups.forEach((g) => {
+            const ck = groupCheck_(g);
+            const sub = el('ul', { style: { margin: '1px 0 4px', paddingInlineStart: '18px' } }, g.criteria.map((c) => el('li', { text: (c.en || c.ar) + (c.en && c.ar && c.ar !== c.en ? ' / ' + c.ar : '') + ' — ' + (c.weight == null ? '?' : c.weight) + '%' })));
+            tree.appendChild(el('li', {}, [
+              el('b', { text: gLabel_(g) + (g.en && g.ar && g.ar !== g.en ? ' / ' + g.ar : '') + ' — ' + (g.weight == null ? '?' : g.weight) + '%' }),
+              el('span', { class: 'jpt-gcheck', style: { marginInlineStart: '8px', color: ck.ok ? '#137333' : '#c5221f' }, text: ck.text }), sub]));
+          });
+          box.appendChild(tree);
+          box.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', marginTop: '4px' }, text: T(
+            'Rule: each group has a weight, and its criteria must add up to exactly that weight (e.g. Group A 30% → criterion 1 15% + criterion 2 15%). All groups together must add up to 100%. Dry Run checks this for every employee.',
+            'القاعدة: لكل مجموعة وزن، ويجب أن يساوي مجموع أوزان معاييرها هذا الوزن تمامًا (مثال: المجموعة أ 30% ← المعيار 1 = 15% + المعيار 2 = 15%). ومجموع كل المجموعات 100%. يفحص التشغيل التجريبي ذلك لكل موظف.') }));
+          if (bi.groups.length) {
+            const xb = el('button', { class: 'jbo-btn jpt-base-xlsx', type: 'button', text: T('⬇ Employee Excel with these groups', '⬇ ملف الموظفين بهذه المجموعات') });
+            xb.addEventListener('click', async () => {
+              const t = (S.tpls || []).find((x) => String(x.id) === String(S.base)) || {};
+              S.src = { id: S.base, en: t.en || '', ar: t.ar || '', groups: bi.groups, got: [] }; S.fill = 'criteria';
+              await empExcel_();
+            });
+            box.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '6px' } }, [xb, el('span', { class: 'jbo-muted', style: { fontSize: '11.5px' }, text: T('Every employee with these groups and criteria — change each employee\'s weights, then upload it with "⬆ Upload workbook".', 'كل موظف بهذه المجموعات والمعايير — عدّل أوزان كل موظف ثم ارفعه بزر "⬆ رفع ملف Excel".') })]));
+          }
+        }
+        outEl.appendChild(box);
+      }
       if (ev) outEl.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', marginTop: '6px' }, text: T(
         'Jisr keeps groups and weights on the evaluation, not on the employee — so each employee gets their own evaluation, created from the base template (its period, frequency and feedback types are used; the settings below are not). Each sheet / row must name the employee (Employee ID). Evaluations are created as DRAFTS and checked one by one; launch them afterwards with "Launch created evaluations" (or in Jisr). Nothing is sent to employees until launch.',
         'يحفظ جسر المجموعات والأوزان على التقييم وليس على الموظف — لذلك يحصل كل موظف على تقييمه الخاص من النموذج الأساسي (تُستخدم فترته وتكراره وأنواع التقييم؛ ولا تُستخدم الإعدادات أدناه). يجب أن تحدد كل ورقة / صف الموظف (الرقم الوظيفي). تُنشأ التقييمات كمسودات وتُفحص واحدًا واحدًا؛ ثم أطلقها بزر "إطلاق التقييمات المنشأة" (أو من جسر). لا يصل شيء للموظفين قبل الإطلاق.') }));
@@ -39120,6 +39166,16 @@
         launchB.addEventListener('click', () => launch_()); delB.addEventListener('click', () => deleteDrafts_());
         outEl.appendChild(el('div', { style: { display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap', alignItems: 'center' } }, [launchB, delB, el('span', { class: 'jbo-muted', style: { fontSize: '11.5px' }, text: nReg + T(' evaluation(s) created by this tool in ', ' تقييم أنشأته الأداة في ') + slug_() })]));
       }
+    }
+    /** v4.49: read the base template's groups for the evaluation mode */
+    async function loadBase_(id) {
+      S.baseLoading = true;
+      try {
+        const g = await request_('GET', '/v2/form_templates/' + encodeURIComponent(id) + '/form_template_groups', { pagination: 'false' });
+        S.baseInfo = g.ok ? { id, groups: srcGroupsOf_(g.json) } : { id, groups: [], err: T('Could not read the template\'s groups (HTTP ', 'تعذّرت قراءة مجموعات النموذج (HTTP ') + g.status + ')' };
+      } catch (e) { S.baseInfo = { id, groups: [], err: e.message }; }
+      S.baseLoading = false;
+      if (String(S.base) === String(id)) out_();
     }
     async function empMap_() {
       const emps = await W.__jisrBulkOpsEmployees.get(false, (n) => { statusEl.textContent = T('Loading employees… ', 'جارٍ تحميل الموظفين… ') + n; });
@@ -39608,7 +39664,8 @@
             else { r.state = 'skip'; r.evalId = reg[key].id; r.msg = T('Already created by this tool (#', 'أنشأته الأداة مسبقًا (#') + reg[key].id + ', ' + ((g && g.ok && g.json && g.json.data && g.json.data.status) || '?') + T(') — delete the draft first to create it again', ') — احذف المسودة أولًا لإعادة الإنشاء'); continue; }
           }
           if (errs.length) { r.state = 'error'; r.msg = '✗ ' + Array.from(new Set(errs)).join('\n✗ '); continue; }
-          r.state = 'ready'; r.msg = T('ready — evaluation "', 'جاهز — تقييم "') + (x.en || x.ar) + T('" for ', '" للموظف ') + (r.emp.name || code) + ' · ' + x.groups.length + T(' group(s), ', ' مجموعة، ') + x.groups.reduce((a, g) => a + g.criteria.length, 0) + T(' criteria', ' معيار');
+          r.state = 'ready'; r.msg = T('ready — evaluation "', 'جاهز — تقييم "') + (x.en || x.ar) + T('" for ', '" للموظف ') + (r.emp.name || code) + ' · ' + x.groups.length + T(' group(s), ', ' مجموعة، ') + x.groups.reduce((a, g) => a + g.criteria.length, 0) + T(' criteria', ' معيار') +
+            x.groups.map((g) => '\n  ' + (g.en || g.ar) + ' ' + g.weight + '% = ' + g.criteria.map((c) => c.weight + '%').join(' + ') + (groupCheck_(g).ok ? ' ✓' : ' ✗')).join('');
         }
         S.dryDone = true;
         S.note = T('Dry Run done — nothing was created. ', 'انتهى التشغيل التجريبي — لم يُنشأ شيء. ') + S.rows.filter((r) => r.state === 'ready').length + T(' evaluation(s) ready from "', ' تقييم جاهز من "') + ((S.tpls || []).find((t) => String(t.id) === String(S.base)) || {}).en + '".';
@@ -39746,7 +39803,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.48.0
+// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.49.0
 // ###########################################################################
 
 /*
@@ -40053,7 +40110,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.48.0
+// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.49.0
 // ###########################################################################
 
 /** Business trip city catalogue (v4.22): Saudi regions, cities, towns and villages (homaily/Saudi-Arabia-Regions-Cities-and-Districts) and world cities with population over ~15,000 (datasets/world-cities, GeoNames) by country (dr5hn/countries-states-cities-database). Read-only reference data. */
@@ -40061,7 +40118,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.48.0
+// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.49.0
 // ###########################################################################
 
 /*
@@ -40600,7 +40657,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.48.0
+// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.49.0
 // ###########################################################################
 
 /*
@@ -41170,7 +41227,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 27 — Activation Checklist sidebar  v4.48.0
+// ##### SECTION 27 — Activation Checklist sidebar  v4.49.0
 // ###########################################################################
 
 /**
@@ -41634,7 +41691,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.48.0
+// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.49.0
 // ###########################################################################
 
 /**
