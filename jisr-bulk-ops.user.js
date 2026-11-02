@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.52.0
+// @version      4.53.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @updateURL    https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
 // @downloadURL  https://raw.githubusercontent.com/esam-almithali/jisr-bulk-ops/main/jisr-bulk-ops.user.js
@@ -68,7 +68,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.52.0
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.53.0
 // ###########################################################################
 
 /*
@@ -1090,7 +1090,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0c — Google sign-in (company accounts only)  v4.52.0
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.53.0
 // ###########################################################################
 
 /*
@@ -1314,7 +1314,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.52.0
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.53.0
 // ###########################################################################
 
 /*
@@ -27500,7 +27500,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.52.0
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.53.0
 // ###########################################################################
 
 /*
@@ -29075,7 +29075,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.52.0
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.53.0
 // ###########################################################################
 
 /*
@@ -29724,7 +29724,7 @@
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v4.52.0
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.53.0
 // ###########################################################################
 
 /*
@@ -30592,7 +30592,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.52.0
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.53.0
 // ###########################################################################
 
 /*
@@ -32180,7 +32180,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.52.0
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.53.0
 // ###########################################################################
 
 /*
@@ -32650,7 +32650,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 20 — Employee Documents bulk upload  v4.52.0
+// ##### SECTION 20 — Employee Documents bulk upload  v4.53.0
 // ###########################################################################
 
 /*
@@ -33482,7 +33482,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 21 — Bulk Offboarding  v4.52.0
+// ##### SECTION 21 — Bulk Offboarding  v4.53.0
 // ###########################################################################
 
 /**
@@ -34130,7 +34130,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 22 — Bulk Final Settlement  v4.52.0
+// ##### SECTION 22 — Bulk Final Settlement  v4.53.0
 // ###########################################################################
 
 /**
@@ -34615,7 +34615,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 24 — Bulk Payroll Transactions  v4.52.0
+// ##### SECTION 24 — Bulk Payroll Transactions  v4.53.0
 // ###########################################################################
 
 /**
@@ -35287,7 +35287,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.52.0
+// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.53.0
 // ###########################################################################
 
 /**
@@ -35726,7 +35726,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.52.0
+// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.53.0
 // ###########################################################################
 
 /*
@@ -36346,7 +36346,7 @@
 })();
 
 // ###########################################################################
-// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.52.0
+// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.53.0
 // ###########################################################################
 
 /**
@@ -36942,7 +36942,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.52.0
+// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.53.0
 // ###########################################################################
 
 /**
@@ -37016,7 +37016,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.52.0
+// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.53.0
 // ###########################################################################
 
 /**
@@ -37029,7 +37029,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.52.0
+// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.53.0
 // ###########################################################################
 
 /*
@@ -37765,7 +37765,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.52.0
+// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.53.0
 // ###########################################################################
 
 /*
@@ -38263,7 +38263,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.52.0
+// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.53.0
 // ###########################################################################
 
 /*
@@ -39466,7 +39466,11 @@
         if (!t) { gr.push(g); return; }
         keys(t).forEach((k) => names.add(k));
         if (S.evalOpt.same !== 'merge') { gr.push(Object.assign({}, g, { en: t.en || g.en, ar: t.ar || g.ar })); return; } // replace: the template's name is used
-        if (used.has(t)) { const m = used.get(t); (g.criteria || []).forEach((c) => m.criteria.push(c)); return; } // two file groups into the same template group
+        if (used.has(t)) { // two or more file groups into the same template group: criteria combined, their weights added up
+          const m = used.get(t); (g.criteria || []).forEach((c) => m.criteria.push(c));
+          const w = weight_(g.wRaw); if (typeof m.__fw === 'number' && typeof w === 'number') { m.__fw = r2_(m.__fw + w); m.wRaw = m.__fw; } else m.__fw = null;
+          return;
+        }
         keys(t).forEach((k) => merged.add(k));
         const crit = t.criteria.map((c) => ({ en: c.en || c.ar, ar: c.ar, wRaw: c.weight == null ? '' : c.weight, rRaw: c.remarks ? 'Yes' : 'No' }));
         (g.criteria || []).forEach((c) => {
@@ -39477,6 +39481,7 @@
           if (clean_(c.rRaw) !== '') crit[i].rRaw = c.rRaw;
         });
         const m = Object.assign({}, g, { en: t.en || g.en, ar: t.ar || g.ar, wRaw: clean_(g.wRaw) !== '' ? g.wRaw : (t.weight == null ? '' : t.weight), criteria: crit });
+        m.__fw = weight_(g.wRaw);
         used.set(t, m); gr.push(m);
       });
       const kept = bi.groups.filter((t) => !keys(t).some((k) => names.has(k)));
@@ -39507,6 +39512,15 @@
       mapEl.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', marginBottom: '4px' }, text: T(
         'For each group in your file, choose: add it as a NEW group, or put its criteria INTO a group the template already has — then the template\'s group name is used (e.g. "skillsxxx" → "Skills").',
         'لكل مجموعة في ملفك اختر: إضافتها كمجموعة جديدة، أو وضع معاييرها داخل مجموعة موجودة في النموذج — وعندها يُستخدم اسم مجموعة النموذج (مثال: "skillsxxx" ← "Skills").') }));
+      // v4.53: one choice for every group in the file at once
+      if (list.length > 1) {
+        const allSel = el('select', { class: 'jpt-gmap-all' }, [el('option', { value: '', text: T('➕ Every group as a new group', '➕ كل مجموعة كمجموعة جديدة') })].concat(bi.groups.map((t) =>
+          el('option', { value: tplGroupId_(t), text: (S.evalOpt.same === 'merge' ? T('↪ Put all their criteria into "', '↪ ضع كل معاييرها داخل "') : T('↪ All replace "', '↪ كلها تستبدل "')) + gLabel_(t) + '" (' + (t.weight == null ? '?' : t.weight) + '%)' }))));
+        const allB = el('button', { class: 'jbo-btn jpt-gmap-apply', type: 'button', text: T('Apply to all ', 'تطبيق على كل ') + list.length + T(' groups', ' مجموعات') });
+        allB.addEventListener('click', () => { list.forEach(([k]) => S.groupMap.set(k, allSel.value)); invalidate_(); });
+        mapEl.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', margin: '4px 0 6px', padding: '6px 8px', background: '#f6f8fc', borderRadius: '6px', fontSize: '12px' } },
+          [el('b', { text: T('All groups at once:', 'كل المجموعات مرة واحدة:') }), allSel, allB, el('span', { class: 'jbo-muted', style: { fontSize: '11px' }, text: T('You can still change single groups below.', 'يمكنك تغيير أي مجموعة منفردة أدناه.') })]));
+      }
       const tbl = el('table', { class: 'jpt-gmap-t', style: { borderCollapse: 'collapse', fontSize: '12px', width: '100%' } });
       list.sort((a, b) => b[1].n - a[1].n).forEach(([k, e]) => {
         const cur = mapTarget_({ en: e.name, ar: e.ar }, bi);
@@ -39919,7 +39933,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.52.0
+// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.53.0
 // ###########################################################################
 
 /*
@@ -40226,7 +40240,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.52.0
+// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.53.0
 // ###########################################################################
 
 /** Business trip city catalogue (v4.22): Saudi regions, cities, towns and villages (homaily/Saudi-Arabia-Regions-Cities-and-Districts) and world cities with population over ~15,000 (datasets/world-cities, GeoNames) by country (dr5hn/countries-states-cities-database). Read-only reference data. */
@@ -40234,7 +40248,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.52.0
+// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.53.0
 // ###########################################################################
 
 /*
@@ -40773,7 +40787,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.52.0
+// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.53.0
 // ###########################################################################
 
 /*
@@ -41343,7 +41357,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 27 — Activation Checklist sidebar  v4.52.0
+// ##### SECTION 27 — Activation Checklist sidebar  v4.53.0
 // ###########################################################################
 
 /**
@@ -41807,7 +41821,7 @@
 
 
 // ###########################################################################
-// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.52.0
+// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.53.0
 // ###########################################################################
 
 /**
