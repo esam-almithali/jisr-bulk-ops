@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.63.0
+// @version      4.75.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
+// @exclude      https://jisr.jisr.net/*
+// @exclude      http://jisr.jisr.net/*
 // @match        https://*.jisr.net.sa/*
 // @require      https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js
 // @require      https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js
@@ -25,6 +27,117 @@
 // @connect      maps.app.goo.gl
 // @run-at       document-idle
 // ==/UserScript==
+
+// v4.75.0: this tool must never appear or run on jisr.jisr.net (the @exclude lines above keep it from loading; this stops it even if it is injected by hand)
+if (/^jisr\.jisr\.net$/i.test(location.hostname)) { throw new Error('Jisr Bulk Ops is turned off on this site.'); }
+
+// ###########################################################################
+// ##### ACTIVITY TRACKER (v4.72) — every tool that writes to Jisr reports to the Ops dashboard
+// ###########################################################################
+// Only some tools sent their rows to the dashboard themselves; the newer ones (Shifts, Family Members, Letter Templates, Approval Cycles,
+// Performance Templates, Delete Employees, Flight Tickets, Business Trip Cities, Payroll Transactions, Leave Cancel, Locations Setup …) sent
+// nothing, so most of the work never showed. Tools call Jisr through `fetch`; this wrapper (it only ever sees THIS script's own calls, never
+// the Jisr page's) notes each write (PUT / POST / PATCH / DELETE to the Jisr API) made while one of those tools is the open tool and sends
+// it in the same form the older tools use (/api/log: one row per write: status, short redacted message, delay). It never changes a request,
+// never reads a request body, and fails open: no backend set, or any error, means nothing happens.
+const JBO_TRACKED_TOOLS = ['payroll-transactions-bulk', 'leave-cancel-bulk', 'shifts-bulk', 'fixed-hours-bulk', 'flight-tickets-bulk', 'shifts-clear', 'family-details-bulk', 'letter-templates', 'approval-cycles', 'performance-templates', 'delete-employees', 'business-trip-cities', 'final-settlement-bulk', 'locations-onboarding'];
+const JBO_OPEN_ONLY_TOOLS = ['payroll-reconciliation', 'data-validation', 'activation-checklist', 'letter-converter']; // read-only: the dashboard shows that they were used
+const jboAct_ = { tool: '', at: 0, buf: [], timer: null, sent: 0, failed: 0, lastError: '', lastOk: 0, warned: false };
+function jboActCfg_() { let u = null, k = null; try { u = jboSecureGet_('backendUrl'); k = jboSecureGet_('backendWriteKey'); } catch (e) { /* ignore */ } return { url: u, key: k }; }
+function jboActSlug_() { try { const o = GM_getValue('jisrBulkOps_slugOverride', ''); return o || location.hostname.split('.')[0]; } catch (e) { return ''; } }
+function jboActToast_(text) {
+  try { const d = document.createElement('div'); d.textContent = text; d.setAttribute('style', 'position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:2147483647;background:#202124;color:#fff;padding:10px 16px;border-radius:10px;font:13px system-ui,sans-serif;max-width:min(560px,92vw);box-shadow:0 6px 24px rgba(0,0,0,.3)'); document.body.appendChild(d); setTimeout(() => d.remove(), 9000); } catch (e) { /* ignore */ }
+}
+function jboActFlush_() {
+  if (jboAct_.timer) { clearTimeout(jboAct_.timer); jboAct_.timer = null; }
+  if (!jboAct_.buf.length) return;
+  const cfg = jboActCfg_(); const batch = jboAct_.buf.splice(0, 500);
+  if (!cfg.url || typeof GM_xmlhttpRequest !== 'function') return;
+  let actor = ''; try { actor = GM_getValue('jisrBulkOps_ownerLabel', '') || ''; } catch (e) { /* ignore */ }
+  try {
+    GM_xmlhttpRequest({ method: 'POST', url: cfg.url + '/api/log', timeout: 8000, headers: { 'Content-Type': 'application/json', 'X-Write-Key': cfg.key || '' }, data: JSON.stringify({ actor: actor || 'unknown', slug: jboActSlug_(), entries: batch }),
+      onload: (r) => { if (r.status >= 200 && r.status < 300) { jboAct_.sent += batch.length; jboAct_.lastOk = Date.now(); jboAct_.lastError = ''; } else { jboAct_.failed += batch.length; jboAct_.lastError = 'HTTP ' + r.status + (r.status === 401 ? ' (the dashboard does not accept this write key)' : r.status === 429 ? ' (too many requests)' : ''); if (!jboAct_.warned && (r.status === 401 || r.status === 403)) { jboAct_.warned = true; jboActToast_('Jisr Ops dashboard: the write key on this browser was rejected; activity is NOT being recorded. Tampermonkey menu → Configure Shared Backend.'); } } },
+      onerror: () => { jboAct_.failed += batch.length; jboAct_.lastError = 'no answer from the dashboard'; }, ontimeout: () => { jboAct_.failed += batch.length; jboAct_.lastError = 'the dashboard timed out'; } });
+  } catch (e) { jboAct_.failed += batch.length; }
+  if (jboAct_.buf.length) jboAct_.timer = setTimeout(jboActFlush_, 2000);
+}
+function jboActPush_(tool, rowKey, status, message, ms) {
+  const cfg = jboActCfg_(); if (!cfg.url) return;
+  jboAct_.buf.push({ module: tool, rowKey: String(rowKey), status, message: jboRedact_(String(message || '').slice(0, 300)), latency_ms: ms == null ? undefined : Math.round(ms), at: new Date().toISOString() });
+  if (jboAct_.buf.length >= 400) jboActFlush_(); else if (!jboAct_.timer) jboAct_.timer = setTimeout(jboActFlush_, 2000);
+}
+/** called whenever a tool is opened: it becomes the tool the writes are credited to */
+function jboActOpen_(id) {
+  jboAct_.tool = id; jboAct_.at = Date.now();
+  try { const st = jboRunStat_(id); Object.assign(st, { ok: 0, fail: 0, reads: 0, writes: 0, ms: 0, fails: [] }); jboRunEmit_(); } catch (e) { /* ignore */ }
+  try {
+    const cfg = jboActCfg_();
+    if (!cfg.url || !cfg.key) { if (!jboAct_.warned) { jboAct_.warned = true; jboActToast_('Jisr Ops dashboard: this browser has no dashboard address / write key, so your activity here is NOT being recorded. Tampermonkey menu → Configure Shared Backend (each browser profile needs it once).'); } return; }
+    if (JBO_OPEN_ONLY_TOOLS.includes(id)) jboActPush_(id, 'opened', 'ok', 'tool opened');
+  } catch (e) { /* ignore */ }
+}
+// v4.74 run status: every call to the Jisr API is counted per tool (running / succeeded / failed) for the status strip in each tool window
+const jboRun_ = { tools: {}, subs: [], inflight: 0 };
+function jboRunStat_(t) { return jboRun_.tools[t] || (jboRun_.tools[t] = { inflight: 0, ok: 0, fail: 0, reads: 0, writes: 0, ms: 0, fails: [] }); }
+function jboRunEmit_() { jboRun_.subs.slice().forEach((f) => { try { f(); } catch (e) { /* ignore */ } }); }
+function jboRunTrack_(tool, p, method, url) {
+  const st = jboRunStat_(tool), write = !(method === 'GET' || method === 'HEAD' || method === 'OPTIONS');
+  const path = url.split('?')[0].replace(/^https:\/\/[^/]+\/api/, '').replace(/\/\d+/g, '/:id');
+  const isRead = !write || /\/(search|get_all|query|filter|validate|preview|lookup)(\/|$)/i.test(path);
+  const t0 = Date.now(); st.inflight++; jboRun_.inflight++; if (isRead) st.reads++; else st.writes++; jboRunEmit_();
+  const done = (bad, status, msg) => {
+    st.inflight = Math.max(0, st.inflight - 1); jboRun_.inflight = Math.max(0, jboRun_.inflight - 1); st.ms += Date.now() - t0;
+    if (bad) { st.fail++; st.fails.push({ method, path, status, msg: String(msg || '').slice(0, 200) }); if (st.fails.length > 60) st.fails.shift(); } else st.ok++;
+    jboRunEmit_();
+  };
+  p.then((res) => {
+    const msgOf = (j) => j && (j.message || j.error || (j.errors && JSON.stringify(j.errors))) || '';
+    if (!res.ok && isRead && res.status === 404) done(false); // a lookup that finds nothing is an answer, not a failure
+    else if (!res.ok) { res.clone().json().then((j) => done(true, res.status, msgOf(j)), () => done(true, res.status, '')); }
+    else if (!isRead) { res.clone().json().then((j) => (j && j.success === false ? done(true, res.status, msgOf(j) || 'refused') : done(false)), () => done(false)); }
+    else done(false);
+  }, (e) => done(true, 0, e && e.message || e));
+}
+unsafeWindow.__jisrBulkOpsRun = {
+  get inflight() { return jboRun_.inflight; }, get tool() { return jboAct_.tool; },
+  toolStat: (t) => jboRunStat_(t), failsOf: (t) => jboRunStat_(t).fails,
+  on: (f) => { jboRun_.subs.push(f); return () => { const i = jboRun_.subs.indexOf(f); if (i >= 0) jboRun_.subs.splice(i, 1); }; }
+};
+const fetch = function jboFetch_(input, init) {
+  const p = self.fetch.apply(self, arguments);
+  try {
+    const u0 = typeof input === 'string' ? input : (input && (input.url || String(input))) || '';
+    if (jboAct_.tool && /^https:\/\/(apis\.jisr\.net|api\.jisr\.net\.sa)\/api\//.test(u0)) jboRunTrack_(jboAct_.tool, p, String((init && init.method) || (input && typeof input === 'object' && input.method) || 'GET').toUpperCase(), u0);
+  } catch (e) { /* never let tracking touch a real request */ }
+  try {
+    const tool = jboAct_.tool; if (!tool || !JBO_TRACKED_TOOLS.includes(tool) || Date.now() - jboAct_.at > 6 * 3600 * 1000) return p;
+    const method = String((init && init.method) || (input && typeof input === 'object' && input.method) || 'GET').toUpperCase();
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return p;
+    const url = typeof input === 'string' ? input : (input && (input.url || String(input))) || '';
+    if (!/^https:\/\/(apis\.jisr\.net|api\.jisr\.net\.sa)\/api\//.test(url)) return p;
+    const path = url.split('?')[0].replace(/^https:\/\/[^/]+\/api/, '');
+    if (method === 'POST' && /\/(search|get_all|query|filter|validate|preview|lookup)(\/|$)/i.test(path)) return p; // a read made with POST
+    const ids = path.match(/\d{2,}/g); const key = ids ? ids[ids.length - 1] : method;
+    const shown = method + ' ' + path.replace(/\/\d+/g, '/:id');
+    const t0 = Date.now();
+    p.then((res) => {
+      let bad = !res.ok; const ms = Date.now() - t0;
+      if (res.ok) { res.clone().json().then((j) => { bad = !!(j && j.success === false); jboActPush_(tool, key, bad ? 'err' : 'ok', shown + ' → ' + (bad ? 'refused: ' + String(j && (j.message || j.error) || '') : res.status), ms); }, () => jboActPush_(tool, key, 'ok', shown + ' → ' + res.status, ms)); }
+      else res.clone().json().then((j) => jboActPush_(tool, key, 'err', shown + ' → HTTP ' + res.status + ': ' + String(j && (j.message || j.error || (j.errors && JSON.stringify(j.errors))) || ''), ms), () => jboActPush_(tool, key, 'err', shown + ' → HTTP ' + res.status, ms));
+    }, (e) => jboActPush_(tool, key, 'err', shown + ' → no answer (' + String(e && e.message || e).slice(0, 80) + ')', Date.now() - t0));
+  } catch (e) { /* never let tracking touch a real request */ }
+  return p;
+};
+try {
+  unsafeWindow.__jisrBulkOpsActivity = { open: jboActOpen_, flush: jboActFlush_, state: () => ({ tool: jboAct_.tool, queued: jboAct_.buf.length, sent: jboAct_.sent, failed: jboAct_.failed, lastError: jboAct_.lastError, lastOk: jboAct_.lastOk, configured: !!(jboActCfg_().url && jboActCfg_().key) }) };
+  if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('🔎 Check Ops dashboard connection', () => {
+    const cfg = jboActCfg_(); if (!cfg.url || !cfg.key) { alert('This browser is NOT connected to the Ops dashboard (no address / write key). Use "Configure Shared Backend" first. Every browser profile needs it once.'); return; }
+    GM_xmlhttpRequest({ method: 'POST', url: cfg.url + '/api/register', timeout: 8000, headers: { 'Content-Type': 'application/json', 'X-Write-Key': cfg.key }, data: JSON.stringify({ email: (() => { try { return GM_getValue('jisrBulkOps_userEmail', ''); } catch (e) { return ''; } })(), tenant: jboActSlug_() }),
+      onload: (r) => { let j = null; try { j = JSON.parse(r.responseText); } catch (e) { /* ignore */ } const st = jboAct_; alert(r.status === 200 && j && j.ok ? 'Connected to the Ops dashboard as: ' + j.operator + (j.verified ? '' : ' (shared key; not a personal key)') + '\nSent from this page so far: ' + st.sent + (st.failed ? ' · failed: ' + st.failed + ' (' + st.lastError + ')' : '') : 'The dashboard did not accept this browser (HTTP ' + r.status + '). Ask the admin for a personal write key, then use "Configure Shared Backend".'); },
+      onerror: () => alert('Could not reach the dashboard address.'), ontimeout: () => alert('The dashboard timed out.') });
+  });
+} catch (e) { /* ignore */ }
+
 
 // ###########################################################################
 // ##### v4.61 SECURITY HELPERS — isolated settings, backend allow-list, safe HTML, log redaction
@@ -136,7 +249,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.62.0
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.75.0
 // ###########################################################################
 
 /*
@@ -284,7 +397,7 @@ function jboRedact_(msg) {
 "Relocation": "النقل",
 "Remove row": "حذف الصف",
 "Start Date": "تاريخ البداية",
-"Stopped — ": "تم الإيقاف — ",
+"Stopped: ": "تم الإيقاف: ",
 "YYYY-MM-DD": "سنة-شهر-يوم",
 "▶ Run Live": "▶ تنفيذ فعلي",
 "⚠️ Shifted": "⚠️ منقول",
@@ -404,7 +517,7 @@ function jboRedact_(msg) {
 "Nothing to run.": "لا يوجد ما يُنفّذ.",
 "Old: Radius (m)": "قديم: النطاق (م)",
 "Reminder Period": "فترة التذكير",
-"Run complete — ": "اكتمل التنفيذ — ",
+"Run complete: ": "اكتمل التنفيذ: ",
 "type to search…": "اكتب للبحث…",
 "— select role —": "— اختر الدور —",
 "📥 Export Report": "📥 تصدير التقرير",
@@ -490,7 +603,7 @@ function jboRedact_(msg) {
 "— choose a policy —": "— اختر سياسة —",
 "⬇ Download current ": "⬇ تنزيل البيانات الحالية: ",
 "   Reused existing: ": "   أُعيد استخدام الموجود: ",
-"-character limit) — ": " حرفًا كحد أقصى) — ",
+"-character limit): ": " حرفًا كحد أقصى): ",
 "All Airports Allowed": "جميع المطارات مسموحة",
 "Auth rejected (HTTP ": "تم رفض المصادقة (HTTP ",
 "Contract ID column: ": "عمود معرّف العقد: ",
@@ -512,7 +625,7 @@ function jboRedact_(msg) {
 "(if Joining Date set)": "(إذا حُدد تاريخ الالتحاق)",
 "(load policies first)": "(حمّل السياسات أولًا)",
 "(type a manager name)": "(اكتب اسم المدير)",
-"Areas run complete — ": "اكتمل تنفيذ المناطق — ",
+"Areas run complete: ": "اكتمل تنفيذ المناطق: ",
 "Auto Renewal (Yes/No)": "التجديد التلقائي (نعم/لا)",
 "Basic Salary (Client)": "الراتب الأساسي (العميل)",
 "Create returned HTTP ": "أعاد الإنشاء HTTP ",
@@ -546,7 +659,7 @@ function jboRedact_(msg) {
 "Stopped by user after ": "أوقفه المستخدم بعد ",
 "Upload Filled Template": "رفع القالب المعبأ",
 "e.g. 1 (or use Months)": "مثال: 1 (أو استخدم الأشهر)",
-"Bulk create complete — ": "اكتمل الإنشاء الجماعي — ",
+"Bulk create complete: ": "اكتمل الإنشاء الجماعي: ",
 "Contract Period (Years)": "مدة العقد (سنوات)",
 "Current Contract Period": "مدة العقد الحالية",
 "Current Contract Status": "حالة العقد الحالية",
@@ -578,11 +691,11 @@ function jboRedact_(msg) {
 "Current Contract End Date": "تاريخ نهاية العقد الحالي",
 "Current Parent Department": "القسم الأعلى الحالي",
 "Latitude must be a number": "يجب أن يكون خط العرض رقمًا",
-"Locations run complete — ": "اكتمل تنفيذ المواقع — ",
+"Locations run complete: ": "اكتمل تنفيذ المواقع: ",
 "Manual Adjustment Balance": "رصيد التعديل اليدوي",
 "New: Manager (name or id)": "جديد: المدير (الاسم أو المعرّف)",
 "Search by name (optional)": "البحث بالاسم (اختياري)",
-"Step 2 of 2 — Map Columns": "الخطوة 2 من 2 — ربط الأعمدة",
+"Step 2 of 2: Map Columns": "الخطوة 2 من 2: ربط الأعمدة",
 "Your name is now set to \"": "تم تعيين اسمك إلى \"",
 "paste a Google Maps link…": "الصق رابط خرائط Google…",
 "(unchanged; or use Months)": "(بدون تغيير؛ أو استخدم الأشهر)",
@@ -600,7 +713,7 @@ function jboRedact_(msg) {
 "e.g. 1441-11-10 (optional)": "مثال: 1441-11-10 (اختياري)",
 " reused (already existed), ": " أُعيد استخدامه (موجود مسبقًا)، ",
 "Assign/Revoke run complete.": "اكتمل تنفيذ الإسناد/السحب.",
-"Bulk suspension complete — ": "اكتمل الإيقاف الجماعي — ",
+"Bulk suspension complete: ": "اكتمل الإيقاف الجماعي: ",
 "Choose a filled file first.": "اختر الملف المعبأ أولًا.",
 "Could not load job titles: ": "تعذّر تحميل المسميات الوظيفية: ",
 "Delay between requests (ms)": "التأخير بين الطلبات (ملي ثانية)",
@@ -615,7 +728,7 @@ function jboRedact_(msg) {
 "Employee Contracts Bulk Edit": "التعديل الجماعي لعقود الموظفين",
 "Fetching Jisr payroll table…": "جارٍ جلب جدول رواتب جسر…",
 "Groups request failed (HTTP ": "فشل طلب المجموعات (HTTP ",
-"Jisr Bulk Ops — drag to move": "أدوات جسر الجماعية — اسحب للتحريك",
+"Jisr Bulk Ops: drag to move": "أدوات جسر الجماعية: اسحب للتحريك",
 "Starting bulk suspension of ": "بدء الإيقاف الجماعي لـ ",
 "search by name, code, or id…": "ابحث بالاسم أو الرقم الوظيفي أو المعرّف…",
 "All Airports Allowed (Yes/No)": "جميع المطارات مسموحة (نعم/لا)",
@@ -631,7 +744,7 @@ function jboRedact_(msg) {
 "Request failed after retries.": "فشل الطلب بعد إعادة المحاولة.",
 "Roles & Permissions Bulk Edit": "التعديل الجماعي للأدوار والصلاحيات",
 "(auto-generated if left blank)": "(يُنشأ تلقائيًا إذا تُرك فارغًا)",
-"(nothing — check your columns)": "(لا شيء — تحقق من الأعمدة)",
+"(nothing; check your columns)": "(لا شيء؛ تحقق من الأعمدة)",
 "Click \"Load Job Titles\" first.": "اضغط \"تحميل المسميات الوظيفية\" أولًا.",
 "Could not build the template: ": "تعذّر إنشاء القالب: ",
 "Loading employees and current ": "جارٍ تحميل الموظفين والبيانات الحالية: ",
@@ -641,7 +754,7 @@ function jboRedact_(msg) {
 " row(s). Review before running.": " صف. راجعها قبل التنفيذ.",
 "Click \"Load Departments\" first.": "اضغط \"تحميل الأقسام\" أولًا.",
 "Filter loaded policies by name…": "تصفية السياسات المحمّلة بالاسم…",
-"Import from Excel — Map Columns": "الاستيراد من Excel — ربط الأعمدة",
+"Import from Excel: Map Columns": "الاستيراد من Excel: ربط الأعمدة",
 "Loading Jisr allowance columns…": "جارٍ تحميل أعمدة بدلات جسر…",
 "Retrospective, no recalculation": "بأثر رجعي، بدون إعادة احتساب",
 "Saved to the cloud folder for \"": "تم الحفظ في المجلد السحابي لـ \"",
@@ -656,10 +769,10 @@ function jboRedact_(msg) {
 "Compact view (click for expanded)": "عرض مختصر (اضغط للعرض الموسع)",
 "Expanded view (click for compact)": "عرض موسع (اضغط للعرض المختصر)",
 "Reason is required for every edit": "السبب مطلوب لكل تعديل",
-"Step 1 of 2 — Pick the Header Row": "الخطوة 1 من 2 — اختر صف العناوين",
+"Step 1 of 2: Pick the Header Row": "الخطوة 1 من 2: اختر صف العناوين",
 "Stopped before sending all areas.": "توقف قبل إرسال جميع المناطق.",
 "Unexpected groups response shape.": "صيغة غير متوقعة لرد المجموعات.",
-"\" not auto-matched — pick manually": "\" لم تتم مطابقته تلقائيًا — اختره يدويًا",
+"\" not auto-matched: pick manually": "\" لم تتم مطابقته تلقائيًا: اختره يدويًا",
 "Could not load the org structure: ": "تعذّر تحميل الهيكل التنظيمي: ",
 "Joining date change returned HTTP ": "أعاد تغيير تاريخ الالتحاق HTTP ",
 "New Start Date (blank = unchanged)": "تاريخ البداية الجديد (فارغ = بدون تغيير)",
@@ -708,7 +821,7 @@ function jboRedact_(msg) {
 "Department (search by current name or id)": "القسم (ابحث بالاسم الحالي أو المعرّف)",
 "Found in Jisr, missing from client file (": "موجود في جسر وغير موجود في ملف العميل (",
 "Retrospective (recalculates past payroll)": "بأثر رجعي (يعيد احتساب الرواتب السابقة)",
-"Stopping — re-authenticate and try again.": "جارٍ الإيقاف — سجّل الدخول مجددًا وحاول مرة أخرى.",
+"Stopping: re-authenticate and try again.": "جارٍ الإيقاف: سجّل الدخول مجددًا وحاول مرة أخرى.",
 "Unexpected business units response shape.": "صيغة غير متوقعة لرد وحدات الأعمال.",
 "Update shape confirmed for this tenant (\"": "تم تأكيد صيغة التحديث لهذه الشركة (\"",
 " employee(s) from payroll runs on tenant \"": " موظف من مسيرات الرواتب في الشركة \"",
@@ -720,7 +833,7 @@ function jboRedact_(msg) {
 "Server said OK but echoed a different name (\"": "أفاد الخادم بالنجاح لكنه أعاد اسمًا مختلفًا (\"",
 "👤 Set/Change Your Name (for the activity log)": "👤 تعيين/تغيير اسمك (لسجل النشاط)",
 "\" for every Jisr Bulk Ops script on this site.": "\" لجميع أدوات جسر الجماعية على هذا الموقع.",
-"Click to view — export from the results window": "اضغط للعرض — صدّر من نافذة النتائج",
+"Click to view: export from the results window": "اضغط للعرض: صدّر من نافذة النتائج",
 "English name) is reused instead of duplicated.": "الاسم الإنجليزي) بدلًا من تكراره.",
 "Jisr returned no columns for this payroll run.": "لم يُعد جسر أي أعمدة لمسير الرواتب هذا.",
 "No payroll groups found for this month/search.": "لا توجد مجموعات رواتب لهذا الشهر/البحث.",
@@ -739,46 +852,46 @@ function jboRedact_(msg) {
 "Job Title to Delete (search by current name or id)": "المسمى الوظيفي المراد حذفه (ابحث بالاسم الحالي أو المعرّف)",
 "New Indefinitable must be blank, Yes, or No, got \"": "يجب أن يكون (غير محدد المدة) الجديد فارغًا أو نعم أو لا، القيمة: \"",
 "New Start Date Hijri (optional; blank = unchanged)": "تاريخ البداية الهجري الجديد (اختياري؛ فارغ = بدون تغيير)",
-"No areas came back — nothing to put in a template.": "لم تُرجع أي مناطق — لا يوجد ما يوضع في القالب.",
+"No areas came back: nothing to put in a template.": "لم تُرجع أي مناطق: لا يوجد ما يوضع في القالب.",
 " row(s) marked for deletion. Review before running.": " صف محدد للحذف. راجعها قبل التنفيذ.",
-"Don't touch the offboarded employee — skip this row": "لا تغيّر الموظف المنتهية خدمته — تخطَّ هذا الصف",
+"Don't touch the offboarded employee: skip this row": "لا تغيّر الموظف المنتهية خدمته: تخطَّ هذا الصف",
 "Employee not found in Jisr's current payroll table.": "الموظف غير موجود في جدول رواتب جسر الحالي.",
-"Label (optional, e.g. \"Regular Monthly — Aug 2026\")": "التسمية (اختياري، مثال: \"الرواتب الشهرية — أغسطس 2026\")",
+"Label (optional, e.g. \"Regular Monthly: Aug 2026\")": "التسمية (اختياري، مثال: \"الرواتب الشهرية؛ أغسطس 2026\")",
 "New: Google Maps Link (optional, overrides Lat/Lng)": "جديد: رابط خرائط Google (اختياري، يتقدم على الإحداثيات)",
 "Parent Department (search, blank = main department)": "القسم الأعلى (بحث، فارغ = قسم رئيسي)",
 "Joining Date Reason (required if Joining Date given)": "سبب تاريخ الالتحاق (مطلوب عند إدخال تاريخ الالتحاق)",
 " row(s) marked for suspension. Review before running.": " صف محدد للإيقاف. راجعها قبل التنفيذ.",
-"Contract Period — Months (leave blank if using Years)": "مدة العقد — أشهر (اتركه فارغًا عند استخدام السنوات)",
-"Contract Period — Years (leave blank if using Months)": "مدة العقد — سنوات (اتركه فارغًا عند استخدام الأشهر)",
+"Contract Period: Months (leave blank if using Years)": "مدة العقد: أشهر (اتركه فارغًا عند استخدام السنوات)",
+"Contract Period: Years (leave blank if using Months)": "مدة العقد: سنوات (اتركه فارغًا عند استخدام الأشهر)",
 "Jisr returned 0 employee records for this payroll run": "لم يُعد جسر أي سجلات موظفين لمسير الرواتب هذا",
 "Shared backend write key (given to you by the admin):": "مفتاح الكتابة للخادم المشترك (يزوّدك به المسؤول):",
 "Timing \"future\" needs an Effective Date after today (": "التوقيت \"مستقبلي\" يتطلب تاريخ سريان بعد اليوم (",
 "Joining Date Hijri/Reason given without a Joining Date": "أُدخل تاريخ الالتحاق الهجري/السبب بدون تاريخ الالتحاق",
-"No employees came back — nothing to put in a template.": "لم يُرجع أي موظفين — لا يوجد ما يوضع في القالب.",
-"No locations came back — nothing to put in a template.": "لم تُرجع أي مواقع — لا يوجد ما يوضع في القالب.",
+"No employees came back: nothing to put in a template.": "لم يُرجع أي موظفين: لا يوجد ما يوضع في القالب.",
+"No locations came back: nothing to put in a template.": "لم تُرجع أي مواقع: لا يوجد ما يوضع في القالب.",
 "Pick a tab above, then use its own Dry Run / Run Live.": "اختر تبويبًا أعلاه ثم استخدم التشغيل التجريبي / التنفيذ الفعلي الخاص به.",
 "The file changed after you chose it - choose it again.": "تغيّر الملف بعد اختياره - اختره مرة أخرى.",
 "). Use \"Recently seen\" or \"Add manually\" below instead.": "). استخدم \"شوهدت مؤخرًا\" أو \"إضافة يدوية\" أدناه بدلًا من ذلك.",
 "Click \"Load Employees + Roles\" on the Assign tab first.": "اضغط \"تحميل الموظفين والأدوار\" في تبويب الإسناد أولًا.",
 "Employee Identifier and Basic Salary are both required.": "معرّف الموظف والراتب الأساسي مطلوبان.",
-"No job titles came back — nothing to put in a template.": "لم تُرجع أي مسميات وظيفية — لا يوجد ما يوضع في القالب.",
+"No job titles came back: nothing to put in a template.": "لم تُرجع أي مسميات وظيفية: لا يوجد ما يوضع في القالب.",
 " row(s) with at least one change. Review before running.": " صف فيه تغيير واحد على الأقل. راجعها قبل التنفيذ.",
 "Could not locate the role-permissions endpoint for role ": "تعذّر العثور على واجهة صلاحيات الدور للدور ",
-"No departments came back — nothing to put in a template.": "لم تُرجع أي أقسام — لا يوجد ما يوضع في القالب.",
+"No departments came back: nothing to put in a template.": "لم تُرجع أي أقسام: لا يوجد ما يوضع في القالب.",
 " row(s). Edit it, then choose it above and click Dry Run.": " صف. عدّل الملف ثم اختره أعلاه واضغط تشغيل تجريبي.",
 "Contract Type must be \"Fixed term\" or \"Indefinite\", got \"": "يجب أن يكون نوع العقد \"Fixed term\" أو \"Indefinite\"، القيمة: \"",
 "New Period (Years) must be a positive whole number, got \"": "يجب أن تكون المدة الجديدة (سنوات) عددًا صحيحًا موجبًا، القيمة: \"",
 "New Period (Months) must be a positive whole number, got \"": "يجب أن تكون المدة الجديدة (أشهر) عددًا صحيحًا موجبًا، القيمة: \"",
 "This group will be ARCHIVED (Jisr's equivalent of delete).": "ستتم أرشفة هذه المجموعة (ما يعادل الحذف في جسر).",
 "Joining Date given without a Joining Date Reason (required)": "أُدخل تاريخ الالتحاق بدون سبب (السبب مطلوب)",
-"This employee has no contracts on file — nothing to target.": "لا توجد عقود لهذا الموظف — لا يوجد ما يُستهدف.",
+"This employee has no contracts on file; nothing to target.": "لا توجد عقود لهذا الموظف: لا يوجد ما يُستهدف.",
 "This role has no permissions in its catalog to test against.": "لا توجد صلاحيات في قائمة هذا الدور للاختبار عليها.",
 "Could not work out the Jisr tenant slug from this page's URL.": "تعذّر تحديد رمز الشركة من رابط هذه الصفحة.",
 "New Month must be blank or a non-negative whole number, got \"": "يجب أن يكون الشهر الجديد فارغًا أو عددًا صحيحًا غير سالب، القيمة: \"",
 "Timing \"immediate\" needs an Effective Date of exactly today (": "التوقيت \"فوري\" يتطلب أن يكون تاريخ السريان اليوم (",
 "Contract Period (Years) must be a positive whole number, got \"": "يجب أن تكون مدة العقد (سنوات) عددًا صحيحًا موجبًا، القيمة: \"",
 "Could not work out the Jisr tenant slug from this page's URL (": "تعذّر تحديد رمز الشركة من رابط هذه الصفحة (",
-"Every row already matches its current value — nothing to send.": "كل الصفوف مطابقة لقيمها الحالية — لا يوجد ما يُرسل.",
+"Every row already matches its current value; nothing to send.": "كل الصفوف مطابقة لقيمها الحالية: لا يوجد ما يُرسل.",
 "Contract Period (Months) must be a positive whole number, got \"": "يجب أن تكون مدة العقد (أشهر) عددًا صحيحًا موجبًا، القيمة: \"",
 "Effective Date must be DD-MM-YYYY (a real calendar date), got \"": "يجب أن يكون تاريخ السريان بصيغة يوم-شهر-سنة (تاريخ صحيح)، القيمة: \"",
 "New GOSI Applicable Amount must be a non-negative number, got \"": "يجب أن يكون الأجر الخاضع للتأمينات الجديد رقمًا غير سالب، القيمة: \"",
@@ -786,7 +899,7 @@ function jboRedact_(msg) {
 " contract(s) from Jisr now? This cannot be undone from this tool.": " عقد من جسر الآن؟ لا يمكن التراجع عن ذلك من هذه الأداة.",
 "Columns after \"delete\" are for reference only and are never sent.": "الأعمدة بعد \"delete\" للاطلاع فقط ولا تُرسل أبدًا.",
 "New Period must be blank when switching to an Indefinite contract": "يجب ترك المدة الجديدة فارغة عند التحويل إلى عقد غير محدد المدة",
-"That role is not in the loaded roles list — reload and try again.": "هذا الدور غير موجود في قائمة الأدوار المحمّلة — أعد التحميل وحاول مجددًا.",
+"That role is not in the loaded roles list; reload and try again.": "هذا الدور غير موجود في قائمة الأدوار المحمّلة؛ أعد التحميل وحاول مجددًا.",
 "Update returned success, but no matching \"Basic Salary\" change to ": "أعاد التحديث نجاحًا، لكن لا يوجد تغيير مطابق في \"الراتب الأساسي\" إلى ",
 "Manual Adjustment Balance must be a non-negative whole number, got \"": "يجب أن يكون رصيد التعديل اليدوي عددًا صحيحًا غير سالب، القيمة: \"",
 " allowance row(s) from the template. Review both tabs before running.": " صف بدلات من القالب. راجع التبويبين قبل التنفيذ.",
@@ -794,77 +907,77 @@ function jboRedact_(msg) {
 "Choose which payroll group/payrun to reconcile the dropped file against": "اختر مجموعة/مسير الرواتب الذي ستتم مطابقة الملف معه",
 "Contract Period (Years/Months) must be blank for an Indefinite contract": "يجب ترك مدة العقد (سنوات/أشهر) فارغة للعقد غير محدد المدة",
 " location(s) in Jisr now? Nothing is ever deleted by this tool. Proceed?": " موقع في جسر الآن؟ هذه الأداة لا تحذف أي شيء. متابعة؟",
-"Employee Identifier did not match exactly — matched by name similarity (": "لم يتطابق معرّف الموظف تمامًا — تمت المطابقة بتشابه الاسم (",
+"Employee Identifier did not match exactly; matched by name similarity (": "لم يتطابق معرّف الموظف تمامًا: تمت المطابقة بتشابه الاسم (",
 "Pick a role, load its permissions, tick/untick, set Scope where offered.": "اختر دورًا، حمّل صلاحياته، حدّد/ألغِ التحديد، واضبط النطاق حيث يتاح.",
-"Stopped while freeing offboarded codes — run this batch again to finish.": "توقف أثناء تحرير أرقام المنتهية خدمتهم — أعد تنفيذ هذه الدفعة للإكمال.",
+"Stopped while freeing offboarded codes: run this batch again to finish.": "توقف أثناء تحرير أرقام المنتهية خدمتهم؛ أعد تنفيذ هذه الدفعة للإكمال.",
 " Job Title edit(s) to Jisr now? Unchanged rows are skipped automatically.": " تعديل على المسميات الوظيفية إلى جسر الآن؟ يتم تخطي الصفوف بدون تغيير تلقائيًا.",
-"(the API response carries no data to check) — every accepted row says so.": "(رد الواجهة لا يحتوي بيانات للتحقق) — كل صف مقبول يوضح ذلك.",
+"(the API response carries no data to check); every accepted row says so.": "(رد الواجهة لا يحتوي بيانات للتحقق)؛ كل صف مقبول يوضح ذلك.",
 "Dry Run never changes anything. Run Live only sends the plan shown below.": "التشغيل التجريبي لا يغيّر أي شيء. التنفيذ الفعلي يرسل فقط الخطة المعروضة أدناه.",
 "Jisr in this tab (reload the page if you just logged in), then try again.": "جسر في هذا التبويب (أعد تحميل الصفحة إذا سجّلت الدخول للتو)، ثم حاول مجددًا.",
 " Department edit(s) to Jisr now? Unchanged rows are skipped automatically.": " تعديل على الأقسام إلى جسر الآن؟ يتم تخطي الصفوف بدون تغيير تلقائيًا.",
 "A run is still in progress. Close anyway? (Rows already sent stay applied.)": "لا يزال التنفيذ جاريًا. هل تريد الإغلاق؟ (الصفوف المرسلة تبقى مطبّقة.)",
 "Every write is verified against the response before being marked a success.": "يتم التحقق من كل عملية كتابة مقابل الرد قبل اعتبارها ناجحة.",
 "Uploads the same report to this client's cloud folder on the shared backend": "يرفع نفس التقرير إلى المجلد السحابي لهذا العميل على الخادم المشترك",
-"New Contract Period — Months (blank = unchanged; leave blank if using Years)": "مدة العقد الجديدة — أشهر (فارغ = بدون تغيير؛ اتركه فارغًا عند استخدام السنوات)",
-"New Contract Period — Years (blank = unchanged; leave blank if using Months)": "مدة العقد الجديدة — سنوات (فارغ = بدون تغيير؛ اتركه فارغًا عند استخدام الأشهر)",
-"Category is required — pick one (Load Departments first if the list is empty)": "التصنيف مطلوب — اختر واحدًا (حمّل الأقسام أولًا إذا كانت القائمة فارغة)",
-"Employee Identifier (matched against Jisr's Employee Code — confirmed v1.3.0)": "معرّف الموظف (يُطابق مع الرقم الوظيفي في جسر)",
-"One row per employee — type a name/id/code/email and pick from the dropdown. ": "صف لكل موظف — اكتب الاسم/المعرّف/الرقم الوظيفي/البريد واختر من القائمة. ",
+"New Contract Period: Months (blank = unchanged; leave blank if using Years)": "مدة العقد الجديدة: أشهر (فارغ = بدون تغيير؛ اتركه فارغًا عند استخدام السنوات)",
+"New Contract Period: Years (blank = unchanged; leave blank if using Months)": "مدة العقد الجديدة: سنوات (فارغ = بدون تغيير؛ اتركه فارغًا عند استخدام الأشهر)",
+"Category is required: pick one (Load Departments first if the list is empty)": "التصنيف مطلوب: اختر واحدًا (حمّل الأقسام أولًا إذا كانت القائمة فارغة)",
+"Employee Identifier (matched against Jisr's Employee Code; confirmed v1.3.0)": "معرّف الموظف (يُطابق مع الرقم الوظيفي في جسر)",
+"One row per employee: type a name/id/code/email and pick from the dropdown. ": "صف لكل موظف: اكتب الاسم/المعرّف/الرقم الوظيفي/البريد واختر من القائمة. ",
 "Please register your name first: click the J button, then open any tool once.": "سجّل اسمك أولًا: اضغط زر J ثم افتح أي أداة مرة واحدة.",
 "Country, Area (EN), City and Location (EN) are all required to create a location": "الدولة والمنطقة (إنجليزي) والمدينة والموقع (إنجليزي) مطلوبة جميعها لإنشاء موقع",
-"Update shape not confirmed yet for this tenant — run \"Probe Update Shape\" first.": "لم تُؤكد صيغة التحديث لهذه الشركة بعد — شغّل \"فحص صيغة التحديث\" أولًا.",
-"Jisr template downloaded — send it to the client to adjust directly and re-upload.": "تم تنزيل قالب جسر — أرسله للعميل للتعديل مباشرة ثم إعادة الرفع.",
-"Shared backend URL (from the deployed Cloudflare Worker) — leave blank to disable:": "رابط الخادم المشترك (من Cloudflare Worker) — اتركه فارغًا للتعطيل:",
-"Contract Period is required — give either Years or Months for a Fixed term contract": "مدة العقد مطلوبة — أدخل السنوات أو الأشهر للعقد محدد المدة",
+"Update shape not confirmed yet for this tenant; run \"Probe Update Shape\" first.": "لم تُؤكد صيغة التحديث لهذه الشركة بعد؛ شغّل \"فحص صيغة التحديث\" أولًا.",
+"Jisr template downloaded: send it to the client to adjust directly and re-upload.": "تم تنزيل قالب جسر: أرسله للعميل للتعديل مباشرة ثم إعادة الرفع.",
+"Shared backend URL (from the deployed Cloudflare Worker); leave blank to disable:": "رابط الخادم المشترك (من Cloudflare Worker)؛ اتركه فارغًا للتعطيل:",
+"Contract Period is required: give either Years or Months for a Fixed term contract": "مدة العقد مطلوبة: أدخل السنوات أو الأشهر للعقد محدد المدة",
 "Select a Flight Ticket Policy first (Load Policies, then choose one from the list).": "اختر سياسة تذاكر طيران أولًا (حمّل السياسات ثم اختر واحدة من القائمة).",
-"Every current-earnings read failed — check the browser console (F12) for the errors.": "فشلت كل قراءات الاستحقاقات الحالية — راجع وحدة التحكم في المتصفح (F12) للأخطاء.",
-"Your name — shown to teammates in cross-user warnings and in the admin activity log:": "اسمك — يظهر لزملائك في التنبيهات وفي سجل نشاط المسؤول:",
+"Every current-earnings read failed: check the browser console (F12) for the errors.": "فشلت كل قراءات الاستحقاقات الحالية: راجع وحدة التحكم في المتصفح (F12) للأخطاء.",
+"Your name: shown to teammates in cross-user warnings and in the admin activity log:": "اسمك: يظهر لزملائك في التنبيهات وفي سجل نشاط المسؤول:",
 "Latitude and Longitude must both be given together (or use a Google Maps link instead)": "يجب إدخال خط العرض وخط الطول معًا (أو استخدم رابط خرائط Google بدلًا منهما)",
 "Map at least Employee Identifier + Basic Salary; add as many allowance rows as you need": "اربط معرّف الموظف والراتب الأساسي على الأقل؛ وأضف صفوف البدلات حسب الحاجة",
-"Stopped during the temporary-code step — run this batch again to finish the swap safely.": "توقف أثناء خطوة الرقم المؤقت — أعد تنفيذ هذه الدفعة لإكمال التبديل بأمان.",
+"Stopped during the temporary-code step: run this batch again to finish the swap safely.": "توقف أثناء خطوة الرقم المؤقت: أعد تنفيذ هذه الدفعة لإكمال التبديل بأمان.",
 " new Job Title(s) in Jisr now? A name that already exists is reused instead of duplicated.": " مسمى وظيفي جديد في جسر الآن؟ يُعاد استخدام الاسم الموجود بدلًا من تكراره.",
-"Employee Name (optional — enables name-matching if the Identifier doesn't line up exactly)": "اسم الموظف (اختياري — يتيح المطابقة بالاسم إذا لم يتطابق المعرّف تمامًا)",
-" rows — this may take a moment; the panel may be briefly unresponsive while rows are added.": " صف — قد يستغرق ذلك لحظات؛ وقد لا تستجيب النافذة مؤقتًا أثناء إضافة الصفوف.",
+"Employee Name (optional; enables name-matching if the Identifier doesn't line up exactly)": "اسم الموظف (اختياري؛ يتيح المطابقة بالاسم إذا لم يتطابق المعرّف تمامًا)",
+" rows: this may take a moment; the panel may be briefly unresponsive while rows are added.": " صف: قد يستغرق ذلك لحظات؛ وقد لا تستجيب النافذة مؤقتًا أثناء إضافة الصفوف.",
 "This endpoint's response carries nothing to re-verify against, so every accepted row says so.": "رد هذه الواجهة لا يحتوي ما يمكن التحقق منه، لذلك يوضح كل صف مقبول ذلك.",
-"Every tool here is shared by the whole team, and every change made through it is attributed to whoever ran it — for the activity log, and so teammates know who to check with. Enter your name once to continue; it’s remembered for every tool on this site from now on.": "كل أداة هنا مشتركة بين أعضاء الفريق، وكل تغيير يتم من خلالها يُنسب لمن نفّذه — لسجل النشاط، وليعرف الزملاء بمن يتواصلون. أدخل اسمك مرة واحدة للمتابعة، وسيُحفظ لجميع الأدوات على هذا الموقع.",
-"Pick an existing area, then fill in only the \"New\" fields you want to change — blank means unchanged.": "اختر منطقة موجودة ثم عبّئ حقول \"جديد\" التي تريد تغييرها فقط — الفارغ يعني بدون تغيير.",
-"No \"New: <allowance>\" columns found in this file — is this a template downloaded from \"Download Template\"?": "لا توجد أعمدة \"جديد: <البدل>\" في هذا الملف — هل هذا القالب منزّل من \"تنزيل القالب\"؟",
+"Every tool here is shared by the whole team, and every change made through it is attributed to whoever ran it; for the activity log, and so teammates know who to check with. Enter your name once to continue; it’s remembered for every tool on this site from now on.": "كل أداة هنا مشتركة بين أعضاء الفريق، وكل تغيير يتم من خلالها يُنسب لمن نفّذه؛ لسجل النشاط، وليعرف الزملاء بمن يتواصلون. أدخل اسمك مرة واحدة للمتابعة، وسيُحفظ لجميع الأدوات على هذا الموقع.",
+"Pick an existing area, then fill in only the \"New\" fields you want to change; blank means unchanged.": "اختر منطقة موجودة ثم عبّئ حقول \"جديد\" التي تريد تغييرها فقط؛ الفارغ يعني بدون تغيير.",
+"No \"New: <allowance>\" columns found in this file; is this a template downloaded from \"Download Template\"?": "لا توجد أعمدة \"جديد: <البدل>\" في هذا الملف؛ هل هذا القالب منزّل من \"تنزيل القالب\"؟",
 "Shared backend is not configured yet. Use the Tampermonkey menu \"⚙️ Configure Shared Backend (Admin)\" first.": "لم يتم إعداد الخادم المشترك بعد. استخدم قائمة Tampermonkey \"⚙️ إعداد الخادم المشترك (للمسؤول)\" أولًا.",
-"Update shape NOT yet confirmed for this tenant — run \"Probe Update Shape\" once before Save will do anything.": "لم تُؤكد صيغة التحديث لهذه الشركة بعد — شغّل \"فحص صيغة التحديث\" مرة واحدة قبل الحفظ.",
+"Update shape NOT yet confirmed for this tenant; run \"Probe Update Shape\" once before Save will do anything.": "لم تُؤكد صيغة التحديث لهذه الشركة بعد؛ شغّل \"فحص صيغة التحديث\" مرة واحدة قبل الحفظ.",
 "New group is created with no membership rules (applies to nobody) - set its filter conditions in Jisr afterwards.": "تُنشأ المجموعة الجديدة بدون شروط عضوية (لا تنطبق على أحد) - اضبط شروطها في جسر لاحقًا.",
-"Shared backend settings saved — this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.": "تم حفظ إعدادات الخادم المشترك — تنطبق على جميع أدوات جسر الجماعية على هذا الموقع.",
+"Shared backend settings saved: this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.": "تم حفظ إعدادات الخادم المشترك: تنطبق على جميع أدوات جسر الجماعية على هذا الموقع.",
 "Click the row that contains your column titles (handles files with a logo or blank rows on top). Best guess is pre-selected.": "اضغط على الصف الذي يحتوي عناوين الأعمدة (يدعم الملفات التي بأعلاها شعار أو صفوف فارغة). تم تحديد أفضل تخمين مسبقًا.",
-"No allowance columns were returned by Jisr for this payrun — every \"not tracked in Jisr\" mapping will be compared against 0.": "لم يُعد جسر أعمدة بدلات لهذا المسير — كل ربط \"غير مسجل في جسر\" ستتم مقارنته بـ 0.",
-"Downloaded a blank template with one example row. All four columns are required — pick the policy in this popup, not in the sheet.": "تم تنزيل قالب فارغ بصف مثال واحد. الأعمدة الأربعة مطلوبة — اختر السياسة في هذه النافذة وليس في الملف.",
-"Match each field to a column from your file. Rows land in the table for you to review and edit before running — nothing is sent yet.": "اربط كل حقل بعمود من ملفك. تظهر الصفوف في الجدول لمراجعتها وتعديلها قبل التنفيذ — لم يُرسل شيء بعد.",
+"No allowance columns were returned by Jisr for this payrun; every \"not tracked in Jisr\" mapping will be compared against 0.": "لم يُعد جسر أعمدة بدلات لهذا المسير؛ كل ربط \"غير مسجل في جسر\" ستتم مقارنته بـ 0.",
+"Downloaded a blank template with one example row. All four columns are required: pick the policy in this popup, not in the sheet.": "تم تنزيل قالب فارغ بصف مثال واحد. الأعمدة الأربعة مطلوبة: اختر السياسة في هذه النافذة وليس في الملف.",
+"Match each field to a column from your file. Rows land in the table for you to review and edit before running; nothing is sent yet.": "اربط كل حقل بعمود من ملفك. تظهر الصفوف في الجدول لمراجعتها وتعديلها قبل التنفيذ؛ لم يُرسل شيء بعد.",
 "Downloads one Excel workbook with a sheet per list, for reference or client review. Nothing is changed in Jisr. To edit, use each tool's own template.": "ينزّل ملف Excel واحدًا بورقة لكل قائمة، للاطلاع أو لمراجعة العميل. لا يتغير أي شيء في جسر. للتعديل استخدم قالب كل أداة.",
-"Update confirmed by response message only — could not independently verify against the compensation-change history (empty or unreachable for this tenant).": "تم تأكيد التحديث من رسالة الرد فقط — تعذّر التحقق من سجل تغييرات التعويضات (فارغ أو غير متاح لهذه الشركة).",
-"One row per employee. This write cannot be independently re-verified after the fact (the API response carries no data to check) — every accepted row says so.": "صف لكل موظف. لا يمكن التحقق من هذه العملية لاحقًا (رد الواجهة لا يحتوي بيانات للتحقق) — كل صف مقبول يوضح ذلك.",
+"Update confirmed by response message only; could not independently verify against the compensation-change history (empty or unreachable for this tenant).": "تم تأكيد التحديث من رسالة الرد فقط؛ تعذّر التحقق من سجل تغييرات التعويضات (فارغ أو غير متاح لهذه الشركة).",
+"One row per employee. This write cannot be independently re-verified after the fact (the API response carries no data to check); every accepted row says so.": "صف لكل موظف. لا يمكن التحقق من هذه العملية لاحقًا (رد الواجهة لا يحتوي بيانات للتحقق)؛ كل صف مقبول يوضح ذلك.",
 "Client column → label → matching Jisr allowance (auto-detected where possible; Jisr's own allowance names are custom per company, so please double-check each one).": "عمود العميل ← التسمية ← البدل المطابق في جسر (يُكتشف تلقائيًا قدر الإمكان؛ أسماء البدلات تختلف بين الشركات، فتحقق من كل واحد).",
 "Downloaded a blank template with one example row. Name (EN) is required; a title that already exists (matched by exact English name) is reused instead of duplicated.": "تم تنزيل قالب فارغ بصف مثال واحد. الاسم (إنجليزي) مطلوب؛ ويُعاد استخدام المسمى الموجود (بمطابقة الاسم الإنجليزي) بدلًا من تكراره.",
-"One row per employee — type a name/id/code/email and pick from the dropdown. This endpoint's response carries nothing to re-verify against, so every accepted row says so.": "صف لكل موظف — اكتب الاسم/المعرّف/الرقم الوظيفي/البريد واختر من القائمة. رد هذه الواجهة لا يحتوي ما يمكن التحقق منه، لذلك يوضح كل صف مقبول ذلك.",
-"One row per (employee, role) pair. Role is a dropdown, not typed. Assign batches are unioned with existing role membership before sending — nobody already on a role gets silently dropped.": "صف لكل (موظف، دور). الدور يُختار من القائمة. تُدمج دفعات الإسناد مع أعضاء الدور الحاليين قبل الإرسال — فلا يُحذف أحد من الدور دون قصد.",
+"One row per employee: type a name/id/code/email and pick from the dropdown. This endpoint's response carries nothing to re-verify against, so every accepted row says so.": "صف لكل موظف: اكتب الاسم/المعرّف/الرقم الوظيفي/البريد واختر من القائمة. رد هذه الواجهة لا يحتوي ما يمكن التحقق منه، لذلك يوضح كل صف مقبول ذلك.",
+"One row per (employee, role) pair. Role is a dropdown, not typed. Assign batches are unioned with existing role membership before sending; nobody already on a role gets silently dropped.": "صف لكل (موظف، دور). الدور يُختار من القائمة. تُدمج دفعات الإسناد مع أعضاء الدور الحاليين قبل الإرسال؛ فلا يُحذف أحد من الدور دون قصد.",
 "Fallback if the live list above can't load: payroll screens actually opened in this browser tab, or added by hand. IDs here are Payrun IDs (one specific pay period's run), not Paygroup IDs.": "بديل إذا تعذّر تحميل القائمة أعلاه: شاشات الرواتب المفتوحة في هذا التبويب أو المضافة يدويًا. المعرّفات هنا معرّفات مسيرات (مسير فترة محددة) وليست معرّفات مجموعات رواتب.",
 "One row per employee. Type a name/id/code/email and pick from the dropdown, then the new Employee ID/code. Or click \"Download Template\" for a sheet with every current employee already in it.": "صف لكل موظف. اكتب الاسم/المعرّف/الرقم الوظيفي/البريد واختر من القائمة، ثم الرقم الوظيفي الجديد. أو اضغط \"تنزيل القالب\" لملف يحتوي جميع الموظفين الحاليين.",
-"Deletes a contract outright — cannot be undone from this tool. Leave Contract ID blank if the employee only has one contract. Notifier list is always sent empty (matches the one confirmed capture).": "يحذف العقد نهائيًا — لا يمكن التراجع من هذه الأداة. اترك معرّف العقد فارغًا إذا كان للموظف عقد واحد فقط.",
-"This cannot be undone from this tool. There is no confirmed capture of what Jisr does to employees still holding a deleted title — the employee count shown is a warning, not a guarantee either way.": "لا يمكن التراجع من هذه الأداة. لا يوجد تأكيد لما يفعله جسر بالموظفين الذين يحملون المسمى المحذوف — عدد الموظفين المعروض للتنبيه فقط.",
-"Leave a \"New …\" field blank to keep it unchanged. Every PUT sends the full record (name/name_ar/description) — this endpoint has no confirmed partial-update behavior, so this module never omits a field.": "اترك حقل \"جديد …\" فارغًا للإبقاء على القيمة الحالية. كل تحديث يرسل السجل كاملًا (الاسم الإنجليزي/العربي/الوصف).",
-"One row per employee. Timing drives effective_date/without_retroactive the same way Jisr's own screen does — future needs a date after today, immediate needs today, the two retrospective modes need a date before today.": "صف لكل موظف. التوقيت يعمل مثل شاشة جسر — المستقبلي يحتاج تاريخًا بعد اليوم، والفوري يحتاج تاريخ اليوم، وخيارا الأثر الرجعي يحتاجان تاريخًا قبل اليوم.",
-"Full-record write: a blank \"New …\" cell means \"keep the contract's current value\", loaded fresh right before each send. Leave Contract ID blank if the employee only has one contract — otherwise you must specify which. Reason is required for every edit.": "يُرسل السجل كاملًا: الخلية الفارغة في \"جديد …\" تعني \"الإبقاء على قيمة العقد الحالية\" المحمّلة قبل كل إرسال. اترك معرّف العقد فارغًا إذا كان للموظف عقد واحد فقط — وإلا حدده. السبب مطلوب لكل تعديل.",
-"One row per (employee, allowance) change. The Allowance Name must match an EXISTING allowance the employee already has — this adjusts, it does not create a new allowance type. Rows here combine with any Salary Increment row for the same employee into one write.": "صف لكل تغيير (موظف، بدل). يجب أن يطابق اسم البدل بدلًا موجودًا لدى الموظف — هذا تعديل وليس إنشاء نوع بدل جديد. تُدمج هذه الصفوف مع صف زيادة الراتب لنفس الموظف في عملية واحدة.",
-"Creates brand-new areas and/or locations — never edits or deletes an existing one. An Area matched by name within the given Country is reused automatically instead of being duplicated. City must already exist in Jisr for that country (this tool cannot create cities).": "ينشئ مناطق و/أو مواقع جديدة فقط — لا يعدّل ولا يحذف الموجود. تُعاد استخدام المنطقة المطابقة بالاسم داخل الدولة بدلًا من تكرارها. يجب أن تكون المدينة موجودة مسبقًا في جسر.",
-"Adjusts employees already enrolled in the policy you pick below — it cannot enroll a new employee (no confirmed capture for that exists). One row per employee. This write cannot be independently re-verified after the fact (the API response carries no data to check) — every accepted row says so.": "يعدّل الموظفين المسجلين مسبقًا في السياسة المختارة أدناه — لا يمكنه تسجيل موظف جديد. صف لكل موظف. لا يمكن التحقق من هذه العملية لاحقًا — كل صف مقبول يوضح ذلك.",
-"Creates a brand-new contract for each row's employee. The server computes End Date itself from Start Date + Contract Period (confirmed) and defaults Status to Active — neither is a column here. Optional Joining Date columns fire an independent employee-level change alongside the contract create.": "ينشئ عقدًا جديدًا لموظف كل صف. يحسب الخادم تاريخ النهاية من تاريخ البداية ومدة العقد ويجعل الحالة نشطة تلقائيًا. أعمدة تاريخ الالتحاق الاختيارية تُحدث تغييرًا مستقلًا على الموظف مع إنشاء العقد.",
-"Pick an existing location, then fill in only the \"New\" fields you want to change — blank means unchanged. A Google Maps link (short or long) overrides Latitude/Longitude if both are given. Moving a location to a different area/city isn't supported here — only address, manager, coordinates and radius.": "اختر موقعًا موجودًا ثم عبّئ حقول \"جديد\" التي تريد تغييرها فقط — الفارغ يعني بدون تغيير. رابط خرائط Google يتقدم على الإحداثيات. نقل الموقع لمنطقة/مدينة أخرى غير مدعوم — فقط العنوان والمدير والإحداثيات والنطاق.",
-"Match each field to a column from your file. Rows where every \"new value\" column is blank are skipped automatically — handy for a downloaded template where you've only filled in the ones you want to change. Remaining rows land in the table for you to review and edit before running — nothing is sent yet.": "اربط كل حقل بعمود من ملفك. تُتخطى تلقائيًا الصفوف التي كل أعمدة \"القيمة الجديدة\" فيها فارغة. تظهر بقية الصفوف في الجدول لمراجعتها وتعديلها قبل التنفيذ — لم يُرسل شيء بعد.",
-"Match each field to a column from your file. Rows where every \"new value\" column is blank are skipped automatically — handy for a downloaded template where you've only filled in the records you want to change. Remaining rows land in the table for you to review and edit before running — nothing is sent yet.": "اربط كل حقل بعمود من ملفك. تُتخطى تلقائيًا الصفوف التي كل أعمدة \"القيمة الجديدة\" فيها فارغة. تظهر بقية الصفوف في الجدول لمراجعتها وتعديلها قبل التنفيذ — لم يُرسل شيء بعد.",
-"Match each field to a column from your file. Rows where every \"new value\" column is blank are skipped automatically — handy for a downloaded template where you've only filled in the employees you want to change. Remaining rows land in the table for you to review and edit before running — nothing is sent yet.": "اربط كل حقل بعمود من ملفك. تُتخطى تلقائيًا الصفوف التي كل أعمدة \"القيمة الجديدة\" فيها فارغة. تظهر بقية الصفوف في الجدول لمراجعتها وتعديلها قبل التنفيذ — لم يُرسل شيء بعد.",
-"Match each field to a column from your file. Rows where every \"new value\" (or Reason) column is blank are skipped automatically — handy for a downloaded template where you've only filled in the ones you want to change. Remaining rows land in the table for you to review and edit before running — nothing is sent yet.": "اربط كل حقل بعمود من ملفك. تُتخطى تلقائيًا الصفوف التي كل أعمدة \"القيمة الجديدة\" (أو السبب) فيها فارغة. تظهر بقية الصفوف في الجدول لمراجعتها وتعديلها قبل التنفيذ — لم يُرسل شيء بعد.",
-"Plain free-text titles only — no link to Jisr's reference title library (same decision already made for Edit). Description can't be set on create yet (not part of the confirmed write for this endpoint) — create the title here, then add a description via the Edit tab. A title that already exists with the exact same English name is reused instead of duplicated.": "مسميات نصية فقط — بدون ربط بمكتبة المسميات المرجعية في جسر. لا يمكن إضافة الوصف عند الإنشاء — أنشئ المسمى هنا ثم أضف الوصف من تبويب التعديل. يُعاد استخدام المسمى الموجود بنفس الاسم الإنجليزي بدلًا من تكراره.",
-"Downloaded a blank template with one example row, plus a \"Valid Categories\" reference sheet — Category must match one of the names on that sheet exactly (this tenant's own categories, harvested live; a category no existing department uses yet can't be offered here). A department that already exists (matched by exact English name) is reused instead of duplicated.": "تم تنزيل قالب فارغ بصف مثال واحد مع ورقة \"التصنيفات المتاحة\" — يجب أن يطابق التصنيف أحد الأسماء فيها تمامًا. يُعاد استخدام القسم الموجود (بمطابقة الاسم الإنجليزي) بدلًا من تكراره.",
-"Manager and Category are required (both are required fields on Jisr's own confirmed create call). Category options come from this tenant's own departments — click \"Load Departments\" first if the dropdown is empty. A department that already exists with the exact same English name is reused instead of duplicated. If a Parent Department is chosen, creating the row is two already-confirmed API calls (create, then set-parent) — see Dry Run for the exact sequence.": "المدير والتصنيف مطلوبان. خيارات التصنيف تأتي من أقسام هذه الشركة — اضغط \"تحميل الأقسام\" أولًا إذا كانت القائمة فارغة. يُعاد استخدام القسم الموجود بنفس الاسم الإنجليزي بدلًا من تكراره. عند اختيار قسم أعلى، يتم الإنشاء على خطوتين (إنشاء ثم تعيين القسم الأعلى) — راجع التشغيل التجريبي للتفاصيل.",
-"Leave a \"New …\" field blank to keep it unchanged. To clear an existing parent (make a department a main department again), tick \"Clear Parent?\" instead of typing in New Parent Department — typing in both is flagged as an error, not guessed at. A department cannot be made a child of itself or one of its own descendants (blocked client-side using the loaded org tree). Every PUT sends the full record (name/name_ar/manager_id/category_ids/parent_id) — this endpoint has no confirmed partial-update behavior. Manager and Category changes cannot be independently verified from the response (only name/name_ar/parent_id are ever echoed back) — spot-check in the Jisr UI if in doubt.": "اترك حقل \"جديد …\" فارغًا للإبقاء على القيمة الحالية. لإزالة القسم الأعلى (جعل القسم رئيسيًا) حدّد \"إزالة القسم الأعلى؟\" بدلًا من كتابة قسم أعلى جديد. لا يمكن جعل القسم تابعًا لنفسه أو لأحد فروعه. لا يمكن التحقق من تغييرات المدير والتصنيف من الرد — تحقق منها في جسر عند الشك.",
-"Pick an existing location, then fill in only the \"New\" fields you want to change — blank means unchanged. A Google Maps link (short or long) overrides Latitude/Longitude if both are given. To move a location, pick a New Area and/or New City (cities of the location's country, as in Jisr).": "اختر موقعًا موجودًا ثم عبّئ حقول \"جديد\" التي تريد تغييرها فقط — الفارغ يعني بلا تغيير. رابط خرائط Google (قصير أو طويل) يحل محل خط العرض/خط الطول إذا أُعطي الاثنان. لنقل موقع، اختر منطقة جديدة و/أو مدينة جديدة (مدن دولة الموقع، كما في جسر).",
+"Deletes a contract outright: cannot be undone from this tool. Leave Contract ID blank if the employee only has one contract. Notifier list is always sent empty (matches the one confirmed capture).": "يحذف العقد نهائيًا: لا يمكن التراجع من هذه الأداة. اترك معرّف العقد فارغًا إذا كان للموظف عقد واحد فقط.",
+"This cannot be undone from this tool. There is no confirmed capture of what Jisr does to employees still holding a deleted title; the employee count shown is a warning, not a guarantee either way.": "لا يمكن التراجع من هذه الأداة. لا يوجد تأكيد لما يفعله جسر بالموظفين الذين يحملون المسمى المحذوف؛ عدد الموظفين المعروض للتنبيه فقط.",
+"Leave a \"New …\" field blank to keep it unchanged. Every PUT sends the full record (name/name_ar/description); this endpoint has no confirmed partial-update behavior, so this module never omits a field.": "اترك حقل \"جديد …\" فارغًا للإبقاء على القيمة الحالية. كل تحديث يرسل السجل كاملًا (الاسم الإنجليزي/العربي/الوصف).",
+"One row per employee. Timing drives effective_date/without_retroactive the same way Jisr's own screen does; future needs a date after today, immediate needs today, the two retrospective modes need a date before today.": "صف لكل موظف. التوقيت يعمل مثل شاشة جسر: المستقبلي يحتاج تاريخًا بعد اليوم، والفوري يحتاج تاريخ اليوم، وخيارا الأثر الرجعي يحتاجان تاريخًا قبل اليوم.",
+"Full-record write: a blank \"New …\" cell means \"keep the contract's current value\", loaded fresh right before each send. Leave Contract ID blank if the employee only has one contract; otherwise you must specify which. Reason is required for every edit.": "يُرسل السجل كاملًا: الخلية الفارغة في \"جديد …\" تعني \"الإبقاء على قيمة العقد الحالية\" المحمّلة قبل كل إرسال. اترك معرّف العقد فارغًا إذا كان للموظف عقد واحد فقط؛ وإلا حدده. السبب مطلوب لكل تعديل.",
+"One row per (employee, allowance) change. The Allowance Name must match an EXISTING allowance the employee already has; this adjusts, it does not create a new allowance type. Rows here combine with any Salary Increment row for the same employee into one write.": "صف لكل تغيير (موظف، بدل). يجب أن يطابق اسم البدل بدلًا موجودًا لدى الموظف؛ هذا تعديل وليس إنشاء نوع بدل جديد. تُدمج هذه الصفوف مع صف زيادة الراتب لنفس الموظف في عملية واحدة.",
+"Creates brand-new areas and/or locations: never edits or deletes an existing one. An Area matched by name within the given Country is reused automatically instead of being duplicated. City must already exist in Jisr for that country (this tool cannot create cities).": "ينشئ مناطق و/أو مواقع جديدة فقط؛ لا يعدّل ولا يحذف الموجود. تُعاد استخدام المنطقة المطابقة بالاسم داخل الدولة بدلًا من تكرارها. يجب أن تكون المدينة موجودة مسبقًا في جسر.",
+"Adjusts employees already enrolled in the policy you pick below; it cannot enroll a new employee (no confirmed capture for that exists). One row per employee. This write cannot be independently re-verified after the fact (the API response carries no data to check); every accepted row says so.": "يعدّل الموظفين المسجلين مسبقًا في السياسة المختارة أدناه؛ لا يمكنه تسجيل موظف جديد. صف لكل موظف. لا يمكن التحقق من هذه العملية لاحقًا؛ كل صف مقبول يوضح ذلك.",
+"Creates a brand-new contract for each row's employee. The server computes End Date itself from Start Date + Contract Period (confirmed) and defaults Status to Active; neither is a column here. Optional Joining Date columns fire an independent employee-level change alongside the contract create.": "ينشئ عقدًا جديدًا لموظف كل صف. يحسب الخادم تاريخ النهاية من تاريخ البداية ومدة العقد ويجعل الحالة نشطة تلقائيًا. أعمدة تاريخ الالتحاق الاختيارية تُحدث تغييرًا مستقلًا على الموظف مع إنشاء العقد.",
+"Pick an existing location, then fill in only the \"New\" fields you want to change; blank means unchanged. A Google Maps link (short or long) overrides Latitude/Longitude if both are given. Moving a location to a different area/city isn't supported here; only address, manager, coordinates and radius.": "اختر موقعًا موجودًا ثم عبّئ حقول \"جديد\" التي تريد تغييرها فقط؛ الفارغ يعني بدون تغيير. رابط خرائط Google يتقدم على الإحداثيات. نقل الموقع لمنطقة/مدينة أخرى غير مدعوم؛ فقط العنوان والمدير والإحداثيات والنطاق.",
+"Match each field to a column from your file. Rows where every \"new value\" column is blank are skipped automatically, so a downloaded template only needs the ones you want to change. Remaining rows land in the table for you to review and edit before running; nothing is sent yet.": "اربط كل حقل بعمود من ملفك. تُتخطى تلقائيًا الصفوف التي كل أعمدة \"القيمة الجديدة\" فيها فارغة. تظهر بقية الصفوف في الجدول لمراجعتها وتعديلها قبل التنفيذ؛ لم يُرسل شيء بعد.",
+"Match each field to a column from your file. Rows where every \"new value\" column is blank are skipped automatically, so a downloaded template only needs the records you want to change. Remaining rows land in the table for you to review and edit before running; nothing is sent yet.": "اربط كل حقل بعمود من ملفك. تُتخطى تلقائيًا الصفوف التي كل أعمدة \"القيمة الجديدة\" فيها فارغة. تظهر بقية الصفوف في الجدول لمراجعتها وتعديلها قبل التنفيذ؛ لم يُرسل شيء بعد.",
+"Match each field to a column from your file. Rows where every \"new value\" column is blank are skipped automatically, so a downloaded template only needs the employees you want to change. Remaining rows land in the table for you to review and edit before running; nothing is sent yet.": "اربط كل حقل بعمود من ملفك. تُتخطى تلقائيًا الصفوف التي كل أعمدة \"القيمة الجديدة\" فيها فارغة. تظهر بقية الصفوف في الجدول لمراجعتها وتعديلها قبل التنفيذ؛ لم يُرسل شيء بعد.",
+"Match each field to a column from your file. Rows where every \"new value\" (or Reason) column is blank are skipped automatically, so a downloaded template only needs the ones you want to change. Remaining rows land in the table for you to review and edit before running; nothing is sent yet.": "اربط كل حقل بعمود من ملفك. تُتخطى تلقائيًا الصفوف التي كل أعمدة \"القيمة الجديدة\" (أو السبب) فيها فارغة. تظهر بقية الصفوف في الجدول لمراجعتها وتعديلها قبل التنفيذ؛ لم يُرسل شيء بعد.",
+"Plain free-text titles only: no link to Jisr's reference title library (same decision already made for Edit). Description can't be set on create yet (not part of the confirmed write for this endpoint); create the title here, then add a description via the Edit tab. A title that already exists with the exact same English name is reused instead of duplicated.": "مسميات نصية فقط: بدون ربط بمكتبة المسميات المرجعية في جسر. لا يمكن إضافة الوصف عند الإنشاء؛ أنشئ المسمى هنا ثم أضف الوصف من تبويب التعديل. يُعاد استخدام المسمى الموجود بنفس الاسم الإنجليزي بدلًا من تكراره.",
+"Downloaded a blank template with one example row, plus a \"Valid Categories\" reference sheet. Category must match one of the names on that sheet exactly (this tenant's own categories, harvested live; a category no existing department uses yet can't be offered here). A department that already exists (matched by exact English name) is reused instead of duplicated.": "تم تنزيل قالب فارغ بصف مثال واحد مع ورقة \"التصنيفات المتاحة\"؛ يجب أن يطابق التصنيف أحد الأسماء فيها تمامًا. يُعاد استخدام القسم الموجود (بمطابقة الاسم الإنجليزي) بدلًا من تكراره.",
+"Manager and Category are required (both are required fields on Jisr's own confirmed create call). Category options come from this tenant's own departments; click \"Load Departments\" first if the dropdown is empty. A department that already exists with the exact same English name is reused instead of duplicated. If a Parent Department is chosen, creating the row is two already-confirmed API calls (create, then set-parent); see Dry Run for the exact sequence.": "المدير والتصنيف مطلوبان. خيارات التصنيف تأتي من أقسام هذه الشركة؛ اضغط \"تحميل الأقسام\" أولًا إذا كانت القائمة فارغة. يُعاد استخدام القسم الموجود بنفس الاسم الإنجليزي بدلًا من تكراره. عند اختيار قسم أعلى، يتم الإنشاء على خطوتين (إنشاء ثم تعيين القسم الأعلى)؛ راجع التشغيل التجريبي للتفاصيل.",
+"Leave a \"New …\" field blank to keep it unchanged. To clear an existing parent (make a department a main department again), tick \"Clear Parent?\" instead of typing in New Parent Department; typing in both is flagged as an error, not guessed at. A department cannot be made a child of itself or one of its own descendants (blocked client-side using the loaded org tree). Every PUT sends the full record (name/name_ar/manager_id/category_ids/parent_id); this endpoint has no confirmed partial-update behavior. Manager and Category changes cannot be independently verified from the response (only name/name_ar/parent_id are ever echoed back); spot-check in the Jisr UI if in doubt.": "اترك حقل \"جديد …\" فارغًا للإبقاء على القيمة الحالية. لإزالة القسم الأعلى (جعل القسم رئيسيًا) حدّد \"إزالة القسم الأعلى؟\" بدلًا من كتابة قسم أعلى جديد. لا يمكن جعل القسم تابعًا لنفسه أو لأحد فروعه. لا يمكن التحقق من تغييرات المدير والتصنيف من الرد؛ تحقق منها في جسر عند الشك.",
+"Pick an existing location, then fill in only the \"New\" fields you want to change; blank means unchanged. A Google Maps link (short or long) overrides Latitude/Longitude if both are given. To move a location, pick a New Area and/or New City (cities of the location's country, as in Jisr).": "اختر موقعًا موجودًا ثم عبّئ حقول \"جديد\" التي تريد تغييرها فقط؛ الفارغ يعني بلا تغيير. رابط خرائط Google (قصير أو طويل) يحل محل خط العرض/خط الطول إذا أُعطي الاثنان. لنقل موقع، اختر منطقة جديدة و/أو مدينة جديدة (مدن دولة الموقع، كما في جسر).",
 "Attendance Log Converter": "محوّل سجلات الحضور",
 " ok, ": " ناجح، ",
 " (.xlsx)": " (‎.xlsx)",
@@ -900,38 +1013,38 @@ function jboRedact_(msg) {
 " location(s) to Jisr now? Only the \"New\" fields you filled in are sent, one PUT per location. Proceed?": " موقع إلى جسر الآن؟ تُرسل فقط حقول \"جديد\" التي عبأتها. متابعة؟",
 " area(s). Fill only the \"New: …\" columns you want to change, leave the rest blank, then use \"Upload Excel\".": " منطقة. عبّئ أعمدة \"جديد: …\" التي تريد تغييرها فقط واترك الباقي فارغًا، ثم استخدم \"رفع ملف Excel\".",
 " location(s). Fill only the \"New: …\" columns you want to change, leave the rest blank, then use \"Upload Excel\".": " موقع. عبّئ أعمدة \"جديد: …\" التي تريد تغييرها فقط واترك الباقي فارغًا، ثم استخدم \"رفع ملف Excel\".",
-" row(s). Any role that couldn't be auto-matched is flagged in its Status cell — pick it manually before running.": " صف. أي دور لم تتم مطابقته تلقائيًا موضح في خانة الحالة — اختره يدويًا قبل التنفيذ.",
+" row(s). Any role that couldn't be auto-matched is flagged in its Status cell; pick it manually before running.": " صف. أي دور لم تتم مطابقته تلقائيًا موضح في خانة الحالة؛ اختره يدويًا قبل التنفيذ.",
 " employee(s). Fill in \"New Employee Code\" only for the ones you want changed, leave the rest blank, then Upload Excel.": " موظف. عبّئ \"الرقم الوظيفي الجديد\" لمن تريد تغييرهم فقط واترك الباقي فارغًا، ثم ارفع ملف Excel.",
 "\" to discover the write shape, then verify and revert it. Safe, but it does send real requests to this real role. Proceed?": "\" لاكتشاف صيغة الكتابة ثم التحقق وإرجاعها. العملية آمنة لكنها ترسل طلبات فعلية لهذا الدور. متابعة؟",
 "\n\nThis REPLACES the role's permission set with exactly what is ticked. Verified afterwards by re-reading the role.\n\nProceed?": "\n\nسيتم استبدال صلاحيات الدور بما هو محدد فقط. يتم التحقق بعد ذلك بإعادة قراءة الدور.\n\nمتابعة؟",
 " job title(s). Fill in \"New …\" columns only for the ones you want to change, leave the rest blank, then use \"Upload Filled Template\".": " مسمى وظيفي. عبّئ أعمدة \"جديد …\" لما تريد تغييره فقط واترك الباقي فارغًا، ثم استخدم \"رفع القالب المعبأ\".",
 " job title(s). Type YES in the last column for every title you want deleted, leave the rest blank, then use \"Upload Filled Template\".": " مسمى وظيفي. اكتب YES في العمود الأخير لكل مسمى تريد حذفه واترك الباقي فارغًا، ثم استخدم \"رفع القالب المعبأ\".",
 " employee(s). Type YES in the last column for every employee you want suspended, leave the rest blank, then use \"Upload Filled Template\".": " موظف. اكتب YES في العمود الأخير لكل موظف تريد إيقافه واترك الباقي فارغًا، ثم استخدم \"رفع القالب المعبأ\".",
-" new contract(s) in Jisr now? This does not check for existing overlapping contracts first — Jisr's own response decides whether that's a problem.": " عقد جديد في جسر الآن؟ لا يتم فحص العقود المتداخلة مسبقًا — رد جسر هو الذي يحدد ذلك.",
-" employee(s). \"Current Roles\" is informational — fill \"Action\" and \"Target Role\" only for the rows you want to change, leave the rest blank, then Upload Excel.": " موظف. \"الأدوار الحالية\" للاطلاع فقط — عبّئ \"الإجراء\" و\"الدور المطلوب\" للصفوف التي تريد تغييرها فقط واترك الباقي فارغًا، ثم ارفع ملف Excel.",
+" new contract(s) in Jisr now? This does not check for existing overlapping contracts first. Jisr's own response decides whether that's a problem.": " عقد جديد في جسر الآن؟ لا يتم فحص العقود المتداخلة مسبقًا؛ رد جسر هو الذي يحدد ذلك.",
+" employee(s). \"Current Roles\" is informational: fill \"Action\" and \"Target Role\" only for the rows you want to change, leave the rest blank, then Upload Excel.": " موظف. \"الأدوار الحالية\" للاطلاع فقط: عبّئ \"الإجراء\" و\"الدور المطلوب\" للصفوف التي تريد تغييرها فقط واترك الباقي فارغًا، ثم ارفع ملف Excel.",
 " assignment(s)?\n\nAssign batches are unioned with each role's current membership first (additive guard) so this can never accidentally strip existing members. Proceed?": " إسناد؟\n\nتُدمج دفعات الإسناد مع أعضاء كل دور الحاليين أولًا، فلا يُحذف أي عضو حالي بالخطأ. متابعة؟",
 " distinct allowance(s) tenant-wide. Fill \"New Basic Salary\" and/or any \"New: <allowance>\" column only for what should change, leave the rest blank, then use \"Upload Filled Template\".": " بدل مختلف في الشركة. عبّئ \"الراتب الأساسي الجديد\" و/أو أي عمود \"جديد: <البدل>\" لما يجب تغييره فقط واترك الباقي فارغًا، ثم استخدم \"رفع القالب المعبأ\".",
 " failed so far, overlapping this batch).\n\nOK = resume it (skip rows already marked succeeded).\nCancel = start a fresh run (the old log is still downloadable below until this run finishes).": " فشل حتى الآن، ضمن هذه الدفعة).\n\nموافق = الاستكمال (تخطي الصفوف الناجحة).\nإلغاء = بدء تنفيذ جديد (يبقى السجل القديم متاحًا للتنزيل حتى ينتهي هذا التنفيذ).",
-"\"?\n\nThis endpoint's response carries nothing to independently verify — every success below means \"Jisr accepted the request,\" not \"re-confirmed by re-reading.\" Spot-check afterward in the Jisr UI.": "\"؟\n\nرد هذه الواجهة لا يحتوي ما يمكن التحقق منه — النجاح يعني \"قبل جسر الطلب\" وليس \"تم التأكد بإعادة القراءة\". تحقق لاحقًا من جسر.",
-" employee(s) who have a contract on file, each pre-filled with their current contract. Type a Reason only for the ones you actually want to delete — a blank Reason means that row is skipped on upload.": " موظف لديهم عقود، معبأة بعقودهم الحالية. اكتب السبب فقط للعقود التي تريد حذفها — السبب الفارغ يعني تخطي الصف عند الرفع.",
-"Downloaded a blank template with one example row. Country/Area (EN)/City/Location (EN) are required — an Area that already exists (matched by name within that country) is reused instead of duplicated.": "تم تنزيل قالب فارغ بصف مثال واحد. الدولة/المنطقة (إنجليزي)/المدينة/الموقع (إنجليزي) مطلوبة — تُعاد استخدام المنطقة الموجودة بدلًا من تكرارها.",
-" contract edit(s) to Jisr now? Note: start_date/end_date have been observed NOT matching what was sent in at least one prior capture — every row's result says whether the server echoed back what you sent.": " تعديل عقد إلى جسر الآن؟ ملاحظة: لوحظ سابقًا اختلاف تواريخ البداية/النهاية عما أُرسل — نتيجة كل صف توضح ما إذا أعاد الخادم نفس القيم.",
+"\"?\n\nThis endpoint's response carries nothing to independently verify; every success below means \"Jisr accepted the request,\" not \"re-confirmed by re-reading.\" Spot-check afterward in the Jisr UI.": "\"؟\n\nرد هذه الواجهة لا يحتوي ما يمكن التحقق منه؛ النجاح يعني \"قبل جسر الطلب\" وليس \"تم التأكد بإعادة القراءة\". تحقق لاحقًا من جسر.",
+" employee(s) who have a contract on file, each pre-filled with their current contract. Type a Reason only for the ones you actually want to delete; a blank Reason means that row is skipped on upload.": " موظف لديهم عقود، معبأة بعقودهم الحالية. اكتب السبب فقط للعقود التي تريد حذفها؛ السبب الفارغ يعني تخطي الصف عند الرفع.",
+"Downloaded a blank template with one example row. Country/Area (EN)/City/Location (EN) are required: an Area that already exists (matched by name within that country) is reused instead of duplicated.": "تم تنزيل قالب فارغ بصف مثال واحد. الدولة/المنطقة (إنجليزي)/المدينة/الموقع (إنجليزي) مطلوبة: تُعاد استخدام المنطقة الموجودة بدلًا من تكرارها.",
+" contract edit(s) to Jisr now? Note: start_date/end_date have been observed NOT matching what was sent in at least one prior capture; every row's result says whether the server echoed back what you sent.": " تعديل عقد إلى جسر الآن؟ ملاحظة: لوحظ سابقًا اختلاف تواريخ البداية/النهاية عما أُرسل؛ نتيجة كل صف توضح ما إذا أعاد الخادم نفس القيم.",
 " new Department(s) in Jisr now? A name that already exists is reused instead of duplicated. Departments with a chosen parent will get a second (already-confirmed) API call right after creation to set that parent.": " قسم جديد في جسر الآن؟ يُعاد استخدام الاسم الموجود بدلًا من تكراره. الأقسام التي لها قسم أعلى سيتم تعيينه بخطوة ثانية مباشرة بعد الإنشاء.",
-" employee(s) to Jisr now?\n\nEvery employee's CURRENT benefits are read first and sent back unchanged (except any matching Adjust Allowances row) — Jisr replaces the whole earnings record on every write. Verified afterwards where possible. Proceed?": " موظف إلى جسر الآن؟\n\nتُقرأ بدلات كل موظف الحالية أولًا وتُرسل كما هي (عدا صفوف تعديل البدلات المطابقة) — لأن جسر يستبدل سجل الاستحقاقات كاملًا في كل عملية. يتم التحقق بعد ذلك قدر الإمكان. متابعة؟",
-" GOSI Applicable Amount change(s) to Jisr now?\n\nThis endpoint's response carries no data to independently verify against — every success below means \"Jisr accepted the request,\" not \"re-confirmed by re-reading.\" Spot-check afterward in the Jisr UI.": " تغيير على الأجر الخاضع للتأمينات إلى جسر الآن؟\n\nرد هذه الواجهة لا يحتوي بيانات للتحقق — النجاح يعني \"قبل جسر الطلب\" وليس \"تم التأكد بإعادة القراءة\". تحقق لاحقًا من جسر.",
+" employee(s) to Jisr now?\n\nEvery employee's CURRENT benefits are read first and sent back unchanged (except any matching Adjust Allowances row). Jisr replaces the whole earnings record on every write. Verified afterwards where possible. Proceed?": " موظف إلى جسر الآن؟\n\nتُقرأ بدلات كل موظف الحالية أولًا وتُرسل كما هي (عدا صفوف تعديل البدلات المطابقة)؛ لأن جسر يستبدل سجل الاستحقاقات كاملًا في كل عملية. يتم التحقق بعد ذلك قدر الإمكان. متابعة؟",
+" GOSI Applicable Amount change(s) to Jisr now?\n\nThis endpoint's response carries no data to independently verify against; every success below means \"Jisr accepted the request,\" not \"re-confirmed by re-reading.\" Spot-check afterward in the Jisr UI.": " تغيير على الأجر الخاضع للتأمينات إلى جسر الآن؟\n\nرد هذه الواجهة لا يحتوي بيانات للتحقق؛ النجاح يعني \"قبل جسر الطلب\" وليس \"تم التأكد بإعادة القراءة\". تحقق لاحقًا من جسر.",
 " department(s). Fill in \"New …\" columns only for what you want to change, leave the rest blank; type YES in the last column to clear an existing parent (make it a main department) instead of typing a New Parent Department. Then use \"Upload Filled Template\".": " قسم. عبّئ أعمدة \"جديد …\" لما تريد تغييره فقط واترك الباقي فارغًا؛ اكتب YES في العمود الأخير لإزالة القسم الأعلى (جعله قسمًا رئيسيًا). ثم استخدم \"رفع القالب المعبأ\".",
-" Flight Ticket Policy change(s) to Jisr now?\n\nThis endpoint's response carries no data to independently verify against — every success below means \"Jisr accepted the request,\" not \"re-confirmed by re-reading.\" It also only ADJUSTS employees already enrolled in this policy — it cannot enroll someone new. Spot-check afterward in the Jisr UI.": " تغيير على سياسة تذاكر الطيران إلى جسر الآن؟\n\nرد هذه الواجهة لا يحتوي بيانات للتحقق — النجاح يعني \"قبل جسر الطلب\". كما أنها تعدّل فقط الموظفين المسجلين مسبقًا في السياسة. تحقق لاحقًا من جسر.",
-" employee(s). \"Has Active Contract?\"/\"Current Contract Status\"/\"Current Contract End Date\" are informational — Jisr will not let you create a new contract for someone who already has an active one, so only fill in the contract fields for rows showing \"No\" (or an inactive/ended current contract), leave the rest completely blank, then Upload Filled Template.": " موظف. أعمدة \"لديه عقد نشط؟\"/\"حالة العقد الحالية\"/\"تاريخ نهاية العقد الحالي\" للاطلاع فقط — لا يسمح جسر بإنشاء عقد جديد لمن لديه عقد نشط، فعبّئ بيانات العقد فقط للصفوف التي تظهر \"No\"، واترك الباقي فارغًا، ثم ارفع القالب المعبأ.",
+" Flight Ticket Policy change(s) to Jisr now?\n\nThis endpoint's response carries no data to independently verify against; every success below means \"Jisr accepted the request,\" not \"re-confirmed by re-reading.\" It also only ADJUSTS employees already enrolled in this policy; it cannot enroll someone new. Spot-check afterward in the Jisr UI.": " تغيير على سياسة تذاكر الطيران إلى جسر الآن؟\n\nرد هذه الواجهة لا يحتوي بيانات للتحقق؛ النجاح يعني \"قبل جسر الطلب\". كما أنها تعدّل فقط الموظفين المسجلين مسبقًا في السياسة. تحقق لاحقًا من جسر.",
+" employee(s). \"Has Active Contract?\"/\"Current Contract Status\"/\"Current Contract End Date\" are informational. Jisr will not let you create a new contract for someone who already has an active one, so only fill in the contract fields for rows showing \"No\" (or an inactive/ended current contract), leave the rest completely blank, then Upload Filled Template.": " موظف. أعمدة \"لديه عقد نشط؟\"/\"حالة العقد الحالية\"/\"تاريخ نهاية العقد الحالي\" للاطلاع فقط؛ لا يسمح جسر بإنشاء عقد جديد لمن لديه عقد نشط، فعبّئ بيانات العقد فقط للصفوف التي تظهر \"No\"، واترك الباقي فارغًا، ثم ارفع القالب المعبأ.",
 "This usually means the payrun hasn't been calculated/finalized in Jisr yet, or the wrong payroll run was selected ": "يعني هذا عادة أن المسير لم يُحتسب/يُعتمد في جسر بعد، أو تم اختيار مسير رواتب خاطئ ",
 "(right-click the icon to switch runs). This is not a bug in the reconciliation itself.": "(اضغط بزر الفأرة الأيمن على الأيقونة لتغيير المسير). هذه ليست مشكلة في المطابقة نفسها.",
-"Detected Jisr field shapes from the first real records seen this run — double-check these look right before trusting the numbers above: ": "صيغ حقول جسر المكتشفة من أول السجلات — تأكد من صحتها قبل الاعتماد على الأرقام أعلاه: ",
+"Detected Jisr field shapes from the first real records seen this run; double-check these look right before trusting the numbers above: ": "صيغ حقول جسر المكتشفة من أول السجلات؛ تأكد من صحتها قبل الاعتماد على الأرقام أعلاه: ",
 "Log": "السجل",
 " policies found.": " سياسة.",
 "Download current Employee Groups (.xlsx)": "تنزيل مجموعات الموظفين الحالية (‎.xlsx)",
 "Download current Business Units (.xlsx)": "تنزيل وحدات الأعمال الحالية (‎.xlsx)",
-"GOSI Compliance — Export & Salary Check": "ملاحظات التأمينات — التصدير ومطابقة الرواتب",
+"GOSI Compliance: Export & Salary Check": "ملاحظات التأمينات: التصدير ومطابقة الرواتب",
 " employee(s). Fill \"New GOSI Applicable Amount\" only for the ones you want changed, leave the rest blank, then Upload Excel.": " موظف. عبّئ \"الأجر الخاضع للتأمينات الجديد\" لمن تريد تغييرهم فقط واترك الباقي فارغًا، ثم ارفع ملف Excel.",
-" employee(s). Fill the three columns only for the employees you want to adjust (all three are required on those rows), leave the rest blank — pick the policy in this popup, not in the sheet.": " موظف. عبّئ الأعمدة الثلاثة فقط للموظفين الذين تريد تعديلهم (الثلاثة مطلوبة في تلك الصفوف)، واترك الباقي فارغًا — اختر السياسة في هذه النافذة وليس في الملف.",
+" employee(s). Fill the three columns only for the employees you want to adjust (all three are required on those rows), leave the rest blank; pick the policy in this popup, not in the sheet.": " موظف. عبّئ الأعمدة الثلاثة فقط للموظفين الذين تريد تعديلهم (الثلاثة مطلوبة في تلك الصفوف)، واترك الباقي فارغًا؛ اختر السياسة في هذه النافذة وليس في الملف.",
 "Iqama / National ID": "رقم الإقامة / الهوية",
 "Employee Code Bulk Edit": "التعديل الجماعي للرقم الوظيفي",
 "Role Assignment (Assign/Revoke)": "إسناد الأدوار (إسناد/سحب)",
@@ -939,7 +1052,7 @@ function jboRedact_(msg) {
 "GOSI Applicable Amount": "مبلغ التأمينات الخاضع",
 "Payroll Reconciliation (read-only)": "مطابقة الرواتب (للقراءة فقط)",
 "Flight Ticket Policy Assignment": "سياسة تذاكر الطيران",
-"Areas & Locations — Create": "المناطق والمواقع — إنشاء",
+"Areas & Locations: Create": "المناطق والمواقع: إنشاء",
 "Cancel Transactions & Loans": "إلغاء العمليات والقروض",
 "Employee Documents": "مستندات الموظفين",
 "Bulk Offboarding": "إنهاء الخدمة الجماعي",
@@ -947,21 +1060,21 @@ function jboRedact_(msg) {
 "Jisr Letter Converter": "محوّل خطابات جسر",
 "Bulk Cancel Leave Requests": "إلغاء طلبات الإجازة الجماعي",
 "Bulk Payroll Transactions": "حركات الرواتب الجماعية",
-"Fixed Working Hours — Bulk": "ساعات العمل الثابتة — جماعي",
+"Fixed Working Hours (Bulk)": "ساعات العمل الثابتة (جماعي)",
 "New Area": "المنطقة الجديدة",
 "New City": "المدينة الجديدة",
 "New: Area": "جديد: المنطقة",
 "New: City": "جديد: المدينة",
 "Activation Checklist": "قائمة التفعيل",
 "Data Validation (Initial · Muqeem · GOSI)": "التحقق من البيانات (الأولي · مقيم · التأمينات)",
-"Business Trip Cities — Bulk": "مدن رحلات العمل — جماعي",
-"Flight Ticket Allowance — Bulk": "بدل تذاكر الطيران — جماعي",
-"Delete Employees — Bulk (permanent)": "حذف الموظفين — جماعي (نهائي)",
-"Performance Templates — Bulk": "نماذج تقييم الأداء — جماعي",
-"Approval Cycles — Duplicate & Bulk Edit": "سلاسل الموافقات — نسخ وتعديل جماعي",
-"Shifts & Day Offs — assign or clear, up to one year": "الورديات وأيام الراحة — إسناد أو مسح حتى سنة",
-"Family Members — Bulk": "أفراد العائلة — جماعي",
-"Letter Templates — edit in Jisr": "قوالب الخطابات — تعديل في جسر"
+"Business Trip Cities (Bulk)": "مدن رحلات العمل (جماعي)",
+"Flight Ticket Allowance (Bulk)": "بدل تذاكر الطيران (جماعي)",
+"Delete Employees (Bulk, permanent)": "حذف الموظفين: جماعي (نهائي)",
+"Performance Templates (Bulk)": "نماذج تقييم الأداء (جماعي)",
+"Approval Cycles: Duplicate & Bulk Edit": "سلاسل الموافقات: نسخ وتعديل جماعي",
+"Shifts & Day Offs: assign or clear, up to one year": "الورديات وأيام الراحة: إسناد أو مسح حتى سنة",
+"Family Members (Bulk)": "أفراد العائلة (جماعي)",
+"Letter Templates: edit in Jisr": "قوالب الخطابات: تعديل في جسر"
 };
 
   // ---------------------------------------------------------------- language detection
@@ -1161,7 +1274,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0c — Google sign-in (company accounts only)  v4.62.0
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.75.0
 // ###########################################################################
 
 /*
@@ -1360,7 +1473,129 @@ function jboRedact_(msg) {
     out.addEventListener('click', (e) => { e.stopPropagation(); signOut(); if (onSignedOut) onSignedOut(); });
     container.appendChild(el('div', { class: 'jba-who', 'data-no-i18n': '' }, [el('span', { text: '🔒 ' + (s.name ? s.name + ' · ' : '') + s.email, title: s.email }), out]));
   }
-  /** Wraps every registered tool's open(): refused while signed out. Called once all sections have registered. */
+  // ###########################################################################
+// ##### RUN STATUS (v4.74) — what is loading, what succeeded, what failed, in every tool
+// ###########################################################################
+// Every call this script makes to the Jisr API goes through the `fetch` wrapper at the top of the file, which reports here. Each open tool window gets a
+// status strip under its title: requests running now, rows done / failed (the status cells every tool already fills: jbo-status-ok / -err / -pending),
+// a progress bar and the list of what failed, with a button to copy it. The J button turns busy while anything is running. Nothing here changes a request.
+(function () {
+  'use strict';
+  const R = unsafeWindow.__jisrBulkOpsRun; if (!R) return;
+  const I = unsafeWindow.__jisrBulkOpsI18n || { t: (en) => en, isAr: () => false };
+  const T = (en, ar) => I.t(en, ar);
+  const css = `
+    .jbo-run { display: none; flex: none; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 8px 18px; border-bottom: 1px solid #e8eaed; background: #f8f9fc; font-size: 12.5px; color: #3c4043; }
+    .jbo-run.on { display: flex; }
+    .jbo-run .st { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; min-width: 150px; }
+    .jbo-run .sp { width: 13px; height: 13px; border-radius: 50%; border: 2px solid #c7cbe6; border-top-color: #5b5bf0; animation: jboRunSpin .8s linear infinite; }
+    .jbo-run:not(.busy) .sp { display: none; }
+    .jbo-run .dot { width: 9px; height: 9px; border-radius: 50%; background: #137333; } .jbo-run.busy .dot { display: none; } .jbo-run.bad .dot { background: #c5221f; }
+    .jbo-run .bar { flex: 1 1 140px; min-width: 120px; height: 6px; border-radius: 999px; background: #e3e5f4; overflow: hidden; position: relative; }
+    .jbo-run .bar i { position: absolute; inset: 0 auto 0 0; width: 0; background: linear-gradient(90deg, #4f5bf5, #8b5cf6); border-radius: 999px; transition: width .25s; }
+    .jbo-run.indet .bar i { width: 35%; animation: jboRunSlide 1.1s ease-in-out infinite; }
+    .jbo-run .n { display: inline-flex; gap: 12px; font-variant-numeric: tabular-nums; }
+    .jbo-run .n b { font-weight: 700; } .jbo-run .ok b { color: #137333; } .jbo-run .no b { color: #c5221f; } .jbo-run .wt b { color: #5f6368; }
+    .jbo-run .rq { color: #70757a; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+    .jbo-run button { border: 1px solid #dadce0; background: #fff; border-radius: 999px; padding: 2px 10px; font: inherit; font-size: 12px; cursor: pointer; color: #3c4043; }
+    .jbo-run button:hover { background: #f1f3f4; }
+    .jbo-run-list { flex: none; max-height: 190px; overflow: auto; padding: 8px 18px; border-bottom: 1px solid #e8eaed; background: #fff8f7; font-size: 12px; }
+    .jbo-run-list div { padding: 3px 0; border-bottom: 1px solid #f3e1de; word-break: break-word; } .jbo-run-list div:last-child { border-bottom: 0; }
+    .jbo-run-list b { color: #c5221f; } .jbo-run-list small { color: #70757a; }
+    .jbo-fail-only tbody tr:not(:has(td.jbo-status-err, td.jlo-st.bad)) { display: none; }
+    .jbo-fab.jbo-busy::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 3px solid transparent; border-top-color: #8b5cf6; border-right-color: #22d3ee; animation: jboRunSpin 1s linear infinite; pointer-events: none; }
+    @keyframes jboRunSpin { to { transform: rotate(360deg); } }
+    @keyframes jboRunSlide { 0% { transform: translateX(-100%); } 100% { transform: translateX(290%); } }
+    html.jbo-glass.jbo-aurora .jbo-run { background: #f4f5fc; border-color: #e3e5f4; color: #4a4c6a; }
+    html.jbo-glass.jbo-aurora .jbo-run button { border-color: #e3e5f4; color: #4a4c6a; }
+    @media (prefers-reduced-motion: reduce) { .jbo-run .sp, .jbo-fab.jbo-busy::after, .jbo-run.indet .bar i { animation: none; } }
+  `;
+  const injectCss = () => { if (document.getElementById('jbo-run-css')) return; const s = document.createElement('style'); s.id = 'jbo-run-css'; s.textContent = css; (document.head || document.documentElement).appendChild(s); };
+  const mk = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const fabBusy = () => { const f = document.querySelector('.jbo-fab'); if (f) f.classList.toggle('jbo-busy', R.inflight > 0); };
+  const rowText = (tr) => Array.from(tr.children).map((c) => (c.innerText || c.textContent).replace(/\s+/g, ' ').trim()).filter(Boolean);
+
+  function attach(modal) {
+    if (modal.__jboRun) return; modal.__jboRun = true; injectCss();
+    const head = modal.querySelector('.jbo-modal-head'); if (!head) return;
+    const tool = R.tool || '';
+    const strip = mk('div', 'jbo-run'), stEl = mk('span', 'st'), sp = mk('span', 'sp'), dot = mk('span', 'dot'), stT = mk('span');
+    stEl.appendChild(sp); stEl.appendChild(dot); stEl.appendChild(stT);
+    const bar = mk('span', 'bar'); bar.appendChild(mk('i'));
+    const nums = mk('span', 'n'), rq = mk('span', 'rq');
+    const showB = mk('button', '', ''), copyB = mk('button', '', T('Copy failed', 'نسخ ما فشل')), onlyB = mk('button', '', T('Only failed rows', 'الصفوف الفاشلة فقط'));
+    [showB, copyB, onlyB].forEach((b) => { b.type = 'button'; b.style.display = 'none'; });
+    strip.append(stEl, bar, nums, rq, showB, onlyB, copyB);
+    const list = mk('div', 'jbo-run-list'); list.style.display = 'none';
+    head.after(strip); strip.after(list);
+    let open = false, timer = 0, lastFails = [];
+    const failedRows = () => Array.from(modal.querySelectorAll('td.jbo-status-err, td.jlo-st.bad')).map((td) => td.closest('tr')).filter(Boolean);
+    function paintList() {
+      list.innerHTML = '';
+      const rows = failedRows(); const reqs = R.failsOf(tool);
+      rows.slice(0, 200).forEach((tr) => { const t = rowText(tr); const d = mk('div'); d.append(mk('b', '', t.slice(0, 2).join(' · ')), mk('small', '', ' · ' + t.slice(2).join(' · ').slice(0, 280))); list.appendChild(d); });
+      if (!rows.length) reqs.slice(-30).forEach((f) => { const d = mk('div'); d.append(mk('b', '', f.method + ' ' + f.path), mk('small', '', ' · ' + (f.status ? 'HTTP ' + f.status : T('no answer', 'لا رد')) + (f.msg ? ': ' + f.msg : ''))); list.appendChild(d); });
+      if (!list.childNodes.length) list.appendChild(mk('div', '', T('Nothing failed.', 'لم يفشل شيء.')));
+      lastFails = rows.map((tr) => rowText(tr).join(' | ')).concat(rows.length ? [] : reqs.map((f) => f.method + ' ' + f.path + ' | ' + (f.status || '') + ' | ' + (f.msg || '')));
+    }
+    function paint() {
+      timer = 0;
+      if (!modal.isConnected) return;
+      const T0 = R.toolStat(tool);
+      const cells = modal.querySelectorAll('td.jbo-status-ok, td.jbo-status-err, td.jbo-status-pending, td.jlo-st');
+      let ok = 0, bad = 0, wait = 0; cells.forEach((c) => { if (c.classList.contains('jbo-status-ok') || c.classList.contains('ok')) ok++; else if (c.classList.contains('jbo-status-err') || c.classList.contains('bad')) bad++; else wait++; });
+      const rowsTotal = ok + bad + wait, rowsDone = ok + bad;
+      const busy = T0.inflight > 0, wrote = T0.writes > 0;
+      const any = busy || rowsDone > 0 || T0.reads + T0.writes > 0;
+      strip.classList.toggle('on', any);
+      if (!any) { list.style.display = 'none'; return; }
+      strip.classList.toggle('busy', busy); strip.classList.toggle('bad', (rowsDone ? bad : T0.fail) > 0);
+      strip.classList.toggle('indet', busy && !rowsDone);
+      const doneAll = rowsTotal > 0 && rowsDone === rowsTotal;
+      stT.textContent = busy ? (rowsTotal && rowsDone ? T('Working: ', 'جارٍ العمل: ') + rowsDone + ' / ' + rowsTotal : T('Working… ', 'جارٍ العمل… ') + T0.inflight + T(' request(s) running', ' طلب قيد التنفيذ'))
+        : rowsDone && !wrote ? T('Checked, nothing sent to Jisr yet', 'تم الفحص ولم يُرسل شيء إلى جسر')
+        : rowsDone ? (bad ? T('Finished with problems', 'انتهى مع مشاكل') : T('Finished', 'انتهى'))
+        : (T0.fail ? T('Finished with failed requests', 'انتهى مع طلبات فاشلة') : T('Done', 'تم'));
+      bar.firstChild.style.width = busy && !rowsDone ? '' : rowsTotal ? Math.round(rowsDone / rowsTotal * 100) + '%' : (busy ? '' : '100%');
+      nums.innerHTML = '';
+      if (rowsTotal) {
+        const lab = wrote ? [T('succeeded', 'نجح'), T('failed', 'فشل')] : [T('ready', 'جاهز'), T('problems', 'مشاكل')];
+        const a = mk('span', 'ok'); a.append(mk('b', '', '✓ ' + ok), ' ' + lab[0]); const b2 = mk('span', 'no'); b2.append(mk('b', '', '✗ ' + bad), ' ' + lab[1]); nums.append(a, b2);
+        if (wait) { const w = mk('span', 'wt'); w.append(mk('b', '', '… ' + wait), ' ' + (busy ? T('waiting', 'بالانتظار') : T('not run', 'لم تنفذ'))); nums.append(w); }
+      } else {
+        const a = mk('span', 'ok'); a.append(mk('b', '', '✓ ' + T0.ok), ' ' + T('succeeded', 'نجح')); const b2 = mk('span', 'no'); b2.append(mk('b', '', '✗ ' + T0.fail), ' ' + T('failed', 'فشل')); nums.append(a, b2);
+      }
+      rq.textContent = T('Requests to Jisr: ', 'الطلبات إلى جسر: ') + (T0.ok + T0.fail) + (T0.fail ? ' (' + T0.fail + T(' failed', ' فشل') + ')' : '') + (T0.ms ? ' · ' + T('avg ', 'متوسط ') + Math.round(T0.ms / Math.max(1, T0.ok + T0.fail)) + ' ms' : '');
+      const nFail = rowsTotal ? bad : T0.fail;
+      showB.style.display = nFail ? '' : 'none'; copyB.style.display = nFail ? '' : 'none'; onlyB.style.display = bad ? '' : 'none';
+      showB.textContent = open ? T('Hide failed', 'إخفاء ما فشل') : T('Show failed (', 'عرض ما فشل (') + nFail + ')';
+      onlyB.textContent = modal.classList.contains('jbo-fail-only') ? T('Show all rows', 'عرض كل الصفوف') : T('Only failed rows', 'الصفوف الفاشلة فقط');
+      list.style.display = open && nFail ? '' : 'none'; if (open && nFail) paintList();
+    }
+    const soon = () => { if (!timer) timer = setTimeout(paint, 180); };
+    showB.addEventListener('click', () => { open = !open; paint(); });
+    onlyB.addEventListener('click', () => { modal.classList.toggle('jbo-fail-only'); paint(); });
+    copyB.addEventListener('click', async () => { paintList(); const txt = lastFails.join('\n'); let ok = false; try { await navigator.clipboard.writeText(txt); ok = true; } catch (e) { try { if (typeof GM_setClipboard === 'function') { GM_setClipboard(txt); ok = true; } } catch (e2) { /* ignore */ } } copyB.textContent = ok ? T('Copied', 'تم النسخ') : T('Could not copy', 'تعذّر النسخ'); setTimeout(() => { copyB.textContent = T('Copy failed', 'نسخ ما فشل'); }, 1600); });
+    try { new MutationObserver(soon).observe(modal, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'], characterData: false }); } catch (e) { /* ignore */ }
+    const off = R.on(() => { if (!modal.isConnected) { off(); return; } soon(); });
+    soon();
+  }
+  function scan(node) {
+    if (!node || node.nodeType !== 1) return;
+    if (node.classList && node.classList.contains('jbo-modal')) attach(node);
+    else if (node.querySelectorAll) node.querySelectorAll('.jbo-modal').forEach(attach);
+  }
+  function start() {
+    R.on(fabBusy);
+    try { new MutationObserver((ms) => { ms.forEach((m) => m.addedNodes.forEach(scan)); }).observe(document.body, { childList: true }); } catch (e) { /* ignore */ }
+    scan(document.body);
+  }
+  if (document.body) start(); else document.addEventListener('DOMContentLoaded', start);
+  unsafeWindow.__jisrBulkOpsRunUi = { attach, scan };
+})();
+
+
+/** Wraps every registered tool's open(): refused while signed out. Called once all sections have registered. */
   function wrapModules() {
     const g = W.__jisrBulkOps;
     if (!g || !g.modules) return;
@@ -1385,7 +1620,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.62.0
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.75.0
 // ###########################################################################
 
 /*
@@ -1988,7 +2223,7 @@ function jboRedact_(msg) {
   const CATEGORIES = [
     ['employees', 'Employees', 'الموظفون', ['data-validation', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'family-details-bulk', 'offboarding-bulk', 'delete-employees']],
     ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'gosi-compliance', 'payroll-reconciliation', 'flight-tickets-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk']],
-    ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'org-groups-business-units']],
+    ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units']],
     ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear', 'attendance-log-converter']],
     ['performance', 'Performance', 'الأداء', ['performance-templates']],
     ['requests', 'Requests & approvals', 'الطلبات والموافقات', ['approval-cycles']],
@@ -2002,7 +2237,7 @@ function jboRedact_(msg) {
       ['policies', 'Policies & benefits', 'السياسات والمزايا', ['business-trip-cities', 'flight-tickets-bulk']],
       ['performance', 'Performance', 'الأداء', ['performance-templates']],
       ['requests', 'Requests & approvals', 'الطلبات والموافقات', ['approval-cycles']],
-      ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'org-groups-business-units']],
+      ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units']],
       ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear']],
     ] },
     { key: 'check', en: 'Validate, convert & reconcile', ar: 'التحقق والتحويل والمطابقة', icon: 'scale', color: '#5FD0B0', groups: [
@@ -2057,7 +2292,7 @@ function jboRedact_(msg) {
     'employee-documents': ['Upload Iqama, passport and any company document type', 'رفع الإقامة والجواز وأي نوع مستند للشركة'],
     'offboarding-bulk': ['Offboard employees in bulk', 'إنهاء خدمات الموظفين جماعيًا'],
     'approval-cycles': ['See, duplicate and bulk edit request approval steps', 'عرض خطوات موافقات الطلبات ونسخها وتعديلها جماعيًا'],
-    'performance-templates': ['Evaluation templates with groups, criteria and weights — from Excel or the client\'s workbook, as new templates or added into existing ones; or one per employee from an existing template\'s groups', 'نماذج التقييم مع المجموعات والمعايير والأوزان — من Excel أو ملف العميل، كنماذج جديدة أو إضافة إلى نماذج موجودة؛ أو نموذج لكل موظف من مجموعات نموذج موجود'],
+    'performance-templates': ['Evaluation templates with groups, criteria and weights; from Excel or the client\'s workbook, as new templates or added into existing ones; or one per employee from an existing template\'s groups', 'نماذج التقييم مع المجموعات والمعايير والأوزان؛ من Excel أو ملف العميل، كنماذج جديدة أو إضافة إلى نماذج موجودة؛ أو نموذج لكل موظف من مجموعات نموذج موجود'],
     'delete-employees': ['⚠ Permanently delete employees from this account', '⚠ حذف الموظفين نهائيًا من هذا الحساب'],
     'salary-increment-bulk': ['New salaries from a file', 'رواتب جديدة من ملف'],
     'suspend-payrun-bulk': ['Hold or release salaries in a payrun', 'إيقاف الرواتب أو إطلاقها في مسير'],
@@ -2072,19 +2307,20 @@ function jboRedact_(msg) {
     'departments-bulk': ['Create, rename and nest departments', 'إنشاء الإدارات وتسميتها وترتيبها'],
     'job-titles-bulk': ['Bulk create and edit job titles, and assign them to employees', 'إنشاء المسميات الوظيفية وتعديلها جماعيًا وإسنادها للموظفين'],
     'locations-bulk': ['Areas, cities, locations and map pins', 'المناطق والمدن والمواقع ودبابيس الخريطة'],
+    'locations-onboarding': ['Onboarding: set country, region, city and manager for all locations at once (or from Excel)', 'التهيئة: تحديد الدولة والمنطقة والمدينة والمدير لكل المواقع دفعة واحدة (أو من Excel)'],
     'org-groups-business-units': ['Employee groups and business units', 'مجموعات الموظفين ووحدات الأعمال'],
     'leave-cancel-bulk': ['Clean up imported leaves', 'تنظيف الإجازات المستوردة'],
     'fixed-hours-bulk': ['Weekly schedules and assignments', 'الجداول الأسبوعية والتعيينات'],
-    'shifts-bulk': ['Create, edit, duplicate and delete shifts — form or Excel', 'إنشاء الورديات وتعديلها ونسخها وحذفها — نموذج أو Excel'],
-    'family-details-bulk': ['Add family members — passport numbers with letters, nationalities by name', 'إضافة أفراد العائلة — أرقام الجواز بالحروف والجنسيات بالاسم'],
-    'shifts-clear': ['Assign day offs (weekends) or a shift, or clear — any range up to a year', 'إسناد أيام الراحة (عطلة نهاية الأسبوع) أو وردية، أو المسح — لأي فترة حتى سنة'],
+    'shifts-bulk': ['Create, edit, duplicate and delete shifts; form or Excel', 'إنشاء الورديات وتعديلها ونسخها وحذفها: نموذج أو Excel'],
+    'family-details-bulk': ['Add family members: passport numbers with letters, nationalities by name', 'إضافة أفراد العائلة: أرقام الجواز بالحروف والجنسيات بالاسم'],
+    'shifts-clear': ['Assign day offs (weekends) or a shift, or clear; any range up to a year', 'إسناد أيام الراحة (عطلة نهاية الأسبوع) أو وردية، أو المسح؛ لأي فترة حتى سنة'],
     'attendance-log-converter': ['Device logs to Jisr, then publish', 'سجلات الأجهزة إلى جسر ثم النشر'],
     'activation-checklist': ['Playbook progress for this client', 'تقدّم دليل التفعيل لهذا العميل'],
     'export-everything': ['Read-only export of the whole account', 'تصدير كامل الحساب (قراءة فقط)'],
     'letter-templates': ['Open, edit and save Jisr\'s letter templates (variables, header, body, footer)', 'فتح قوالب خطابات جسر وتعديلها وحفظها (المتغيرات، الترويسة، النص، التذييل)'],
     'letter-converter': ['Word letters to Jisr templates', 'تحويل خطابات Word إلى قوالب جسر'],
   };
-  const NEW_IDS = ['letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
+  const NEW_IDS = ['locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
   const svg_ = (k, size) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('width', size || 16); s.setAttribute('height', size || 16); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.8'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round'); s.innerHTML = ICONS[k] || ICONS.other; return s; };
   const normQ_ = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[ً-ٰٟـ]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
   function highlight_(text, q) {
@@ -2260,7 +2496,6 @@ function jboRedact_(msg) {
   // v4.55: "Glass" look (iOS style) — frosted translucent windows, rounded corners, pill buttons, system blue, soft motion.
   // On by default; "Flat" in ⚙ brings back the earlier look. Pure CSS on html.jbo-glass, so every tool gets it without changes.
   const glassOn_ = () => gmGet_('uiGlass', true) !== false;
-  // v4.63: "Aurora" — the new default look (luminous indigo/violet, roomy, clear). Glass and Flat stay available in the settings.
   const auroraOn_ = () => gmGet_('uiAurora', true) !== false;
   const GLASS_CSS = `
     html.jbo-glass { --g-blue: #007AFF; --g-red: #FF3B30; --g-green: #34C759; --g-sep: rgba(60,60,67,.14); --g-fill: rgba(118,118,128,.12);
@@ -2550,7 +2785,6 @@ function jboRedact_(msg) {
     html.jbo-glass.jbo-aurora .jbo-modal .jbo-autocomplete-item:hover, html.jbo-glass.jbo-aurora .jbo-modal .jbo-autocomplete-item.jbo-ac-active { background: #EEF0FF; color: var(--au-a); }
     @media (max-width: 720px) { html.jbo-glass.jbo-aurora .jbo-modal { border-radius: 20px !important; } html.jbo-glass.jbo-aurora .jbo-modal-body { padding: 16px !important; } html.jbo-glass.jbo-aurora .jbo-modal-head { padding: 16px 18px 12px !important; } }
     @media (prefers-reduced-motion: reduce) { html.jbo-glass.jbo-aurora .jbo-fab::before, html.jbo-glass.jbo-aurora .jbo-modal::before, html.jbo-glass.jbo-aurora .jbo-ast-tile, html.jbo-glass.jbo-aurora .jbo-au-card, html.jbo-glass.jbo-aurora .jbo-modal, html.jbo-glass.jbo-aurora .jbo-backdrop, html.jbo-glass.jbo-aurora .jbo-hub-panel.jbo-ast, html.jbo-glass.jbo-aurora .jbo-toast { animation: none !important; } }
-
   `;
   function applyTheme_() {
     if (!document.getElementById('jbo-glass-css')) { const g = document.createElement('style'); g.id = 'jbo-glass-css'; g.textContent = GLASS_CSS; (document.head || document.documentElement).appendChild(g); }
@@ -2880,7 +3114,7 @@ function jboRedact_(msg) {
       menuEl.appendChild(el('div', { class: 'jbo-ast-settings' }, [
         el('div', { class: 'row' }, [el('span', { text: T('Size of the J button and panel', 'حجم زر J واللوحة') }), sizes]),
         el('div', { class: 'row' }, [el('span', { text: T('Light or night mode', 'الوضع الفاتح أو الليلي') }), themes]),
-        el('div', { class: 'row' }, [el('span', { text: T('Look & feel', 'المظهر والنمط') }), looks]),
+        el('div', { class: 'row' }, [el('span', { text: T('Look', 'المظهر') }), looks]),
         el('label', { class: 'row' }, [el('span', { text: T('Show the Activation Checklist', 'إظهار قائمة التفعيل') + (g.modules['activation-checklist'] ? '' : T(' (not loaded)', ' (غير محمّلة)')) }), ck]),
         el('div', { class: 'hint', text: T('Night makes the J panel, every tool and the checklist dark; Light makes them all light; Classic is the original look; Auto follows the computer. ', 'الليلي يجعل لوحة J وكل الأدوات والقائمة داكنة؛ الفاتح يجعلها فاتحة؛ الكلاسيكي هو الشكل الأصلي؛ التلقائي يتبع الجهاز. ') + T('Saved in this browser. Hiding the checklist removes its card, tab, edge tab and the ring on the J button; your ticks are kept.', 'تُحفظ في هذا المتصفح. إخفاء القائمة يزيل بطاقتها وتبويبها واللسان الجانبي والحلقة حول زر J؛ وتبقى علاماتك محفوظة.') }),
       ]));
@@ -2925,7 +3159,7 @@ function jboRedact_(msg) {
     });
     const offEmp = unsafeWindow.__jisrBulkOpsEmployees.onChange(() => { if (menuEl.isConnected) paintEmp(); else offEmp(); });
     paintEmp();
-    empBtn.title = T('Loads every employee (ID, name, Iqama) once — every tool and template then reuses it.', 'يحمّل كل الموظفين (الرقم، الاسم، الإقامة) مرة واحدة — وتستخدمه كل الأدوات والقوالب.');
+    empBtn.title = T('Loads every employee (ID, name, Iqama) once; every tool and template then reuses it.', 'يحمّل كل الموظفين (الرقم، الاسم، الإقامة) مرة واحدة؛ وتستخدمه كل الأدوات والقوالب.');
     const foot = el('div', { class: 'jbo-hub-emp' }, [empDot, empInfo, empBtn]);
     menuEl.appendChild(foot);
 
@@ -2975,7 +3209,7 @@ function jboRedact_(msg) {
       const attn = cs.C.ALL_ITEMS.filter((it) => !it.sec.blockers && cs.st.live[it.id] && cs.st.live[it.id].ok === false && !cs.C.isDone_(cs.st, it)).slice(0, 3);
       attn.forEach((it) => {
         const tool = it.opt.tool && g.modules[it.opt.tool] ? it.opt.tool : 'activation-checklist';
-        const row = el('div', { class: 'jbo-ast-att', 'data-item': it.id }, [el('span', { class: 's' }), el('span', { class: 'x' }, [el('div', { text: I.isAr() ? it.ar : it.en }), el('small', { text: cs.st.live[it.id].msg || '' })]), el('span', { class: 'go', text: (tool === 'activation-checklist' ? T('Checklist', 'القائمة') : title_(g, tool)).split(/[—(]/)[0].trim() + (I.isAr() ? ' ‹' : ' ›') })]);
+        const row = el('div', { class: 'jbo-ast-att', 'data-item': it.id }, [el('span', { class: 's' }), el('span', { class: 'x' }, [el('div', { text: I.isAr() ? it.ar : it.en }), el('small', { text: cs.st.live[it.id].msg || '' })]), el('span', { class: 'go', text: (tool === 'activation-checklist' ? T('Checklist', 'القائمة') : title_(g, tool)).split(/[:—(]/)[0].trim() + (I.isAr() ? ' ‹' : ' ›') })]);
         row.addEventListener('click', (e) => { e.stopPropagation(); open(tool); });
         card.appendChild(row);
       });
@@ -3000,20 +3234,25 @@ function jboRedact_(msg) {
         tile('tools', 'grid', COL.tools, T('Tools', 'الأدوات'), I.isAr() ? 'عمليات جماعية: ' + nB + ' · تحقق وتحويل ومطابقة: ' + nV : nB + ' bulk actions · ' + nV + ' validate, convert & reconcile'),
       ].concat(g.modules['activation-checklist'] && ckOn_() ? [tile('check', 'check', COL.check, T('Activation checklist', 'قائمة التفعيل'), T('Playbook progress for this client', 'تقدّم دليل التفعيل لهذا العميل'), checklistCard_())] : []));
       body.appendChild(home);
-      // v4.63: Quick start — the tools people reach for most (recent ones first), one tap from home
-      const QS_DEFAULT = ['employee-contracts-bulk', 'salary-increment-bulk', 'payroll-reconciliation', 'payroll-transactions-bulk', 'employee-id-bulk', 'data-validation'];
+      const aurora = glassOn_() && auroraOn_();
       const rec = recent_().filter((id) => g.modules[id] && !NOT_A_TOOL.includes(id));
-      const qsIds = rec.concat(QS_DEFAULT.filter((id) => g.modules[id] && !rec.includes(id))).slice(0, 4);
-      if (qsIds.length) {
-        body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: rec.length ? T('Recent & suggested', 'الأخيرة والمقترحة') : T('Quick start', 'ابدأ بسرعة') })]));
-        const grid = el('div', { class: 'jbo-au-qs' }, qsIds.map((id) => {
-          const c = el('button', { class: 'jbo-au-card', type: 'button', 'data-id': id, style: '--c:' + colorOf(id) }, [el('span', { class: 'ic' }, [svg_(iconOf(id), 17)]), el('b', { text: title_(g, id) }), DESC[id] ? el('small', { text: T(DESC[id][0], DESC[id][1]) }) : null]);
-          c.addEventListener('click', (e) => { e.stopPropagation(); open(id); });
-          return c;
-        }));
-        body.appendChild(grid);
+      if (aurora) {
+        // v4.74: Aurora shows the tools people open most as cards: recent ones first, then the usual starting points
+        const QS_DEFAULT = ['employee-contracts-bulk', 'salary-increment-bulk', 'payroll-reconciliation', 'payroll-transactions-bulk', 'employee-id-bulk', 'data-validation'];
+        const qsIds = rec.concat(QS_DEFAULT.filter((id) => g.modules[id] && !rec.includes(id))).slice(0, 4);
+        if (qsIds.length) {
+          body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: rec.length ? T('Recent and suggested', 'الأخيرة والمقترحة') : T('Quick start', 'بداية سريعة') })]));
+          body.appendChild(el('div', { class: 'jbo-au-qs' }, qsIds.map((id) => {
+            const c = el('button', { class: 'jbo-au-card', type: 'button', 'data-id': id, style: '--c:' + colorOf(id) }, [el('span', { class: 'ic' }, [svg_(iconOf(id), 17)]), el('b', { text: title_(g, id) })]);
+            c.addEventListener('click', (e) => { e.stopPropagation(); open(id); });
+            return c;
+          })));
+        }
+        body.appendChild(el('div', { class: 'jbo-au-tip' }, [el('span', { text: T('Press', 'اضغط') }), el('kbd', { text: '/' }), el('span', { text: T('to search from any page', 'للبحث من أي صفحة') })]));
+      } else if (rec.length) {
+        body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: T('Recent', 'الأخيرة') })]));
+        body.appendChild(el('div', { class: 'jbo-ast-chips' }, rec.map((id) => { const c = el('button', { class: 'jbo-ast-chip', type: 'button', text: title_(g, id) }); c.addEventListener('click', (e) => { e.stopPropagation(); open(id); }); return c; })));
       }
-      body.appendChild(el('div', { class: 'jbo-au-tip' }, [el('span', { text: T('Tip: press', 'نصيحة: اضغط') }), el('kbd', { text: '/' }), el('span', { text: T('anywhere to search', 'في أي مكان للبحث') })]));
       requestAnimationFrame(() => anchor_(menuEl));
     }
     function paintTools() {
@@ -3070,7 +3309,7 @@ function jboRedact_(msg) {
         let n = '';
         if (a.st === 'deleted') n = T('Deleted by Royal Decree M/44 (in force 19 Feb 2025). The text below is the article before deletion.', 'حُذفت بموجب المرسوم الملكي م/44 (نافذ من 19 فبراير 2025). النص أدناه هو نص المادة قبل الحذف.');
         else if ((a.st === 'amended' || a.st === 'added') && lang === 'en') n = T('Official wording from HRSD "Amendments to Labor Law Articles" (Royal Decree M/44, in force 19 Feb 2025).', 'الصياغة الرسمية من وثيقة وزارة الموارد البشرية «تعديلات مواد نظام العمل» (المرسوم الملكي م/44، نافذ من 19 فبراير 2025).');
-        else if ((a.st === 'amended' || a.st === 'added') && lang === 'ar') n = T('Arabic text extracted automatically from the updated (1447 AH) edition — it may contain spelling errors. Check the source before quoting it.', 'نص عربي مستخرج آليًا من النسخة المحدّثة (1447هـ) — قد يحتوي أخطاء إملائية. راجع المصدر قبل الاقتباس.');
+        else if ((a.st === 'amended' || a.st === 'added') && lang === 'ar') n = T('Arabic text extracted automatically from the updated (1447 AH) edition; it may contain spelling errors. Check the source before quoting it.', 'نص عربي مستخرج آليًا من النسخة المحدّثة (1447هـ)؛ قد يحتوي أخطاء إملائية. راجع المصدر قبل الاقتباس.');
         note.textContent = n; note.style.display = n ? '' : 'none';
       }
       swap.addEventListener('click', (e) => { e.stopPropagation(); lang = lang === 'ar' ? 'en' : 'ar'; paintMore(); });
@@ -3116,13 +3355,13 @@ function jboRedact_(msg) {
       copyB.addEventListener('click', async (e) => { e.stopPropagation(); copyB.textContent = (await clip_(best.text + '\n— ' + best.label)) ? T('Copied', 'تم النسخ') : T('Could not copy', 'تعذّر النسخ'); });
       box.append(
         el('div', { class: 'jbo-ast-anslbl', text: T('Answer from the sources', 'إجابة من المصادر') }),
-        el('div', { class: 'jbo-ast-anstext', dir: best.lang === 'ar' ? 'rtl' : 'ltr' }, [best.title && best.src !== 'law' && best.src !== 'help' ? el('b', { text: best.title + ' — ' }) : null, answerText_(best.text, q)]),
+        el('div', { class: 'jbo-ast-anstext', dir: best.lang === 'ar' ? 'rtl' : 'ltr' }, [best.title && best.src !== 'law' && best.src !== 'help' ? el('b', { text: best.title + ' · ' }) : null, answerText_(best.text, q)]),
         el('div', { class: 'jbo-ast-anssrc', text: best.label + (best.st === 'amended' || best.st === 'added' ? T(' · Amended 2025', ' · معدّلة 2025') : '') }),
         el('div', { class: 'jbo-ast-acts' }, [copyB, srcLink]),
       );
       if (list.length > 1) {
         const more = el('div', { class: 'jbo-ast-ansmore' }, [el('div', { class: 'jbo-ast-chap', text: T('Also relevant', 'ذات صلة أيضًا') })]);
-        list.slice(1).forEach((x) => more.appendChild(el('div', { class: 'jbo-ast-ansalt', dir: x.p.lang === 'ar' ? 'rtl' : 'ltr' }, [answerText_(x.p.text.length > 200 ? x.p.text.slice(0, 200) + '…' : x.p.text, q), el('span', { class: 'jbo-ast-chap', text: ' — ' + x.p.label })])));
+        list.slice(1).forEach((x) => more.appendChild(el('div', { class: 'jbo-ast-ansalt', dir: x.p.lang === 'ar' ? 'rtl' : 'ltr' }, [answerText_(x.p.text.length > 200 ? x.p.text.slice(0, 200) + '…' : x.p.text, q), el('span', { class: 'jbo-ast-chap', text: ' · ' + x.p.label })])));
         box.appendChild(more);
       }
       box.appendChild(el('div', { class: 'jbo-ast-note', style: { textAlign: 'start', margin: '8px 0 0' }, text: T('Quoted word for word from the source; check it before sharing with a client.', 'منقول حرفيًا من المصدر؛ تحقّق منه قبل مشاركته مع العميل.') }));
@@ -3669,7 +3908,7 @@ function jboRedact_(msg) {
   function configureBackend_() {
     const cfg = getBackendConfig_();
     const url = prompt(
-      'Shared backend URL (from the deployed Cloudflare Worker) — leave blank to disable:',
+      'Shared backend URL (from the deployed Cloudflare Worker); leave blank to disable:',
       cfg.url || ''
     );
     if (url === null) return;
@@ -3677,7 +3916,7 @@ function jboRedact_(msg) {
     if (key === null) return;
     sharedSet_('backendUrl', url.trim().replace(/\/$/, ''));
     sharedSet_('backendWriteKey', (key || '').trim());
-    toast_('Shared backend settings saved — this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
+    toast_('Shared backend settings saved: this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
   }
 
   if (typeof GM_registerMenuCommand === 'function' && !unsafeWindow.__jisrBulkOpsBackendMenuRegistered) {
@@ -3688,7 +3927,7 @@ function jboRedact_(msg) {
   function ownerLabel_() {
     let label = sharedGet_('ownerLabel', '');
     if (!label) {
-      label = (prompt('Your name — shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
+      label = (prompt('Your name: shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
       sharedSet_('ownerLabel', label);
     }
     return label;
@@ -3705,7 +3944,7 @@ function jboRedact_(msg) {
   function setOwnerLabel_() {
     const current = sharedGet_('ownerLabel', '');
     const label = (prompt(
-      'Your name — shown to teammates in cross-user warnings and in the admin activity log:',
+      'Your name: shown to teammates in cross-user warnings and in the admin activity log:',
       current === 'unknown' ? '' : current
     ) || '').trim();
     if (!label) return;
@@ -3761,7 +4000,7 @@ function jboRedact_(msg) {
       el('div', { class: 'jbo-modal-body' }, [
         el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
           'Every tool here is shared by the whole team, and every change made through it is attributed to ' +
-          'whoever ran it — for the activity log, and so teammates know who to check with. Enter your name ' +
+          'whoever ran it: for the activity log, and so teammates know who to check with. Enter your name ' +
           'once to continue; it\u2019s remembered for every tool on this site from now on.'
         )]),
         el('label', { class: 'jbo-muted', style: { display: 'block', marginBottom: '4px' } }, [document.createTextNode('Your name')]),
@@ -3908,7 +4147,7 @@ function jboRedact_(msg) {
     // different employee, and swap codes are freed in the earlier phases, so
     // rows inside one phase don't depend on each other.
     const speedSelect = el('select', { class: 'jbo-select', style: { width: '190px' }, title: 'How many employees are updated at the same time' });
-    [['1', 'Safe — 1 at a time'], ['4', 'Fast — 4 at once'], ['8', 'Fastest — 8 at once']].forEach(([v, t]) => speedSelect.appendChild(el('option', { value: v, text: t })));
+    [['1', 'Safe: 1 at a time'], ['4', 'Fast: 4 at once'], ['8', 'Fastest: 8 at once']].forEach(([v, t]) => speedSelect.appendChild(el('option', { value: v, text: t })));
     speedSelect.value = String(gmGet_('runConcurrency_' + moduleId, 4));
     speedSelect.addEventListener('change', () => { gmSet_('runConcurrency_' + moduleId, Number(speedSelect.value) || 1); });
 
@@ -3936,7 +4175,7 @@ function jboRedact_(msg) {
       const okCount = Object.values(session.results).filter((r) => r.status === 'ok').length;
       const errCount = Object.values(session.results).filter((r) => r.status === 'err').length;
       summaryEl.textContent = okCount + ' succeeded, ' + errCount + ' failed so far' +
-        (cancelled ? ' (stopped)' : '') + (resumed ? ' — resumed from an earlier interrupted run' : '');
+        (cancelled ? ' (stopped)' : '') + (resumed ? '; resumed from an earlier interrupted run' : '');
     }
     renderSummary();
 
@@ -4076,7 +4315,7 @@ function jboRedact_(msg) {
     hits.forEach((h) => { uniq[String(h.id)] = h; });
     const ids = Object.keys(uniq);
     if (ids.length > 1) {
-      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + ') — use the numeric id');
+      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + '); use the numeric id');
     }
     return uniq[ids[0]];
   }
@@ -4595,7 +4834,7 @@ function jboRedact_(msg) {
     opts = opts || {};
     const chunkSize = opts.chunkSize || 50;
     if (rowsArr.length > (opts.warnThreshold || JBO_CHUNK_WARN_THRESHOLD)) {
-      toast_('Importing ' + rowsArr.length + ' rows — this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
+      toast_('Importing ' + rowsArr.length + ' rows: this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
     }
     return new Promise((resolve) => {
       let i = 0;
@@ -4651,7 +4890,7 @@ function jboRedact_(msg) {
   }
 
   function openImportMappingModal_(parsed, fields, onImport) {
-    const { body, foot, close } = openModalShell_('Import from Excel — Map Columns');
+    const { body, foot, close } = openModalShell_('Import from Excel: Map Columns');
     let sheetName = parsed.sheetNames[0];
     let sheet = parsed.sheets[sheetName];
     let mapping = {};
@@ -4731,8 +4970,8 @@ function jboRedact_(msg) {
     });
 
     const introText = fields.some((f) => f.change)
-      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically — handy for a downloaded template where you\'ve only filled in the employees you want to change. Remaining rows land in the table for you to review and edit before running — nothing is sent yet.'
-      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running — nothing is sent yet.';
+      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically, so a downloaded template only needs the employees you want to change. Remaining rows land in the table for you to review and edit before running; nothing is sent yet.'
+      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running; nothing is sent yet.';
     body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
       [document.createTextNode(introText)]));
     body.appendChild(sheetSelWrap);
@@ -4761,7 +5000,7 @@ function jboRedact_(msg) {
     // behavior as before. The panel it opens is now a proper mini "hub":
     // a header (logo chip, title, live status dot, module-count pill, a
     // compact/expanded toggle) above the module list, all monochrome.
-    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops — drag to move', text: 'J' });
+    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops: drag to move', text: 'J' });
     let menuEl = null;
     function toggleMenu() {
       if (menuEl) { menuEl.remove(); menuEl = null; return; }
@@ -4948,7 +5187,7 @@ function jboRedact_(msg) {
       templateBtn.textContent = 'Loading…';
       try {
         const emps = await getEmployees_(true, (n) => { templateBtn.textContent = 'Loading… (' + n + ')'; });
-        if (!emps.length) { toast_('No employees came back — nothing to put in a template.', 5000); return; }
+        if (!emps.length) { toast_('No employees came back: nothing to put in a template.', 5000); return; }
         const sorted = emps.slice().sort((a, b) => normalizeName_(a.name).localeCompare(normalizeName_(b.name)));
         const headers = ['Employee ID', 'Employee Name', 'Current Employee Code', 'New Employee Code'];
         const dataRows = sorted.map((e) => [e.id, e.name || '', e.code || '', '']);
@@ -4995,7 +5234,7 @@ function jboRedact_(msg) {
         if (employeeText === '') { problems.push({ r, msg: 'empty employee' }); return; }
         if (newCode === '') { problems.push({ r, msg: 'empty new code' }); return; }
         if (newCode.length > EMPLOYEE_CODE_MAX_LEN) {
-          problems.push({ r, msg: 'new code is ' + newCode.length + ' characters — Jisr rejects anything over ' + EMPLOYEE_CODE_MAX_LEN });
+          problems.push({ r, msg: 'new code is ' + newCode.length + ' characters: Jisr rejects anything over ' + EMPLOYEE_CODE_MAX_LEN });
           return;
         }
         let emp;
@@ -5007,7 +5246,7 @@ function jboRedact_(msg) {
         }
         seen[emp.id] = true;
         if (String(emp.code || '') === newCode) {
-          problems.push({ r, msg: 'already has code "' + newCode + '" — nothing to change' });
+          problems.push({ r, msg: 'already has code "' + newCode + '": nothing to change' });
           return;
         }
         ops.push({ r, employeeId: emp.id, employeeName: emp.name, oldCode: emp.code || '(none)', newCode });
@@ -5064,7 +5303,7 @@ function jboRedact_(msg) {
             // already know would be rejected.
             problems.push({ r: op.r, msg: 'code "' + op.newCode + '" is held by offboarded employee ' +
               (off.name || ('id ' + off.id)) + ', but the auto "' + oldStyle + '" rename would be ' +
-              oldStyle.length + ' characters (over the ' + EMPLOYEE_CODE_MAX_LEN + '-character limit) — ' +
+              oldStyle.length + ' characters (over the ' + EMPLOYEE_CODE_MAX_LEN + '-character limit): ' +
               'free this code manually first.' });
             ops.splice(i, 1);
             continue;
@@ -5072,14 +5311,14 @@ function jboRedact_(msg) {
           if (op.r.vacateChoice === 'rename') {
             op.vacateInfo = off;
           } else if (op.r.vacateChoice === 'skip') {
-            problems.push({ r: op.r, msg: 'skipped — code "' + op.newCode + '" is held by offboarded employee ' +
+            problems.push({ r: op.r, msg: 'skipped: code "' + op.newCode + '" is held by offboarded employee ' +
               (off.name || '') + ' (id ' + off.id + '); left them as-is, this row was not sent.' });
             ops.splice(i, 1);
           } else {
             problems.push({
               r: op.r,
               msg: 'code "' + op.newCode + '" is currently held by offboarded employee ' +
-                (off.name ? off.name + ' ' : '') + '(id ' + off.id + ', code "' + off.code + '") — choose:',
+                (off.name ? off.name + ' ' : '') + '(id ' + off.id + ', code "' + off.code + '"); choose:',
               vacateInfo: off
             });
             ops.splice(i, 1);
@@ -5105,7 +5344,7 @@ function jboRedact_(msg) {
       row.statusCell.textContent = '';
       row.statusCell.appendChild(document.createTextNode(msg + ' '));
       const renameBtn = el('button', { class: 'jbo-icon-btn', text: 'Rename them to "OLD-' + info.code + '"' , title: 'Free the code by renaming the offboarded employee' });
-      const skipBtn = el('button', { class: 'jbo-icon-btn', text: 'Leave as-is', title: 'Don\'t touch the offboarded employee — skip this row' });
+      const skipBtn = el('button', { class: 'jbo-icon-btn', text: 'Leave as-is', title: 'Don\'t touch the offboarded employee: skip this row' });
       renameBtn.addEventListener('click', () => { row.vacateChoice = 'rename'; runDryRun(); });
       skipBtn.addEventListener('click', () => { row.vacateChoice = 'skip'; runDryRun(); });
       row.statusCell.appendChild(renameBtn);
@@ -5124,7 +5363,7 @@ function jboRedact_(msg) {
       plan.ops.forEach((op) => {
         if (op.needsTempHop) {
           swapCount++;
-          setStatus(op.r, 'pending', 'part of an ID swap — will use a temporary code first, then "' + op.newCode + '"');
+          setStatus(op.r, 'pending', 'part of an ID swap: will use a temporary code first, then "' + op.newCode + '"');
         } else if (op.vacateInfo) {
           vacateCount++;
           setStatus(op.r, 'pending', 'will free "' + op.newCode + '" from offboarded employee ' +
@@ -5160,12 +5399,12 @@ function jboRedact_(msg) {
         confirmMsg += '\n\n' + contested.length + ' of these are part of an ID swap with another row in this ' +
           'batch (someone else here wants their current code). They\'ll briefly pass through a temporary code ' +
           'first so the swap doesn\'t get rejected as a duplicate, then get their real final code in this same ' +
-          'run. Please don\'t close this tab or click Stop until it finishes — doing so could leave an employee ' +
+          'run. Please don\'t close this tab or click Stop until it finishes; doing so could leave an employee ' +
           'on a temporary code until you run this again.';
       }
       if (vacateOps.length) {
         confirmMsg += '\n\n' + vacateOps.length + ' of these need a code freed from an OFFBOARDED employee first ' +
-          '(you already confirmed this per row) — that employee will be renamed to "OLD-<their code>" ' +
+          '(you already confirmed this per row); that employee will be renamed to "OLD-<their code>" ' +
           '(or "OLD-<code>-<their id>" if that exact value is somehow already taken) before the new code is assigned.';
       }
       if (!confirm(confirmMsg)) return;
@@ -5221,7 +5460,7 @@ function jboRedact_(msg) {
           const withId = 'OLD-' + offEmp.code + '-' + offEmp.id;
           if (withId.length > EMPLOYEE_CODE_MAX_LEN) {
             throw new Error('"' + short + '" was rejected (' + e.message + ') and the id-suffixed fallback "' +
-              withId + '" would exceed ' + EMPLOYEE_CODE_MAX_LEN + ' characters — free this code manually.');
+              withId + '" would exceed ' + EMPLOYEE_CODE_MAX_LEN + ' characters: free this code manually.');
           }
           const emp2 = await updateEmployeeCode_(offEmp.id, withId);
           return emp2.code;
@@ -5237,7 +5476,7 @@ function jboRedact_(msg) {
         toast_(vacateOps.length + ' code(s) need to be freed from an offboarded employee first…', 4000);
         await runPool_(vacateOps, rc.concurrency(), async (op, i) => {
           if (rc.isCancelled()) {
-            if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped while freeing offboarded codes — run this batch again to finish.', 5000); }
+            if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped while freeing offboarded codes: run this batch again to finish.', 5000); }
             return;
           }
           setStatus(op.r, 'pending', 'freeing code from offboarded employee ' +
@@ -5266,10 +5505,10 @@ function jboRedact_(msg) {
       // higher than the number of employees fully finished — expected, not a
       // bug; the per-row status cells and the final summary line are accurate.)
       if (contested.length && !rc.isCancelled()) {
-        toast_(contested.length + ' employee(s) are part of an ID swap — moving them to a temporary code first…', 4000);
+        toast_(contested.length + ' employee(s) are part of an ID swap; moving them to a temporary code first…', 4000);
         await runPool_(contested, rc.concurrency(), async (op, i) => {
           if (rc.isCancelled()) {
-            if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped during the temporary-code step — run this batch again to finish the swap safely.', 5000); }
+            if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped during the temporary-code step: run this batch again to finish the swap safely.', 5000); }
             return;
           }
           setStatus(op.r, 'pending', 'swap: moving to a temporary code…');
@@ -5292,7 +5531,7 @@ function jboRedact_(msg) {
       const runStartedAt = Date.now();
       await runPool_(plan.ops, rc.concurrency(), async (op, i) => {
         if (rc.isCancelled()) {
-          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped — ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
+          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped: ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
           setStatus(op.r, 'pending', 'stopped by user');
           return;
         }
@@ -5306,7 +5545,7 @@ function jboRedact_(msg) {
           // Status cell already shows the phase-0 failure — don't overwrite
           // it, and don't attempt to write this row's new code onto a spot
           // that was never actually freed.
-          rc.recordResult(rowKey, 'err', 'skipped — the code was never freed from the offboarded holder');
+          rc.recordResult(rowKey, 'err', 'skipped: the code was never freed from the offboarded holder');
           bad++;
           return;
         }
@@ -5325,7 +5564,7 @@ function jboRedact_(msg) {
         const done = ok + bad + skipped;
         const perRow = (Date.now() - runStartedAt) / Math.max(1, done);
         const left = Math.max(0, Math.round((plan.ops.length - done) * perRow / 1000));
-        summary.textContent = 'Running… ' + done + ' / ' + plan.ops.length + ' (' + ok + ' ok, ' + bad + ' failed) — about ' +
+        summary.textContent = 'Running… ' + done + ' / ' + plan.ops.length + ' (' + ok + ' ok, ' + bad + ' failed); about ' +
           (left >= 60 ? Math.floor(left / 60) + ' min ' + (left % 60) + ' s' : left + ' s') + ' left';
         if (i < plan.ops.length - 1) await rc.pace();
       });
@@ -5333,7 +5572,7 @@ function jboRedact_(msg) {
       runLiveBtn.disabled = false;
       summary.textContent = 'Done. Succeeded: ' + ok + '   Failed: ' + bad +
         (skipped ? '   Skipped (already done): ' + skipped : '') + '.';
-      toast_('Run complete — ' + ok + ' succeeded, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
+      toast_('Run complete: ' + ok + ' succeeded, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
     });
 
     body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
@@ -5713,7 +5952,7 @@ function jboRedact_(msg) {
   function configureBackend_() {
     const cfg = getBackendConfig_();
     const url = prompt(
-      'Shared backend URL (from the deployed Cloudflare Worker) — leave blank to disable:',
+      'Shared backend URL (from the deployed Cloudflare Worker); leave blank to disable:',
       cfg.url || ''
     );
     if (url === null) return;
@@ -5721,7 +5960,7 @@ function jboRedact_(msg) {
     if (key === null) return;
     sharedSet_('backendUrl', url.trim().replace(/\/$/, ''));
     sharedSet_('backendWriteKey', (key || '').trim());
-    toast_('Shared backend settings saved — this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
+    toast_('Shared backend settings saved: this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
   }
 
   if (typeof GM_registerMenuCommand === 'function' && !unsafeWindow.__jisrBulkOpsBackendMenuRegistered) {
@@ -5732,7 +5971,7 @@ function jboRedact_(msg) {
   function ownerLabel_() {
     let label = sharedGet_('ownerLabel', '');
     if (!label) {
-      label = (prompt('Your name — shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
+      label = (prompt('Your name: shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
       sharedSet_('ownerLabel', label);
     }
     return label;
@@ -5749,7 +5988,7 @@ function jboRedact_(msg) {
   function setOwnerLabel_() {
     const current = sharedGet_('ownerLabel', '');
     const label = (prompt(
-      'Your name — shown to teammates in cross-user warnings and in the admin activity log:',
+      'Your name: shown to teammates in cross-user warnings and in the admin activity log:',
       current === 'unknown' ? '' : current
     ) || '').trim();
     if (!label) return;
@@ -5805,7 +6044,7 @@ function jboRedact_(msg) {
       el('div', { class: 'jbo-modal-body' }, [
         el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
           'Every tool here is shared by the whole team, and every change made through it is attributed to ' +
-          'whoever ran it — for the activity log, and so teammates know who to check with. Enter your name ' +
+          'whoever ran it: for the activity log, and so teammates know who to check with. Enter your name ' +
           'once to continue; it\u2019s remembered for every tool on this site from now on.'
         )]),
         el('label', { class: 'jbo-muted', style: { display: 'block', marginBottom: '4px' } }, [document.createTextNode('Your name')]),
@@ -5955,7 +6194,7 @@ function jboRedact_(msg) {
       const okCount = Object.values(session.results).filter((r) => r.status === 'ok').length;
       const errCount = Object.values(session.results).filter((r) => r.status === 'err').length;
       summaryEl.textContent = okCount + ' succeeded, ' + errCount + ' failed so far' +
-        (cancelled ? ' (stopped)' : '') + (resumed ? ' — resumed from an earlier interrupted run' : '');
+        (cancelled ? ' (stopped)' : '') + (resumed ? '; resumed from an earlier interrupted run' : '');
     }
     renderSummary();
 
@@ -6104,7 +6343,7 @@ function jboRedact_(msg) {
     const uniq = {};
     hits.forEach((h) => { uniq[String(h.id)] = h; });
     const ids = Object.keys(uniq);
-    if (ids.length > 1) throw new Error('"' + raw + '" matches ' + ids.length + ' employees — use the numeric id');
+    if (ids.length > 1) throw new Error('"' + raw + '" matches ' + ids.length + ' employees: use the numeric id');
     return uniq[ids[0]];
   }
 
@@ -6187,7 +6426,7 @@ function jboRedact_(msg) {
     const key = normalizeName_(raw);
     const matches = roles.filter((r) => r.name !== null && normalizeName_(r.name) === key);
     if (matches.length === 0) throw new Error('role not found: "' + raw + '"');
-    if (matches.length > 1) throw new Error('"' + raw + '" matches ' + matches.length + ' roles — use the numeric role id');
+    if (matches.length > 1) throw new Error('"' + raw + '" matches ' + matches.length + ' roles: use the numeric role id');
     return matches[0];
   }
 
@@ -6290,7 +6529,7 @@ function jboRedact_(msg) {
   /** Additive guard: union a batch with the role's CURRENT employee_ids before sending — "add" always means add. */
   function applyAdditiveGuard_(roleId, employeeIds, rolesById) {
     const role = rolesById[String(roleId)];
-    if (!role) throw new Error('additive guard: role ' + roleId + ' is not in the roles list — refusing to write.');
+    if (!role) throw new Error('additive guard: role ' + roleId + ' is not in the roles list; refusing to write.');
     const existing = role.employeeIds;
     if (existing === null) {
       throw new Error('additive guard: membership for role ' + roleId + ' could not be determined (no employee_ids on the role). Refusing to write.');
@@ -6450,7 +6689,7 @@ function jboRedact_(msg) {
           const revertRow = revertFlat.rows.find((r) => r.id === testRow.id);
           const reverted = revertRow && revertRow.isAssigned === testRow.isAssigned;
           if (reverted) return { shape, testedPermission: testRow.permission };
-          throw new Error('shape "' + shape + '" applied the test change but the revert did not verify — ' +
+          throw new Error('shape "' + shape + '" applied the test change but the revert did not verify: ' +
             'role ' + role.id + ' may be left in a changed state. Check it manually in Jisr.');
         }
       } catch (e) {
@@ -6863,7 +7102,7 @@ function jboRedact_(msg) {
     opts = opts || {};
     const chunkSize = opts.chunkSize || 50;
     if (rowsArr.length > (opts.warnThreshold || JBO_CHUNK_WARN_THRESHOLD)) {
-      toast_('Importing ' + rowsArr.length + ' rows — this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
+      toast_('Importing ' + rowsArr.length + ' rows: this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
     }
     return new Promise((resolve) => {
       let i = 0;
@@ -6919,7 +7158,7 @@ function jboRedact_(msg) {
   }
 
   function openImportMappingModal_(parsed, fields, onImport) {
-    const { body, foot, close } = openModalShell_('Import from Excel — Map Columns');
+    const { body, foot, close } = openModalShell_('Import from Excel: Map Columns');
     let sheetName = parsed.sheetNames[0];
     let sheet = parsed.sheets[sheetName];
     let mapping = {};
@@ -6999,8 +7238,8 @@ function jboRedact_(msg) {
     });
 
     const introText = fields.some((f) => f.change)
-      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically — handy for a downloaded template where you\'ve only filled in the employees you want to change. Remaining rows land in the table for you to review and edit before running — nothing is sent yet.'
-      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running — nothing is sent yet.';
+      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically, so a downloaded template only needs the employees you want to change. Remaining rows land in the table for you to review and edit before running; nothing is sent yet.'
+      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running; nothing is sent yet.';
     body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
       [document.createTextNode(introText)]));
     body.appendChild(sheetSelWrap);
@@ -7027,7 +7266,7 @@ function jboRedact_(msg) {
     // behavior as before. The panel it opens is now a proper mini "hub":
     // a header (logo chip, title, live status dot, module-count pill, a
     // compact/expanded toggle) above the module list, all monochrome.
-    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops — drag to move', text: 'J' });
+    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops: drag to move', text: 'J' });
     let menuEl = null;
     function toggleMenu() {
       if (menuEl) { menuEl.remove(); menuEl = null; return; }
@@ -7202,7 +7441,7 @@ function jboRedact_(msg) {
             roleSel.value = String(matched.id);
           } else {
             statusCell.className = 'jbo-status-err';
-            statusCell.textContent = 'role "' + prefill.roleText + '" not auto-matched — pick manually';
+            statusCell.textContent = 'role "' + prefill.roleText + '" not auto-matched: pick manually';
           }
         }
       }
@@ -7221,7 +7460,7 @@ function jboRedact_(msg) {
       importBtn.addEventListener('click', () => {
         openExcelImportFlow_(ASSIGN_IMPORT_FIELDS, async (importedRows) => {
           await appendRowsChunked_(importedRows, (row) => addRow({ employee: row.employee, roleText: row.role, action: row.action }));
-          toast_('Imported ' + importedRows.length + ' row(s). Any role that couldn\'t be auto-matched is flagged in its Status cell — pick it manually before running.', 7000);
+          toast_('Imported ' + importedRows.length + ' row(s). Any role that couldn\'t be auto-matched is flagged in its Status cell; pick it manually before running.', 7000);
         });
       });
 
@@ -7232,7 +7471,7 @@ function jboRedact_(msg) {
         templateBtn.textContent = 'Loading…';
         try {
           await loadAll(true);
-          if (!employeesCache.length) { toast_('No employees came back — nothing to put in a template.', 5000); return; }
+          if (!employeesCache.length) { toast_('No employees came back: nothing to put in a template.', 5000); return; }
           const roleNamesByEmp = {};
           rolesCache.forEach((role) => {
             (role.employeeIds || []).forEach((empId) => {
@@ -7247,7 +7486,7 @@ function jboRedact_(msg) {
             e.id, e.name || '', e.code || '', (roleNamesByEmp[String(e.id)] || []).join(', '), '', ''
           ]);
           downloadWorkbook_('jisr-roles-permissions-template.xlsx', headers, dataRows);
-          toast_('Downloaded a template with ' + sorted.length + ' employee(s). "Current Roles" is informational — ' +
+          toast_('Downloaded a template with ' + sorted.length + ' employee(s). "Current Roles" is informational: ' +
             'fill "Action" and "Target Role" only for the rows you want to change, leave the rest blank, then Upload Excel.', 8000);
         } catch (e) {
           toast_('Could not build the template: ' + e.message, 6000);
@@ -7292,7 +7531,7 @@ function jboRedact_(msg) {
           try { emp = resolveEmployee_(r.empInput.dataset.employeeId || empText, empIndex); }
           catch (e) { problems.push({ r, msg: e.message }); return; }
           const role = rolesCache.find((rr) => String(rr.id) === roleId);
-          if (!role) { problems.push({ r, msg: 'role ' + roleId + ' is not in the loaded roles list — reload and try again' }); return; }
+          if (!role) { problems.push({ r, msg: 'role ' + roleId + ' is not in the loaded roles list; reload and try again' }); return; }
           if (r.actionSel.value === 'assign') {
             if (!assignByRole[role.id]) assignByRole[role.id] = [];
             assignByRole[role.id].push({ r, employeeId: emp.id, employeeName: emp.name, roleName: role.name });
@@ -7354,7 +7593,7 @@ function jboRedact_(msg) {
             let anyFail = false;
             batch.forEach((op) => {
               if (nowIds.indexOf(String(op.employeeId)) !== -1) setStatus(op.r, 'ok', 'verified: ' + op.employeeName + ' now on "' + op.roleName + '"');
-              else { setStatus(op.r, 'err', 'sent OK but ' + op.employeeName + ' not found on the role on re-read — treat as failed'); anyFail = true; }
+              else { setStatus(op.r, 'err', 'sent OK but ' + op.employeeName + ' not found on the role on re-read; treat as failed'); anyFail = true; }
             });
             rc.recordResult(rowKey, anyFail ? 'err' : 'ok', anyFail ? 'one or more employees missing on re-read' : batch.length + ' assigned');
           } catch (e) {
@@ -7381,7 +7620,7 @@ function jboRedact_(msg) {
                 const role = byId[String(op.roleId)];
                 const stillThere = role && role.employeeIds && role.employeeIds.indexOf(String(op.employeeId)) !== -1;
                 if (!stillThere) setStatus(op.r, 'ok', 'verified: ' + op.employeeName + ' removed from "' + op.roleName + '"');
-                else { setStatus(op.r, 'err', 'sent OK but ' + op.employeeName + ' still shows on the role on re-read — treat as failed'); anyFail = true; }
+                else { setStatus(op.r, 'err', 'sent OK but ' + op.employeeName + ' still shows on the role on re-read; treat as failed'); anyFail = true; }
               });
               rc.recordResult(rowKey, anyFail ? 'err' : 'ok', anyFail ? 'one or more still present on re-read' : plan.revokePairs.length + ' revoked');
             } catch (e) {
@@ -7398,7 +7637,7 @@ function jboRedact_(msg) {
       });
 
       paneAssign.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
-        [document.createTextNode('One row per (employee, role) pair. Role is a dropdown, not typed. Assign batches are unioned with existing role membership before sending — nobody already on a role gets silently dropped.')]));
+        [document.createTextNode('One row per (employee, role) pair. Role is a dropdown, not typed. Assign batches are unioned with existing role membership before sending; nobody already on a role gets silently dropped.')]));
       paneAssign.appendChild(tableWrap);
       paneAssign.appendChild(el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px' } }, [addRowBtn, templateBtn, importBtn]));
       paneAssign.appendChild(runControlsWrap);
@@ -7421,8 +7660,8 @@ function jboRedact_(msg) {
       function refreshGateNote() {
         const shape = confirmedUpdateShape_();
         gateNote.textContent = shape
-          ? 'Update shape confirmed for this tenant ("' + shape + '") — Save will write for real.'
-          : 'Update shape NOT yet confirmed for this tenant — run "Probe Update Shape" once before Save will do anything.';
+          ? 'Update shape confirmed for this tenant ("' + shape + '"). Save will write for real.'
+          : 'Update shape NOT yet confirmed for this tenant; run "Probe Update Shape" once before Save will do anything.';
       }
       refreshGateNote();
 
@@ -7435,7 +7674,7 @@ function jboRedact_(msg) {
         const roleId = roleSel.value;
         if (!roleId) { toast_('Select a role first.', 4000); return; }
         const role = rolesCache.find((rr) => String(rr.id) === roleId);
-        if (!role) { toast_('That role is not in the loaded roles list — reload and try again.', 5000); return; }
+        if (!role) { toast_('That role is not in the loaded roles list; reload and try again.', 5000); return; }
         loadPermsBtn.disabled = true; loadPermsBtn.textContent = 'Loading…';
         try {
           const fetched = await fetchRolePermissions_(role.id);
@@ -7443,7 +7682,7 @@ function jboRedact_(msg) {
           currentRole = role;
           gridRows = flat.rows.map((r) => ({ ...r, origAssigned: r.isAssigned, scope: r.currentScope }));
           renderGrid();
-          toast_('Loaded "' + role.name + '" — ' + flat.rows.length + ' permission(s), ' +
+          toast_('Loaded "' + role.name + '": ' + flat.rows.length + ' permission(s), ' +
             flat.rows.filter((x) => x.isAssigned).length + ' assigned.');
         } catch (e) { toast_(e.message, 6000); }
         finally { loadPermsBtn.disabled = false; loadPermsBtn.textContent = 'Load Permissions'; }
@@ -7511,7 +7750,7 @@ function jboRedact_(msg) {
       saveBtn.addEventListener('click', async () => {
         if (!currentRole || !gridRows.length) { toast_('Load a role\'s permissions first.', 4000); return; }
         const shape = confirmedUpdateShape_();
-        if (!shape) { toast_('Update shape not confirmed yet for this tenant — run "Probe Update Shape" first.', 6000); return; }
+        if (!shape) { toast_('Update shape not confirmed yet for this tenant; run "Probe Update Shape" first.', 6000); return; }
         const plan = planSave();
         if (plan.problems.length) { toast_(plan.problems.length + ' row(s) need fixing:\n' + plan.problems.slice(0, 6).join('\n'), 8000); return; }
         const newlyChecked = gridRows.filter((r) => r.isAssigned && !r.origAssigned).length;
@@ -7531,7 +7770,7 @@ function jboRedact_(msg) {
           const when = saveLockRes.since ? new Date(saveLockRes.since).toLocaleString() : 'recently';
           const proceedAnyway = confirm(
             (saveLockRes.heldBy || 'Someone else') + ' started editing "' + currentRole.name + '"\'s permissions ' +
-            when + ' — saving now may overwrite their changes.\n\nOK = proceed anyway.\nCancel = stop and check with them first.'
+            when + '; saving now may overwrite their changes.\n\nOK = proceed anyway.\nCancel = stop and check with them first.'
           );
           if (!proceedAnyway) return;
         }
@@ -7589,7 +7828,7 @@ function jboRedact_(msg) {
         return res;
       }
       dlBtn.addEventListener('click', async () => {
-        if (!rolesCache.length) { toast_('Roles are still loading — try again in a moment.', 4000); return; }
+        if (!rolesCache.length) { toast_('Roles are still loading: try again in a moment.', 4000); return; }
         const roles = rolesCache.slice().sort((a, b) => (a.isDefault === b.isDefault ? normalizeName_(a.name || '').localeCompare(normalizeName_(b.name || '')) : (a.isDefault ? -1 : 1)));
         dlBtn.disabled = true;
         try {
@@ -7629,7 +7868,7 @@ function jboRedact_(msg) {
             const sn = parsed.sheetNames.find((n) => /role permissions/i.test(n)) || parsed.sheetNames[0];
             const sh = parsed.sheets[sn];
             const cPid = sh.headers.findIndex((h) => /^permission id$/i.test(h));
-            if (cPid < 0) throw new Error('This file needs the "Permission ID" column — use the downloaded template.');
+            if (cPid < 0) throw new Error('This file needs the "Permission ID" column; use the downloaded template.');
             const roleCols = [];
             sh.headers.forEach((h, i) => { const m = String(h).match(/#\s*(\d+)\s*$/); if (m) { const r = rolesCache.find((x) => String(x.id) === m[1]); roleCols.push({ i, id: m[1], role: r }); } });
             if (!roleCols.length) throw new Error('No role columns found (headers look like "Role name · #123").');
@@ -7814,7 +8053,7 @@ function jboRedact_(msg) {
       function catLabel_(c) {
         const ex = c.roles.slice(0, 3).join(', ') + (c.roles.length > 3 ? ' +' + (c.roles.length - 3) : '');
         const isDef = tpl && String(tpl.categoryId) === c.id;
-        if (c.name) return c.name + (ex ? ' — e.g. ' + ex : '') + (isDef ? ' (Jisr default)' : '');
+        if (c.name) return c.name + (ex ? ' (e.g. ' + ex + ')' : '') + (isDef ? ' (Jisr default)' : '');
         return (ex ? 'Same as ' + ex : 'Category ' + c.id) + (isDef ? ' (Jisr default for new roles)' : '');
       }
       async function loadCategories_() {
@@ -7863,7 +8102,7 @@ function jboRedact_(msg) {
         catSel.innerHTML = '';
         const list = cats ? Array.from(cats.values()) : [];
         if (!list.length) {
-          catSel.appendChild(el('option', { value: '', text: cats ? 'No categories found — pick a role to copy from' : 'Reading categories…' }));
+          catSel.appendChild(el('option', { value: '', text: cats ? 'No categories found: pick a role to copy from' : 'Reading categories…' }));
           return;
         }
         list.sort((a, b) => (tpl && String(tpl.categoryId) === a.id ? -1 : tpl && String(tpl.categoryId) === b.id ? 1 : b.roles.length - a.roles.length))
@@ -7881,7 +8120,7 @@ function jboRedact_(msg) {
       async function createRole_(o) {
         await loadTemplate_(); await loadCategories_();
         const cat = String(o.categoryId || (o.copyFrom && roleCat[o.copyFrom.id]) || (o.fromScreen ? catSel.value : '') || defaultCat_() || '').trim();
-        if (!/^\d+$/.test(cat)) throw new Error('no role category — pick one from the Category list (or a role to copy from)');
+        if (!/^\d+$/.test(cat)) throw new Error('no role category: pick one from the Category list (or a role to copy from)');
         let perms = (tpl && tpl.defaults) || [];
         if (o.copyFrom) perms = mergePerms_(perms, await permsOf_(o.copyFrom.id));
         const body = { role: { name: o.name, name_ar: o.nameAr || o.name, description: o.description || '', category_id: Number(cat),
@@ -7898,8 +8137,8 @@ function jboRedact_(msg) {
 
       // ---- UI: create one
       const nameIn = el('input', { class: 'jbo-input', placeholder: 'Role name (English)' });
-      const nameArIn = el('input', { class: 'jbo-input', placeholder: 'اسم الدور (عربي) — optional' });
-      const descIn = el('input', { class: 'jbo-input', placeholder: 'Description — optional' });
+      const nameArIn = el('input', { class: 'jbo-input', placeholder: 'اسم الدور (عربي)؛ optional' });
+      const descIn = el('input', { class: 'jbo-input', placeholder: 'Description: optional' });
       const copySel = el('select', { class: 'jbo-select' });
       const catSel = el('select', { class: 'jbo-select', style: { maxWidth: '340px' }, title: 'Jisr files every role under a category. Each option shows roles already in that category.' });
       catSel.addEventListener('change', () => { catTouched = true; });
@@ -7974,7 +8213,7 @@ function jboRedact_(msg) {
           const res = await createRole_({ name, nameAr: nameArIn.value.trim(), description: descIn.value.trim(), copyFrom, categoryId: catSel.value || null, fromScreen: true });
           await reload_();
           const made = rolesCache.find((r) => r.name && normalizeName_(r.name) === normalizeName_(name));
-          toast_(made ? 'Created "' + name + '" (#' + made.id + ') with ' + res.permissions + ' permission(s). Fine-tune them on Edit Permissions.' : 'Jisr answered OK but the new role is not listed yet — refresh.', 8000);
+          toast_(made ? 'Created "' + name + '" (#' + made.id + ') with ' + res.permissions + ' permission(s). Fine-tune them on Edit Permissions.' : 'Jisr answered OK but the new role is not listed yet; refresh.', 8000);
           queueActivity_('roles-permissions', 'create-role', made ? 'ok' : 'err', 'create role "' + name + '"');
           if (made) { nameIn.value = ''; nameArIn.value = ''; descIn.value = ''; copySel.value = ''; }
         } catch (e) {
@@ -7986,7 +8225,7 @@ function jboRedact_(msg) {
       // ---- Excel template: one row per role, Action = Keep / Create / Delete
       const XH = ['Action', 'Role ID', 'Role name', 'Role name (Arabic)', 'Description', 'Copy permissions from', 'Category', 'Employees', 'Type'];
       tplBtn.addEventListener('click', async () => {
-        if (!rolesCache.length) { toast_('Roles are still loading — try again in a moment.', 4000); return; }
+        if (!rolesCache.length) { toast_('Roles are still loading: try again in a moment.', 4000); return; }
         tplBtn.disabled = true; await loadCategories_(); tplBtn.disabled = false;
         const sorted = rolesCache.slice().sort((a, b) => (a.isDefault === b.isDefault ? normalizeName_(a.name || '').localeCompare(normalizeName_(b.name || '')) : (a.isDefault ? -1 : 1)));
         const cLab = (id) => (id != null && cats && cats.get(String(id)) ? catLabel_(cats.get(String(id))) : '');
@@ -8019,7 +8258,7 @@ function jboRedact_(msg) {
             const col = (rx) => H.findIndex((h) => rx.test(h));
             const cA = col(/^action/), cId = col(/^role ?id/), cN = col(/^role name$|^name$|^role$/), cAr = col(/arabic|name ?ar|عربي/), cD = col(/^desc/), cC = col(/^copy/), cCat = col(/^categor/);
             await loadCategories_();
-            if (cA < 0 || cN < 0) throw new Error('This file needs the Action and Role name columns — use the template.');
+            if (cA < 0 || cN < 0) throw new Error('This file needs the Action and Role name columns; use the template.');
             plan = sh.rows.map((row, i) => {
               const v = (c) => (c < 0 ? '' : String(row[c] == null ? '' : row[c]).trim());
               const act = v(cA).toLowerCase(); const it = { line: i + 2, action: act, name: v(cN), nameAr: v(cAr), description: v(cD), copyText: v(cC), id: v(cId), status: '', ok: true };
@@ -8266,7 +8505,7 @@ function jboRedact_(msg) {
           const after = rolesCache.find((r) => String(r.id) === String(role.id));
           const ok = ids.filter((id) => after && after.employeeIds && after.employeeIds.includes(id));
           const missing = ids.filter((id) => !ok.includes(id));
-          toast_(missing.length ? 'Added ' + ok.length + '. ' + missing.length + ' not confirmed in Jisr — check them.' : 'Added ' + ok.length + ' employee(s) to "' + role.name + '".', 7000);
+          toast_(missing.length ? 'Added ' + ok.length + '. ' + missing.length + ' not confirmed in Jisr: check them.' : 'Added ' + ok.length + ' employee(s) to "' + role.name + '".', 7000);
           queueActivity_('roles-permissions', lockKey, missing.length ? 'err' : 'ok', 'easy assign ' + ok.length + '/' + ids.length + ' to "' + role.name + '"');
           if (!missing.length) picked = [];
           selRole = after || null;
@@ -8803,7 +9042,7 @@ function jboRedact_(msg) {
   function configureBackend_() {
     const cfg = getBackendConfig_();
     const url = prompt(
-      'Shared backend URL (from the deployed Cloudflare Worker) — leave blank to disable:',
+      'Shared backend URL (from the deployed Cloudflare Worker); leave blank to disable:',
       cfg.url || ''
     );
     if (url === null) return;
@@ -8811,7 +9050,7 @@ function jboRedact_(msg) {
     if (key === null) return;
     sharedSet_('backendUrl', url.trim().replace(/\/$/, ''));
     sharedSet_('backendWriteKey', (key || '').trim());
-    toast_('Shared backend settings saved — this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
+    toast_('Shared backend settings saved: this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
   }
 
   if (typeof GM_registerMenuCommand === 'function' && !unsafeWindow.__jisrBulkOpsBackendMenuRegistered) {
@@ -8822,7 +9061,7 @@ function jboRedact_(msg) {
   function ownerLabel_() {
     let label = sharedGet_('ownerLabel', '');
     if (!label) {
-      label = (prompt('Your name — shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
+      label = (prompt('Your name: shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
       sharedSet_('ownerLabel', label);
     }
     return label;
@@ -8839,7 +9078,7 @@ function jboRedact_(msg) {
   function setOwnerLabel_() {
     const current = sharedGet_('ownerLabel', '');
     const label = (prompt(
-      'Your name — shown to teammates in cross-user warnings and in the admin activity log:',
+      'Your name: shown to teammates in cross-user warnings and in the admin activity log:',
       current === 'unknown' ? '' : current
     ) || '').trim();
     if (!label) return;
@@ -8895,7 +9134,7 @@ function jboRedact_(msg) {
       el('div', { class: 'jbo-modal-body' }, [
         el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
           'Every tool here is shared by the whole team, and every change made through it is attributed to ' +
-          'whoever ran it — for the activity log, and so teammates know who to check with. Enter your name ' +
+          'whoever ran it: for the activity log, and so teammates know who to check with. Enter your name ' +
           'once to continue; it\u2019s remembered for every tool on this site from now on.'
         )]),
         el('label', { class: 'jbo-muted', style: { display: 'block', marginBottom: '4px' } }, [document.createTextNode('Your name')]),
@@ -9045,7 +9284,7 @@ function jboRedact_(msg) {
       const okCount = Object.values(session.results).filter((r) => r.status === 'ok').length;
       const errCount = Object.values(session.results).filter((r) => r.status === 'err').length;
       summaryEl.textContent = okCount + ' succeeded, ' + errCount + ' failed so far' +
-        (cancelled ? ' (stopped)' : '') + (resumed ? ' — resumed from an earlier interrupted run' : '');
+        (cancelled ? ' (stopped)' : '') + (resumed ? '; resumed from an earlier interrupted run' : '');
     }
     renderSummary();
 
@@ -9189,7 +9428,7 @@ function jboRedact_(msg) {
     const uniq = {};
     hits.forEach((h) => { uniq[String(h.id)] = h; });
     const ids = Object.keys(uniq);
-    if (ids.length > 1) throw new Error('"' + raw + '" matches ' + ids.length + ' employees — use the numeric id');
+    if (ids.length > 1) throw new Error('"' + raw + '" matches ' + ids.length + ' employees: use the numeric id');
     return uniq[ids[0]];
   }
 
@@ -9601,7 +9840,7 @@ function jboRedact_(msg) {
     opts = opts || {};
     const chunkSize = opts.chunkSize || 50;
     if (rowsArr.length > (opts.warnThreshold || JBO_CHUNK_WARN_THRESHOLD)) {
-      toast_('Importing ' + rowsArr.length + ' rows — this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
+      toast_('Importing ' + rowsArr.length + ' rows: this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
     }
     return new Promise((resolve) => {
       let i = 0;
@@ -9657,7 +9896,7 @@ function jboRedact_(msg) {
   }
 
   function openImportMappingModal_(parsed, fields, onImport) {
-    const { body, foot, close } = openModalShell_('Import from Excel — Map Columns');
+    const { body, foot, close } = openModalShell_('Import from Excel: Map Columns');
     let sheetName = parsed.sheetNames[0];
     let sheet = parsed.sheets[sheetName];
     let mapping = {};
@@ -9737,8 +9976,8 @@ function jboRedact_(msg) {
     });
 
     const introText = fields.some((f) => f.change)
-      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically — handy for a downloaded template where you\'ve only filled in the employees you want to change. Remaining rows land in the table for you to review and edit before running — nothing is sent yet.'
-      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running — nothing is sent yet.';
+      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically, so a downloaded template only needs the employees you want to change. Remaining rows land in the table for you to review and edit before running; nothing is sent yet.'
+      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running; nothing is sent yet.';
     body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
       [document.createTextNode(introText)]));
     body.appendChild(sheetSelWrap);
@@ -9767,7 +10006,7 @@ function jboRedact_(msg) {
     // behavior as before. The panel it opens is now a proper mini "hub":
     // a header (logo chip, title, live status dot, module-count pill, a
     // compact/expanded toggle) above the module list, all monochrome.
-    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops — drag to move', text: 'J' });
+    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops: drag to move', text: 'J' });
     let menuEl = null;
     function toggleMenu() {
       if (menuEl) { menuEl.remove(); menuEl = null; return; }
@@ -10151,7 +10390,7 @@ function jboRedact_(msg) {
         ' (reason "' + op.reason + '") was found in this employee\'s compensation-change history. Treat it as failed, not confirmed.');
     } else {
       out.verified = false;
-      out.verifyWarning = 'Update confirmed by response message only — could not independently verify against the compensation-change history (empty or unreachable for this tenant).';
+      out.verifyWarning = 'Update confirmed by response message only; could not independently verify against the compensation-change history (empty or unreachable for this tenant).';
     }
     return out;
   }
@@ -10214,7 +10453,7 @@ function jboRedact_(msg) {
       let emp;
       try { emp = resolveEmployee_(r.employee, empIndex); } catch (e) { problems.push({ r: r.r, msg: e.message }); return; }
       const key = emp.id + '|' + normalizeName_(r.allowanceName);
-      if (seen[key]) { problems.push({ r: r.r, msg: '"' + r.allowanceName + '" for ' + emp.name + ' is also set by another row — one row per (employee, allowance)' }); return; }
+      if (seen[key]) { problems.push({ r: r.r, msg: '"' + r.allowanceName + '" for ' + emp.name + ' is also set by another row; one row per (employee, allowance)' }); return; }
       seen[key] = true;
       ops.push({ r: r.r, employeeId: emp.id, employeeName: emp.name, allowanceName: r.allowanceName, newAmount: amountNum });
     });
@@ -10309,7 +10548,7 @@ function jboRedact_(msg) {
       templateBtn.textContent = 'Loading…';
       try {
         const emps = await getEmployees_(true, (n) => { templateBtn.textContent = 'Loading… (' + n + ')'; });
-        if (!emps.length) { toast_('No employees came back — nothing to put in a template.', 5000); return; }
+        if (!emps.length) { toast_('No employees came back: nothing to put in a template.', 5000); return; }
         employeesCache = emps;
         const sorted = emps.slice().sort((a, b) => normalizeName_(a.name).localeCompare(normalizeName_(b.name)));
         const { perEmployee, allowanceOrder } = await fetchAllCurrentEarnings_(sorted, (n, total) => {
@@ -10348,11 +10587,11 @@ function jboRedact_(msg) {
           });
           toast_('Downloaded a template with ' + sorted.length + ' employee(s) but 0 allowance columns. ' +
             (withCurrent.length === 0
-              ? 'Every current-earnings read failed — check the browser console (F12) for the errors.'
+              ? 'Every current-earnings read failed: check the browser console (F12) for the errors.'
               : withBenefits.length === 0
-                ? 'Reads succeeded but no employee had any benefits on file for this tenant — check the ' +
+                ? 'Reads succeeded but no employee had any benefits on file for this tenant; check the ' +
                   'console for a raw sample if you expected allowances to exist.'
-                : 'Benefits were found but their names could not be read — open the console for a raw ' +
+                : 'Benefits were found but their names could not be read; open the console for a raw ' +
                   'sample benefit object so the field name can be added.'), 9000);
         } else {
           toast_('Downloaded a template with ' + sorted.length + ' employee(s) and ' + allowanceOrder.length +
@@ -10395,7 +10634,7 @@ function jboRedact_(msg) {
           }
         });
         if (!allowanceFields.length) {
-          toast_('No "New: <allowance>" columns found in this file — is this a template downloaded from "Download Template"?', 7000);
+          toast_('No "New: <allowance>" columns found in this file; is this a template downloaded from "Download Template"?', 7000);
         }
         const dynamicFields = [
           { key: 'employee', label: 'Employee (id/code/username/email/name)', required: true,
@@ -10539,7 +10778,7 @@ function jboRedact_(msg) {
       const salaryByEmployee = {};
       salaryPlan.ops.forEach((s) => {
         if (salaryByEmployee[s.employeeId]) {
-          problems.push({ r: s.r, msg: s.employeeName + ' already has a Salary Increment row earlier in this run — one row per employee' });
+          problems.push({ r: s.r, msg: s.employeeName + ' already has a Salary Increment row earlier in this run; one row per employee' });
           return;
         }
         salaryByEmployee[s.employeeId] = s;
@@ -10560,7 +10799,7 @@ function jboRedact_(msg) {
         if (!current) {
           const rowsInvolved = (salaryOp ? [salaryOp.r] : []).concat(allowOps.map((a) => a.r));
           rowsInvolved.forEach((rowRef) => {
-            problems.push({ r: rowRef, msg: 'could not read ' + employeeName + '\'s current earnings in this tenant — refusing to write (would risk wiping their benefits/allowances).' });
+            problems.push({ r: rowRef, msg: 'could not read ' + employeeName + '\'s current earnings in this tenant; refusing to write (would risk wiping their benefits/allowances).' });
           });
           continue;
         }
@@ -10579,7 +10818,7 @@ function jboRedact_(msg) {
           const available = current.benefits.map((b) => b.name).filter(Boolean).join(', ') || '(none on file)';
           unmatched.forEach((a) => {
             problems.push({ r: a.r, msg: '"' + a.allowanceName + '" is not an existing allowance/benefit for ' + employeeName +
-              ' — this tool can only adjust an EXISTING allowance, not create a new one. On file: ' + available });
+              '; this tool can only adjust an EXISTING allowance, not create a new one. On file: ' + available });
           });
         }
 
@@ -10635,7 +10874,7 @@ function jboRedact_(msg) {
       if (!plan.ops.length) { toast_('Nothing to run.', 3000); runLiveBtn.disabled = false; return; }
       if (!confirm('Send salary/allowance changes for ' + plan.ops.length + ' employee(s) to Jisr now?\n\n' +
         'Every employee\'s CURRENT benefits are read first and sent back unchanged (except any matching Adjust ' +
-        'Allowances row) — Jisr replaces the whole earnings record on every write. Verified afterwards where ' +
+        'Allowances row). Jisr replaces the whole earnings record on every write. Verified afterwards where ' +
         'possible. Proceed?')) { runLiveBtn.disabled = false; return; }
 
       const rc = createRunControls_('salary-increment', plan.ops.map((op) => String(op.employeeId)));
@@ -10649,7 +10888,7 @@ function jboRedact_(msg) {
         const op = plan.ops[i];
         const rowKey = String(op.employeeId);
         if (rc.isCancelled()) {
-          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped — ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
+          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped: ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
           if (op.salaryRowRef) setStatus(op.salaryRowRef, 'pending', 'stopped by user');
           op.allowanceChanges.forEach((c) => setStatus(c.r, 'pending', 'stopped by user'));
           continue;
@@ -10664,7 +10903,7 @@ function jboRedact_(msg) {
         op.allowanceChanges.forEach((c) => setStatus(c.r, 'pending', 'sending…'));
         try {
           const res = await applySalaryIncrement_(op);
-          const detail = op.oldSalary + ' → ' + op.newSalary + (res.verified ? ' (verified)' : ' (UNVERIFIED — ' + res.verifyWarning + ')');
+          const detail = op.oldSalary + ' → ' + op.newSalary + (res.verified ? ' (verified)' : ' (UNVERIFIED: ' + res.verifyWarning + ')');
           if (op.salaryRowRef) setStatus(op.salaryRowRef, 'ok', detail + (res.gosiWarning ? ' | GOSI warning: ' + res.gosiWarning : ''));
           op.allowanceChanges.forEach((c) => setStatus(c.r, 'ok', c.name + ': ' + c.oldAmount + ' → ' + c.newAmount + (res.verified ? ' (verified)' : ' (UNVERIFIED)')));
           rc.recordResult(rowKey, 'ok', 'increment applied' + (op.allowanceChanges.length ? ' + ' + op.allowanceChanges.length + ' allowance(s)' : '') + (res.verified ? ' (verified)' : ' (UNVERIFIED)'));
@@ -10682,11 +10921,11 @@ function jboRedact_(msg) {
       const summaryText = 'Done. Succeeded: ' + ok + '   Failed: ' + bad +
         (skipped ? '   Skipped (already done): ' + skipped : '') + '.';
       salarySummary.textContent = summaryText; allowSummary.textContent = summaryText;
-      toast_('Run complete — ' + ok + ' employee(s) succeeded, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
+      toast_('Run complete: ' + ok + ' employee(s) succeeded, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
     });
 
     paneSalary.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
-      [document.createTextNode('One row per employee. Timing drives effective_date/without_retroactive the same way Jisr\'s own screen does — future needs a date after today, immediate needs today, the two retrospective modes need a date before today.')]));
+      [document.createTextNode('One row per employee. Timing drives effective_date/without_retroactive the same way Jisr\'s own screen does; future needs a date after today, immediate needs today, the two retrospective modes need a date before today.')]));
     paneSalary.appendChild(salaryTableWrap);
     paneSalary.appendChild(el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' } },
       [addSalaryRowBtn, templateBtn, uploadTemplateBtn, importSalaryBtn]));
@@ -10694,7 +10933,7 @@ function jboRedact_(msg) {
     paneSalary.appendChild(salarySummary);
 
     paneAllow.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
-      [document.createTextNode('One row per (employee, allowance) change. The Allowance Name must match an EXISTING allowance the employee already has — this adjusts, it does not create a new allowance type. Rows here combine with any Salary Increment row for the same employee into one write.')]));
+      [document.createTextNode('One row per (employee, allowance) change. The Allowance Name must match an EXISTING allowance the employee already has; this adjusts, it does not create a new allowance type. Rows here combine with any Salary Increment row for the same employee into one write.')]));
     paneAllow.appendChild(allowTableWrap);
     paneAllow.appendChild(el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px' } }, [addAllowRowBtn, importAllowBtn]));
     paneAllow.appendChild(allowSummary);
@@ -11074,7 +11313,7 @@ function jboRedact_(msg) {
   function configureBackend_() {
     const cfg = getBackendConfig_();
     const url = prompt(
-      'Shared backend URL (from the deployed Cloudflare Worker) — leave blank to disable:',
+      'Shared backend URL (from the deployed Cloudflare Worker); leave blank to disable:',
       cfg.url || ''
     );
     if (url === null) return;
@@ -11082,7 +11321,7 @@ function jboRedact_(msg) {
     if (key === null) return;
     sharedSet_('backendUrl', url.trim().replace(/\/$/, ''));
     sharedSet_('backendWriteKey', (key || '').trim());
-    toast_('Shared backend settings saved — this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
+    toast_('Shared backend settings saved: this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
   }
 
   if (typeof GM_registerMenuCommand === 'function' && !unsafeWindow.__jisrBulkOpsBackendMenuRegistered) {
@@ -11093,7 +11332,7 @@ function jboRedact_(msg) {
   function ownerLabel_() {
     let label = sharedGet_('ownerLabel', '');
     if (!label) {
-      label = (prompt('Your name — shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
+      label = (prompt('Your name: shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
       sharedSet_('ownerLabel', label);
     }
     return label;
@@ -11110,7 +11349,7 @@ function jboRedact_(msg) {
   function setOwnerLabel_() {
     const current = sharedGet_('ownerLabel', '');
     const label = (prompt(
-      'Your name — shown to teammates in cross-user warnings and in the admin activity log:',
+      'Your name: shown to teammates in cross-user warnings and in the admin activity log:',
       current === 'unknown' ? '' : current
     ) || '').trim();
     if (!label) return;
@@ -11166,7 +11405,7 @@ function jboRedact_(msg) {
       el('div', { class: 'jbo-modal-body' }, [
         el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
           'Every tool here is shared by the whole team, and every change made through it is attributed to ' +
-          'whoever ran it — for the activity log, and so teammates know who to check with. Enter your name ' +
+          'whoever ran it: for the activity log, and so teammates know who to check with. Enter your name ' +
           'once to continue; it\u2019s remembered for every tool on this site from now on.'
         )]),
         el('label', { class: 'jbo-muted', style: { display: 'block', marginBottom: '4px' } }, [document.createTextNode('Your name')]),
@@ -11316,7 +11555,7 @@ function jboRedact_(msg) {
       const okCount = Object.values(session.results).filter((r) => r.status === 'ok').length;
       const errCount = Object.values(session.results).filter((r) => r.status === 'err').length;
       summaryEl.textContent = okCount + ' succeeded, ' + errCount + ' failed so far' +
-        (cancelled ? ' (stopped)' : '') + (resumed ? ' — resumed from an earlier interrupted run' : '');
+        (cancelled ? ' (stopped)' : '') + (resumed ? '; resumed from an earlier interrupted run' : '');
     }
     renderSummary();
 
@@ -11454,7 +11693,7 @@ function jboRedact_(msg) {
     hits.forEach((h) => { uniq[String(h.id)] = h; });
     const ids = Object.keys(uniq);
     if (ids.length > 1) {
-      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + ') — use the numeric id');
+      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + '); use the numeric id');
     }
     return uniq[ids[0]];
   }
@@ -11875,7 +12114,7 @@ function jboRedact_(msg) {
     opts = opts || {};
     const chunkSize = opts.chunkSize || 50;
     if (rowsArr.length > (opts.warnThreshold || JBO_CHUNK_WARN_THRESHOLD)) {
-      toast_('Importing ' + rowsArr.length + ' rows — this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
+      toast_('Importing ' + rowsArr.length + ' rows: this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
     }
     return new Promise((resolve) => {
       let i = 0;
@@ -11931,7 +12170,7 @@ function jboRedact_(msg) {
   }
 
   function openImportMappingModal_(parsed, fields, onImport) {
-    const { body, foot, close } = openModalShell_('Import from Excel — Map Columns');
+    const { body, foot, close } = openModalShell_('Import from Excel: Map Columns');
     let sheetName = parsed.sheetNames[0];
     let sheet = parsed.sheets[sheetName];
     let mapping = {};
@@ -12011,8 +12250,8 @@ function jboRedact_(msg) {
     });
 
     const introText = fields.some((f) => f.change)
-      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically — handy for a downloaded template where you\'ve only filled in the employees you want to change. Remaining rows land in the table for you to review and edit before running — nothing is sent yet.'
-      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running — nothing is sent yet.';
+      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically, so a downloaded template only needs the employees you want to change. Remaining rows land in the table for you to review and edit before running; nothing is sent yet.'
+      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running; nothing is sent yet.';
     body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
       [document.createTextNode(introText)]));
     body.appendChild(sheetSelWrap);
@@ -12041,7 +12280,7 @@ function jboRedact_(msg) {
     // behavior as before. The panel it opens is now a proper mini "hub":
     // a header (logo chip, title, live status dot, module-count pill, a
     // compact/expanded toggle) above the module list, all monochrome.
-    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops — drag to move', text: 'J' });
+    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops: drag to move', text: 'J' });
     let menuEl = null;
     function toggleMenu() {
       if (menuEl) { menuEl.remove(); menuEl = null; return; }
@@ -12190,7 +12429,7 @@ function jboRedact_(msg) {
         throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 400));
       }
       if (json && json.success === false) {
-        throw new Error('HTTP ' + resp.status + ' but success:false' + (json.message ? (' — ' + json.message) : ''));
+        throw new Error('HTTP ' + resp.status + ' but success:false' + (json.message ? (' · ' + json.message) : ''));
       }
       return { status: resp.status, json: json, message: (json && json.message) ? json.message : ('HTTP ' + resp.status + ' OK') };
     }
@@ -12278,7 +12517,7 @@ function jboRedact_(msg) {
       templateBtn.textContent = 'Loading…';
       try {
         const emps = await getEmployees_(true, (n) => { templateBtn.textContent = 'Loading… (' + n + ')'; });
-        if (!emps.length) { toast_('No employees came back — nothing to put in a template.', 5000); return; }
+        if (!emps.length) { toast_('No employees came back: nothing to put in a template.', 5000); return; }
         const sorted = emps.slice().sort((a, b) => normalizeName_(a.name).localeCompare(normalizeName_(b.name)));
         const headers = ['Employee ID', 'Employee Name', 'Employee Code', 'Suspend? (type YES to include)'];
         const dataRows = sorted.map((e) => [e.id, e.name || '', e.code || '', '']);
@@ -12378,7 +12617,7 @@ function jboRedact_(msg) {
       gmSet_('suspendSlug', slug);
 
       if (!confirm('Suspend ' + plan.ops.length + ' employee(s) from payroll runs on tenant "' + slug + '"?\n\n' +
-        'This endpoint\'s response carries nothing to independently verify — every success below means ' +
+        'This endpoint\'s response carries nothing to independently verify; every success below means ' +
         '"Jisr accepted the request," not "re-confirmed by re-reading." Spot-check afterward in the Jisr UI.')) {
         return;
       }
@@ -12406,7 +12645,7 @@ function jboRedact_(msg) {
         }
         if (rc.isDone(rowKey)) {
           setStatus(op.r, 'ok', 'already done in a previous run (resumed)');
-          logLine('ok', (op.employeeName || op.employeeId) + ' — already suspended in a previous run (resumed)');
+          logLine('ok', (op.employeeName || op.employeeId) + '; already suspended in a previous run (resumed)');
           skipped++;
           continue;
         }
@@ -12415,16 +12654,16 @@ function jboRedact_(msg) {
         try {
           const res = await suspendPayrunSalary_(op.employeeId, slug);
           ok++;
-          setStatus(op.r, 'ok', 'accepted (' + res.message + ') — unverified, no read-back endpoint');
+          setStatus(op.r, 'ok', 'accepted (' + res.message + '); unverified, no read-back endpoint');
           rc.recordResult(rowKey, 'ok', res.message);
-          logLine('ok', (op.employeeName || op.employeeId) + ' (id ' + op.employeeId + ') — suspended (' + res.message + ')');
+          logLine('ok', (op.employeeName || op.employeeId) + ' (id ' + op.employeeId + '); suspended (' + res.message + ')');
         } catch (e) {
           bad++;
           setStatus(op.r, 'err', e.message);
           rc.recordResult(rowKey, 'err', e.message);
-          logLine('err', (op.employeeName || op.employeeId) + ' (id ' + op.employeeId + ') — FAILED: ' + e.message);
+          logLine('err', (op.employeeName || op.employeeId) + ' (id ' + op.employeeId + '). FAILED: ' + e.message);
           if (e.isAuthError) {
-            logLine('err', 'Stopping — re-authenticate and try again.');
+            logLine('err', 'Stopping: re-authenticate and try again.');
             brokeOnAuthError = true;
             break;
           }
@@ -12439,11 +12678,11 @@ function jboRedact_(msg) {
       summary.textContent = 'Succeeded: ' + ok + '   Failed: ' + bad +
         (skipped ? '   Skipped (already done): ' + skipped : '') +
         (rc.isCancelled() ? '   (stopped early)' : '') + '.';
-      toast_('Bulk suspension complete — ' + ok + ' succeeded, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 6000);
+      toast_('Bulk suspension complete: ' + ok + ' succeeded, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 6000);
     });
 
     body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [
-      document.createTextNode('One row per employee — type a name/id/code/email and pick from the dropdown. ' +
+      document.createTextNode('One row per employee: type a name/id/code/email and pick from the dropdown. ' +
         'This endpoint\'s response carries nothing to re-verify against, so every accepted row says so.')
     ]));
     body.appendChild(tableWrap);
@@ -12879,7 +13118,7 @@ function jboRedact_(msg) {
   function configureBackend_() {
     const cfg = getBackendConfig_();
     const url = prompt(
-      'Shared backend URL (from the deployed Cloudflare Worker) — leave blank to disable:',
+      'Shared backend URL (from the deployed Cloudflare Worker); leave blank to disable:',
       cfg.url || ''
     );
     if (url === null) return;
@@ -12887,7 +13126,7 @@ function jboRedact_(msg) {
     if (key === null) return;
     sharedSet_('backendUrl', url.trim().replace(/\/$/, ''));
     sharedSet_('backendWriteKey', (key || '').trim());
-    toast_('Shared backend settings saved — this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
+    toast_('Shared backend settings saved: this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
   }
 
   if (typeof GM_registerMenuCommand === 'function' && !unsafeWindow.__jisrBulkOpsBackendMenuRegistered) {
@@ -12898,7 +13137,7 @@ function jboRedact_(msg) {
   function ownerLabel_() {
     let label = sharedGet_('ownerLabel', '');
     if (!label) {
-      label = (prompt('Your name — shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
+      label = (prompt('Your name: shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
       sharedSet_('ownerLabel', label);
     }
     return label;
@@ -12915,7 +13154,7 @@ function jboRedact_(msg) {
   function setOwnerLabel_() {
     const current = sharedGet_('ownerLabel', '');
     const label = (prompt(
-      'Your name — shown to teammates in cross-user warnings and in the admin activity log:',
+      'Your name: shown to teammates in cross-user warnings and in the admin activity log:',
       current === 'unknown' ? '' : current
     ) || '').trim();
     if (!label) return;
@@ -12971,7 +13210,7 @@ function jboRedact_(msg) {
       el('div', { class: 'jbo-modal-body' }, [
         el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
           'Every tool here is shared by the whole team, and every change made through it is attributed to ' +
-          'whoever ran it — for the activity log, and so teammates know who to check with. Enter your name ' +
+          'whoever ran it: for the activity log, and so teammates know who to check with. Enter your name ' +
           'once to continue; it\u2019s remembered for every tool on this site from now on.'
         )]),
         el('label', { class: 'jbo-muted', style: { display: 'block', marginBottom: '4px' } }, [document.createTextNode('Your name')]),
@@ -13121,7 +13360,7 @@ function jboRedact_(msg) {
       const okCount = Object.values(session.results).filter((r) => r.status === 'ok').length;
       const errCount = Object.values(session.results).filter((r) => r.status === 'err').length;
       summaryEl.textContent = okCount + ' succeeded, ' + errCount + ' failed so far' +
-        (cancelled ? ' (stopped)' : '') + (resumed ? ' — resumed from an earlier interrupted run' : '');
+        (cancelled ? ' (stopped)' : '') + (resumed ? '; resumed from an earlier interrupted run' : '');
     }
     renderSummary();
 
@@ -13259,7 +13498,7 @@ function jboRedact_(msg) {
     hits.forEach((h) => { uniq[String(h.id)] = h; });
     const ids = Object.keys(uniq);
     if (ids.length > 1) {
-      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + ') — use the numeric id');
+      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + '); use the numeric id');
     }
     return uniq[ids[0]];
   }
@@ -13648,7 +13887,7 @@ function jboRedact_(msg) {
     opts = opts || {};
     const chunkSize = opts.chunkSize || 50;
     if (rowsArr.length > (opts.warnThreshold || JBO_CHUNK_WARN_THRESHOLD)) {
-      toast_('Importing ' + rowsArr.length + ' rows — this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
+      toast_('Importing ' + rowsArr.length + ' rows: this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
     }
     return new Promise((resolve) => {
       let i = 0;
@@ -13704,7 +13943,7 @@ function jboRedact_(msg) {
   }
 
   function openImportMappingModal_(parsed, fields, onImport) {
-    const { body, foot, close } = openModalShell_('Import from Excel — Map Columns');
+    const { body, foot, close } = openModalShell_('Import from Excel: Map Columns');
     let sheetName = parsed.sheetNames[0];
     let sheet = parsed.sheets[sheetName];
     let mapping = {};
@@ -13784,7 +14023,7 @@ function jboRedact_(msg) {
     });
 
     body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
-      [document.createTextNode('Match each field to a column from your file. Rows land in the table for you to review and edit before running — nothing is sent yet.')]));
+      [document.createTextNode('Match each field to a column from your file. Rows land in the table for you to review and edit before running; nothing is sent yet.')]));
     body.appendChild(sheetSelWrap);
     body.appendChild(mapTable);
     body.appendChild(previewNote);
@@ -13811,7 +14050,7 @@ function jboRedact_(msg) {
     // behavior as before. The panel it opens is now a proper mini "hub":
     // a header (logo chip, title, live status dot, module-count pill, a
     // compact/expanded toggle) above the module list, all monochrome.
-    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops — drag to move', text: 'J' });
+    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops: drag to move', text: 'J' });
     let menuEl = null;
     function toggleMenu() {
       if (menuEl) { menuEl.remove(); menuEl = null; return; }
@@ -14009,13 +14248,13 @@ function jboRedact_(msg) {
         verified: true,
         alreadyExisted: true,
         verifyWarning: null,
-        note: 'not sent — a compensation change with this exact reason ("' + op.reason + '") was already found in this ' +
+        note: 'not sent: a compensation change with this exact reason ("' + op.reason + '") was already found in this ' +
           'employee\'s history, most likely from an earlier attempt at this same write.'
       };
     }
     return {
       verified: false,
-      verifyWarning: 'confirmed by response message only — no read-back endpoint exists for GOSI applicable amount, so this could not be independently re-checked. Spot-check in the Jisr UI.'
+      verifyWarning: 'confirmed by response message only: no read-back endpoint exists for GOSI applicable amount, so this could not be independently re-checked. Spot-check in the Jisr UI.'
     };
   }
 
@@ -14173,7 +14412,7 @@ function jboRedact_(msg) {
       try { plan = collectPlan(); } catch (e) { toast_(e.message, 5000); return; }
       plan.problems.forEach((p) => setStatus(p.r, 'err', p.msg));
       plan.ops.forEach((op) => setStatus(op.r, 'pending',
-        'would set to ' + op.amount + ' effective ' + op.effectiveDateDisplay + ' — "' + op.reason + '"'));
+        'would set to ' + op.amount + ' effective ' + op.effectiveDateDisplay + '; "' + op.reason + '"'));
       summary.textContent = plan.ops.length + ' change(s) ready, ' + plan.problems.length + ' row(s) with problems. Nothing sent yet.';
     });
 
@@ -14185,7 +14424,7 @@ function jboRedact_(msg) {
       plan.problems.forEach((p) => setStatus(p.r, 'err', p.msg));
       if (!plan.ops.length) { toast_('Nothing to run.', 3000); return; }
       if (!confirm('Send ' + plan.ops.length + ' GOSI Applicable Amount change(s) to Jisr now?\n\n' +
-        'This endpoint\'s response carries no data to independently verify against — every success below means ' +
+        'This endpoint\'s response carries no data to independently verify against; every success below means ' +
         '"Jisr accepted the request," not "re-confirmed by re-reading." Spot-check afterward in the Jisr UI.')) return;
 
       const rc = createRunControls_('gosi-applicable-amount', plan.ops.map((op) => String(op.employeeId)));
@@ -14200,7 +14439,7 @@ function jboRedact_(msg) {
         const op = plan.ops[i];
         const rowKey = String(op.employeeId);
         if (rc.isCancelled()) {
-          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped — ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
+          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped: ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
           setStatus(op.r, 'pending', 'stopped by user');
           continue;
         }
@@ -14214,7 +14453,7 @@ function jboRedact_(msg) {
           const res = await applyGosiApplicableAmount_(op);
           const msg = res.alreadyExisted
             ? 'already done: ' + res.note
-            : 'accepted: set to ' + op.amount + ' effective ' + op.effectiveDateDisplay + ' (unverified — no read-back endpoint)';
+            : 'accepted: set to ' + op.amount + ' effective ' + op.effectiveDateDisplay + ' (unverified; no read-back endpoint)';
           setStatus(op.r, 'ok', msg);
           rc.recordResult(rowKey, 'ok', msg);
           ok++;
@@ -14229,12 +14468,12 @@ function jboRedact_(msg) {
       runLiveBtn.disabled = false;
       summary.textContent = 'Done. Succeeded: ' + ok + '   Failed: ' + bad +
         (skipped ? '   Skipped (already done): ' + skipped : '') + '.';
-      toast_('Run complete — ' + ok + ' succeeded, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
+      toast_('Run complete: ' + ok + ' succeeded, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
     });
 
     body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [
       document.createTextNode('One row per employee. This write cannot be independently re-verified after the fact ' +
-        '(the API response carries no data to check) — every accepted row says so.')
+        '(the API response carries no data to check); every accepted row says so.')
     ]));
     body.appendChild(tableWrap);
     // v3.3: pre-filled template (every employee with ID, name, Iqama) - this tool had none before
@@ -14245,7 +14484,7 @@ function jboRedact_(msg) {
       templateBtn.textContent = 'Loading…';
       try {
         const rows = await unsafeWindow.__jisrBulkOpsEmployees.employeeRows(3, (n) => { templateBtn.textContent = 'Loading… (' + n + ')'; });
-        if (!rows.length) { toast_('No employees came back — nothing to put in a template.', 5000); return; }
+        if (!rows.length) { toast_('No employees came back: nothing to put in a template.', 5000); return; }
         const headers = ['Employee ID', 'Employee Name', unsafeWindow.__jisrBulkOpsEmployees.IQAMA_HEADER, 'New GOSI Applicable Amount', 'Effective Date', 'Reason'];
         const ws = XLSX.utils.aoa_to_sheet([headers].concat(rows));
         ws['!cols'] = [{ wch: 12 }, { wch: 32 }, { wch: 18 }, { wch: 26 }, { wch: 16 }, { wch: 30 }];
@@ -14589,7 +14828,7 @@ function jboRedact_(msg) {
   function configureBackend_() {
     const cfg = getBackendConfig_();
     const url = prompt(
-      'Shared backend URL (from the deployed Cloudflare Worker) — leave blank to disable:',
+      'Shared backend URL (from the deployed Cloudflare Worker); leave blank to disable:',
       cfg.url || ''
     );
     if (url === null) return;
@@ -14597,7 +14836,7 @@ function jboRedact_(msg) {
     if (key === null) return;
     sharedSet_('backendUrl', url.trim().replace(/\/$/, ''));
     sharedSet_('backendWriteKey', (key || '').trim());
-    toast_('Shared backend settings saved — this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
+    toast_('Shared backend settings saved: this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
   }
 
   if (typeof GM_registerMenuCommand === 'function' && !unsafeWindow.__jisrBulkOpsBackendMenuRegistered) {
@@ -14608,7 +14847,7 @@ function jboRedact_(msg) {
   function ownerLabel_() {
     let label = sharedGet_('ownerLabel', '');
     if (!label) {
-      label = (prompt('Your name — shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
+      label = (prompt('Your name: shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
       sharedSet_('ownerLabel', label);
     }
     return label;
@@ -14625,7 +14864,7 @@ function jboRedact_(msg) {
   function setOwnerLabel_() {
     const current = sharedGet_('ownerLabel', '');
     const label = (prompt(
-      'Your name — shown to teammates in cross-user warnings and in the admin activity log:',
+      'Your name: shown to teammates in cross-user warnings and in the admin activity log:',
       current === 'unknown' ? '' : current
     ) || '').trim();
     if (!label) return;
@@ -14681,7 +14920,7 @@ function jboRedact_(msg) {
       el('div', { class: 'jbo-modal-body' }, [
         el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
           'Every tool here is shared by the whole team, and every change made through it is attributed to ' +
-          'whoever ran it — for the activity log, and so teammates know who to check with. Enter your name ' +
+          'whoever ran it: for the activity log, and so teammates know who to check with. Enter your name ' +
           'once to continue; it\u2019s remembered for every tool on this site from now on.'
         )]),
         el('label', { class: 'jbo-muted', style: { display: 'block', marginBottom: '4px' } }, [document.createTextNode('Your name')]),
@@ -14831,7 +15070,7 @@ function jboRedact_(msg) {
       const okCount = Object.values(session.results).filter((r) => r.status === 'ok').length;
       const errCount = Object.values(session.results).filter((r) => r.status === 'err').length;
       summaryEl.textContent = okCount + ' succeeded, ' + errCount + ' failed so far' +
-        (cancelled ? ' (stopped)' : '') + (resumed ? ' — resumed from an earlier interrupted run' : '');
+        (cancelled ? ' (stopped)' : '') + (resumed ? '; resumed from an earlier interrupted run' : '');
     }
     renderSummary();
 
@@ -14969,7 +15208,7 @@ function jboRedact_(msg) {
     hits.forEach((h) => { uniq[String(h.id)] = h; });
     const ids = Object.keys(uniq);
     if (ids.length > 1) {
-      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + ') — use the numeric id');
+      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + '); use the numeric id');
     }
     return uniq[ids[0]];
   }
@@ -15432,7 +15671,7 @@ function jboRedact_(msg) {
     opts = opts || {};
     const chunkSize = opts.chunkSize || 50;
     if (rowsArr.length > (opts.warnThreshold || JBO_CHUNK_WARN_THRESHOLD)) {
-      toast_('Importing ' + rowsArr.length + ' rows — this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
+      toast_('Importing ' + rowsArr.length + ' rows: this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
     }
     return new Promise((resolve) => {
       let i = 0;
@@ -15488,7 +15727,7 @@ function jboRedact_(msg) {
   }
 
   function openImportMappingModal_(parsed, fields, onImport) {
-    const { body, foot, close } = openModalShell_('Import from Excel — Map Columns');
+    const { body, foot, close } = openModalShell_('Import from Excel: Map Columns');
     let sheetName = parsed.sheetNames[0];
     let sheet = parsed.sheets[sheetName];
     let mapping = {};
@@ -15568,8 +15807,8 @@ function jboRedact_(msg) {
     });
 
     const introText = fields.some((f) => f.change)
-      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically — handy for a downloaded template where you\'ve only filled in the records you want to change. Remaining rows land in the table for you to review and edit before running — nothing is sent yet.'
-      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running — nothing is sent yet.';
+      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically, so a downloaded template only needs the records you want to change. Remaining rows land in the table for you to review and edit before running; nothing is sent yet.'
+      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running; nothing is sent yet.';
     body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
       [document.createTextNode(introText)]));
     body.appendChild(sheetSelWrap);
@@ -15594,7 +15833,7 @@ function jboRedact_(msg) {
   function ensureLauncher_(g) {
     if (g.ready) { renderMenu_(g); return; }
     g.ready = true;
-    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops — drag to move', text: 'J' });
+    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops: drag to move', text: 'J' });
     let menuEl = null;
     function toggleMenu() {
       if (menuEl) { menuEl.remove(); menuEl = null; return; }
@@ -16232,7 +16471,7 @@ function jboRedact_(msg) {
           templateLocBtn.textContent = 'Loading org structure…';
           await loadOrgStructure_((i, total) => { templateLocBtn.textContent = 'Loading org structure… (' + i + '/' + total + ')'; });
         }
-        if (!locRows.length) { toast_('No locations came back — nothing to put in a template.', 5000); return; }
+        if (!locRows.length) { toast_('No locations came back: nothing to put in a template.', 5000); return; }
         const headers = ['Location ID', 'Country', 'Area', 'City',
           'New: Area', 'New: City', 'Old: Address (EN)', 'New: Address (EN)', 'Old: Address (AR)', 'New: Address (AR)',
           'Old: Manager', 'New: Manager (name or id)', 'Old: Latitude', 'New: Latitude',
@@ -16324,7 +16563,7 @@ function jboRedact_(msg) {
         const loc = row.locInput.dataset.itemId
           ? locRows.find((l) => String(l.id) === row.locInput.dataset.itemId)
           : findLocationRow_(locText);
-        if (!loc) { problems.push({ r: row, msg: 'location not found: "' + locText + '" — click "Load Org Structure" first if you haven\'t' }); continue; }
+        if (!loc) { problems.push({ r: row, msg: 'location not found: "' + locText + '": click "Load Org Structure" first if you haven\'t' }); continue; }
 
         const changes = {};
         if (addrEn) changes.address_en = addrEn;
@@ -16336,7 +16575,7 @@ function jboRedact_(msg) {
             if (!(cityCacheByCountry[loc.countryId] || []).length) { try { await loadCities_(loc.countryId); } catch (e) { /* reported below */ } }
             const c = await resolveCityFor_(loc.countryId, newCity, row.cityInput.dataset.itemId); if (c.error) { problems.push({ r: row, msg: c.error }); continue; } cityId = c.id;
           }
-          if (cityId == null) { problems.push({ r: row, msg: 'this location has no city yet — fill New City too' }); continue; }
+          if (cityId == null) { problems.push({ r: row, msg: 'this location has no city yet; fill New City too' }); continue; }
           if (String(areaId) !== String(loc.areaId)) changes.area_id = areaId;
           if (String(cityId) !== String(loc.cityId)) changes.city_id = cityId;
           if (changes.area_id !== undefined || changes.city_id !== undefined) {
@@ -16376,7 +16615,7 @@ function jboRedact_(msg) {
           if (isNaN(radNum) || radNum < 0) { problems.push({ r: row, msg: 'Radius must be a non-negative number' }); continue; }
           changes.radius = radNum;
         }
-        if (!Object.keys(changes).length) { problems.push({ r: row, msg: (newArea || newCity) ? 'already in that area / city — nothing to change' : 'location selected but no New value filled in' }); continue; }
+        if (!Object.keys(changes).length) { problems.push({ r: row, msg: (newArea || newCity) ? 'already in that area / city; nothing to change' : 'location selected but no New value filled in' }); continue; }
         const __moved = changes.__moved; delete changes.__moved;
         ops.push({ r: row, id: loc.id, label: formatLocLabel_(loc), current: loc, changes, moved: __moved });
       }
@@ -16400,7 +16639,7 @@ function jboRedact_(msg) {
         if (op.changes[CFG.MANAGER_FIELD] !== undefined) parts.push('Manager: ' + (op.current.managerName || '(none)') + ' → #' + op.changes[CFG.MANAGER_FIELD]);
         if (op.changes.latitude !== undefined) parts.push('Lat/Lng: ' + op.current.latitude + ',' + op.current.longitude + ' → ' + op.changes.latitude + ',' + op.changes.longitude);
         if (op.changes.radius !== undefined) parts.push('Radius: ' + op.current.radius + ' → ' + op.changes.radius);
-        setStatus_(op.r, 'pending', 'would change — ' + parts.join('; '));
+        setStatus_(op.r, 'pending', 'would change: ' + parts.join('; '));
       });
       locSummary.textContent = plan.ops.length + ' location(s) ready, ' + plan.problems.length + ' row(s) with problems. Nothing sent yet.';
       dryRunLocBtn.disabled = false;
@@ -16478,11 +16717,11 @@ function jboRedact_(msg) {
       runLiveLocBtn.disabled = false;
       locSummary.textContent = 'Done. Succeeded: ' + ok + '   Failed: ' + bad +
         (skipped ? '   Skipped (already done): ' + skipped : '') + '.';
-      toast_('Locations run complete — ' + ok + ' succeeded, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
+      toast_('Locations run complete: ' + ok + ' succeeded, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
     });
 
     paneLoc.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
-      'Pick an existing location, then fill in only the "New" fields you want to change — blank means unchanged. ' +
+      'Pick an existing location, then fill in only the "New" fields you want to change; blank means unchanged. ' +
       'A Google Maps link (short or long) overrides Latitude/Longitude if both are given. To move a location, ' +
       'pick a New Area and/or New City (cities of the location\'s country, as in Jisr).')]));
     paneLoc.appendChild(locTableWrap);
@@ -16543,7 +16782,7 @@ function jboRedact_(msg) {
           templateAreaBtn.textContent = 'Loading org structure…';
           await loadOrgStructure_((i, total) => { templateAreaBtn.textContent = 'Loading org structure… (' + i + '/' + total + ')'; });
         }
-        if (!areaRows.length) { toast_('No areas came back — nothing to put in a template.', 5000); return; }
+        if (!areaRows.length) { toast_('No areas came back: nothing to put in a template.', 5000); return; }
         const headers = ['Area ID', 'Country', 'Old: Name (EN)', 'New: Name (EN)', 'Old: Name (AR)', 'New: Name (AR)',
           'Old: Manager', 'New: Manager (name or id)', '# Locations'];
         const dataRows = areaRows.map((a) => [a.id, a.countryName, a.name, '', a.name_ar, '', a.managerName || '', '', a.locationCount]);
@@ -16604,7 +16843,7 @@ function jboRedact_(msg) {
         const area = row.areaInput.dataset.itemId
           ? areaRows.find((a) => String(a.id) === row.areaInput.dataset.itemId)
           : findAreaRowById_(areaText);
-        if (!area) { problems.push({ r: row, msg: 'area not found: "' + areaText + '" — click "Load Org Structure" first if you haven\'t' }); return; }
+        if (!area) { problems.push({ r: row, msg: 'area not found: "' + areaText + '": click "Load Org Structure" first if you haven\'t' }); return; }
         const changes = {};
         if (nameEn) changes.name = nameEn;
         if (nameAr) changes.name_ar = nameAr;
@@ -16630,7 +16869,7 @@ function jboRedact_(msg) {
         if (op.changes.name !== undefined) parts.push('Name EN: "' + op.current.name + '" → "' + op.changes.name + '"');
         if (op.changes.name_ar !== undefined) parts.push('Name AR: "' + op.current.name_ar + '" → "' + op.changes.name_ar + '"');
         if (op.changes[CFG.MANAGER_FIELD] !== undefined) parts.push('Manager: ' + (op.current.managerName || '(none)') + ' → #' + op.changes[CFG.MANAGER_FIELD]);
-        setStatus_(op.r, 'pending', 'would change — ' + parts.join('; '));
+        setStatus_(op.r, 'pending', 'would change: ' + parts.join('; '));
       });
       areaSummary.textContent = plan.ops.length + ' area(s) ready, ' + plan.problems.length + ' row(s) with problems. Nothing sent yet.';
     });
@@ -16701,11 +16940,11 @@ function jboRedact_(msg) {
       runLiveAreaBtn.disabled = false;
       areaSummary.textContent = 'Done. Succeeded: ' + ok + '   Failed: ' + bad +
         (skipped ? '   Skipped (already done): ' + skipped : '') + '.';
-      toast_('Areas run complete — ' + ok + ' succeeded, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
+      toast_('Areas run complete: ' + ok + ' succeeded, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
     });
 
     paneArea.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
-      'Pick an existing area, then fill in only the "New" fields you want to change — blank means unchanged.')]));
+      'Pick an existing area, then fill in only the "New" fields you want to change; blank means unchanged.')]));
     paneArea.appendChild(areaTableWrap);
     paneArea.appendChild(el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [addAreaRowBtn, templateAreaBtn, uploadAreaBtn]));
     paneArea.appendChild(areaRunControlsWrap);
@@ -16792,7 +17031,7 @@ function jboRedact_(msg) {
         'المقر الرئيسي - الرياض', '', 'https://maps.app.goo.gl/example', '150'];
       downloadWorkbook_('jisr-locations-bulk-create-template.xlsx', headers, [example]);
       toast_('Downloaded a blank template with one example row. Country/Area (EN)/City/Location (EN) are ' +
-        'required — an Area that already exists (matched by name within that country) is reused instead of ' +
+        'required: an Area that already exists (matched by name within that country) is reused instead of ' +
         'duplicated.', 9000);
     });
 
@@ -16998,7 +17237,7 @@ function jboRedact_(msg) {
       try { await loadOrgStructure_(); } catch (e) {
         plan.locOps.forEach((op) => setStatus_(op.r, 'err',
           'area(s) were created, but re-loading the org structure afterwards failed: ' + e.message +
-          ' — cannot safely continue to create locations without confirmed area ids.'));
+          '; cannot safely continue to create locations without confirmed area ids.'));
         runLiveCreateBtn.disabled = false;
         releaseCreateLock_();
         return;
@@ -17014,7 +17253,7 @@ function jboRedact_(msg) {
           .filter((op) => !op.areaRef.existing && missingAreaKeys.indexOf(op.areaRef.key) !== -1)
           .forEach((op) => setStatus_(op.r, 'err',
             'area "' + op.areaRef.name + '" was submitted for creation but could not be found in the org tree ' +
-            'afterwards — refusing to guess its id.'));
+            'afterwards: refusing to guess its id.'));
       }
 
       const readyLocOps = plan.locOps.filter((op) => op.areaRef.existing || !!resolvedAreaIdByKey[op.areaRef.key]);
@@ -17057,17 +17296,17 @@ function jboRedact_(msg) {
             const found = locRows.find((l) => l.cityId === op.cityId && normalizeName_(l.address_en) === normalizeName_(op.address_en));
             if (found && op.latitude != null) __geoTodo.push({ op, found });
             if (!found) {
-              setStatus_(op.r, 'err', 'sent, but could not find this location in the org tree afterwards — treat as unverified/failed');
+              setStatus_(op.r, 'err', 'sent, but could not find this location in the org tree afterwards; treat as unverified/failed');
               bad++;
             } else {
-              setStatus_(op.r, 'ok', 'verified — created as location #' + found.id);
+              setStatus_(op.r, 'ok', 'verified: created as location #' + found.id);
               ok++;
             }
           });
           for (const g of __geoTodo) {
             try {
               await setLocationGeo_(g.found, { latitude: g.op.latitude, longitude: g.op.longitude, radius: g.op.radius != null ? g.op.radius : undefined });
-              setStatus_(g.op.r, 'ok', 'verified — created as location #' + g.found.id + ', map pin set');
+              setStatus_(g.op.r, 'ok', 'verified: created as location #' + g.found.id + ', map pin set');
             } catch (e2) {
               setStatus_(g.op.r, 'err', 'created as location #' + g.found.id + ', but the map pin was not set: ' + e2.message);
               ok--; bad++;
@@ -17081,7 +17320,7 @@ function jboRedact_(msg) {
 
       runLiveCreateBtn.disabled = false;
       createSummary.textContent = 'Done. Succeeded: ' + ok + '   Failed: ' + bad + '.';
-      toast_('Bulk create complete — ' + ok + ' succeeded, ' + bad + ' failed.', 5000);
+      toast_('Bulk create complete: ' + ok + ' succeeded, ' + bad + ' failed.', 5000);
       // One aggregate entry rather than per-row — Bulk Create is a
       // batch-atomic operation (two POSTs total), not a per-row loop like
       // every other module's Run Live, so there's no natural per-row rowKey
@@ -17094,7 +17333,7 @@ function jboRedact_(msg) {
     });
 
     paneCreate.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
-      'Creates brand-new areas and/or locations — never edits or deletes an existing one. An Area matched by ' +
+      'Creates brand-new areas and/or locations: never edits or deletes an existing one. An Area matched by ' +
       'name within the given Country is reused automatically instead of being duplicated. City must already ' +
       'exist in Jisr for that country (this tool cannot create cities).')]));
     paneCreate.appendChild(createTableWrap);
@@ -17505,7 +17744,7 @@ function jboRedact_(msg) {
   function configureBackend_() {
     const cfg = getBackendConfig_();
     const url = prompt(
-      'Shared backend URL (from the deployed Cloudflare Worker) — leave blank to disable:',
+      'Shared backend URL (from the deployed Cloudflare Worker); leave blank to disable:',
       cfg.url || ''
     );
     if (url === null) return;
@@ -17513,7 +17752,7 @@ function jboRedact_(msg) {
     if (key === null) return;
     sharedSet_('backendUrl', url.trim().replace(/\/$/, ''));
     sharedSet_('backendWriteKey', (key || '').trim());
-    toast_('Shared backend settings saved — this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
+    toast_('Shared backend settings saved: this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
   }
 
   if (typeof GM_registerMenuCommand === 'function' && !unsafeWindow.__jisrBulkOpsBackendMenuRegistered) {
@@ -17524,7 +17763,7 @@ function jboRedact_(msg) {
   function ownerLabel_() {
     let label = sharedGet_('ownerLabel', '');
     if (!label) {
-      label = (prompt('Your name — shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
+      label = (prompt('Your name: shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
       sharedSet_('ownerLabel', label);
     }
     return label;
@@ -17533,7 +17772,7 @@ function jboRedact_(msg) {
   function setOwnerLabel_() {
     const current = sharedGet_('ownerLabel', '');
     const label = (prompt(
-      'Your name — shown to teammates in cross-user warnings and in the admin activity log:',
+      'Your name: shown to teammates in cross-user warnings and in the admin activity log:',
       current === 'unknown' ? '' : current
     ) || '').trim();
     if (!label) return;
@@ -17589,7 +17828,7 @@ function jboRedact_(msg) {
       el('div', { class: 'jbo-modal-body' }, [
         el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
           'Every tool here is shared by the whole team, and every change made through it is attributed to ' +
-          'whoever ran it — for the activity log, and so teammates know who to check with. Enter your name ' +
+          'whoever ran it: for the activity log, and so teammates know who to check with. Enter your name ' +
           'once to continue; it’s remembered for every tool on this site from now on.'
         )]),
         el('label', { class: 'jbo-muted', style: { display: 'block', marginBottom: '4px' } }, [document.createTextNode('Your name')]),
@@ -17706,7 +17945,7 @@ function jboRedact_(msg) {
       const okCount = Object.values(session.results).filter((r) => r.status === 'ok').length;
       const errCount = Object.values(session.results).filter((r) => r.status === 'err').length;
       summaryEl.textContent = okCount + ' succeeded, ' + errCount + ' failed so far' +
-        (cancelled ? ' (stopped)' : '') + (resumed ? ' — resumed from an earlier interrupted run' : '');
+        (cancelled ? ' (stopped)' : '') + (resumed ? '; resumed from an earlier interrupted run' : '');
     }
     renderSummary();
 
@@ -17829,7 +18068,7 @@ function jboRedact_(msg) {
     hits.forEach((h) => { uniq[String(h.id)] = h; });
     const ids = Object.keys(uniq);
     if (ids.length > 1) {
-      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + ') — use the numeric id');
+      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + '); use the numeric id');
     }
     return uniq[ids[0]];
   }
@@ -18228,7 +18467,7 @@ function jboRedact_(msg) {
     opts = opts || {};
     const chunkSize = opts.chunkSize || 50;
     if (rowsArr.length > (opts.warnThreshold || JBO_CHUNK_WARN_THRESHOLD)) {
-      toast_('Importing ' + rowsArr.length + ' rows — this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
+      toast_('Importing ' + rowsArr.length + ' rows: this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
     }
     return new Promise((resolve) => {
       let i = 0;
@@ -18266,7 +18505,7 @@ function jboRedact_(msg) {
   }
 
   function openImportMappingModal_(parsed, fields, onImport) {
-    const { body, foot, close } = openModalShell_('Import from Excel — Map Columns');
+    const { body, foot, close } = openModalShell_('Import from Excel: Map Columns');
     let sheetName = parsed.sheetNames[0];
     let sheet = parsed.sheets[sheetName];
     let mapping = {};
@@ -18354,8 +18593,8 @@ function jboRedact_(msg) {
     });
 
     const introText = fields.some((f) => f.change)
-      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically — handy for a downloaded template where you\'ve only filled in the ones you want to change. Remaining rows land in the table for you to review and edit before running — nothing is sent yet.'
-      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running — nothing is sent yet.';
+      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically, so a downloaded template only needs the ones you want to change. Remaining rows land in the table for you to review and edit before running; nothing is sent yet.'
+      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running; nothing is sent yet.';
     body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
       [document.createTextNode(introText)]));
     body.appendChild(sheetSelWrap);
@@ -18380,7 +18619,7 @@ function jboRedact_(msg) {
   function ensureLauncher_(g) {
     if (g.ready) { renderMenu_(g); return; }
     g.ready = true;
-    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops — drag to move', text: 'J' });
+    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops: drag to move', text: 'J' });
     let menuEl = null;
     function toggleMenu() {
       if (menuEl) { menuEl.remove(); menuEl = null; return; }
@@ -18514,12 +18753,12 @@ function jboRedact_(msg) {
     const raw = String(input == null ? '' : input).trim();
     if (raw === '') throw new Error('empty job title identifier');
     const hits = index[normalizeName_(raw)];
-    if (!hits || hits.length === 0) throw new Error('job title not found: "' + raw + '" — pick one from the dropdown suggestions');
+    if (!hits || hits.length === 0) throw new Error('job title not found: "' + raw + '": pick one from the dropdown suggestions');
     const uniq = {};
     hits.forEach((h) => { uniq[String(h.id)] = h; });
     const ids = Object.keys(uniq);
     if (ids.length > 1) {
-      throw new Error('"' + raw + '" matches ' + ids.length + ' job titles (ids ' + ids.join(', ') + ') — pick one from the dropdown suggestions or use the numeric id');
+      throw new Error('"' + raw + '" matches ' + ids.length + ' job titles (ids ' + ids.join(', ') + '); pick one from the dropdown suggestions or use the numeric id');
     }
     return uniq[ids[0]];
   }
@@ -18599,7 +18838,7 @@ function jboRedact_(msg) {
       String(echoed.name_ar || '') === String(op.newNameAr || '');
     return {
       verified,
-      verifyWarning: verified ? null : 'the response did not echo back the values just sent — could not independently confirm. Spot-check in the Jisr UI.'
+      verifyWarning: verified ? null : 'the response did not echo back the values just sent; could not independently confirm. Spot-check in the Jisr UI.'
     };
   }
 
@@ -18611,7 +18850,7 @@ function jboRedact_(msg) {
    */
   async function applyJobTitleDelete_(id) {
     await apiRequest_('DELETE', '/v2/job_titles/' + encodeURIComponent(id) + '/', {});
-    return { verified: false, verifyWarning: 'no response body was ever captured for this endpoint to confirm against — a non-error HTTP response is treated as success. Spot-check in the Jisr UI if in doubt.' };
+    return { verified: false, verifyWarning: 'no response body was ever captured for this endpoint to confirm against; a non-error HTTP response is treated as success. Spot-check in the Jisr UI if in doubt.' };
   }
 
   /** See the file header's "CONFIRMED create" block for the exact capture this mirrors — only these three keys, no "description". */
@@ -18643,7 +18882,7 @@ function jboRedact_(msg) {
     return {
       verified,
       id: echoed ? echoed.id : null,
-      verifyWarning: verified ? null : 'the response did not echo back the values just sent — could not independently confirm. Spot-check in the Jisr UI.'
+      verifyWarning: verified ? null : 'the response did not echo back the values just sent; could not independently confirm. Spot-check in the Jisr UI.'
     };
   }
 
@@ -18789,9 +19028,9 @@ function jboRedact_(msg) {
         const existing = jobTitlesCache.find((jt) => normalizeName_(jt.name) === op.key);
         if (existing) {
           setStatus_(op.r, 'pending', 'a title named "' + op.name + '" already appears to exist (#' + existing.id +
-            ') — Run Live will reuse it instead of creating a duplicate');
+            '). Run Live will reuse it instead of creating a duplicate');
         } else {
-          setStatus_(op.r, 'pending', 'would CREATE — "' + op.name + '"' + (op.nameAr ? ' / "' + op.nameAr + '"' : ' (no Arabic name)'));
+          setStatus_(op.r, 'pending', 'would CREATE: "' + op.name + '"' + (op.nameAr ? ' / "' + op.nameAr + '"' : ' (no Arabic name)'));
         }
       });
       createSummary.textContent = plan.ops.length + ' title(s) ready, ' + plan.problems.length +
@@ -18835,7 +19074,7 @@ function jboRedact_(msg) {
         const op = plan.ops[i];
         const rowKey = op.key;
         if (rc.isCancelled()) {
-          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped — ' + (ok + reused + bad) + ' of ' + plan.ops.length + ' processed.', 4000); }
+          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped: ' + (ok + reused + bad) + ' of ' + plan.ops.length + ' processed.', 4000); }
           setStatus_(op.r, 'pending', 'stopped by user');
           continue;
         }
@@ -18847,12 +19086,12 @@ function jboRedact_(msg) {
             async () => applyJobTitleCreate_(op)
           );
           if (!created) {
-            const msg = 'already exists — reused #' + existing.id + ' instead of creating a duplicate';
+            const msg = 'already exists: reused #' + existing.id + ' instead of creating a duplicate';
             setStatus_(op.r, 'ok', msg);
             rc.recordResult(rowKey, 'ok', msg);
             reused++;
           } else {
-            const msg = result.verified ? ('created — #' + result.id + ' (verified)') : ('created (unverified: ' + result.verifyWarning + ')');
+            const msg = result.verified ? ('created: #' + result.id + ' (verified)') : ('created (unverified: ' + result.verifyWarning + ')');
             setStatus_(op.r, 'ok', msg);
             rc.recordResult(rowKey, 'ok', msg);
             if (result.id != null) existingByKey[op.key] = { id: result.id, name: op.name };
@@ -18868,7 +19107,7 @@ function jboRedact_(msg) {
       if (!rc.isCancelled()) rc.finish();
       runLiveCreateBtn.disabled = false;
       createSummary.textContent = 'Done. Created: ' + ok + '   Reused existing: ' + reused + '   Failed: ' + bad + '.';
-      toast_('Run complete — ' + ok + ' created, ' + reused + ' reused (already existed), ' + bad + ' failed.', 5000);
+      toast_('Run complete: ' + ok + ' created, ' + reused + ' reused (already existed), ' + bad + ' failed.', 5000);
       // A new title just showed up server-side — same cache-invalidation
       // reasoning as Edit/Delete, so the picker autocomplete in the other
       // two tabs sees it immediately without a manual "Load Job Titles".
@@ -18876,7 +19115,7 @@ function jboRedact_(msg) {
     });
 
     paneCreate.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [
-      document.createTextNode('Plain free-text titles only — no link to Jisr\'s reference title library (same decision already made for Edit). Description can\'t be set on create yet (not part of the confirmed write for this endpoint) — create the title here, then add a description via the Edit tab. A title that already exists with the exact same English name is reused instead of duplicated.')
+      document.createTextNode('Plain free-text titles only: no link to Jisr\'s reference title library (same decision already made for Edit). Description can\'t be set on create yet (not part of the confirmed write for this endpoint); create the title here, then add a description via the Edit tab. A title that already exists with the exact same English name is reused instead of duplicated.')
     ]));
     paneCreate.appendChild(createTableWrap);
     paneCreate.appendChild(el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px' } },
@@ -18983,7 +19222,7 @@ function jboRedact_(msg) {
       editTemplateBtn.textContent = 'Loading…';
       try {
         if (!jobTitlesCache.length) jobTitlesCache = await getJobTitles_(false, (n) => { editTemplateBtn.textContent = 'Loading… (' + n + ')'; });
-        if (!jobTitlesCache.length) { toast_('No job titles came back — nothing to put in a template.', 5000); return; }
+        if (!jobTitlesCache.length) { toast_('No job titles came back: nothing to put in a template.', 5000); return; }
         const sorted = jobTitlesCache.slice().sort((a, b) => normalizeName_(a.name).localeCompare(normalizeName_(b.name)));
         const headers = ['Job Title ID', 'Current Name (EN)', 'Current Name (AR)', 'Current Description', 'New Name (EN)', 'New Name (AR)', 'New Description'];
         const dataRows = sorted.map((jt) => [jt.id, jt.name, jt.nameAr, jt.description, '', '', '']);
@@ -19022,7 +19261,7 @@ function jboRedact_(msg) {
         const newName = newNameRaw || jt.name;
         const newNameAr = newNameArRaw || jt.nameAr;
         const newDescription = newDescRaw || jt.description;
-        if (!newName) { problems.push({ r: row, msg: 'the resulting Name (EN) would be blank — type one in' }); return; }
+        if (!newName) { problems.push({ r: row, msg: 'the resulting Name (EN) would be blank; type one in' }); return; }
         const changed = newName !== jt.name || newNameAr !== jt.nameAr || newDescription !== jt.description;
         rawOps.push({
           r: row, id: jt.id, currentName: jt.name, currentNameAr: jt.nameAr, currentDescription: jt.description,
@@ -19046,7 +19285,7 @@ function jboRedact_(msg) {
       try { plan = collectEditPlan_(); } catch (e) { toast_(e.message, 5000); return; }
       plan.problems.forEach((p) => setStatus_(p.r, 'err', p.msg));
       plan.ops.forEach((op) => {
-        if (!op.changed) { setStatus_(op.r, 'pending', 'no changes — will be skipped'); return; }
+        if (!op.changed) { setStatus_(op.r, 'pending', 'no changes: will be skipped'); return; }
         let msg = 'EN: "' + op.currentName + '" → "' + op.newName + '"';
         if (op.newNameAr !== op.currentNameAr) msg += '  |  AR: "' + op.currentNameAr + '" → "' + op.newNameAr + '"';
         if (op.newDescription !== op.currentDescription) msg += '  |  Description changed';
@@ -19065,7 +19304,7 @@ function jboRedact_(msg) {
       plan.problems.forEach((p) => setStatus_(p.r, 'err', p.msg));
       if (!plan.ops.length) { toast_('Nothing to run.', 3000); return; }
       const changedCount = plan.ops.filter((o) => o.changed).length;
-      if (!changedCount) { toast_('Every row already matches its current value — nothing to send.', 4000); return; }
+      if (!changedCount) { toast_('Every row already matches its current value; nothing to send.', 4000); return; }
       if (!confirm('Send ' + changedCount + ' Job Title edit(s) to Jisr now? Unchanged rows are skipped automatically.')) return;
 
       const rc = createRunControls_('job-titles-edit', plan.ops.map((op) => String(op.id)));
@@ -19079,9 +19318,9 @@ function jboRedact_(msg) {
       for (let i = 0; i < plan.ops.length; i++) {
         const op = plan.ops[i];
         const rowKey = String(op.id);
-        if (!op.changed) { setStatus_(op.r, 'ok', 'no changes — skipped'); skipped++; continue; }
+        if (!op.changed) { setStatus_(op.r, 'ok', 'no changes: skipped'); skipped++; continue; }
         if (rc.isCancelled()) {
-          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped — ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
+          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped: ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
           setStatus_(op.r, 'pending', 'stopped by user');
           continue;
         }
@@ -19103,7 +19342,7 @@ function jboRedact_(msg) {
       if (!rc.isCancelled()) rc.finish();
       runLiveEditBtn.disabled = false;
       editSummary.textContent = 'Done. Succeeded: ' + ok + '   Failed: ' + bad + '   Skipped (no changes): ' + skipped + '.';
-      toast_('Run complete — ' + ok + ' succeeded, ' + bad + ' failed, ' + skipped + ' skipped (no changes).', 5000);
+      toast_('Run complete: ' + ok + ' succeeded, ' + bad + ' failed, ' + skipped + ' skipped (no changes).', 5000);
       // Same reasoning as Delete's cache invalidation below: at least one
       // title's name/name_ar/description just changed server-side, so the
       // in-memory/GM-persisted picker cache is now stale — force a re-fetch
@@ -19112,7 +19351,7 @@ function jboRedact_(msg) {
     });
 
     paneEdit.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [
-      document.createTextNode('Leave a "New …" field blank to keep it unchanged. Every PUT sends the full record (name/name_ar/description) — this endpoint has no confirmed partial-update behavior, so this module never omits a field.')
+      document.createTextNode('Leave a "New …" field blank to keep it unchanged. Every PUT sends the full record (name/name_ar/description); this endpoint has no confirmed partial-update behavior, so this module never omits a field.')
     ]));
     paneEdit.appendChild(editTableWrap);
     paneEdit.appendChild(el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px' } },
@@ -19188,7 +19427,7 @@ function jboRedact_(msg) {
       deleteTemplateBtn.textContent = 'Loading…';
       try {
         if (!jobTitlesCache.length) jobTitlesCache = await getJobTitles_(false, (n) => { deleteTemplateBtn.textContent = 'Loading… (' + n + ')'; });
-        if (!jobTitlesCache.length) { toast_('No job titles came back — nothing to put in a template.', 5000); return; }
+        if (!jobTitlesCache.length) { toast_('No job titles came back: nothing to put in a template.', 5000); return; }
         const sorted = jobTitlesCache.slice().sort((a, b) => normalizeName_(a.name).localeCompare(normalizeName_(b.name)));
         const headers = ['Job Title ID', 'Current Name (EN)', 'Current Name (AR)', 'Number of Employees', 'Delete? (type YES to include)'];
         const dataRows = sorted.map((jt) => [jt.id, jt.name, jt.nameAr, jt.numberOfEmployees == null ? '' : jt.numberOfEmployees, '']);
@@ -19238,10 +19477,10 @@ function jboRedact_(msg) {
       try { plan = collectDeletePlan_(); } catch (e) { toast_(e.message, 5000); return; }
       plan.problems.forEach((p) => setStatus_(p.r, 'err', p.msg));
       plan.ops.forEach((op) => {
-        let msg = 'would DELETE — "' + op.name + '" / "' + op.nameAr + '"';
+        let msg = 'would DELETE: "' + op.name + '" / "' + op.nameAr + '"';
         if (op.numberOfEmployees) {
           msg += '  ⚠ ' + op.numberOfEmployees + ' employee' + (op.numberOfEmployees === 1 ? '' : 's') +
-            ' currently hold' + (op.numberOfEmployees === 1 ? 's' : '') + ' this title — Jisr\'s own response will ' +
+            ' currently hold' + (op.numberOfEmployees === 1 ? 's' : '') + ' this title: Jisr\'s own response will ' +
             'decide whether the delete is allowed; nothing has been sent yet.';
         }
         setStatus_(op.r, 'pending', msg);
@@ -19260,7 +19499,7 @@ function jboRedact_(msg) {
       const namesList = plan.ops.map((op) => op.name + (op.numberOfEmployees ? ' (' + op.numberOfEmployees + ' emp.)' : '')).join(', ');
       const totalEmployees = plan.ops.reduce((s, op) => s + (op.numberOfEmployees || 0), 0);
       if (!confirm('Permanently DELETE ' + plan.ops.length + ' job title(s)?\n\n' + namesList +
-        (totalEmployees ? '\n\n⚠ ' + totalEmployees + ' employee(s) across these titles may be affected — this ' +
+        (totalEmployees ? '\n\n⚠ ' + totalEmployees + ' employee(s) across these titles may be affected; this ' +
           'module has no confirmed evidence of what Jisr does to them (blocks the delete, or leaves them without ' +
           'this title). Jisr\'s own response is the only source of truth here.' : '') +
         '\n\nThis cannot be undone from this tool.')) return;
@@ -19277,7 +19516,7 @@ function jboRedact_(msg) {
         const op = plan.ops[i];
         const rowKey = String(op.id);
         if (rc.isCancelled()) {
-          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped — ' + (ok + bad) + ' of ' + plan.ops.length + ' processed.', 4000); }
+          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped: ' + (ok + bad) + ' of ' + plan.ops.length + ' processed.', 4000); }
           setStatus_(op.r, 'pending', 'stopped by user');
           continue;
         }
@@ -19299,7 +19538,7 @@ function jboRedact_(msg) {
       if (!rc.isCancelled()) rc.finish();
       runLiveDeleteBtn.disabled = false;
       deleteSummary.textContent = 'Done. Succeeded: ' + ok + '   Failed: ' + bad + '.';
-      toast_('Run complete — ' + ok + ' succeeded, ' + bad + ' failed.', 5000);
+      toast_('Run complete: ' + ok + ' succeeded, ' + bad + ' failed.', 5000);
       // Whatever actually happened server-side, the local picker cache is now
       // stale for any deleted id — force a re-fetch next time it's needed
       // rather than risk offering a deleted title as still-pickable.
@@ -19307,7 +19546,7 @@ function jboRedact_(msg) {
     });
 
     paneDelete.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [
-      document.createTextNode('This cannot be undone from this tool. There is no confirmed capture of what Jisr does to employees still holding a deleted title — the employee count shown is a warning, not a guarantee either way.')
+      document.createTextNode('This cannot be undone from this tool. There is no confirmed capture of what Jisr does to employees still holding a deleted title; the employee count shown is a warning, not a guarantee either way.')
     ]));
     paneDelete.appendChild(deleteTableWrap);
     paneDelete.appendChild(el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px' } },
@@ -20080,7 +20319,7 @@ function jboRedact_(msg) {
   function configureBackend_() {
     const cfg = getBackendConfig_();
     const url = prompt(
-      'Shared backend URL (from the deployed Cloudflare Worker) — leave blank to disable:',
+      'Shared backend URL (from the deployed Cloudflare Worker); leave blank to disable:',
       cfg.url || ''
     );
     if (url === null) return;
@@ -20088,7 +20327,7 @@ function jboRedact_(msg) {
     if (key === null) return;
     sharedSet_('backendUrl', url.trim().replace(/\/$/, ''));
     sharedSet_('backendWriteKey', (key || '').trim());
-    toast_('Shared backend settings saved — this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
+    toast_('Shared backend settings saved: this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
   }
 
   if (typeof GM_registerMenuCommand === 'function' && !unsafeWindow.__jisrBulkOpsBackendMenuRegistered) {
@@ -20325,7 +20564,7 @@ function jboRedact_(msg) {
   function ownerLabel_() {
     let label = sharedGet_('ownerLabel', '');
     if (!label) {
-      label = (prompt('Your name — shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
+      label = (prompt('Your name: shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
       sharedSet_('ownerLabel', label);
     }
     return label;
@@ -20334,7 +20573,7 @@ function jboRedact_(msg) {
   function setOwnerLabel_() {
     const current = sharedGet_('ownerLabel', '');
     const label = (prompt(
-      'Your name — shown to teammates in cross-user warnings and in the admin activity log:',
+      'Your name: shown to teammates in cross-user warnings and in the admin activity log:',
       current === 'unknown' ? '' : current
     ) || '').trim();
     if (!label) return;
@@ -20381,7 +20620,7 @@ function jboRedact_(msg) {
       el('div', { class: 'jbo-modal-body' }, [
         el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
           'Every tool here is shared by the whole team, and every change made through it is attributed to ' +
-          'whoever ran it — for the activity log, and so teammates know who to check with. Enter your name ' +
+          'whoever ran it: for the activity log, and so teammates know who to check with. Enter your name ' +
           'once to continue; it’s remembered for every tool on this site from now on.'
         )]),
         el('label', { class: 'jbo-muted', style: { display: 'block', marginBottom: '4px' } }, [document.createTextNode('Your name')]),
@@ -20407,7 +20646,7 @@ function jboRedact_(msg) {
   function ensureLauncher_(g) {
     if (g.ready) { renderMenu_(g); return; }
     g.ready = true;
-    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops — drag to move', text: 'J' });
+    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops: drag to move', text: 'J' });
     let menuEl = null;
     function toggleMenu() {
       if (menuEl) { menuEl.remove(); menuEl = null; return; }
@@ -21312,7 +21551,7 @@ function jboRedact_(msg) {
       if (r.status === 'not_found') {
         const suggestion = r.nameSuggestion
           ? ' Possible match by name similarity: "' + r.nameSuggestion.name + '" (Jisr ID ' + r.nameSuggestion.idRaw + ', ' +
-            Math.round(r.nameSuggestion.score * 100) + '%) — not auto-matched, please confirm manually.'
+            Math.round(r.nameSuggestion.score * 100) + '%); not auto-matched, please confirm manually.'
           : '';
         noteRows.push([r.clientRow.idRaw, '(not found in Jisr)', 'Employee not found in Jisr\'s current payroll table.' + suggestion]);
         return;
@@ -21412,7 +21651,7 @@ function jboRedact_(msg) {
     const confirmBtn = el('button', { class: 'jpr-btn jpr-btn-primary', text: 'Use This Row →' });
     const cancelBtn = el('button', { class: 'jpr-btn', text: 'Cancel' });
     const backdrop = openModal_({
-      title: 'Step 1 of 2 — Pick the Header Row',
+      title: 'Step 1 of 2: Pick the Header Row',
       subtitle: 'Showing the first ' + preview.length + ' rows of your file',
       bodyEl: body,
       footButtons: [cancelBtn, confirmBtn]
@@ -21507,14 +21746,14 @@ function jboRedact_(msg) {
 
     const jisrStatusMsg = jisrCols.allowanceCols.length
       ? jisrCols.allowanceCols.length + ' allowance column(s) detected live from this Jisr tenant.'
-      : 'No allowance columns were returned by Jisr for this payrun — every "not tracked in Jisr" mapping will be compared against 0.';
+      : 'No allowance columns were returned by Jisr for this payrun; every "not tracked in Jisr" mapping will be compared against 0.';
 
     const body = el('div', {}, [
       el('div', { class: 'jpr-banner', text: jisrStatusMsg }),
       el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '14px', marginBottom: '16px' } }, [
-        el('div', {}, [el('label', { class: 'jpr-muted', text: 'Employee Identifier (matched against Jisr\'s Employee Code — confirmed v1.3.0)' }), el('br'), idSelect]),
+        el('div', {}, [el('label', { class: 'jpr-muted', text: 'Employee Identifier (matched against Jisr\'s Employee Code; confirmed v1.3.0)' }), el('br'), idSelect]),
         el('div', {}, [el('label', { class: 'jpr-muted', text: 'Basic Salary' }), el('br'), basicSelect]),
-        el('div', {}, [el('label', { class: 'jpr-muted', text: 'Employee Name (optional — enables name-matching if the Identifier doesn\'t line up exactly)' }), el('br'), nameSelect])
+        el('div', {}, [el('label', { class: 'jpr-muted', text: 'Employee Name (optional; enables name-matching if the Identifier doesn\'t line up exactly)' }), el('br'), nameSelect])
       ]),
       el('div', { style: { fontWeight: '700', marginBottom: '6px' } }, [document.createTextNode('Allowance Mapping')]),
       el('div', { class: 'jpr-muted', style: { marginBottom: '8px' } },
@@ -21527,7 +21766,7 @@ function jboRedact_(msg) {
     const backBtn = el('button', { class: 'jpr-btn', text: '← Back' });
     const cancelBtn = el('button', { class: 'jpr-btn', text: 'Cancel' });
     const backdrop = openModal_({
-      title: 'Step 2 of 2 — Map Columns',
+      title: 'Step 2 of 2: Map Columns',
       subtitle: 'Map at least Employee Identifier + Basic Salary; add as many allowance rows as you need',
       wide: true,
       bodyEl: body,
@@ -21615,13 +21854,13 @@ function jboRedact_(msg) {
       // confirm — see reconcile_'s NAME_FUZZY_* thresholds.
       const fuzzyTag = r.matchMethod === 'name_fuzzy'
         ? el('span', { class: 'jpr-pill-tag jpr-pill-yellow', style: { marginInlineStart: '6px' },
-            title: 'Employee Identifier did not match exactly — matched by name similarity (' + Math.round(r.matchConfidence * 100) + '%) instead.',
+            title: 'Employee Identifier did not match exactly; matched by name similarity (' + Math.round(r.matchConfidence * 100) + '%) instead.',
             text: '🔤 name match' })
         : null;
       const suggestionEl = (r.status === 'not_found' && r.nameSuggestion)
         ? el('div', { class: 'jpr-muted', style: { fontStyle: 'italic' } }, [document.createTextNode(
             'Possible match: "' + r.nameSuggestion.name + '" (Jisr ID ' + r.nameSuggestion.idRaw + ', ' +
-            Math.round(r.nameSuggestion.score * 100) + '% name similarity) — not auto-matched, please confirm manually.'
+            Math.round(r.nameSuggestion.score * 100) + '% name similarity); not auto-matched, please confirm manually.'
           )])
         : null;
       tr.appendChild(el('td', {}, [
@@ -21666,14 +21905,14 @@ function jboRedact_(msg) {
         document.createTextNode(
           'Jisr returned 0 employee records for this payroll run' +
           (diagnostics.jisrState ? ' (run state: "' + diagnostics.jisrState + '")' : '') +
-          ' — every row below is "Not Found" simply because there is nothing to reconcile against yet. ' +
+          '; every row below is "Not Found" simply because there is nothing to reconcile against yet. ' +
           'This usually means the payrun hasn\'t been calculated/finalized in Jisr yet, or the wrong payroll run was selected ' +
           '(right-click the icon to switch runs). This is not a bug in the reconciliation itself.'
         )
       ]);
     } else if (diagnostics && diagnostics.shapesSeen.size) {
       diagBanner = el('div', { class: 'jpr-banner' }, [
-        document.createTextNode('Detected Jisr field shapes from the first real records seen this run — double-check these look right before trusting the numbers above: ' +
+        document.createTextNode('Detected Jisr field shapes from the first real records seen this run; double-check these look right before trusting the numbers above: ' +
           Array.from(diagnostics.shapesSeen).join('; '))
       ]);
     } else if (diagnostics) {
@@ -21682,7 +21921,7 @@ function jboRedact_(msg) {
       // for THIS tenant/payrun — not an open question anymore.
       diagBanner = el('div', { class: 'jpr-banner' }, [
         document.createTextNode(
-          'Jisr returned ' + diagnostics.jisrRecordCount + ' employee record(s) for this payroll run, but every field on every one of them read back as "missing" — ' +
+          'Jisr returned ' + diagnostics.jisrRecordCount + ' employee record(s) for this payroll run, but every field on every one of them read back as "missing": ' +
           'unexpected, since this endpoint\'s record shape is confirmed (see this file\'s header comment). Numbers above are almost certainly wrong; please capture ' +
           'one raw record from the .../finance/payruns/<id>/additions_deductions response (View Source, not the collapsed preview) so this can be investigated.'
         )
@@ -21746,8 +21985,8 @@ function jboRedact_(msg) {
     iconEl.textContent = icon;
     textEl.textContent = text;
     subEl.textContent = sub || '';
-    let title = text + (sub ? ' — ' + sub : '');
-    if (selectedPayrun_) title += '\n(' + selectedPayrun_.label + ') — right-click to change payroll run';
+    let title = text + (sub ? ' · ' + sub : '');
+    if (selectedPayrun_) title += '\n(' + selectedPayrun_.label + '); right-click to change payroll run';
     widget.title = title;
   }
 
@@ -21866,7 +22105,7 @@ function jboRedact_(msg) {
       btn.textContent = 'Preparing…';
       try {
         await downloadJisrTemplate_(payrunId, getLabel());
-        toast_('Jisr template downloaded — send it to the client to adjust directly and re-upload.', 4500);
+        toast_('Jisr template downloaded: send it to the client to adjust directly and re-upload.', 4500);
       } catch (e) {
         toast_('Could not build the template: ' + e.message, 5000);
       } finally {
@@ -21881,7 +22120,7 @@ function jboRedact_(msg) {
     let backdrop;
 
     function pickPaygroup(g) {
-      const label = g.name + (g.payrun && g.payrun.month_year_i18n ? ' — ' + g.payrun.month_year_i18n : '');
+      const label = g.name + (g.payrun && g.payrun.month_year_i18n ? ' · ' + g.payrun.month_year_i18n : '');
       const payrunId = String(g.payrun.id);
       // status_i18n/status come straight from the confirmed paygroups
       // endpoint (v1.2.0) — carried onto selectedPayrun_ so the results
@@ -21920,7 +22159,7 @@ function jboRedact_(msg) {
         else selectBtn.addEventListener('click', () => pickPaygroup(g));
         const templateBtn = makeTemplateBtn_(
           () => (hasPayrun ? String(g.payrun.id) : null),
-          () => g.name + (hasPayrun && g.payrun.month_year_i18n ? ' — ' + g.payrun.month_year_i18n : '')
+          () => g.name + (hasPayrun && g.payrun.month_year_i18n ? ' · ' + g.payrun.month_year_i18n : '')
         );
         if (!hasPayrun) templateBtn.disabled = true;
         tbody.appendChild(el('tr', {}, [
@@ -21988,7 +22227,7 @@ function jboRedact_(msg) {
     }
     renderList();
 
-    const manualLabel = el('input', { class: 'jpr-input', placeholder: 'Label (optional, e.g. "Regular Monthly — Aug 2026")', style: { width: '260px' } });
+    const manualLabel = el('input', { class: 'jpr-input', placeholder: 'Label (optional, e.g. "Regular Monthly: Aug 2026")', style: { width: '260px' } });
     const manualId = el('input', { class: 'jpr-input', placeholder: 'Payrun ID', style: { width: '110px' } });
     const addBtn = el('button', { class: 'jpr-btn', text: 'Add & Select' });
     addBtn.addEventListener('click', () => {
@@ -22075,7 +22314,7 @@ function jboRedact_(msg) {
       worst ? '⚠️' : '✅',
       (worst ? output.counts.shifted + ' Shifted | ' + (output.counts.mismatch + output.counts.not_found) + ' Mismatches'
              : 'All ' + output.counts.match + ' Matched'),
-      'Click to view — export from the results window'
+      'Click to view: export from the results window'
     );
     openResultsModal_(output, mapping, diagnostics, resetCtx);
   }
@@ -22584,7 +22823,7 @@ function jboRedact_(msg) {
   function configureBackend_() {
     const cfg = getBackendConfig_();
     const url = prompt(
-      'Shared backend URL (from the deployed Cloudflare Worker) — leave blank to disable:',
+      'Shared backend URL (from the deployed Cloudflare Worker); leave blank to disable:',
       cfg.url || ''
     );
     if (url === null) return;
@@ -22592,7 +22831,7 @@ function jboRedact_(msg) {
     if (key === null) return;
     sharedSet_('backendUrl', url.trim().replace(/\/$/, ''));
     sharedSet_('backendWriteKey', (key || '').trim());
-    toast_('Shared backend settings saved — this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
+    toast_('Shared backend settings saved: this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
   }
 
   if (typeof GM_registerMenuCommand === 'function' && !unsafeWindow.__jisrBulkOpsBackendMenuRegistered) {
@@ -22603,7 +22842,7 @@ function jboRedact_(msg) {
   function ownerLabel_() {
     let label = sharedGet_('ownerLabel', '');
     if (!label) {
-      label = (prompt('Your name — shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
+      label = (prompt('Your name: shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
       sharedSet_('ownerLabel', label);
     }
     return label;
@@ -22612,7 +22851,7 @@ function jboRedact_(msg) {
   function setOwnerLabel_() {
     const current = sharedGet_('ownerLabel', '');
     const label = (prompt(
-      'Your name — shown to teammates in cross-user warnings and in the admin activity log:',
+      'Your name: shown to teammates in cross-user warnings and in the admin activity log:',
       current === 'unknown' ? '' : current
     ) || '').trim();
     if (!label) return;
@@ -22668,7 +22907,7 @@ function jboRedact_(msg) {
       el('div', { class: 'jbo-modal-body' }, [
         el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
           'Every tool here is shared by the whole team, and every change made through it is attributed to ' +
-          'whoever ran it — for the activity log, and so teammates know who to check with. Enter your name ' +
+          'whoever ran it: for the activity log, and so teammates know who to check with. Enter your name ' +
           'once to continue; it\u2019s remembered for every tool on this site from now on.'
         )]),
         el('label', { class: 'jbo-muted', style: { display: 'block', marginBottom: '4px' } }, [document.createTextNode('Your name')]),
@@ -22785,7 +23024,7 @@ function jboRedact_(msg) {
       const okCount = Object.values(session.results).filter((r) => r.status === 'ok').length;
       const errCount = Object.values(session.results).filter((r) => r.status === 'err').length;
       summaryEl.textContent = okCount + ' succeeded, ' + errCount + ' failed so far' +
-        (cancelled ? ' (stopped)' : '') + (resumed ? ' — resumed from an earlier interrupted run' : '');
+        (cancelled ? ' (stopped)' : '') + (resumed ? '; resumed from an earlier interrupted run' : '');
     }
     renderSummary();
 
@@ -22908,7 +23147,7 @@ function jboRedact_(msg) {
     hits.forEach((h) => { uniq[String(h.id)] = h; });
     const ids = Object.keys(uniq);
     if (ids.length > 1) {
-      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + ') — use the numeric id');
+      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + '); use the numeric id');
     }
     return uniq[ids[0]];
   }
@@ -23307,7 +23546,7 @@ function jboRedact_(msg) {
     opts = opts || {};
     const chunkSize = opts.chunkSize || 50;
     if (rowsArr.length > (opts.warnThreshold || JBO_CHUNK_WARN_THRESHOLD)) {
-      toast_('Importing ' + rowsArr.length + ' rows — this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
+      toast_('Importing ' + rowsArr.length + ' rows: this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
     }
     return new Promise((resolve) => {
       let i = 0;
@@ -23337,7 +23576,7 @@ function jboRedact_(msg) {
   }
 
   function openImportMappingModal_(parsed, fields, onImport) {
-    const { body, foot, close } = openModalShell_('Import from Excel — Map Columns');
+    const { body, foot, close } = openModalShell_('Import from Excel: Map Columns');
     let sheetName = parsed.sheetNames[0];
     let sheet = parsed.sheets[sheetName];
     let mapping = {};
@@ -23430,8 +23669,8 @@ function jboRedact_(msg) {
     });
 
     const introText = fields.some((f) => f.change)
-      ? 'Match each field to a column from your file. Rows where every "new value" (or Reason) column is blank are skipped automatically — handy for a downloaded template where you\'ve only filled in the ones you want to change. Remaining rows land in the table for you to review and edit before running — nothing is sent yet.'
-      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running — nothing is sent yet.';
+      ? 'Match each field to a column from your file. Rows where every "new value" (or Reason) column is blank are skipped automatically, so a downloaded template only needs the ones you want to change. Remaining rows land in the table for you to review and edit before running; nothing is sent yet.'
+      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running; nothing is sent yet.';
     body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
       [document.createTextNode(introText)]));
     body.appendChild(sheetSelWrap);
@@ -23456,7 +23695,7 @@ function jboRedact_(msg) {
   function ensureLauncher_(g) {
     if (g.ready) { renderMenu_(g); return; }
     g.ready = true;
-    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops — drag to move', text: 'J' });
+    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops: drag to move', text: 'J' });
     let menuEl = null;
     function toggleMenu() {
       if (menuEl) { menuEl.remove(); menuEl = null; return; }
@@ -23577,7 +23816,7 @@ function jboRedact_(msg) {
       if (yearsStr || monthsStr) return { problem: 'Contract Period (Years/Months) must be blank for an Indefinite contract' };
       return { period: '' };
     }
-    if (!yearsStr && !monthsStr) return { problem: 'Contract Period is required — give either Years or Months for a Fixed term contract' };
+    if (!yearsStr && !monthsStr) return { problem: 'Contract Period is required: give either Years or Months for a Fixed term contract' };
     if (yearsStr && monthsStr) return { problem: 'Contract Period: give Years or Months, not both' };
     if (yearsStr) {
       const years = Number(yearsStr);
@@ -23620,7 +23859,7 @@ function jboRedact_(msg) {
   }
 
   function contractSummary_(c) {
-    return '#' + c.id + ' — ' + (c.contract_type || '?') + ' · ' + (c.start_date || '?') + ' → ' +
+    return '#' + c.id + ' · ' + (c.contract_type || '?') + ' · ' + (c.start_date || '?') + ' → ' +
       (c.end_date || 'no end date') + ' · ' + (c.status || '?');
   }
 
@@ -23700,8 +23939,8 @@ function jboRedact_(msg) {
       return found;
     }
     if (list.length === 1) return list[0];
-    if (list.length === 0) throw new Error('This employee has no contracts on file — nothing to target.');
-    throw new Error('This employee has ' + list.length + ' contracts on file — put one of these IDs in the ' +
+    if (list.length === 0) throw new Error('This employee has no contracts on file; nothing to target.');
+    throw new Error('This employee has ' + list.length + ' contracts on file: put one of these IDs in the ' +
       'Contract ID column: ' + list.map((c) => contractSummary_(c)).join(' | '));
   }
 
@@ -24004,7 +24243,7 @@ function jboRedact_(msg) {
   function joiningDateResultSuffix_(joiningDateOp, joiningDateResult) {
     if (!joiningDateOp) return '';
     if (joiningDateResult && joiningDateResult.error) return ' | Joining date change FAILED: ' + joiningDateResult.error;
-    return ' | Joining date updated to ' + joiningDateOp.date + ' (unverified — response carries no data to re-check)';
+    return ' | Joining date updated to ' + joiningDateOp.date + ' (unverified; response carries no data to re-check)';
   }
 
   async function runJoiningDateIfAny_(employeeId, joiningDateOp) {
@@ -24134,8 +24373,8 @@ function jboRedact_(msg) {
     const CREATE_IMPORT_FIELDS = [
       { key: 'employee', label: 'Employee (id/code/username/email/name)', required: true, synonyms: ['employee', 'employee id', 'emp id', 'id', 'code', 'email', 'name'] },
       { key: 'contractType', label: 'Contract Type (Fixed term/Indefinite)', required: true, change: true, synonyms: ['contract type', 'type'] },
-      { key: 'contractPeriodYears', label: 'Contract Period — Years (leave blank if using Months)', required: false, change: true, synonyms: ['contract period years', 'period years', 'years'] },
-      { key: 'contractPeriodMonths', label: 'Contract Period — Months (leave blank if using Years)', required: false, change: true, synonyms: ['contract period months', 'period months', 'months'] },
+      { key: 'contractPeriodYears', label: 'Contract Period: Years (leave blank if using Months)', required: false, change: true, synonyms: ['contract period years', 'period years', 'years'] },
+      { key: 'contractPeriodMonths', label: 'Contract Period: Months (leave blank if using Years)', required: false, change: true, synonyms: ['contract period months', 'period months', 'months'] },
       { key: 'startDate', label: 'Start Date (YYYY-MM-DD)', required: true, change: true, synonyms: ['start date'] },
       { key: 'startDateHijri', label: 'Start Date Hijri (optional)', required: false, change: true, synonyms: ['start date hijri', 'start hijri'] },
       { key: 'autoRenewal', label: 'Auto Renewal (Yes/No)', required: true, change: true, synonyms: ['auto renewal', 'auto-renewal'] },
@@ -24166,7 +24405,7 @@ function jboRedact_(msg) {
       try {
         createTemplateBtn.textContent = 'Loading employees…';
         const emps = await getEmployees_(true, (n) => { createTemplateBtn.textContent = 'Loading employees… (' + n + ')'; });
-        if (!emps.length) { toast_('No employees came back — nothing to put in a template.', 5000); return; }
+        if (!emps.length) { toast_('No employees came back: nothing to put in a template.', 5000); return; }
         const sorted = emps.slice().sort((a, b) => normalizeName_(a.name).localeCompare(normalizeName_(b.name)));
         // One GET per employee (no bulk contracts endpoint exists — see
         // buildContractDirectory_) so this step can take a while on a large
@@ -24189,7 +24428,7 @@ function jboRedact_(msg) {
         });
         downloadWorkbook_('jisr-employee-contracts-create-template.xlsx', headers, dataRows);
         toast_('Downloaded a template with ' + sorted.length + ' employee(s). "Has Active Contract?"/"Current ' +
-          'Contract Status"/"Current Contract End Date" are informational — Jisr will not let you create a new ' +
+          'Contract Status"/"Current Contract End Date" are informational. Jisr will not let you create a new ' +
           'contract for someone who already has an active one, so only fill in the contract fields for rows ' +
           'showing "No" (or an inactive/ended current contract), leave the rest completely blank, then Upload ' +
           'Filled Template.', 10000);
@@ -24231,7 +24470,7 @@ function jboRedact_(msg) {
       let plan;
       try { plan = collectCreatePlan_(); } catch (e) { toast_(e.message, 5000); return; }
       plan.problems.forEach((p) => setStatus_(p.r, 'err', p.msg));
-      plan.ops.forEach((op) => setStatus_(op.r, 'pending', 'would CREATE — ' + op.contractType +
+      plan.ops.forEach((op) => setStatus_(op.r, 'pending', 'would CREATE: ' + op.contractType +
         (op.contractPeriod ? ', ' + op.contractPeriod : '') + ', starts ' + op.startDate +
         (op.joiningDateOp ? ' | would also set Joining Date to ' + op.joiningDateOp.date : '')));
       createSummary.textContent = plan.ops.length + ' contract(s) ready, ' + plan.problems.length + ' row(s) with problems. Nothing sent yet.';
@@ -24243,7 +24482,7 @@ function jboRedact_(msg) {
       plan.problems.forEach((p) => setStatus_(p.r, 'err', p.msg));
       if (!plan.ops.length) { toast_('Nothing to run.', 3000); return; }
       if (!confirm('Create ' + plan.ops.length + ' new contract(s) in Jisr now? This does not check for existing ' +
-        'overlapping contracts first — Jisr\'s own response decides whether that\'s a problem.')) return;
+        'overlapping contracts first: Jisr\'s own response decides whether that\'s a problem.')) return;
 
       const rc = createRunControls_('employee-contracts-create', plan.ops.map((op, i) => String(op.employeeId) + '#' + i));
       if (!(await rc.checkLock())) return;
@@ -24254,7 +24493,7 @@ function jboRedact_(msg) {
         const op = plan.ops[i];
         const rowKey = String(op.employeeId) + '#' + i;
         if (rc.isCancelled()) {
-          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped — ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
+          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped: ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
           setStatus_(op.r, 'pending', 'stopped by user'); continue;
         }
         if (rc.isDone(rowKey)) { setStatus_(op.r, 'ok', 'already done in a previous run (resumed)'); skipped++; continue; }
@@ -24263,8 +24502,8 @@ function jboRedact_(msg) {
           const result = await applyContractCreate_(op);
           const jdResult = await runJoiningDateIfAny_(op.employeeId, op.joiningDateOp);
           const base = result.mismatches.length
-            ? 'created — #' + result.id + ' (UNVERIFIED, mismatches: ' + result.mismatches.join('; ') + ')'
-            : 'created — #' + result.id + ' (verified, ends ' + result.endDate + ')';
+            ? 'created: #' + result.id + ' (UNVERIFIED, mismatches: ' + result.mismatches.join('; ') + ')'
+            : 'created: #' + result.id + ' (verified, ends ' + result.endDate + ')';
           const msg = base + joiningDateResultSuffix_(op.joiningDateOp, jdResult);
           setStatus_(op.r, 'ok', msg);
           rc.recordResult(rowKey, 'ok', msg);
@@ -24279,12 +24518,12 @@ function jboRedact_(msg) {
       if (!rc.isCancelled()) rc.finish();
       runLiveCreateBtn.disabled = false;
       createSummary.textContent = 'Done. Created: ' + ok + '   Failed: ' + bad + (skipped ? '   Skipped: ' + skipped : '') + '.';
-      toast_('Run complete — ' + ok + ' created, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
+      toast_('Run complete: ' + ok + ' created, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
     });
 
     paneCreate.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
       'Creates a brand-new contract for each row\'s employee. The server computes End Date itself from Start Date + ' +
-      'Contract Period (confirmed) and defaults Status to Active — neither is a column here. Optional Joining Date ' +
+      'Contract Period (confirmed) and defaults Status to Active; neither is a column here. Optional Joining Date ' +
       'columns fire an independent employee-level change alongside the contract create.'
     )]));
     paneCreate.appendChild(createTableWrap);
@@ -24385,8 +24624,8 @@ function jboRedact_(msg) {
       { key: 'employee', label: 'Employee (id/code/username/email/name)', required: true, synonyms: ['employee', 'employee id', 'emp id', 'id', 'code', 'email', 'name'] },
       { key: 'contractId', label: 'Contract ID (blank = auto if only one)', required: false, synonyms: ['contract id'] },
       { key: 'contractType', label: 'New Contract Type (blank = unchanged)', required: false, change: true, synonyms: ['new contract type', 'contract type'] },
-      { key: 'contractPeriodYears', label: 'New Contract Period — Years (blank = unchanged; leave blank if using Months)', required: false, change: true, synonyms: ['new contract period years', 'contract period years', 'years'] },
-      { key: 'contractPeriodMonths', label: 'New Contract Period — Months (blank = unchanged; leave blank if using Years)', required: false, change: true, synonyms: ['new contract period months', 'contract period months', 'months'] },
+      { key: 'contractPeriodYears', label: 'New Contract Period: Years (blank = unchanged; leave blank if using Months)', required: false, change: true, synonyms: ['new contract period years', 'contract period years', 'years'] },
+      { key: 'contractPeriodMonths', label: 'New Contract Period: Months (blank = unchanged; leave blank if using Years)', required: false, change: true, synonyms: ['new contract period months', 'contract period months', 'months'] },
       { key: 'startDate', label: 'New Start Date (blank = unchanged)', required: false, change: true, synonyms: ['new start date', 'start date'] },
       { key: 'startDateHijri', label: 'New Start Date Hijri (optional; blank = unchanged)', required: false, change: true, synonyms: ['new start date hijri'] },
       { key: 'endDate', label: 'New End Date (blank = unchanged)', required: false, change: true, synonyms: ['new end date', 'end date'] },
@@ -24413,7 +24652,7 @@ function jboRedact_(msg) {
       try {
         editTemplateBtn.textContent = 'Loading employees…';
         const emps = await getEmployees_(true, (n) => { editTemplateBtn.textContent = 'Loading employees… (' + n + ')'; });
-        if (!emps.length) { toast_('No employees came back — nothing to put in a template.', 5000); return; }
+        if (!emps.length) { toast_('No employees came back: nothing to put in a template.', 5000); return; }
         const sorted = emps.slice().sort((a, b) => normalizeName_(a.name).localeCompare(normalizeName_(b.name)));
         const dir = await buildContractDirectory_(sorted, (n, total) => {
           editTemplateBtn.textContent = 'Loading contracts… (' + n + '/' + total + ')';
@@ -24441,9 +24680,9 @@ function jboRedact_(msg) {
         downloadWorkbook_('jisr-employee-contracts-edit-template.xlsx', headers, dataRows);
         let msg = 'Downloaded a template with ' + withContract.length + ' employee(s) who have a contract on file, ' +
           'each pre-filled with their current contract. Fill in only the "New …" columns you want to change (plus ' +
-          'a Reason) and leave the rest blank — a row with nothing filled in is skipped automatically on upload, ' +
+          'a Reason) and leave the rest blank; a row with nothing filled in is skipped automatically on upload, ' +
           'and blank "New …" cells mean "leave unchanged" on the ones you do submit.';
-        if (skipped > 0) msg += ' ' + skipped + ' employee(s) with no contract on file were left out — use the Bulk Create tab for them.';
+        if (skipped > 0) msg += ' ' + skipped + ' employee(s) with no contract on file were left out; use the Bulk Create tab for them.';
         toast_(msg, 12000);
       } catch (e) {
         toast_('Could not build the template: ' + e.message, 6000);
@@ -24507,8 +24746,8 @@ function jboRedact_(msg) {
           if (op.op.indefinitable !== null) changed.push('indefinitable→' + yesNo_(op.op.indefinitable));
           if (op.op.reminderPeriod) changed.push('reminder→' + op.op.reminderPeriod);
           if (op.op.month !== '') changed.push('month→' + op.op.month);
-          setStatus_(op.r, 'pending', 'would EDIT ' + contractSummary_(baseline) + ' — changing: ' +
-            (changed.length ? changed.join(', ') : '(nothing — check your columns)') +
+          setStatus_(op.r, 'pending', 'would EDIT ' + contractSummary_(baseline) + '; changing: ' +
+            (changed.length ? changed.join(', ') : '(nothing; check your columns)') +
             (op.joiningDateOp ? ' | would also set Joining Date to ' + op.joiningDateOp.date : ''));
           resolved++;
         } catch (e) {
@@ -24526,7 +24765,7 @@ function jboRedact_(msg) {
       plan.problems.forEach((p) => setStatus_(p.r, 'err', p.msg));
       if (!plan.ops.length) { toast_('Nothing to run.', 3000); return; }
       if (!confirm('Send ' + plan.ops.length + ' contract edit(s) to Jisr now? Note: start_date/end_date have been ' +
-        'observed NOT matching what was sent in at least one prior capture — every row\'s result says whether the ' +
+        'observed NOT matching what was sent in at least one prior capture; every row\'s result says whether the ' +
         'server echoed back what you sent.')) return;
 
       const rc = createRunControls_('employee-contracts-edit', plan.ops.map((op, i) => String(op.employeeId) + '#' + i));
@@ -24539,7 +24778,7 @@ function jboRedact_(msg) {
         const op = plan.ops[i];
         const rowKey = String(op.employeeId) + '#' + i;
         if (rc.isCancelled()) {
-          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped — ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
+          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped: ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
           setStatus_(op.r, 'pending', 'stopped by user'); continue;
         }
         if (rc.isDone(rowKey)) { setStatus_(op.r, 'ok', 'already done in a previous run (resumed)'); skipped++; continue; }
@@ -24550,8 +24789,8 @@ function jboRedact_(msg) {
           const result = await applyContractEdit_(op.employeeId, baseline, op.op);
           const jdResult = await runJoiningDateIfAny_(op.employeeId, op.joiningDateOp);
           const base = result.mismatches.length
-            ? 'edited #' + baseline.id + ' — UNVERIFIED, mismatches: ' + result.mismatches.join('; ')
-            : 'edited #' + baseline.id + ' — verified (server echoed back exactly what was sent)';
+            ? 'edited #' + baseline.id + 'UNVERIFIED, mismatches: ' + result.mismatches.join('; ')
+            : 'edited #' + baseline.id + '; verified (server echoed back exactly what was sent)';
           const msg = base + joiningDateResultSuffix_(op.joiningDateOp, jdResult);
           setStatus_(op.r, 'ok', msg);
           rc.recordResult(rowKey, 'ok', msg);
@@ -24566,12 +24805,12 @@ function jboRedact_(msg) {
       if (!rc.isCancelled()) rc.finish();
       runLiveEditBtn.disabled = false;
       editSummary.textContent = 'Done. Edited: ' + ok + '   Failed: ' + bad + (skipped ? '   Skipped: ' + skipped : '') + '.';
-      toast_('Run complete — ' + ok + ' edited, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
+      toast_('Run complete: ' + ok + ' edited, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
     });
 
     paneEdit.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
       'Full-record write: a blank "New …" cell means "keep the contract\'s current value", loaded fresh right before ' +
-      'each send. Leave Contract ID blank if the employee only has one contract — otherwise you must specify which. ' +
+      'each send. Leave Contract ID blank if the employee only has one contract; otherwise you must specify which. ' +
       'Reason is required for every edit.'
     )]));
     paneEdit.appendChild(editTableWrap);
@@ -24643,7 +24882,7 @@ function jboRedact_(msg) {
       try {
         deleteTemplateBtn.textContent = 'Loading employees…';
         const emps = await getEmployees_(true, (n) => { deleteTemplateBtn.textContent = 'Loading employees… (' + n + ')'; });
-        if (!emps.length) { toast_('No employees came back — nothing to put in a template.', 5000); return; }
+        if (!emps.length) { toast_('No employees came back: nothing to put in a template.', 5000); return; }
         const sorted = emps.slice().sort((a, b) => normalizeName_(a.name).localeCompare(normalizeName_(b.name)));
         const dir = await buildContractDirectory_(sorted, (n, total) => {
           deleteTemplateBtn.textContent = 'Loading contracts… (' + n + '/' + total + ')';
@@ -24665,7 +24904,7 @@ function jboRedact_(msg) {
         downloadWorkbook_('jisr-employee-contracts-delete-template.xlsx', headers, dataRows);
         toast_('Downloaded a template with ' + withContract.length + ' employee(s) who have a contract on file, ' +
           'each pre-filled with their current contract. Type a Reason only for the ones you actually want to ' +
-          'delete — a blank Reason means that row is skipped on upload.', 10000);
+          'delete: a blank Reason means that row is skipped on upload.', 10000);
       } catch (e) {
         toast_('Could not build the template: ' + e.message, 6000);
       } finally {
@@ -24731,7 +24970,7 @@ function jboRedact_(msg) {
         const op = plan.ops[i];
         const rowKey = String(op.employeeId) + '#' + i;
         if (rc.isCancelled()) {
-          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped — ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
+          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped: ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
           setStatus_(op.r, 'pending', 'stopped by user'); continue;
         }
         if (rc.isDone(rowKey)) { setStatus_(op.r, 'ok', 'already done in a previous run (resumed)'); skipped++; continue; }
@@ -24741,7 +24980,7 @@ function jboRedact_(msg) {
           setStatus_(op.r, 'pending', 'deleting…');
           await applyContractDelete_(op.employeeId, baseline.id, op.reason);
           const jdResult = await runJoiningDateIfAny_(op.employeeId, op.joiningDateOp);
-          const msg = 'deleted #' + baseline.id + ' (unverified — response carries no data to re-check)' +
+          const msg = 'deleted #' + baseline.id + ' (unverified; response carries no data to re-check)' +
             joiningDateResultSuffix_(op.joiningDateOp, jdResult);
           setStatus_(op.r, 'ok', msg);
           rc.recordResult(rowKey, 'ok', msg);
@@ -24756,11 +24995,11 @@ function jboRedact_(msg) {
       if (!rc.isCancelled()) rc.finish();
       runLiveDeleteBtn.disabled = false;
       deleteSummary.textContent = 'Done. Deleted: ' + ok + '   Failed: ' + bad + (skipped ? '   Skipped: ' + skipped : '') + '.';
-      toast_('Run complete — ' + ok + ' deleted, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
+      toast_('Run complete: ' + ok + ' deleted, ' + bad + ' failed' + (skipped ? ', ' + skipped + ' already done' : '') + '.', 5000);
     });
 
     paneDelete.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
-      'Deletes a contract outright — cannot be undone from this tool. Leave Contract ID blank if the employee only ' +
+      'Deletes a contract outright: cannot be undone from this tool. Leave Contract ID blank if the employee only ' +
       'has one contract. Notifier list is always sent empty (matches the one confirmed capture).'
     )]));
     paneDelete.appendChild(deleteTableWrap);
@@ -25111,7 +25350,7 @@ function jboRedact_(msg) {
   function configureBackend_() {
     const cfg = getBackendConfig_();
     const url = prompt(
-      'Shared backend URL (from the deployed Cloudflare Worker) — leave blank to disable:',
+      'Shared backend URL (from the deployed Cloudflare Worker); leave blank to disable:',
       cfg.url || ''
     );
     if (url === null) return;
@@ -25119,7 +25358,7 @@ function jboRedact_(msg) {
     if (key === null) return;
     sharedSet_('backendUrl', url.trim().replace(/\/$/, ''));
     sharedSet_('backendWriteKey', (key || '').trim());
-    toast_('Shared backend settings saved — this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
+    toast_('Shared backend settings saved: this applies to all Jisr Bulk Ops scripts on this site, no need to repeat it per script.', 4000);
   }
 
   if (typeof GM_registerMenuCommand === 'function' && !unsafeWindow.__jisrBulkOpsBackendMenuRegistered) {
@@ -25130,7 +25369,7 @@ function jboRedact_(msg) {
   function ownerLabel_() {
     let label = sharedGet_('ownerLabel', '');
     if (!label) {
-      label = (prompt('Your name — shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
+      label = (prompt('Your name: shown to teammates in cross-user warnings and in the admin activity log:', '') || '').trim() || 'unknown';
       sharedSet_('ownerLabel', label);
     }
     return label;
@@ -25139,7 +25378,7 @@ function jboRedact_(msg) {
   function setOwnerLabel_() {
     const current = sharedGet_('ownerLabel', '');
     const label = (prompt(
-      'Your name — shown to teammates in cross-user warnings and in the admin activity log:',
+      'Your name: shown to teammates in cross-user warnings and in the admin activity log:',
       current === 'unknown' ? '' : current
     ) || '').trim();
     if (!label) return;
@@ -25195,7 +25434,7 @@ function jboRedact_(msg) {
       el('div', { class: 'jbo-modal-body' }, [
         el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [document.createTextNode(
           'Every tool here is shared by the whole team, and every change made through it is attributed to ' +
-          'whoever ran it — for the activity log, and so teammates know who to check with. Enter your name ' +
+          'whoever ran it: for the activity log, and so teammates know who to check with. Enter your name ' +
           'once to continue; it\u2019s remembered for every tool on this site from now on.'
         )]),
         el('label', { class: 'jbo-muted', style: { display: 'block', marginBottom: '4px' } }, [document.createTextNode('Your name')]),
@@ -25312,7 +25551,7 @@ function jboRedact_(msg) {
       const okCount = Object.values(session.results).filter((r) => r.status === 'ok').length;
       const errCount = Object.values(session.results).filter((r) => r.status === 'err').length;
       summaryEl.textContent = okCount + ' succeeded, ' + errCount + ' failed so far' +
-        (cancelled ? ' (stopped)' : '') + (resumed ? ' — resumed from an earlier interrupted run' : '');
+        (cancelled ? ' (stopped)' : '') + (resumed ? '; resumed from an earlier interrupted run' : '');
     }
     renderSummary();
 
@@ -25430,12 +25669,12 @@ function jboRedact_(msg) {
     const raw = String(input == null ? '' : input).trim();
     if (raw === '') throw new Error('empty employee identifier');
     const hits = index[normalizeName_(raw)];
-    if (!hits || hits.length === 0) throw new Error('employee not found: "' + raw + '" — pick one from the dropdown suggestions');
+    if (!hits || hits.length === 0) throw new Error('employee not found: "' + raw + '": pick one from the dropdown suggestions');
     const uniq = {};
     hits.forEach((h) => { uniq[String(h.id)] = h; });
     const ids = Object.keys(uniq);
     if (ids.length > 1) {
-      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + ') — use the numeric id');
+      throw new Error('"' + raw + '" matches ' + ids.length + ' employees (ids ' + ids.join(', ') + '); use the numeric id');
     }
     return uniq[ids[0]];
   }
@@ -25845,7 +26084,7 @@ function jboRedact_(msg) {
     opts = opts || {};
     const chunkSize = opts.chunkSize || 50;
     if (rowsArr.length > (opts.warnThreshold || JBO_CHUNK_WARN_THRESHOLD)) {
-      toast_('Importing ' + rowsArr.length + ' rows — this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
+      toast_('Importing ' + rowsArr.length + ' rows: this may take a moment; the panel may be briefly unresponsive while rows are added.', 6000);
     }
     return new Promise((resolve) => {
       let i = 0;
@@ -25883,7 +26122,7 @@ function jboRedact_(msg) {
   }
 
   function openImportMappingModal_(parsed, fields, onImport) {
-    const { body, foot, close } = openModalShell_('Import from Excel — Map Columns');
+    const { body, foot, close } = openModalShell_('Import from Excel: Map Columns');
     let sheetName = parsed.sheetNames[0];
     let sheet = parsed.sheets[sheetName];
     let mapping = {};
@@ -25971,8 +26210,8 @@ function jboRedact_(msg) {
     });
 
     const introText = fields.some((f) => f.change)
-      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically — handy for a downloaded template where you\'ve only filled in the ones you want to change. Remaining rows land in the table for you to review and edit before running — nothing is sent yet.'
-      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running — nothing is sent yet.';
+      ? 'Match each field to a column from your file. Rows where every "new value" column is blank are skipped automatically, so a downloaded template only needs the ones you want to change. Remaining rows land in the table for you to review and edit before running; nothing is sent yet.'
+      : 'Match each field to a column from your file. Rows land in the table for you to review and edit before running; nothing is sent yet.';
     body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } },
       [document.createTextNode(introText)]));
     body.appendChild(sheetSelWrap);
@@ -25997,7 +26236,7 @@ function jboRedact_(msg) {
   function ensureLauncher_(g) {
     if (g.ready) { renderMenu_(g); return; }
     g.ready = true;
-    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops — drag to move', text: 'J' });
+    const fab = el('div', { class: 'jbo-fab', title: 'Jisr Bulk Ops: drag to move', text: 'J' });
     let menuEl = null;
     function toggleMenu() {
       if (menuEl) { menuEl.remove(); menuEl = null; return; }
@@ -26140,12 +26379,12 @@ function jboRedact_(msg) {
     const raw = String(input == null ? '' : input).trim();
     if (raw === '') throw new Error('empty department identifier');
     const hits = index[normalizeName_(raw)];
-    if (!hits || hits.length === 0) throw new Error('department not found: "' + raw + '" — pick one from the dropdown suggestions');
+    if (!hits || hits.length === 0) throw new Error('department not found: "' + raw + '": pick one from the dropdown suggestions');
     const uniq = {};
     hits.forEach((h) => { uniq[String(h.id)] = h; });
     const ids = Object.keys(uniq);
     if (ids.length > 1) {
-      throw new Error('"' + raw + '" matches ' + ids.length + ' departments (ids ' + ids.join(', ') + ') — pick one from the dropdown suggestions or use the numeric id');
+      throw new Error('"' + raw + '" matches ' + ids.length + ' departments (ids ' + ids.join(', ') + '); pick one from the dropdown suggestions or use the numeric id');
     }
     return uniq[ids[0]];
   }
@@ -26272,7 +26511,7 @@ function jboRedact_(msg) {
     return {
       verified,
       id: echoed ? echoed.id : null,
-      verifyWarning: verified ? null : 'the response did not echo back the values just sent — could not independently confirm. Spot-check in the Jisr UI.'
+      verifyWarning: verified ? null : 'the response did not echo back the values just sent; could not independently confirm. Spot-check in the Jisr UI.'
     };
   }
 
@@ -26297,7 +26536,7 @@ function jboRedact_(msg) {
       String(echoedParentId) === String(wantParentId);
     return {
       verified,
-      verifyWarning: verified ? null : 'the response did not echo back the values just sent (name/name_ar/parent_id) — could not independently confirm. Spot-check in the Jisr UI. (manager and category are never echoed by this endpoint, verified or not.)'
+      verifyWarning: verified ? null : 'the response did not echo back the values just sent (name/name_ar/parent_id); could not independently confirm. Spot-check in the Jisr UI. (manager and category are never echoed by this endpoint, verified or not.)'
     };
   }
 
@@ -26511,7 +26750,7 @@ function jboRedact_(msg) {
           rows: categoryOptions.map((c) => [c.id, c.nameEn, c.nameAr])
         };
         downloadWorkbook_('jisr-departments-create-template.xlsx', headers, [example], [catSheet]);
-        toast_('Downloaded a blank template with one example row, plus a "Valid Categories" reference sheet — Category must ' +
+        toast_('Downloaded a blank template with one example row, plus a "Valid Categories" reference sheet. Category must ' +
           'match one of the names on that sheet exactly (this tenant\'s own categories, harvested live; a category no ' +
           'existing department uses yet can\'t be offered here). A department that already exists (matched by exact ' +
           'English name) is reused instead of duplicated.', 9000);
@@ -26545,7 +26784,7 @@ function jboRedact_(msg) {
         if (!managerRaw) { problems.push({ r: row, msg: 'Manager is required' }); return; }
         let manager;
         try { manager = resolveEmployee_(managerRaw, empIndex); } catch (e) { problems.push({ r: row, msg: e.message }); return; }
-        if (!categoryRaw) { problems.push({ r: row, msg: 'Category is required — pick one (Load Departments first if the list is empty)' }); return; }
+        if (!categoryRaw) { problems.push({ r: row, msg: 'Category is required: pick one (Load Departments first if the list is empty)' }); return; }
         let parentId = null, parentLabelText = '';
         if (parentRaw) {
           let parentDept;
@@ -26578,9 +26817,9 @@ function jboRedact_(msg) {
         const existing = departmentsCache.find((d) => normalizeName_(d.name) === op.key);
         if (existing) {
           setStatus_(op.r, 'pending', 'a department named "' + op.name + '" already appears to exist (#' + existing.id +
-            ') — Run Live will reuse it instead of creating a duplicate');
+            '). Run Live will reuse it instead of creating a duplicate');
         } else {
-          let msg = 'would CREATE — "' + op.name + '"' + (op.nameAr ? ' / "' + op.nameAr + '"' : ' (no Arabic name)') +
+          let msg = 'would CREATE: "' + op.name + '"' + (op.nameAr ? ' / "' + op.nameAr + '"' : ' (no Arabic name)') +
             ', manager: ' + op.managerLabel;
           msg += op.parentId ? (', then set parent → "' + op.parentLabel + '" (2 confirmed calls: POST, then PUT)') : ', top-level (main department)';
           setStatus_(op.r, 'pending', msg);
@@ -26623,7 +26862,7 @@ function jboRedact_(msg) {
         const op = plan.ops[i];
         const rowKey = op.key;
         if (rc.isCancelled()) {
-          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped — ' + (ok + reused + bad) + ' of ' + plan.ops.length + ' processed.', 4000); }
+          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped: ' + (ok + reused + bad) + ' of ' + plan.ops.length + ' processed.', 4000); }
           setStatus_(op.r, 'pending', 'stopped by user');
           continue;
         }
@@ -26635,12 +26874,12 @@ function jboRedact_(msg) {
             async () => applyDepartmentCreate_(op)
           );
           if (!created) {
-            const msg = 'already exists — reused #' + existing.id + ' instead of creating a duplicate (parent NOT changed on the existing department)';
+            const msg = 'already exists: reused #' + existing.id + ' instead of creating a duplicate (parent NOT changed on the existing department)';
             setStatus_(op.r, 'ok', msg);
             rc.recordResult(rowKey, 'ok', msg);
             reused++;
           } else {
-            let msg = result.verified ? ('created — #' + result.id + ' (verified)') : ('created (unverified: ' + result.verifyWarning + ')');
+            let msg = result.verified ? ('created: #' + result.id + ' (verified)') : ('created (unverified: ' + result.verifyWarning + ')');
             if (result.id != null) existingByKey[op.key] = { id: result.id, name: op.name };
             if (op.parentId && result.id != null) {
               try {
@@ -26652,7 +26891,7 @@ function jboRedact_(msg) {
                   ? (', parent set → "' + op.parentLabel + '" (verified)')
                   : (', parent set → "' + op.parentLabel + '" (unverified: ' + editRes.verifyWarning + ')');
               } catch (e) {
-                msg += ', BUT setting the parent afterward FAILED: ' + e.message + ' — department was created top-level; set the parent manually via the Edit tab.';
+                msg += ', BUT setting the parent afterward FAILED: ' + e.message + '; department was created top-level; set the parent manually via the Edit tab.';
               }
             }
             setStatus_(op.r, 'ok', msg);
@@ -26669,15 +26908,15 @@ function jboRedact_(msg) {
       if (!rc.isCancelled()) rc.finish();
       runLiveCreateBtn.disabled = false;
       createSummary.textContent = 'Done. Created: ' + ok + '   Reused existing: ' + reused + '   Failed: ' + bad + '.';
-      toast_('Run complete — ' + ok + ' created, ' + reused + ' reused (already existed), ' + bad + ' failed.', 5000);
+      toast_('Run complete: ' + ok + ' created, ' + reused + ' reused (already existed), ' + bad + ' failed.', 5000);
       if (ok > 0) { departmentsMemCache = null; gmSet_('departmentsCache_' + currentSlug_(), null); departmentsCache = []; }
     });
 
     paneCreate.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [
       document.createTextNode('Manager and Category are required (both are required fields on Jisr\'s own confirmed create call). ' +
-        'Category options come from this tenant\'s own departments — click "Load Departments" first if the dropdown is empty. ' +
+        'Category options come from this tenant\'s own departments; click "Load Departments" first if the dropdown is empty. ' +
         'A department that already exists with the exact same English name is reused instead of duplicated. If a Parent ' +
-        'Department is chosen, creating the row is two already-confirmed API calls (create, then set-parent) — see Dry Run for the exact sequence.')
+        'Department is chosen, creating the row is two already-confirmed API calls (create, then set-parent); see Dry Run for the exact sequence.')
     ]));
     paneCreate.appendChild(createTableWrap);
     paneCreate.appendChild(el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px' } },
@@ -26787,7 +27026,7 @@ function jboRedact_(msg) {
       try {
         await loadAll(true, (n) => { editTemplateBtn.textContent = 'Loading… (' + n + ')'; });
         refreshAllCategorySelects_();
-        if (!departmentsCache.length) { toast_('No departments came back — nothing to put in a template.', 5000); return; }
+        if (!departmentsCache.length) { toast_('No departments came back: nothing to put in a template.', 5000); return; }
         const sorted = departmentsCache.slice().sort((a, b) => normalizeName_(a.name).localeCompare(normalizeName_(b.name)));
         const headers = ['Department ID', 'Current Name (EN)', 'Current Name (AR)', 'Current Manager', 'Current Parent Department',
           'Current Category', 'New Name (EN)', 'New Name (AR)', 'New Manager', 'New Category', 'New Parent Department',
@@ -26837,7 +27076,7 @@ function jboRedact_(msg) {
         let d;
         try { d = resolveDepartment_(searchVal, deptIndex); } catch (e) { problems.push({ r: row, msg: e.message }); return; }
         if (clearParent && newParentRaw) {
-          problems.push({ r: row, msg: 'both "Clear Parent" and a New Parent Department are set for "' + d.name + '" — pick one' });
+          problems.push({ r: row, msg: 'both "Clear Parent" and a New Parent Department are set for "' + d.name + '": pick one' });
           return;
         }
         const excludedIds = computeExcludedParentIds_(departmentsCache, d.id);
@@ -26863,12 +27102,12 @@ function jboRedact_(msg) {
           let parentDept;
           try { parentDept = resolveDepartment_(newParentRaw, deptIndex); } catch (e) { problems.push({ r: row, msg: e.message }); return; }
           if (excludedIds.has(String(parentDept.id))) {
-            problems.push({ r: row, msg: '"' + d.name + '" cannot be made a child of "' + parentDept.name + '" — that would create a cycle (it is itself a descendant of "' + d.name + '")' });
+            problems.push({ r: row, msg: '"' + d.name + '" cannot be made a child of "' + parentDept.name + '": that would create a cycle (it is itself a descendant of "' + d.name + '")' });
             return;
           }
           newParentId = parentDept.id; newParentLabel = parentDept.name || parentDept.nameAr || String(parentDept.id);
         }
-        if (!newName) { problems.push({ r: row, msg: 'the resulting Name (EN) would be blank — type one in' }); return; }
+        if (!newName) { problems.push({ r: row, msg: 'the resulting Name (EN) would be blank; type one in' }); return; }
         const changed = newName !== d.name || newNameAr !== d.nameAr || newManagerId !== d.managerId ||
           normalizeName_(newCategoryIds.join(',')) !== normalizeName_(d.categoryIds.join(',')) ||
           String(newParentId) !== String(d.parentId);
@@ -26897,7 +27136,7 @@ function jboRedact_(msg) {
       try { plan = collectEditPlan_(); } catch (e) { toast_(e.message, 5000); return; }
       plan.problems.forEach((p) => setStatus_(p.r, 'err', p.msg));
       plan.ops.forEach((op) => {
-        if (!op.changed) { setStatus_(op.r, 'pending', 'no changes — will be skipped'); return; }
+        if (!op.changed) { setStatus_(op.r, 'pending', 'no changes: will be skipped'); return; }
         const parts = [];
         if (op.newName !== op.currentName) parts.push('EN: "' + op.currentName + '" → "' + op.newName + '"');
         if (op.newNameAr !== op.currentNameAr) parts.push('AR: "' + op.currentNameAr + '" → "' + op.newNameAr + '"');
@@ -26919,7 +27158,7 @@ function jboRedact_(msg) {
       plan.problems.forEach((p) => setStatus_(p.r, 'err', p.msg));
       if (!plan.ops.length) { toast_('Nothing to run.', 3000); return; }
       const changedCount = plan.ops.filter((o) => o.changed).length;
-      if (!changedCount) { toast_('Every row already matches its current value — nothing to send.', 4000); return; }
+      if (!changedCount) { toast_('Every row already matches its current value; nothing to send.', 4000); return; }
       if (!confirm('Send ' + changedCount + ' Department edit(s) to Jisr now? Unchanged rows are skipped automatically.')) return;
 
       const rc = createRunControls_('departments-edit', plan.ops.map((op) => String(op.id)));
@@ -26933,9 +27172,9 @@ function jboRedact_(msg) {
       for (let i = 0; i < plan.ops.length; i++) {
         const op = plan.ops[i];
         const rowKey = String(op.id);
-        if (!op.changed) { setStatus_(op.r, 'ok', 'no changes — skipped'); skipped++; continue; }
+        if (!op.changed) { setStatus_(op.r, 'ok', 'no changes: skipped'); skipped++; continue; }
         if (rc.isCancelled()) {
-          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped — ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
+          if (!stoppedNoted) { stoppedNoted = true; toast_('Stopped: ' + (ok + bad + skipped) + ' of ' + plan.ops.length + ' processed.', 4000); }
           setStatus_(op.r, 'pending', 'stopped by user');
           continue;
         }
@@ -26957,17 +27196,17 @@ function jboRedact_(msg) {
       if (!rc.isCancelled()) rc.finish();
       runLiveEditBtn.disabled = false;
       editSummary.textContent = 'Done. Succeeded: ' + ok + '   Failed: ' + bad + '   Skipped (no changes): ' + skipped + '.';
-      toast_('Run complete — ' + ok + ' succeeded, ' + bad + ' failed, ' + skipped + ' skipped (no changes).', 5000);
+      toast_('Run complete: ' + ok + ' succeeded, ' + bad + ' failed, ' + skipped + ' skipped (no changes).', 5000);
       if (ok > 0) { departmentsMemCache = null; gmSet_('departmentsCache_' + currentSlug_(), null); departmentsCache = []; }
     });
 
     paneEdit.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' } }, [
       document.createTextNode('Leave a "New …" field blank to keep it unchanged. To clear an existing parent (make a department ' +
-        'a main department again), tick "Clear Parent?" instead of typing in New Parent Department — typing in both is flagged ' +
+        'a main department again), tick "Clear Parent?" instead of typing in New Parent Department; typing in both is flagged ' +
         'as an error, not guessed at. A department cannot be made a child of itself or one of its own descendants (blocked ' +
         'client-side using the loaded org tree). Every PUT sends the full record (name/name_ar/manager_id/category_ids/' +
-        'parent_id) — this endpoint has no confirmed partial-update behavior. Manager and Category changes cannot be ' +
-        'independently verified from the response (only name/name_ar/parent_id are ever echoed back) — spot-check in the Jisr UI if in doubt.')
+        'parent_id); this endpoint has no confirmed partial-update behavior. Manager and Category changes cannot be ' +
+        'independently verified from the response (only name/name_ar/parent_id are ever echoed back); spot-check in the Jisr UI if in doubt.')
     ]));
     paneEdit.appendChild(editTableWrap);
     paneEdit.appendChild(el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px' } },
@@ -27892,7 +28131,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.62.0
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.75.0
 // ###########################################################################
 
 /*
@@ -28421,7 +28660,7 @@ function jboRedact_(msg) {
         const emp = byCode[r.code.toLowerCase()] || byId[r.code] || byNid[r.code];
         if (!emp) { r.problem = T('Employee ID not found in Jisr', 'الرقم الوظيفي غير موجود في جسر'); return; }
         r.emp = emp;
-        if (!r.outTime) { r.problem = T('Only one punch this day — not sent', 'بصمة واحدة فقط في هذا اليوم — لن تُرسل'); return; }
+        if (!r.outTime) { r.problem = T('Only one punch this day: not sent', 'بصمة واحدة فقط في هذا اليوم؛ لن تُرسل'); return; }
         const pages = cfg.params.some(([k]) => k === 'page') && cfg.mode === 'perDate' ? 50 : 1;
         let matches = [];
         for (let pg = 1; pg <= pages; pg++) {
@@ -28434,7 +28673,7 @@ function jboRedact_(msg) {
           if (found.length || pages === 1 || !expand_(res.json, cfg.base).length) break;
         }
         if (!matches.length) { r.problem = T('No attendance record for this day in Jisr (no shift assigned?)', 'لا يوجد سجل حضور لهذا اليوم في جسر (لا توجد وردية؟)'); return; }
-        if (matches.length > 1) { r.problem = T('More than one shift that day — update it in Jisr directly', 'أكثر من وردية في هذا اليوم — عدّلها في جسر مباشرة'); return; }
+        if (matches.length > 1) { r.problem = T('More than one shift that day; update it in Jisr directly', 'أكثر من وردية في هذا اليوم؛ عدّلها في جسر مباشرة'); return; }
         r.recordId = matches[0].recordId; r.shiftId = matches[0].shiftId;
       } catch (e) { r.problem = e.message; }
       finally { done++; if (onProgress) onProgress(done, rows.length); }
@@ -29168,7 +29407,7 @@ function jboRedact_(msg) {
         catch (e) { row.result = e.message; row.failed = true; S.push.bad++; }
         const done = S.push.ok + S.push.bad;
         const left = Math.round((todo.length - done) * ((Date.now() - t0) / Math.max(1, done)) / 1000);
-        S.push.progress = done + '/' + todo.length + ' — ' + S.push.ok + T(' ok, ', ' ناجح، ') + S.push.bad + T(' failed', ' فشل') + (done < todo.length ? T(' — about ', ' — تقريبًا ') + left + T(' s left', ' ث متبقية') : '');
+        S.push.progress = done + '/' + todo.length + ' · ' + S.push.ok + T(' ok, ', ' ناجح، ') + S.push.bad + T(' failed', ' فشل') + (done < todo.length ? T('; about ', '; تقريبًا ') + left + T(' s left', ' ث متبقية') : '');
         paintProgress_();
       });
       S.push.phase = 'done'; render_();
@@ -29192,11 +29431,11 @@ function jboRedact_(msg) {
         const steps = el('ol', { class: 'jbo-muted', style: { margin: '4px 0 8px', paddingInlineStart: '20px', lineHeight: '1.6' } });
         [
           T('One-time setup for this company: in another tab of this Jisr site, open Attendance and click any employee so the day\'s details load.', 'إعداد لمرة واحدة لهذه الشركة: في تبويب آخر من موقع جسر هذا، افتح الحضور واضغط على أي موظف حتى تظهر تفاصيل اليوم.'),
-          T('Edit that day\'s clock in/out and save — exactly as you would by hand (you can set it back afterwards).', 'عدّل الدخول/الخروج لذلك اليوم واحفظ — كما تفعل يدويًا (يمكنك إرجاعه بعدها).'),
+          T('Edit that day\'s clock in/out and save; exactly as you would by hand (you can set it back afterwards).', 'عدّل الدخول/الخروج لذلك اليوم واحفظ: كما تفعل يدويًا (يمكنك إرجاعه بعدها).'),
           T('Come back here. It usually sets itself up straight away; if not, click "Find setup".', 'عد إلى هنا. غالبًا يكتمل الإعداد تلقائيًا؛ وإن لم يكتمل اضغط «البحث عن الإعداد».'),
         ].forEach((t) => steps.appendChild(el('li', { text: t })));
         box.appendChild(steps);
-        box.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', marginBottom: '8px' }, text: T('Do steps 1–2 in the same browser window with this script running (any Jisr tab works, including this one — close this window first if you like; your converted file stays here).', 'نفّذ الخطوتين 1–2 في نفس نافذة المتصفح مع تشغيل هذا السكربت (أي تبويب من جسر يعمل، بما فيه هذا — يمكنك إغلاق هذه النافذة أولًا؛ يبقى ملفك المحوّل هنا).') }));
+        box.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', marginBottom: '8px' }, text: T('Do steps 1–2 in the same browser window with this script running (any Jisr tab works, including this one; close this window first if you like; your converted file stays here).', 'نفّذ الخطوتين 1–2 في نفس نافذة المتصفح مع تشغيل هذا السكربت (أي تبويب من جسر يعمل، بما فيه هذا؛ يمكنك إغلاق هذه النافذة أولًا؛ يبقى ملفك المحوّل هنا).') }));
         const findB = el('button', { class: 'jbo-btn jbo-btn-primary', text: P.isLearning && P.isLearning() ? T('Looking…', 'جارٍ البحث…') : T('🔎 Find setup', '🔎 البحث عن الإعداد') });
         if (P.isLearning && P.isLearning()) findB.setAttribute('disabled', 'disabled');
         findB.addEventListener('click', async () => { findB.setAttribute('disabled', 'disabled'); findB.textContent = T('Looking…', 'جارٍ البحث…'); await P.discover(); render_(); });
@@ -29221,8 +29460,8 @@ function jboRedact_(msg) {
       }
       const forget = el('a', { href: 'javascript:void 0', style: { fontSize: '11.5px', marginInlineStart: '8px' }, text: T('forget', 'نسيان') });
       forget.addEventListener('click', () => { if (confirm(T('Forget the learned setup? You will need to edit one day in Jisr again.', 'نسيان الإعداد المُتعلَّم؟ ستحتاج إلى تعديل يوم واحد في جسر مرة أخرى.'))) { P.forget(); S.push.phase = 'idle'; S.push.rows = null; render_(); } });
-      box.appendChild(el('div', { class: 'jbo-status-ok', style: { fontWeight: '400' } }, [T('✓ Ready — learned from your Jisr attendance screen on ', '✓ جاهز — تم التعلم من شاشة الحضور في جسر بتاريخ ') + new Date(cfg.learnedAt).toLocaleString(), forget]));
-      box.appendChild(el('div', { class: 'jbo-muted', style: { margin: '6px 0' }, text: T('Sends one update per employee per day: first punch = clock in, last punch = clock out. It replaces that day\'s clock in/out in Jisr. Days with only one punch are not sent. Check first — nothing is sent until you click Publish.', 'يرسل تحديثًا واحدًا لكل موظف في كل يوم: أول بصمة = دخول، وآخر بصمة = خروج. يستبدل الدخول/الخروج لذلك اليوم في جسر. الأيام ذات البصمة الواحدة لا تُرسل. افحص أولًا — لا يُرسل شيء حتى تضغط نشر.') }));
+      box.appendChild(el('div', { class: 'jbo-status-ok', style: { fontWeight: '400' } }, [T('✓ Ready: learned from your Jisr attendance screen on ', '✓ جاهز: تم التعلم من شاشة الحضور في جسر بتاريخ ') + new Date(cfg.learnedAt).toLocaleString(), forget]));
+      box.appendChild(el('div', { class: 'jbo-muted', style: { margin: '6px 0' }, text: T('Sends one update per employee per day: first punch = clock in, last punch = clock out. It replaces that day\'s clock in/out in Jisr. Days with only one punch are not sent. Check first: nothing is sent until you click Publish.', 'يرسل تحديثًا واحدًا لكل موظف في كل يوم: أول بصمة = دخول، وآخر بصمة = خروج. يستبدل الدخول/الخروج لذلك اليوم في جسر. الأيام ذات البصمة الواحدة لا تُرسل. افحص أولًا: لا يُرسل شيء حتى تضغط نشر.') }));
 
       const rowsHere = S.push.rows;
       const ctl = el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } });
@@ -29297,7 +29536,7 @@ function jboRedact_(msg) {
       // --- step 1: file
       const drop = el('div', { class: 'jac-drop' }, [
         el('div', { style: { fontSize: '14px', fontWeight: '600', color: '#202124' }, text: S.file ? '📄 ' + S.file.name : T('Drop the client\'s attendance file here, or click to choose', 'أفلت ملف الحضور من العميل هنا، أو اضغط للاختيار') }),
-        el('div', { style: { marginTop: '4px' }, text: T('Excel (.xlsx, .xls), CSV or PDF — any layout: In/Out columns, several punches per cell, or days across the top.', 'Excel (‎.xlsx، ‎.xls) أو CSV أو PDF — بأي شكل: أعمدة دخول/خروج، أو عدة بصمات في الخلية، أو الأيام بشكل أفقي.') }),
+        el('div', { style: { marginTop: '4px' }, text: T('Excel (.xlsx, .xls), CSV or PDF; any layout: In/Out columns, several punches per cell, or days across the top.', 'Excel (‎.xlsx، ‎.xls) أو CSV أو PDF؛ بأي شكل: أعمدة دخول/خروج، أو عدة بصمات في الخلية، أو الأيام بشكل أفقي.') }),
       ]);
       drop.addEventListener('click', () => fileInput.click());
       drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('jac-over'); });
@@ -29467,7 +29706,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.62.0
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.75.0
 // ###########################################################################
 
 /*
@@ -29961,7 +30200,7 @@ function jboRedact_(msg) {
     const field_ = (label, ctl) => el('div', { class: 'jgc-field' }, [el('span', { text: label }), ctl]);
 
     function render_() {
-      titleEl.textContent = T('GOSI Compliance — Export & Salary Check', 'ملاحظات التأمينات — التصدير ومطابقة الرواتب');
+      titleEl.textContent = T('GOSI Compliance: Export & Salary Check', 'ملاحظات التأمينات: التصدير ومطابقة الرواتب');
       body.innerHTML = ''; foot.innerHTML = ''; statusEl = null;
       const L = STATUS_LABEL();
 
@@ -29980,7 +30219,7 @@ function jboRedact_(msg) {
       const closeF = el('button', { class: 'jbo-btn', text: T('Close', 'إغلاق') });
       closeF.addEventListener('click', close);
       if (!S.raw.length) {
-        if (!S.loading && !S.error) body.appendChild(el('div', { class: 'jbo-muted', style: { margin: '14px 0' }, text: T('Loads the same list as Jisr\'s GOSI compliance screen (every page), then lets you export it to Excel and check each employee\'s GOSI wage against Jisr\'s Basic + Housing. Read-only — nothing is changed in Jisr.', 'يحمّل نفس قائمة شاشة ملاحظات التأمينات في جسر (كل الصفحات)، ثم يتيح تصديرها إلى Excel ومطابقة أجر التأمينات لكل موظف مع الأساسي + السكن في جسر. للقراءة فقط — لا يتغير أي شيء في جسر.') }));
+        if (!S.loading && !S.error) body.appendChild(el('div', { class: 'jbo-muted', style: { margin: '14px 0' }, text: T('Loads the same list as Jisr\'s GOSI compliance screen (every page), then lets you export it to Excel and check each employee\'s GOSI wage against Jisr\'s Basic + Housing. Read-only: nothing is changed in Jisr.', 'يحمّل نفس قائمة شاشة ملاحظات التأمينات في جسر (كل الصفحات)، ثم يتيح تصديرها إلى Excel ومطابقة أجر التأمينات لكل موظف مع الأساسي + السكن في جسر. للقراءة فقط: لا يتغير أي شيء في جسر.') }));
         foot.appendChild(el('div')); foot.appendChild(closeF);
         return;
       }
@@ -30002,7 +30241,7 @@ function jboRedact_(msg) {
       const numOpts = [['', T('— none —', '— لا يوجد —')]].concat(S.det.numericKeys.map((k) => [k, k]));
       const setF = (k) => (v) => { S.f[k] = v; gmSet_('gosiFieldMap', S.f); buildRows_(); render_(); };
       const det = el('details', { style: { margin: '6px 0' } });
-      det.appendChild(el('summary', { style: { cursor: 'pointer', fontSize: '12.5px' }, text: T('Fields read from the GOSI response (auto-detected — change if a column looks wrong)', 'الحقول المقروءة من رد التأمينات (مكتشفة تلقائيًا — غيّرها إذا بدا عمود غير صحيح)') }));
+      det.appendChild(el('summary', { style: { cursor: 'pointer', fontSize: '12.5px' }, text: T('Fields read from the GOSI response (auto-detected; change if a column looks wrong)', 'الحقول المقروءة من رد التأمينات (مكتشفة تلقائيًا؛ غيّرها إذا بدا عمود غير صحيح)') }));
       const fr = el('div', { class: 'jgc-row' });
       const wageOpts = [numOpts[0], [COMMENT_WAGE, T('Read from the comment text', 'من نص الملاحظة (comments)')]].concat(numOpts.slice(1).filter(([k]) => !NOT_AMOUNT.test(k)));
       fr.appendChild(field_(T('GOSI wage', 'أجر التأمينات'), select_(S.f.gosiWage, wageOpts, setF('gosiWage'))));
@@ -30086,14 +30325,14 @@ function jboRedact_(msg) {
           tbl.appendChild(el('tr', {}, [who, el('span', { 'data-no-i18n': '', text: issueLabel_(r.issueType), title: r.comment || r.issueLabel }), el('span', { class: 'jgc-num', text: fmt(r.gosi) }), jisrCell, bars, diffCell, pill].map((c) => el('td', {}, [c]))));
         });
         wrap.appendChild(tbl);
-        if (rows.length > 1000) wrap.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px' }, text: T('Showing the first 1000 rows — the Excel export has all of them.', 'عرض أول 1000 صف — ملف Excel يحتوي جميعها.') }));
+        if (rows.length > 1000) wrap.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px' }, text: T('Showing the first 1000 rows: the Excel export has all of them.', 'عرض أول 1000 صف: ملف Excel يحتوي جميعها.') }));
         if (!rows.length) wrap.appendChild(el('div', { class: 'jbo-muted', style: { padding: '10px' }, text: T('No rows match this filter.', 'لا توجد صفوف مطابقة لهذا الفلتر.') }));
       }
       renderTable_();
 
       const exp = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('⬇ Export to Excel', '⬇ تصدير إلى Excel') });
       exp.addEventListener('click', exportXlsx_);
-      foot.appendChild(el('div', { class: 'jbo-muted', text: S.rows.length + T(' issue rows loaded. Read-only — nothing is changed in Jisr.', ' صف ملاحظات محمّل. للقراءة فقط — لا يتغير أي شيء في جسر.') }));
+      foot.appendChild(el('div', { class: 'jbo-muted', text: S.rows.length + T(' issue rows loaded. Read-only: nothing is changed in Jisr.', ' صف ملاحظات محمّل. للقراءة فقط: لا يتغير أي شيء في جسر.') }));
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [closeF, exp]));
     }
     render_();
@@ -30102,7 +30341,7 @@ function jboRedact_(msg) {
   function register_() {
     const g = (unsafeWindow.__jisrBulkOps = unsafeWindow.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = {
-      title: 'GOSI Compliance — Export & Salary Check',
+      title: 'GOSI Compliance: Export & Salary Check',
       open: () => {
         if (!sharedGet_('ownerLabel', '')) { alert(T('Please register your name first: click the J button, then open any tool once.', 'سجّل اسمك أولًا: اضغط زر J ثم افتح أي أداة مرة واحدة.')); return; }
         openTool_();
@@ -30116,7 +30355,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v4.62.0
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.75.0
 // ###########################################################################
 
 /*
@@ -30280,17 +30519,17 @@ function jboRedact_(msg) {
     const s = plan_(it);
     if (!it.action) return '';
     if (it.locked) return lockText_(it);
-    if (it.kind === 'txn') return s.length ? T('Will cancel this transaction', 'سيتم إلغاء هذه العملية') : T('Already cancelled — nothing to send', 'ملغاة مسبقًا — لا شيء للإرسال');
-    if (!s.length) return T('Already cancelled — nothing to send', 'ملغاة مسبقًا — لا شيء للإرسال');
+    if (it.kind === 'txn') return s.length ? T('Will cancel this transaction', 'سيتم إلغاء هذه العملية') : T('Already cancelled: nothing to send', 'ملغاة مسبقًا: لا شيء للإرسال');
+    if (!s.length) return T('Already cancelled: nothing to send', 'ملغاة مسبقًا: لا شيء للإرسال');
     if (s.length === 2) return T('Will cancel the transaction, then delete the loan', 'سيتم إلغاء العملية ثم حذف القرض');
-    if (s[0] === 'delete') return T('Transaction already cancelled — will delete the loan', 'العملية ملغاة مسبقًا — سيتم حذف القرض');
+    if (s[0] === 'delete') return T('Transaction already cancelled: will delete the loan', 'العملية ملغاة مسبقًا: سيتم حذف القرض');
     return T('Will cancel the loan transaction (loan kept)', 'سيتم إلغاء عملية القرض (يبقى القرض)');
   }
   function lockText_(it) {
     return '🔒 ' + (it.kind === 'loan' && it.paid > 0
       ? T('SAR ', '') + Number(it.paid).toLocaleString('en-US') + T(' already deducted in a closed payroll', ' ر.س مخصومة مسبقًا في مسير رواتب مغلق')
       : T('Confirmed in a closed payroll', 'مؤكدة في مسير رواتب مغلق')) +
-      T(' — cannot be cancelled or deleted until support reopens that payroll month, then re-scan.', ' — لا يمكن إلغاؤها أو حذفها حتى يعيد الدعم فتح شهر المسير، ثم أعد الفحص.');
+      T('; cannot be cancelled or deleted until support reopens that payroll month, then re-scan.', '; لا يمكن إلغاؤها أو حذفها حتى يعيد الدعم فتح شهر المسير، ثم أعد الفحص.');
   }
   /** Strict: only the template's own phrases (EN/AR) or a clear one-word form. Anything else is reported, never guessed. */
   function actionFromText_(s, kind) {
@@ -30470,7 +30709,7 @@ function jboRedact_(msg) {
       }
       return json;
     }
-    throw new Error(T('Jisr kept saying "too many requests" — try a slower speed.', 'جسر يرفض بسبب كثرة الطلبات — جرّب سرعة أبطأ.'));
+    throw new Error(T('Jisr kept saying "too many requests"; try a slower speed.', 'جسر يرفض بسبب كثرة الطلبات: جرّب سرعة أبطأ.'));
   }
   const loanUrl_ = (empId, loanId) => apiBase_() + '/v2/finance/employees/' + encodeURIComponent(empId) + '/loans/' + encodeURIComponent(loanId) + '/?slug=' + encodeURIComponent(slug_());
   function loansListUrl_(empId) {
@@ -30512,7 +30751,7 @@ function jboRedact_(msg) {
   async function execute_(it, txnCfg) {
     if (it.locked) return { state: 'blocked', text: lockText_(it) };
     const steps = plan_(it);
-    if (!steps.length) return { state: 'skip', text: T('Already cancelled — nothing sent', 'ملغاة مسبقًا — لم يُرسل شيء') };
+    if (!steps.length) return { state: 'skip', text: T('Already cancelled: nothing sent', 'ملغاة مسبقًا: لم يُرسل شيء') };
     if (it.kind === 'txn') {
       const req = buildTxnRequest_(txnCfg, it.el);
       await request_(req.method, req.url, req.body);
@@ -30526,7 +30765,7 @@ function jboRedact_(msg) {
       const tStatus = loan && loan.loan_transaction ? loan.loan_transaction.status : undefined;
       if (loan) { it.loanStatus = first_(loan.status, it.loanStatus); it.loanStatusLabel = first_(loan.status_i18n, loan.status, it.loanStatusLabel); if (tStatus !== undefined) it.txnStatus = tStatus; }
       if (tStatus !== undefined && !isCancelled_(tStatus)) {
-        return { state: 'err', text: T('✗ Jisr did not cancel the transaction (status: ', '✗ لم يلغِ جسر العملية (الحالة: ') + tStatus + T(') — loan not deleted', ') — لم يُحذف القرض') };
+        return { state: 'err', text: T('✗ Jisr did not cancel the transaction (status: ', '✗ لم يلغِ جسر العملية (الحالة: ') + tStatus + T('); loan not deleted', ')؛ لم يُحذف القرض') };
       }
       it.loanStatus = 'cancelled'; it.loanStatusLabel = T('Cancelled', 'ملغى'); if (it.txnStatus) it.txnStatus = 'cancelled';
       if (steps.length === 1) return { state: 'ok', text: T('✓ Transaction cancelled', '✓ تم إلغاء العملية') };
@@ -30601,7 +30840,7 @@ function jboRedact_(msg) {
     const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1250px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
     const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
     const offLang = I.onChange(() => render_());
-    const onLearn = () => { try { S.txnCfg = JSON.parse(gmGet_(TXN_KEY(), '') || 'null'); } catch (e) { S.txnCfg = null; } S.notice = T('Learned how Jisr cancels a transaction — check the request below.', 'تم التعرّف على طريقة إلغاء العملية في جسر — راجع الطلب أدناه.'); S.noticeErr = false; render_(); };
+    const onLearn = () => { try { S.txnCfg = JSON.parse(gmGet_(TXN_KEY(), '') || 'null'); } catch (e) { S.txnCfg = null; } S.notice = T('Learned how Jisr cancels a transaction; check the request below.', 'تم التعرّف على طريقة إلغاء العملية في جسر؛ راجع الطلب أدناه.'); S.noticeErr = false; render_(); };
     listeners.add(onLearn);
     const close = () => { if (S.busy && !confirm(T('Still working. Close anyway?', 'لا يزال العمل جاريًا. هل تريد الإغلاق؟'))) return; S.stop = true; offLang(); listeners.delete(onLearn); backdrop.remove(); };
     closeBtn.addEventListener('click', close);
@@ -30648,7 +30887,7 @@ function jboRedact_(msg) {
         found.forEach((x) => { const old = keep.get(x.key); if (old) x.action = old.action; keep.set(x.key, x); });
         S.loans = Array.from(keep.values()).sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }) || (a.loanId - b.loanId));
         S.loansScanned = true; S.dry.loans = false;
-        setNotice_(T('Scanned ', 'تم فحص ') + emps.length + T(' employee(s): ', ' موظف: ') + found.length + T(' loan(s) found.', ' قرض.') + (S.loanScanErrors.length ? T(' Could not read ', ' تعذّرت قراءة ') + S.loanScanErrors.length + T(' employee(s) — see below.', ' موظف — انظر أدناه.') : ''), S.loanScanErrors.length > 0);
+        setNotice_(T('Scanned ', 'تم فحص ') + emps.length + T(' employee(s): ', ' موظف: ') + found.length + T(' loan(s) found.', ' قرض.') + (S.loanScanErrors.length ? T(' Could not read ', ' تعذّرت قراءة ') + S.loanScanErrors.length + T(' employee(s); see below.', ' موظف: انظر أدناه.') : ''), S.loanScanErrors.length > 0);
       } catch (e) { setNotice_(e.message, true); }
       S.busy = ''; render_();
     }
@@ -30661,7 +30900,7 @@ function jboRedact_(msg) {
         S.txns.forEach((t) => { const e = byId.get(String(t.empId)) || byCode.get(String(t.code)); if (e) { t.nid = e.nid || ''; t.code = t.code || e.code; t.name = t.name || e.full_name; } });
         S.txnsLoaded = true; S.dry.txns = false;
         const linked = S.txns.filter((t) => t.loanLinked).length;
-        setNotice_(S.txns.length + T(' transaction(s) loaded', ' عملية محمّلة') + (linked ? T(' — ', ' — ') + linked + T(' belong to a loan and are handled on the Loans tab.', ' مرتبطة بقرض وتُعالج من تبويب القروض.') : '.'));
+        setNotice_(S.txns.length + T(' transaction(s) loaded', ' عملية محمّلة') + (linked ? T(' · ', ' · ') + linked + T(' belong to a loan and are handled on the Loans tab.', ' مرتبطة بقرض وتُعالج من تبويب القروض.') : '.'));
       } catch (e) { setNotice_(e.message, true); }
       S.busy = ''; render_();
     }
@@ -30670,7 +30909,7 @@ function jboRedact_(msg) {
       const wb = XLSX.utils.book_new();
       let aoa, name;
       if (S.tab === 'loans') {
-        aoa = [LOAN_HEADERS].concat(S.loans.filter((x) => !x.deleted).map((x) => [x.code, x.name, x.nid, x.loanId, x.loanType, x.amount, x.monthly, x.paid, x.pending, x.locked ? 'No — paid in a closed payroll' : 'Yes', x.loanStatusLabel, x.txnId, x.txnStatus, x.paidAt, x.action ? ACTION_TEXT[x.action] : '']));
+        aoa = [LOAN_HEADERS].concat(S.loans.filter((x) => !x.deleted).map((x) => [x.code, x.name, x.nid, x.loanId, x.loanType, x.amount, x.monthly, x.paid, x.pending, x.locked ? 'No: paid in a closed payroll' : 'Yes', x.loanStatusLabel, x.txnId, x.txnStatus, x.paidAt, x.action ? ACTION_TEXT[x.action] : '']));
         name = 'Loans';
       } else {
         aoa = [TXN_HEADERS].concat(S.txns.filter((x) => !x.loanLinked).map((x) => [x.txnId, x.code, x.name, x.nid || '', x.type, x.amount, x.date, x.statusLabel, x.action ? ACTION_TEXT.cancel : '']));
@@ -30680,8 +30919,8 @@ function jboRedact_(msg) {
       ws['!cols'] = aoa[0].map((h) => ({ wch: Math.max(13, String(h).length + 3) }));
       XLSX.utils.book_append_sheet(wb, ws, name);
       const help = S.tab === 'loans'
-        ? [['How to use'], ['1. In the "Action" column write one of:'], ['   Cancel transaction   → cancels the loan\'s transaction, the loan stays'], ['   Cancel + delete loan → cancels the transaction first, then deletes the loan'], ['   (leave empty)        → nothing happens to that loan'], ['2. Do not change "Loan ID" — rows are matched by it.'], ['3. Upload the file back in the tool, run Dry run, then Run live.']]
-        : [['How to use'], ['1. In the "Action" column write: Cancel transaction'], ['   (leave empty → nothing happens)'], ['2. Do not change "Transaction ID" — rows are matched by it.'], ['3. Upload the file back in the tool, run Dry run, then Run live.']];
+        ? [['How to use'], ['1. In the "Action" column write one of:'], ['   Cancel transaction   → cancels the loan\'s transaction, the loan stays'], ['   Cancel + delete loan → cancels the transaction first, then deletes the loan'], ['   (leave empty)        → nothing happens to that loan'], ['2. Do not change "Loan ID": rows are matched by it.'], ['3. Upload the file back in the tool, run Dry run, then Run live.']]
+        : [['How to use'], ['1. In the "Action" column write: Cancel transaction'], ['   (leave empty → nothing happens)'], ['2. Do not change "Transaction ID": rows are matched by it.'], ['3. Upload the file back in the tool, run Dry run, then Run live.']];
       const hs = XLSX.utils.aoa_to_sheet(help); hs['!cols'] = [{ wch: 80 }];
       XLSX.utils.book_append_sheet(wb, hs, 'How to use');
       const fname = (S.tab === 'loans' ? 'loans-cancel-' : 'transactions-cancel-') + slug_() + '.xlsx';
@@ -30707,7 +30946,7 @@ function jboRedact_(msg) {
           const cAct = col(/^(action|الإجراء|الاجراء)$/);
           const cEmp = col(/^(employee id|الرقم الوظيفي)$/);
           const cNid = col(/iqama|national id|الهوية|الإقامة/);
-          if (!cId || !cAct) throw new Error(T('Could not find the "', 'لم يتم العثور على عمود "') + (kind === 'loan' ? 'Loan ID' : 'Transaction ID') + T('" and "Action" columns — use the template from this tool.', '" و"Action" — استخدم القالب من هذه الأداة.'));
+          if (!cId || !cAct) throw new Error(T('Could not find the "', 'لم يتم العثور على عمود "') + (kind === 'loan' ? 'Loan ID' : 'Transaction ID') + T('" and "Action" columns: use the template from this tool.', '" و"Action": استخدم القالب من هذه الأداة.'));
           const wanted = rows.map((r, i) => Object.assign({ __row: i + 2 }, r)).filter((r) => String(r[cAct]).trim() !== ''); // __row = Excel row number
           if (kind === 'loan') {
             const known = new Set(S.loans.map((x) => String(x.loanId)));
@@ -30730,8 +30969,8 @@ function jboRedact_(msg) {
             const it = map.get(id);
             if (act === null) problems.push(T('Row ', 'الصف ') + r.__row + ': ' + T('unknown action "', 'إجراء غير معروف "') + r[cAct] + '"');
             else if (!it) problems.push(T('Row ', 'الصف ') + r.__row + ': ' + (kind === 'loan' ? T('loan ', 'القرض ') : T('transaction ', 'العملية ')) + id + T(' not found in Jisr', ' غير موجود في جسر'));
-            else if (it.loanLinked) problems.push(T('Row ', 'الصف ') + r.__row + ': ' + T('transaction belongs to a loan — use the Loans tab', 'العملية مرتبطة بقرض — استخدم تبويب القروض'));
-            else if (act && it.locked) problems.push(T('Row ', 'الصف ') + r.__row + ': ' + (kind === 'loan' ? T('loan ', 'القرض ') + id : T('transaction ', 'العملية ') + id) + ' — ' + lockText_(it));
+            else if (it.loanLinked) problems.push(T('Row ', 'الصف ') + r.__row + ': ' + T('transaction belongs to a loan: use the Loans tab', 'العملية مرتبطة بقرض: استخدم تبويب القروض'));
+            else if (act && it.locked) problems.push(T('Row ', 'الصف ') + r.__row + ': ' + (kind === 'loan' ? T('loan ', 'القرض ') + id : T('transaction ', 'العملية ') + id) + ' · ' + lockText_(it));
             else { it.action = act; applied++; }
           });
           S.statusFilter = 'all'; S.search = ''; invalidate_();
@@ -30755,7 +30994,7 @@ function jboRedact_(msg) {
       const todo = items_().filter((x) => x.action && !x.deleted && plan_(x).length);
       if (!todo.length) return;
       const deletes = todo.filter((x) => plan_(x).includes('delete')).length;
-      const msg = T('Send ', 'إرسال ') + todo.length + T(' change(s) to Jisr now?', ' تغيير إلى جسر الآن؟') + (deletes ? '\n' + deletes + T(' loan(s) will be DELETED — this cannot be undone.', ' قرض سيتم حذفه — لا يمكن التراجع.') : '');
+      const msg = T('Send ', 'إرسال ') + todo.length + T(' change(s) to Jisr now?', ' تغيير إلى جسر الآن؟') + (deletes ? '\n' + deletes + T(' loan(s) will be DELETED: this cannot be undone.', ' قرض سيتم حذفه: لا يمكن التراجع.') : '');
       if (!confirm(msg)) return;
       S.busy = 'run'; S.stop = false; let done = 0, ok = 0, bad = 0; render_();
       await pool_(todo, S.speed, async (it) => {
@@ -30815,7 +31054,7 @@ function jboRedact_(msg) {
       });
       tableWrap.appendChild(tbl);
       if (!rows.length) tableWrap.appendChild(el('div', { class: 'jbo-muted', style: { padding: '10px' }, text: T('Nothing to show with this filter.', 'لا يوجد ما يُعرض بهذا الفلتر.') }));
-      if (rows.length > 1500) tableWrap.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px' }, text: T('Showing the first 1500 — use search or the Excel template for the rest.', 'عرض أول 1500 — استخدم البحث أو قالب Excel للباقي.') }));
+      if (rows.length > 1500) tableWrap.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px' }, text: T('Showing the first 1500: use search or the Excel template for the rest.', 'عرض أول 1500: استخدم البحث أو قالب Excel للباقي.') }));
     }
     let bulkEl = null;
     function renderBulk_() {
@@ -30827,7 +31066,7 @@ function jboRedact_(msg) {
         let skipped = 0;
         items_().forEach((x) => { if (S.selected.has(x.key) && !x.deleted) { if (x.locked && a) { skipped++; return; } x.action = a; x.result = null; } });
         invalidate_();
-        if (skipped) { setNotice_(skipped + T(' selected row(s) skipped — paid in a closed payroll (locked).', ' صف محدد تم تخطيه — مدفوع في مسير رواتب مغلق (مقفل).'), true); render_(); return; }
+        if (skipped) { setNotice_(skipped + T(' selected row(s) skipped: paid in a closed payroll (locked).', ' صف محدد تم تخطيه: مدفوع في مسير رواتب مغلق (مقفل).'), true); render_(); return; }
         renderFoot_(); renderTable_();
       };
       const mk = (label, a, cls) => { const b = el('button', { class: 'jbo-btn ' + (cls || ''), text: label, disabled: !n || !!S.busy }); b.addEventListener('click', () => setAll(a)); return b; };
@@ -30869,7 +31108,7 @@ function jboRedact_(msg) {
       });
       body.appendChild(tabs);
       body.appendChild(el('div', { class: 'jbo-muted', style: { margin: '6px 0' }, text: S.tab === 'loans'
-        ? T('A loan can only be deleted after its transaction is cancelled — "Cancel + delete loan" always does both, in that order. Loans with any installment already deducted in a closed payroll are locked 🔒 until support reopens that payroll month.', 'لا يمكن حذف القرض إلا بعد إلغاء عمليته — "إلغاء + حذف القرض" ينفّذ الخطوتين بهذا الترتيب دائمًا. القروض التي خُصم منها أي قسط في مسير رواتب مغلق مقفلة 🔒 حتى يعيد الدعم فتح شهر المسير.')
+        ? T('A loan can only be deleted after its transaction is cancelled. "Cancel + delete loan" always does both, in that order. Loans with any installment already deducted in a closed payroll are locked 🔒 until support reopens that payroll month.', 'لا يمكن حذف القرض إلا بعد إلغاء عمليته؛ "إلغاء + حذف القرض" ينفّذ الخطوتين بهذا الترتيب دائمًا. القروض التي خُصم منها أي قسط في مسير رواتب مغلق مقفلة 🔒 حتى يعيد الدعم فتح شهر المسير.')
         : T('Payments to employees that are not part of a loan. Transactions that belong to a loan are handled on the Loans tab.', 'مدفوعات للموظفين غير مرتبطة بقرض. العمليات المرتبطة بقرض تُعالج من تبويب القروض.') }));
 
       const actions = el('div', { class: 'jlt-row' });
@@ -30889,7 +31128,7 @@ function jboRedact_(msg) {
         if (!S.txnCfg) {
           body.appendChild(el('div', { class: 'jlt-box' }, [
             el('b', { text: T('One-time setup for this company', 'إعداد لمرة واحدة لهذه الشركة') }),
-            el('div', { text: T('1. Keep this window open (or close it — the tool keeps listening on this tab).', '1. أبقِ هذه النافذة مفتوحة (أو أغلقها — الأداة تستمع في هذا التبويب).') }),
+            el('div', { text: T('1. Keep this window open (or close it; the tool keeps listening on this tab).', '1. أبقِ هذه النافذة مفتوحة (أو أغلقها؛ الأداة تستمع في هذا التبويب).') }),
             el('div', { text: T('2. In Jisr, open the screen that lists the payroll / out-of-payrun transactions.', '2. في جسر، افتح الشاشة التي تعرض عمليات الرواتب / المدفوعات خارج مسير الرواتب.') }),
             el('div', { text: T('3. Cancel ONE transaction that is not a loan (use a test employee).', '3. ألغِ عملية واحدة غير مرتبطة بقرض (استخدم موظفًا تجريبيًا).') }),
             el('div', { text: T('The tool learns from that cancel how Jisr lists and cancels transactions, and shows you the request before using it.', 'تتعلّم الأداة من هذا الإلغاء كيف يعرض جسر العمليات ويلغيها، وتعرض لك الطلب قبل استخدامه.') }),
@@ -30936,7 +31175,7 @@ function jboRedact_(msg) {
         const FILTERS = S.tab === 'loans'
           ? [['open', T('All loans not deleted', 'كل القروض غير المحذوفة')], ['active', T('Open (active) loans', 'قروض مفتوحة (نشطة)')], ['cancelled', T('Cancelled, not deleted', 'ملغاة وغير محذوفة')],
             ['pending', T('Has a pending amount', 'عليها مبلغ متبقٍ')], ['repaid', T('Fully repaid (nothing pending)', 'مسددة بالكامل')],
-            ['free', T('Nothing paid yet — can cancel / delete', 'لم يُسدد شيء — يمكن الإلغاء / الحذف')], ['locked', T('🔒 Paid in a closed payroll (locked)', '🔒 مدفوعة في مسير مغلق (مقفلة)')],
+            ['free', T('Nothing paid yet: can cancel / delete', 'لم يُسدد شيء: يمكن الإلغاء / الحذف')], ['locked', T('🔒 Paid in a closed payroll (locked)', '🔒 مدفوعة في مسير مغلق (مقفلة)')],
             ['chosen', T('With an action', 'بإجراء')], ['all', T('All, incl. deleted', 'الكل، مع المحذوفة')]]
           : [['open', T('Not cancelled', 'غير ملغاة')], ['free', T('Can be cancelled', 'يمكن إلغاؤها')], ['locked', T('🔒 In a closed payroll', '🔒 في مسير مغلق')], ['cancelled', T('Cancelled', 'ملغاة')], ['chosen', T('With an action', 'بإجراء')], ['all', T('All', 'الكل')]];
         FILTERS.forEach(([v, l]) => filt.appendChild(el('option', { value: v, text: l, selected: S.statusFilter === v })));
@@ -30984,7 +31223,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.62.0
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.75.0
 // ###########################################################################
 
 /*
@@ -32126,7 +32365,7 @@ function jboRedact_(msg) {
     if (mod.readableHeaders.length) L.push(['Reference columns (never sent): ' + mod.readableHeaders.join(', ')]);
     if (mod.canCreate) L.push(['Leave the id column empty on a row to CREATE a new record.']);
     if (mod.editableHeaders.includes('delete')) L.push(['Write TRUE in "delete" to delete that record.']);
-    if (mod.editableHeaders.includes('employee_id') || mod.key === 'employee_code') L.push(['employee_id / id is Jisr\'s internal employee id. If you only know the employee code or Iqama, fill employee_code / national_id instead and leave it empty — the tool fills it in.']);
+    if (mod.editableHeaders.includes('employee_id') || mod.key === 'employee_code') L.push(['employee_id / id is Jisr\'s internal employee id. If you only know the employee code or Iqama, fill employee_code / national_id instead and leave it empty; the tool fills it in.']);
     Object.entries(mod.choices || {}).forEach(([f, c]) => L.push(['"' + f + '": pick from the dropdown - ' + c.values.join(' / ') + (c.strict ? '' : ' (others accepted)')]));
     (mod.picks || []).forEach((pk) => L.push(['"' + pk.col + '": pick the employee from the dropdown - it fills ' + pk.target + (pk.append ? ' (added to the ids already there)' : '') + ' for you, so you never type an id or a name.']));
     if (mod.key === 'role_assignment') L.push(['employee_ids: internal employee ids separated by |   action: assign or revoke   (or one employee per row with the dropdown column)']);
@@ -32441,7 +32680,7 @@ function jboRedact_(msg) {
       const m = mod();
       gridWrap.innerHTML = '';
       if (!S.grid || !S.grid.length) {
-        gridWrap.appendChild(el('div', { class: 'jbo-muted', style: { padding: '12px' }, text: m.needsIdList ? T('Add employees above to load their rows.', 'أضف موظفين أعلاه لتحميل صفوفهم.') : m.noExport ? T('No list exists in Jisr for this — click "+ New row".', 'لا توجد قائمة في جسر لهذه الأداة — اضغط "+ صف جديد".') : T('Click "Load current data".', 'اضغط "تحميل البيانات الحالية".') }));
+        gridWrap.appendChild(el('div', { class: 'jbo-muted', style: { padding: '12px' }, text: m.needsIdList ? T('Add employees above to load their rows.', 'أضف موظفين أعلاه لتحميل صفوفهم.') : m.noExport ? T('No list exists in Jisr for this; click "+ New row".', 'لا توجد قائمة في جسر لهذه الأداة؛ اضغط "+ صف جديد".') : T('Click "Load current data".', 'اضغط "تحميل البيانات الحالية".') }));
         return;
       }
       const q = S.gridSearch.trim().toLowerCase();
@@ -32490,13 +32729,13 @@ function jboRedact_(msg) {
         tbl.appendChild(tr);
       });
       gridWrap.appendChild(tbl);
-      if (rows.length > 400) gridWrap.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px' }, text: T('Showing 400 rows — filter to find others, or use the Excel tab for large changes.', 'عرض 400 صف — استخدم التصفية أو تبويب Excel للتغييرات الكبيرة.') }));
+      if (rows.length > 400) gridWrap.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px' }, text: T('Showing 400 rows: filter to find others, or use the Excel tab for large changes.', 'عرض 400 صف: استخدم التصفية أو تبويب Excel للتغييرات الكبيرة.') }));
     }
 
     function renderFoot_() {
       foot.innerHTML = '';
       const m = mod();
-      if (m.readOnly) { foot.appendChild(el('div', { class: 'jbo-muted', text: T('Read-only — export only, nothing is written to Jisr.', 'للقراءة فقط — تصدير فقط، لا يُكتب شيء في جسر.') })); return; }
+      if (m.readOnly) { foot.appendChild(el('div', { class: 'jbo-muted', text: T('Read-only: export only, nothing is written to Jisr.', 'للقراءة فقط: تصدير فقط، لا يُكتب شيء في جسر.') })); return; }
       const edited = S.tab === 'one' && S.grid ? S.grid.filter((r) => dirty_(m, r)) : null;
       const source = S.tab === 'excel' ? S.fileRows : edited;
       const speed = el('select', { class: 'jbo-select', style: { width: 'auto' }, title: T('How many changes are sent at the same time', 'عدد التغييرات المرسلة في نفس الوقت'), disabled: !m.parallelOk || m.sequential });
@@ -32541,7 +32780,7 @@ function jboRedact_(msg) {
       body.appendChild(tabs);
       const info = m.readOnly ? T('Read-only: exports the pay groups list.', 'للقراءة فقط: يصدّر قائمة مجموعات الرواتب.')
         : m.needsIdList ? T('Per employee: export reads each chosen employee from Jisr, then edit and upload.', 'لكل موظف: التصدير يقرأ كل موظف مختار من جسر، ثم عدّل وارفع.')
-          : m.noExport ? T('No "list all" in Jisr — the template starts empty; fill in new records.', 'لا توجد قائمة كاملة في جسر — القالب يبدأ فارغًا؛ عبّئ السجلات الجديدة.') : '';
+          : m.noExport ? T('No "list all" in Jisr: the template starts empty; fill in new records.', 'لا توجد قائمة كاملة في جسر؛ القالب يبدأ فارغًا؛ عبّئ السجلات الجديدة.') : '';
       if (info) body.appendChild(el('div', { class: 'jbo-muted', style: { margin: '6px 0' }, text: 'ℹ️ ' + info }));
       if (S.tab === 'excel') renderExcel_(m); else renderOne_(m);
       statusEl = el('div', { class: 'jst-status' });
@@ -32575,7 +32814,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.62.0
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.75.0
 // ###########################################################################
 
 /*
@@ -32737,7 +32976,7 @@ function jboRedact_(msg) {
       try {
         res = await fetch(url, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
       } catch (e) {
-        if (method !== 'GET') { const err = new Error(T('No answer from Jisr — the result will be checked against Jisr', 'لا رد من جسر — سيتم التحقق من النتيجة في جسر')); err.unknown = true; throw err; }
+        if (method !== 'GET') { const err = new Error(T('No answer from Jisr: the result will be checked against Jisr', 'لا رد من جسر: سيتم التحقق من النتيجة في جسر')); err.unknown = true; throw err; }
         await sleep_(800 * (a + 1)); continue;
       }
       if (res.status === 401 || res.status === 403) throw new Error(T('Not logged in to Jisr in this tab (HTTP ', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP ') + res.status + ').');
@@ -32931,9 +33170,9 @@ function jboRedact_(msg) {
         S.noteErr = !!failed;
         if (others.size) {
           const n = Array.from(others.values()).reduce((a, b) => a + b, 0);
-          S.note += ' ' + n + T(' other employee(s) are left out of the payroll for a different reason (', ' موظف آخر مستبعد من الرواتب لسبب مختلف (') + Array.from(others.entries()).map(([l, c]) => l + ': ' + c).join(', ') + T(') — unsuspending does not apply to them, so they are not listed.', ') — لا ينطبق عليهم إلغاء الإيقاف لذلك لا يظهرون.');
+          S.note += ' ' + n + T(' other employee(s) are left out of the payroll for a different reason (', ' موظف آخر مستبعد من الرواتب لسبب مختلف (') + Array.from(others.entries()).map(([l, c]) => l + ': ' + c).join(', ') + T('); unsuspending does not apply to them, so they are not listed.', ')؛ لا ينطبق عليهم إلغاء الإيقاف لذلك لا يظهرون.');
         }
-        if (!S.rows.length && nonEmpty && !others.size) { S.note += T(' Jisr returned excluded-employee data, but no employee in it could be matched — please send a screenshot of that response from DevTools.', ' أعاد جسر بيانات الموظفين المستبعدين لكن لم تتم مطابقة أي موظف — أرسل لقطة لهذه الاستجابة من أدوات المطور.'); S.noteErr = true; }
+        if (!S.rows.length && nonEmpty && !others.size) { S.note += T(' Jisr returned excluded-employee data, but no employee in it could be matched; please send a screenshot of that response from DevTools.', ' أعاد جسر بيانات الموظفين المستبعدين لكن لم تتم مطابقة أي موظف؛ أرسل لقطة لهذه الاستجابة من أدوات المطور.'); S.noteErr = true; }
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; paint_();
     }
@@ -33045,7 +33284,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 20 — Employee Documents bulk upload  v4.62.0
+// ##### SECTION 20 — Employee Documents bulk upload  v4.75.0
 // ###########################################################################
 
 /*
@@ -33375,7 +33614,7 @@ function jboRedact_(msg) {
         // 403 = Jisr refused this action for this user (role / permission), the session itself is fine
         const j = await res.json().catch(() => null);
         const why = jisrMsg_(j);
-        const err = new Error(T('Jisr refused (HTTP 403) ', 'رفض جسر الطلب (HTTP 403) ') + method + ' ' + path + (why ? ': ' + why : '') + T(' — your Jisr role may not have access to employee documents / editing this employee.', ' — قد لا يملك دورك في جسر صلاحية مستندات الموظفين أو تعديل هذا الموظف.'));
+        const err = new Error(T('Jisr refused (HTTP 403) ', 'رفض جسر الطلب (HTTP 403) ') + method + ' ' + path + (why ? ': ' + why : '') + T('; your Jisr role may not have access to employee documents / editing this employee.', '; قد لا يملك دورك في جسر صلاحية مستندات الموظفين أو تعديل هذا الموظف.'));
         err.status = 403; throw err;
       }
       if (res.status === 429 || (method === 'GET' && res.status >= 500)) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
@@ -33673,7 +33912,7 @@ function jboRedact_(msg) {
           r.emp = e1 || e2 || null;
           // which document
           r.cat = typeFromText_(r.typeText, cats);
-          if (!r.cat) errs.push(T('Unknown document type "', 'نوع مستند غير معروف "') + r.typeText + T('" — use one of: ', '" — استخدم أحد: ') + cats.map(catLabel_).join(' / '));
+          if (!r.cat) errs.push(T('Unknown document type "', 'نوع مستند غير معروف "') + r.typeText + T('": use one of: ', '": استخدم أحد: ') + cats.map(catLabel_).join(' / '));
           // which file
           r.file = S.files.get(String(r.fileName).toLowerCase()) || null;
           if (!r.file) errs.push(T('File not among the chosen files', 'الملف غير موجود ضمن الملفات المختارة'));
@@ -33713,11 +33952,11 @@ function jboRedact_(msg) {
           r.beforeFiles = inf.records;
           const existing = inf.records.filter((x) => recTypeId_(x) === String(r.cat.typeId));
           const notes = [];
-          if (existing.length && !r.replace) { r.state = 'skip'; r.msg = T('Already has a "', 'لديه بالفعل مستند «') + catLabel_(r.cat) + T('" document — skipped. Type YES in "Replace existing?" to add another one.', '» — تم التخطي. اكتب YES في «Replace existing?» لإضافة مستند آخر.'); return; }
+          if (existing.length && !r.replace) { r.state = 'skip'; r.msg = T('Already has a "', 'لديه بالفعل مستند «') + catLabel_(r.cat) + T('" document: skipped. Type YES in "Replace existing?" to add another one.', '»: تم التخطي. اكتب YES في «Replace existing?» لإضافة مستند آخر.'); return; }
           if (existing.length) notes.push(T('Will be added next to the existing "', 'سيُضاف بجانب مستند «') + catLabel_(r.cat) + T('" document', '» الحالي'));
           if (r.expiry) notes.push(T('expiry date: ', 'تاريخ الانتهاء: ') + r.expiry);
           if (r.number || r.issue || r.place) notes.push(T('Number / issue date / place are not part of this document type; only the file, description and expiry date are sent.', 'الرقم / تاريخ الإصدار / المكان ليست ضمن هذا النوع؛ يُرسل الملف والوصف وتاريخ الانتهاء فقط.'));
-          r.state = 'ready'; r.msg = notes.length ? T('ready — ', 'جاهز — ') + notes.join('\n') : '';
+          r.state = 'ready'; r.msg = notes.length ? T('ready: ', 'جاهز: ') + notes.join('\n') : '';
         });
         S.rows.forEach((r) => {
           if (r.state) return;
@@ -33726,7 +33965,7 @@ function jboRedact_(msg) {
           r.before = inf;
           const existing = activeOf_(inf.attachments, r.cat.cat);
           const notes = [];
-          if (existing.length && !r.replace) { r.state = 'skip'; r.msg = T('Already has a ', 'لديه بالفعل ') + catLabel_(r.cat) + T(' file (', ' (') + existing.map((a) => a.file_name).join(', ') + T(') — skipped. Type YES in "Replace existing?" to upload anyway.', ') — تم التخطي. اكتب YES في «Replace existing?» للرفع على أي حال.'); return; }
+          if (existing.length && !r.replace) { r.state = 'skip'; r.msg = T('Already has a ', 'لديه بالفعل ') + catLabel_(r.cat) + T(' file (', ' (') + existing.map((a) => a.file_name).join(', ') + T('); skipped. Type YES in "Replace existing?" to upload anyway.', ')؛ تم التخطي. اكتب YES في «Replace existing?» للرفع على أي حال.'); return; }
           if (existing.length) notes.push(T('Will be added next to the existing file(s): ', 'سيُضاف بجانب الملف/الملفات الحالية: ') + existing.map((a) => a.file_name).join(', '));
           const cur = inf.ident || {};
           [['number', T('number', 'الرقم')], ['issue', T('issue date', 'تاريخ الإصدار')], ['expiry', T('expiry date', 'تاريخ الانتهاء')], ['place', T('issue place', 'مكان الإصدار')]].forEach(([role, label]) => {
@@ -33737,11 +33976,11 @@ function jboRedact_(msg) {
             else if (!ov) notes.push(label + ': ' + nv);
           });
           if (r.cat.learned && !Object.keys(r.cat.fields).length && (r.number || r.expiry || r.issue)) notes.push(T('This type has no number/date fields in Jisr; only the file is sent.', 'هذا النوع بلا حقول رقم/تاريخ في جسر؛ يُرسل الملف فقط.'));
-          r.state = 'ready'; r.msg = notes.length ? T('ready — ', 'جاهز — ') + notes.join('\n') : '';
+          r.state = 'ready'; r.msg = notes.length ? T('ready: ', 'جاهز: ') + notes.join('\n') : '';
         });
         S.dryDone = true;
         const rd = S.rows.filter((r) => r.state === 'ready').length;
-        S.note = T('Dry Run done — nothing was sent. ', 'انتهى التشغيل التجريبي — لم يُرسل شيء. ') + rd + T(' file(s) ready to upload.', ' ملف جاهز للرفع.');
+        S.note = T('Dry Run done: nothing was sent. ', 'انتهى التشغيل التجريبي: لم يُرسل شيء. ') + rd + T(' file(s) ready to upload.', ' ملف جاهز للرفع.');
         S.noteErr = false;
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; paint_();
@@ -33791,7 +34030,7 @@ function jboRedact_(msg) {
         let res = null, unknown = false;
         try { res = await request_('POST', fileCreatePath_(r.emp.id), null, bodyJ); }
         catch (e) { if (!e.unknown) throw e; unknown = true; }
-        if (res && !res.ok) { r.state = 'failed'; r.msg = '✗ ' + T('Upload: ', 'الرفع: ') + (jisrMsg_(res.json) || ('HTTP ' + res.status)) + (res.status === 404 || res.status === 405 ? T(' — Jisr uses a different request to add documents here. Add one document by hand in Jisr with this script running, then try again.', ' — يستخدم جسر طلبًا مختلفًا لإضافة المستندات. أضف مستندًا واحدًا يدويًا في جسر مع تشغيل هذا السكربت ثم حاول مجددًا.') : ''); return; }
+        if (res && !res.ok) { r.state = 'failed'; r.msg = '✗ ' + T('Upload: ', 'الرفع: ') + (jisrMsg_(res.json) || ('HTTP ' + res.status)) + (res.status === 404 || res.status === 405 ? T('Jisr uses a different request to add documents here. Add one document by hand in Jisr with this script running, then try again.', '; يستخدم جسر طلبًا مختلفًا لإضافة المستندات. أضف مستندًا واحدًا يدويًا في جسر مع تشغيل هذا السكربت ثم حاول مجددًا.') : ''); return; }
         // confirm by reading the employee's documents back
         const beforeIds = new Set((r.beforeFiles || []).map((x) => String(x.id)));
         const after = await readFiles_(r.emp.id).catch(() => (res && res.json ? findFileRecords_(res.json) : []));
@@ -33803,10 +34042,10 @@ function jboRedact_(msg) {
           const gotExp = String(hit.expiry_date || '').slice(0, 10);
           const expOk = !wantIso || gotExp === wantIso;
           r.state = expOk ? 'done' : 'check';
-          r.msg = (expOk ? '✓ ' : '⚠ ') + T('uploaded (document #', 'تم الرفع (مستند #') + hit.id + ')' + (expOk ? '' : T(' — expiry date in Jisr is "', ' — تاريخ الانتهاء في جسر «') + (gotExp || '—') + T('", expected ', '»، المتوقع ') + wantIso);
+          r.msg = (expOk ? '✓ ' : '⚠ ') + T('uploaded (document #', 'تم الرفع (مستند #') + hit.id + ')' + (expOk ? '' : T('; expiry date in Jisr is "', '; تاريخ الانتهاء في جسر «') + (gotExp || '—') + T('", expected ', '»، المتوقع ') + wantIso);
         } else {
           r.state = 'check';
-          r.msg = unknown ? T('⚠ No answer from Jisr and the document is not on the profile — check the employee in Jisr', '⚠ لا رد من جسر والمستند غير موجود في ملف الموظف — تحقّق من الموظف في جسر') : T('⚠ Jisr said OK but the document is not on the profile', '⚠ قال جسر تم، لكن المستند غير موجود في ملف الموظف');
+          r.msg = unknown ? T('⚠ No answer from Jisr and the document is not on the profile; check the employee in Jisr', '⚠ لا رد من جسر والمستند غير موجود في ملف الموظف؛ تحقّق من الموظف في جسر') : T('⚠ Jisr said OK but the document is not on the profile', '⚠ قال جسر تم، لكن المستند غير موجود في ملف الموظف');
         }
       } catch (e) { r.state = 'failed'; r.msg = '✗ ' + T('Upload: ', 'الرفع: ') + e.message; }
     }
@@ -33831,10 +34070,10 @@ function jboRedact_(msg) {
         if (hit) {
           r.attachmentId = hit.id;
           r.state = changed.length ? 'check' : 'done';
-          r.msg = (changed.length ? '⚠ ' : '✓ ') + T('uploaded (attachment #', 'تم الرفع (مرفق #') + hit.id + ')' + (changed.length ? T(' — other ID details changed: ', ' — تغيّرت تفاصيل أخرى: ') + changed.join(', ') : '');
+          r.msg = (changed.length ? '⚠ ' : '✓ ') + T('uploaded (attachment #', 'تم الرفع (مرفق #') + hit.id + ')' + (changed.length ? T('; other ID details changed: ', '; تغيّرت تفاصيل أخرى: ') + changed.join(', ') : '');
         } else {
           r.state = 'check';
-          r.msg = unknown ? T('⚠ No answer from Jisr and the file is not on the profile — check the employee in Jisr', '⚠ لا رد من جسر والملف غير موجود في ملف الموظف — تحقّق من الموظف في جسر') : T('⚠ Jisr said OK but the file is not on the profile', '⚠ قال جسر تم، لكن الملف غير موجود في ملف الموظف');
+          r.msg = unknown ? T('⚠ No answer from Jisr and the file is not on the profile; check the employee in Jisr', '⚠ لا رد من جسر والملف غير موجود في ملف الموظف؛ تحقّق من الموظف في جسر') : T('⚠ Jisr said OK but the file is not on the profile', '⚠ قال جسر تم، لكن الملف غير موجود في ملف الموظف');
         }
       } catch (e) { r.state = 'failed'; r.msg = '✗ ' + T('Upload: ', 'الرفع: ') + e.message; }
     }
@@ -33877,7 +34116,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 21 — Bulk Offboarding  v4.62.0
+// ##### SECTION 21 — Bulk Offboarding  v4.75.0
 // ###########################################################################
 
 /**
@@ -34111,7 +34350,7 @@ function jboRedact_(msg) {
       if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول مجددًا.'));
       if (res.status === 429 || (method === 'GET' && res.status >= 500)) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
       const json = await res.json().catch(() => null);
-      if (res.status === 403) { const err = new Error(T('Jisr refused (HTTP 403) ', 'رفض جسر الطلب (HTTP 403) ') + method + ' ' + path + (jisrMsg_(json) ? ': ' + jisrMsg_(json) : '') + T(' — your Jisr role may not allow offboarding.', ' — قد لا يسمح دورك في جسر بإنهاء الخدمة.')); err.status = 403; throw err; }
+      if (res.status === 403) { const err = new Error(T('Jisr refused (HTTP 403) ', 'رفض جسر الطلب (HTTP 403) ') + method + ' ' + path + (jisrMsg_(json) ? ': ' + jisrMsg_(json) : '') + T('; your Jisr role may not allow offboarding.', '; قد لا يسمح دورك في جسر بإنهاء الخدمة.')); err.status = 403; throw err; }
       return { status: res.status, ok: res.ok && !(json && json.success === false), json };
     }
     throw new Error('Request failed after retries');
@@ -34416,7 +34655,7 @@ function jboRedact_(msg) {
           }
           if (!r.assigneeId) {
             const missing = tasks.filter((t) => !r.skipTaskIds.includes(t.id) && t.assignee_id == null && !(t.assignee && t.assignee.id != null));
-            if (missing.length) errs.push(T('No assignee in the plan for: ', 'لا يوجد مسؤول في الخطة لـ: ') + missing.map((t) => t.name).join(', ') + T(' — fill "Task assignee"', ' — املأ «Task assignee»'));
+            if (missing.length) errs.push(T('No assignee in the plan for: ', 'لا يوجد مسؤول في الخطة لـ: ') + missing.map((t) => t.name).join(', ') + T('; fill "Task assignee"', '; املأ «Task assignee»'));
           }
           if (r.emp && r.assigneeId != null && String(r.assigneeId) === String(r.emp.id)) errs.push(T('The employee cannot be the assignee of their own offboarding tasks', 'لا يمكن أن يكون الموظف مسؤولًا عن مهام إنهاء خدمته'));
           r.notes = notes;
@@ -34433,7 +34672,7 @@ function jboRedact_(msg) {
             const txt = r.reasonText.toLowerCase();
             const hit = list.find((x) => x.key.toLowerCase() === txt || x.label.toLowerCase() === txt);
             if (!r.reasonText) { r.state = 'error'; r.msg = '✗ ' + T('Reason is empty', 'السبب فارغ'); }
-            else if (!hit) { r.state = 'error'; r.msg = '✗ ' + T('Reason "', 'السبب "') + r.reasonText + T('" is not offered by Jisr for ', '" غير متاح في جسر لمبادرة ') + r.initiator + (list.length ? T(' — use one of: ', ' — استخدم أحد: ') + list.slice(0, 12).map((x) => x.label).join(' / ') : ''); }
+            else if (!hit) { r.state = 'error'; r.msg = '✗ ' + T('Reason "', 'السبب "') + r.reasonText + T('" is not offered by Jisr for ', '" غير متاح في جسر لمبادرة ') + r.initiator + (list.length ? T('; use one of: ', '; استخدم أحد: ') + list.slice(0, 12).map((x) => x.label).join(' / ') : ''); }
             else { r.reasonKey = hit.key; r.reasonLabel = hit.label; if (hit.type && !r.offboardType) r.offboardType = hit.type; }
           } catch (e) { r.state = 'error'; r.msg = '✗ ' + e.message; }
           done++; statusEl.textContent = T('Reading reasons… ', 'جارٍ قراءة الأسباب… ') + done + '/' + todo.length;
@@ -34449,10 +34688,10 @@ function jboRedact_(msg) {
             if (bad.length) { r.state = 'error'; r.msg = '✗ ' + T('Task assignee cannot take: ', 'مسؤول المهام لا يمكنه تولّي: ') + bad.map((t) => t.name).join(', '); }
           });
         }
-        S.rows.forEach((r) => { if (r.state) return; r.state = 'ready'; r.msg = (r.notes.length ? T('ready — ', 'جاهز — ') + r.notes.join('\n') : '') + (r.skipTaskIds.length ? (r.notes.length ? '\n' : T('ready — ', 'جاهز — ')) + r.skipTaskIds.length + T(' task(s) skipped', ' مهمة متخطاة') : ''); });
+        S.rows.forEach((r) => { if (r.state) return; r.state = 'ready'; r.msg = (r.notes.length ? T('ready: ', 'جاهز: ') + r.notes.join('\n') : '') + (r.skipTaskIds.length ? (r.notes.length ? '\n' : T('ready: ', 'جاهز: ')) + r.skipTaskIds.length + T(' task(s) skipped', ' مهمة متخطاة') : ''); });
         S.dryDone = true;
         const rd = S.rows.filter((r) => r.state === 'ready').length;
-        S.note = T('Dry Run done — nothing was sent. ', 'انتهى التشغيل التجريبي — لم يُرسل شيء. ') + rd + T(' employee(s) ready.', ' موظف جاهز.');
+        S.note = T('Dry Run done: nothing was sent. ', 'انتهى التشغيل التجريبي: لم يُرسل شيء. ') + rd + T(' employee(s) ready.', ' موظف جاهز.');
         S.noteErr = false;
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; paint_();
@@ -34472,7 +34711,7 @@ function jboRedact_(msg) {
           const res = await request_('POST', '/v2/hr/offboard_records', null, buildBody_({ empId: r.emp.id, initiator: r.initiator, offboardType: r.offboardType, reasonKey: r.reasonKey, details: r.details, comments: r.comments, commDate: r.commDate, lwd: r.lwd, rehire: r.rehire, regrettable: r.regrettable, assigneeId: r.assigneeId, skipTaskIds: r.skipTaskIds, paymentMethod: r.paymentMethod, revoke: r.revoke }, S.plan));
           if (!res.ok) { r.state = 'failed'; r.msg = '✗ ' + (jisrMsg_(res.json) || ('HTTP ' + res.status)); }
           else { r.recordId = recordIdFrom_(res.json); r.state = 'done'; r.msg = '✓ ' + T('offboarding created', 'تم إنشاء إنهاء الخدمة') + (r.recordId != null ? ' (#' + r.recordId + ')' : ''); }
-        } catch (e) { r.state = e.unknown ? 'check' : 'failed'; r.msg = (e.unknown ? '⚠ ' + T('No answer from Jisr — check this employee in Jisr before retrying', 'لا رد من جسر — تحقّق من الموظف في جسر قبل إعادة المحاولة') : '✗ ' + e.message); }
+        } catch (e) { r.state = e.unknown ? 'check' : 'failed'; r.msg = (e.unknown ? '⚠ ' + T('No answer from Jisr: check this employee in Jisr before retrying', 'لا رد من جسر: تحقّق من الموظف في جسر قبل إعادة المحاولة') : '✗ ' + e.message); }
         done++; S.busy = T('Offboarding… ', 'جارٍ إنهاء الخدمة… ') + done + '/' + todo.length; paint_();
       });
       S.phase = 'done'; S.busy = '';
@@ -34525,7 +34764,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 22 — Bulk Final Settlement  v4.62.0
+// ##### SECTION 22 — Bulk Final Settlement  v4.75.0
 // ###########################################################################
 
 /**
@@ -34871,7 +35110,7 @@ function jboRedact_(msg) {
             const cands = all.filter((s) => (r.empText && String(s.code || '').toLowerCase() === r.empText.toLowerCase()) || (e && String(s.empId) === String(e.id)));
             const open = cands.filter((s) => !['confirmed', 'paid'].includes(s.status));
             if (!cands.length) errs.push(T('No final settlement for this employee', 'لا توجد تسوية نهائية لهذا الموظف'));
-            else if (open.length > 1) errs.push(T('More than one open settlement — fill "Settlement ID"', 'أكثر من تسوية مفتوحة — املأ «Settlement ID»'));
+            else if (open.length > 1) errs.push(T('More than one open settlement: fill "Settlement ID"', 'أكثر من تسوية مفتوحة: املأ «Settlement ID»'));
             else r.s = open[0] || cands[0];
           }
           if (r.s) { const k = String(r.s.payrunId); if (seen.has(k)) errs.push(T('Same settlement as row ', 'نفس التسوية في الصف ') + seen.get(k)); else seen.set(k, r.no); }
@@ -34892,7 +35131,7 @@ function jboRedact_(msg) {
             const a = r.cur.amounts;
             const editsWanted = r.newEos != null || r.newLeave != null || r.addAmt != null || r.dedAmt != null;
             const errs = [];
-            if (editsWanted && !EDITABLE.includes(r.cur.status)) errs.push(T('Settlement is "', 'التسوية بحالة "') + r.s.statusLabel + T('" — amounts can only change while Open or Rejected', '" — لا تتغير المبالغ إلا وهي مفتوحة أو مرفوضة'));
+            if (editsWanted && !EDITABLE.includes(r.cur.status)) errs.push(T('Settlement is "', 'التسوية بحالة "') + r.s.statusLabel + T('": amounts can only change while Open or Rejected', '": لا تتغير المبالغ إلا وهي مفتوحة أو مرفوضة'));
             if (!r.cur.effectiveDate) errs.push(T('Settlement has no pay period start', 'لا يوجد تاريخ بداية لفترة التسوية'));
             let est = a.net;
             if (r.newEos != null) {
@@ -34921,19 +35160,19 @@ function jboRedact_(msg) {
             }
             if (r.approve) {
               if (!r.send && r.cur.status !== 'under_review') errs.push(T('Approve needs the settlement to be pending approval (or "Send for approval" = YES)', 'الاعتماد يتطلب أن تكون التسوية بانتظار الاعتماد (أو «Send for approval» = YES)'));
-              else if (r.cur.status === 'under_review' && r.cur.approverId != null && S.me != null && String(r.cur.approverId) !== String(S.me)) notes.push(T('you are not the current approver — approve will be skipped', 'لست المعتمِد الحالي — سيتم تخطي الاعتماد'));
+              else if (r.cur.status === 'under_review' && r.cur.approverId != null && S.me != null && String(r.cur.approverId) !== String(S.me)) notes.push(T('you are not the current approver; approve will be skipped', 'لست المعتمِد الحالي: سيتم تخطي الاعتماد'));
               else r.plan.push(T('Approve ("', 'اعتماد ("') + r.comment + '")');
             }
-            if (!r.plan.length && !errs.length) errs.push(T('Nothing to do', 'لا يوجد ما يُنفّذ') + (notes.length ? ' — ' + notes.join('; ') : ''));
+            if (!r.plan.length && !errs.length) errs.push(T('Nothing to do', 'لا يوجد ما يُنفّذ') + (notes.length ? ' · ' + notes.join('; ') : ''));
             r.estTotal = est !== a.net ? est : null;
             if (errs.length) { r.state = 'error'; r.msg = '✗ ' + errs.join('\n✗ '); }
-            else { r.state = 'ready'; r.msg = notes.length ? T('ready — ', 'جاهز — ') + notes.join('\n') : ''; }
+            else { r.state = 'ready'; r.msg = notes.length ? T('ready: ', 'جاهز: ') + notes.join('\n') : ''; }
           } catch (e) { r.state = 'error'; r.msg = '✗ ' + e.message; }
           done++; statusEl.textContent = T('Reading settlements… ', 'جارٍ قراءة التسويات… ') + done + '/' + todo.length;
         });
         S.dryDone = true;
         const rd = S.rows.filter((r) => r.state === 'ready').length;
-        S.note = T('Dry Run done — nothing was sent. ', 'انتهى التشغيل التجريبي — لم يُرسل شيء. ') + rd + T(' settlement(s) ready. Totals after the arrow are estimates; Jisr recalculates.', ' تسوية جاهزة. الإجماليات بعد السهم تقديرية؛ جسر يعيد الحساب.');
+        S.note = T('Dry Run done: nothing was sent. ', 'انتهى التشغيل التجريبي: لم يُرسل شيء. ') + rd + T(' settlement(s) ready. Totals after the arrow are estimates; Jisr recalculates.', ' تسوية جاهزة. الإجماليات بعد السهم تقديرية؛ جسر يعيد الحساب.');
         S.noteErr = false;
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; paint_();
@@ -34947,7 +35186,7 @@ function jboRedact_(msg) {
       const step = async (label, fn) => {
         if (fail.length) return;
         try { const res = await fn(); if (res && !res.ok) fail.push(label + ': ' + (jisrMsg_(res.json) || ('HTTP ' + res.status))); else did.push(label); }
-        catch (e) { fail.push(label + ': ' + (e.unknown ? T('no answer from Jisr — check in Jisr', 'لا رد من جسر — تحقّق في جسر') : e.message)); }
+        catch (e) { fail.push(label + ': ' + (e.unknown ? T('no answer from Jisr: check in Jisr', 'لا رد من جسر: تحقّق في جسر') : e.message)); }
       };
       const a = r.cur.amounts;
       if (r.newEos != null) await step(T('end of service', 'نهاية الخدمة'), () => request_('POST', '/v2/finance/payroll_transactions', { type: 'payrunType' }, editBody_(s, a.eos.typeId, r.newEos, '')));
@@ -35010,7 +35249,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 24 — Bulk Payroll Transactions  v4.62.0
+// ##### SECTION 24 — Bulk Payroll Transactions  v4.75.0
 // ###########################################################################
 
 /**
@@ -35122,7 +35361,7 @@ function jboRedact_(msg) {
       try {
         res = await fetch(url, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: I.isAr() ? 'ar' : 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
       } catch (e) {
-        if (method !== 'GET') { const err = new Error(T('No answer from Jisr — check the employee in Jisr before retrying', 'لا رد من جسر — تحقّق من الموظف في جسر قبل إعادة المحاولة')); err.unknown = true; throw err; }
+        if (method !== 'GET') { const err = new Error(T('No answer from Jisr: check the employee in Jisr before retrying', 'لا رد من جسر: تحقّق من الموظف في جسر قبل إعادة المحاولة')); err.unknown = true; throw err; }
         await sleep_(800 * (a + 1)); continue;
       }
       if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول مجددًا.'));
@@ -35329,8 +35568,8 @@ function jboRedact_(msg) {
     const ACTIONS = ['Keep', 'Edit', 'Delete'];
     function renderManage_() {
       body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
-        'Export the transactions that already exist (bonuses, allowances, deductions… paid out of payroll or in it), choose an Action per row — Edit (fill the New columns) or Delete — then upload, Dry Run and apply. Loan transactions stay with “Cancel Transactions & Loans”.',
-        'صدّر الحركات الموجودة (مكافآت، بدلات، خصومات… خارج المسير أو ضمنه)، واختر الإجراء لكل صف — تعديل (املأ الأعمدة الجديدة) أو حذف — ثم ارفع الملف وشغّل التجريبي وطبّق. حركات السلف تبقى في «إلغاء العمليات والقروض».') }));
+        'Export the transactions that already exist (bonuses, allowances, deductions… paid out of payroll or in it), choose an Action per row. Edit (fill the New columns) or Delete; then upload, Dry Run and apply. Loan transactions stay with “Cancel Transactions & Loans”.',
+        'صدّر الحركات الموجودة (مكافآت، بدلات، خصومات… خارج المسير أو ضمنه)، واختر الإجراء لكل صف، تعديل (املأ الأعمدة الجديدة) أو حذف، ثم ارفع الملف وشغّل التجريبي وطبّق. حركات السلف تبقى في «إلغاء العمليات والقروض».') }));
       body.appendChild(el('div', { class: 'jpt-warn', text: T('Not yet confirmed with Jisr: editing and deleting a transaction (no capture yet). The first change is sent alone and read back; the rest are only sent if Jisr shows it as asked.', 'لم يتأكد بعد مع جسر: تعديل الحركة وحذفها (لا يوجد التقاط بعد). يُرسل التغيير الأول وحده ويُقرأ من جسر؛ ولا يُرسل الباقي إلا إذا ظهر كما طُلب.') }));
       body.appendChild(el('div', { class: 'jpt-grid' }, [el('label', {}, [T('Effective from', 'السريان من'), fromIn]), el('label', {}, [T('Effective to (optional)', 'السريان إلى (اختياري)'), toIn]), el('label', {}, [T('Payment', 'طريقة الدفع'), kindSel]), el('label', { style: { gridColumn: 'span 2' } }, [T('Employees', 'الموظفون'), onlyIn])]));
       body.appendChild(el('div', { class: 'jpt-bar' }, [expB, upB]));
@@ -35442,7 +35681,7 @@ function jboRedact_(msg) {
           if (!l) { r.state = 'error'; r.msg = T('✗ Could not read this employee\'s transactions', '✗ تعذّرت قراءة حركات هذا الموظف'); return; }
           r.tx = l.find((t) => String(t.id) === r.txId) || null;
           if (!r.tx) { r.state = 'error'; r.msg = T('✗ Transaction not found for this employee (deleted already, or the wrong employee)', '✗ الحركة غير موجودة لهذا الموظف (حُذفت أو موظف خاطئ)'); return; }
-          if (r.tx.loan) { r.state = 'error'; r.msg = T('✗ Part of a loan — use “Cancel Transactions & Loans”', '✗ جزء من سلفة — استخدم «إلغاء العمليات والقروض»'); return; }
+          if (r.tx.loan) { r.state = 'error'; r.msg = T('✗ Part of a loan: use “Cancel Transactions & Loans”', '✗ جزء من سلفة: استخدم «إلغاء العمليات والقروض»'); return; }
           if (/cancel|delet/i.test(String(r.tx.status || ''))) { r.state = 'skip'; r.msg = T('Already cancelled', 'ملغاة مسبقًا'); return; }
           if (/paid|processed|completed|closed/i.test(String(r.tx.status || '')) && r.tx.payType === 'in_payrun') { r.state = 'error'; r.msg = T('✗ Already processed in a payrun (', '✗ عولجت في مسير (') + r.tx.status + ')'; return; }
           if (r.action === 'edit') {
@@ -35453,7 +35692,7 @@ function jboRedact_(msg) {
         });
         S.dryDone = true;
         const rd = S.rows.filter((r) => r.state === 'ready');
-        S.note = T('Dry Run done — nothing was changed. ', 'انتهى التشغيل التجريبي — لم يتغير شيء. ') + rd.filter((r) => r.action === 'edit').length + T(' edit(s) and ', ' تعديل و') + rd.filter((r) => r.action === 'delete').length + T(' delete(s) ready.', ' حذف جاهز.'); S.noteErr = false;
+        S.note = T('Dry Run done: nothing was changed. ', 'انتهى التشغيل التجريبي: لم يتغير شيء. ') + rd.filter((r) => r.action === 'edit').length + T(' edit(s) and ', ' تعديل و') + rd.filter((r) => r.action === 'delete').length + T(' delete(s) ready.', ' حذف جاهز.'); S.noteErr = false;
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; mPaint_();
     }
@@ -35461,7 +35700,7 @@ function jboRedact_(msg) {
       try {
         const path = '/v2/finance/payroll_transactions/' + encodeURIComponent(r.txId);
         const res = r.action === 'delete' ? await request_('DELETE', path, null, null) : await request_('PUT', path, null, editBody_(r.tx, r.ch, r.emp.id));
-        if (!res.ok) { r.state = 'failed'; r.msg = '✗ ' + (jisrMsg_(res.json) || 'HTTP ' + res.status) + (res.status === 404 || res.status === 405 ? T(' — Jisr uses another address for this; send a capture of doing it once in Jisr', ' — يستخدم جسر عنوانًا آخر لهذا؛ أرسل التقاطًا لتنفيذه مرة في جسر') : ''); return 'stop'; }
+        if (!res.ok) { r.state = 'failed'; r.msg = '✗ ' + (jisrMsg_(res.json) || 'HTTP ' + res.status) + (res.status === 404 || res.status === 405 ? T('Jisr uses another address for this; send a capture of doing it once in Jisr', '; يستخدم جسر عنوانًا آخر لهذا؛ أرسل التقاطًا لتنفيذه مرة في جسر') : ''); return 'stop'; }
         const l = await existing_(r.emp.id).catch(() => null);
         const now = l ? l.find((t) => String(t.id) === r.txId) : undefined;
         if (r.action === 'delete') {
@@ -35470,22 +35709,22 @@ function jboRedact_(msg) {
           r.state = 'failed'; r.msg = T('✗ Jisr answered OK but the transaction is still there (', '✗ رد جسر بالنجاح لكن الحركة ما زالت موجودة (') + (now.status || '') + ')'; return 'stop';
         }
         if (!l) { r.state = 'done'; r.msg = T('✓ edited (could not read back)', '✓ عُدّلت (تعذّر التحقق)'); return true; }
-        if (!now) { r.state = 'failed'; r.msg = T('✗ After the edit the transaction is gone — check the employee in Jisr', '✗ بعد التعديل اختفت الحركة — تحقّق في جسر'); return 'stop'; }
+        if (!now) { r.state = 'failed'; r.msg = T('✗ After the edit the transaction is gone; check the employee in Jisr', '✗ بعد التعديل اختفت الحركة: تحقّق في جسر'); return 'stop'; }
         const off = [];
         if (r.ch.amount != null && Math.abs(Math.abs(now.amount) - r.ch.amount) > 0.005) off.push(T('amount ', 'المبلغ ') + fmt_(Math.abs(now.amount)));
         if (r.ch.effective && now.effective !== r.ch.effective) off.push(T('effective ', 'السريان ') + now.effective);
-        if (off.length) { r.state = 'failed'; r.msg = T('✗ Jisr shows ', '✗ يعرض جسر ') + off.join(', ') + T(' — not as asked. The run was stopped.', ' — ليس كما طُلب. أُوقف التشغيل.'); return 'stop'; }
+        if (off.length) { r.state = 'failed'; r.msg = T('✗ Jisr shows ', '✗ يعرض جسر ') + off.join(', ') + T('; not as asked. The run was stopped.', '; ليس كما طُلب. أُوقف التشغيل.'); return 'stop'; }
         r.state = 'done'; r.msg = T('✓ edited · checked', '✓ عُدّلت · تم التحقق'); return true;
-      } catch (e) { r.state = 'failed'; r.msg = '✗ ' + (e.unknown ? T('no answer from Jisr — check it in Jisr', 'لا رد من جسر — تحقّق في جسر') : e.message); return 'stop'; }
+      } catch (e) { r.state = 'failed'; r.msg = '✗ ' + (e.unknown ? T('no answer from Jisr: check it in Jisr', 'لا رد من جسر: تحقّق في جسر') : e.message); return 'stop'; }
     }
     async function mRun_() {
       const todo = S.rows.filter((r) => r.state === 'ready');
       if (!todo.length) return;
       const nE = todo.filter((r) => r.action === 'edit').length, nD = todo.length - nE;
-      if (!confirm(T('In ', 'في ') + slug_() + ':\n' + T('• edit ', '• تعديل ') + nE + T(' transaction(s)', ' حركة') + '\n' + T('• DELETE ', '• حذف ') + nD + T(' transaction(s)', ' حركة') + '\n\n' + T('Not yet confirmed with Jisr — the first one is sent alone and read back before the rest. Continue?', 'لم يتأكد بعد مع جسر — تُرسل الأولى وحدها وتُقرأ قبل الباقي. متابعة؟'))) return;
+      if (!confirm(T('In ', 'في ') + slug_() + ':\n' + T('• edit ', '• تعديل ') + nE + T(' transaction(s)', ' حركة') + '\n' + T('• DELETE ', '• حذف ') + nD + T(' transaction(s)', ' حركة') + '\n\n' + T('Not yet confirmed with Jisr: the first one is sent alone and read back before the rest. Continue?', 'لم يتأكد بعد مع جسر: تُرسل الأولى وحدها وتُقرأ قبل الباقي. متابعة؟'))) return;
       S.phase = 'running'; S.stop = false; S.busy = ' '; mPaint_();
       const first = await mOne_(todo[0]); let done = 1;
-      if (first !== true) todo.slice(1).forEach((r) => { r.msg = T('not sent — the first change did not go through as asked', 'لم يُرسل — التغيير الأول لم يتم كما طُلب'); });
+      if (first !== true) todo.slice(1).forEach((r) => { r.msg = T('not sent: the first change did not go through as asked', 'لم يُرسل: التغيير الأول لم يتم كما طُلب'); });
       else if (todo.length > 1 && !confirm(T('The first change (#', 'التغيير الأول (#') + todo[0].txId + T(') was done and checked. Continue with the other ', ') تم وتحقق. متابعة بقية التغييرات (') + (todo.length - 1) + '?')) todo.slice(1).forEach((r) => { r.msg = T('not sent (stopped after the first)', 'لم يُرسل (توقف بعد الأول)'); });
       else {
         let halted = false;
@@ -35518,7 +35757,7 @@ function jboRedact_(msg) {
       S.busy = ''; S.dryDone = false; paint_();
     }
     catSel.addEventListener('change', () => { S.rows.forEach((r) => { if (r.state !== 'done') { r.state = ''; r.msg = ''; } }); fillTypes_(); });
-    [typeSel, paySel, effIn, paidIn, noteIn].forEach((x) => x.addEventListener('change', () => { S.dryDone = false; S.rows.forEach((r) => { if (r.state === 'ready') { r.state = ''; r.msg = T('settings changed — run the Dry Run again', 'تغيّرت الإعدادات — أعد التشغيل التجريبي'); } }); paint_(); }));
+    [typeSel, paySel, effIn, paidIn, noteIn].forEach((x) => x.addEventListener('change', () => { S.dryDone = false; S.rows.forEach((r) => { if (r.state === 'ready') { r.state = ''; r.msg = T('settings changed: run the Dry Run again', 'تغيّرت الإعدادات: أعد التشغيل التجريبي'); } }); paint_(); }));
 
     // ---------------- template: all employees, amount blank
     tplB.addEventListener('click', async () => {
@@ -35606,12 +35845,12 @@ function jboRedact_(msg) {
         todo.filter((r) => !r.state).forEach((r) => {
           const l = ex.get(String(r.emp.id)) || [];
           const same = l.find((t) => String(t.typeId) === String(r.typeId) && t.amount != null && Math.abs(Math.abs(t.amount) - r.amount) < 0.005 && t.effective === r.effective && !/cancel|reject/i.test(String(t.status || '')));
-          if (same && !dupChk.checked) { r.state = 'skip'; r.msg = T('Already in Jisr (#', 'موجودة في جسر (#') + same.id + T(') — tick “create even if…” to add it again', ') — فعّل «أنشئ حتى لو…» لإضافتها مجددًا'); }
-          else { r.state = 'ready'; if (same) r.msg = T('ready — a same transaction exists (#', 'جاهز — توجد حركة مماثلة (#') + same.id + ')'; }
+          if (same && !dupChk.checked) { r.state = 'skip'; r.msg = T('Already in Jisr (#', 'موجودة في جسر (#') + same.id + T('); tick “create even if…” to add it again', ')؛ فعّل «أنشئ حتى لو…» لإضافتها مجددًا'); }
+          else { r.state = 'ready'; if (same) r.msg = T('ready: a same transaction exists (#', 'جاهز: توجد حركة مماثلة (#') + same.id + ')'; }
         });
         S.dryDone = true;
         const rd = S.rows.filter((r) => r.state === 'ready');
-        S.note = T('Dry Run done — nothing was created. ', 'انتهى التشغيل التجريبي — لم يُنشأ شيء. ') + rd.length + T(' transaction(s) ready, total ', ' حركة جاهزة، الإجمالي ') + fmt_(rd.reduce((a, r) => a + r.amount, 0)) + '.' + (unread ? T(' Existing transactions could not be read for ', ' تعذّرت قراءة الحركات الموجودة لـ ') + unread + T(' employee(s), so duplicates were not checked for them.', ' موظف، فلم يُفحص التكرار لهم.') : '');
+        S.note = T('Dry Run done: nothing was created. ', 'انتهى التشغيل التجريبي: لم يُنشأ شيء. ') + rd.length + T(' transaction(s) ready, total ', ' حركة جاهزة، الإجمالي ') + fmt_(rd.reduce((a, r) => a + r.amount, 0)) + '.' + (unread ? T(' Existing transactions could not be read for ', ' تعذّرت قراءة الحركات الموجودة لـ ') + unread + T(' employee(s), so duplicates were not checked for them.', ' موظف، فلم يُفحص التكرار لهم.') : '');
         S.noteErr = false;
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; paint_();
@@ -35625,10 +35864,10 @@ function jboRedact_(msg) {
         if (!res.ok) { r.state = 'failed'; r.msg = '✗ ' + (jisrMsg_(res.json) || 'HTTP ' + res.status); return false; }
         const tx = created_(res.json); r.txId = tx && tx.id;
         const bad = mismatch_(tx, r);
-        if (bad) { r.state = 'failed'; r.msg = '✗ ' + T('Created', 'أُنشئت') + (r.txId ? ' #' + r.txId : '') + T(' but ', ' لكن ') + bad + T(' — check it in Jisr. The run was stopped.', ' — تحقّق منها في جسر. أُوقف التشغيل.'); return 'stop'; }
+        if (bad) { r.state = 'failed'; r.msg = '✗ ' + T('Created', 'أُنشئت') + (r.txId ? ' #' + r.txId : '') + T(' but ', ' لكن ') + bad + T('; check it in Jisr. The run was stopped.', '; تحقّق منها في جسر. أُوقف التشغيل.'); return 'stop'; }
         r.state = 'done'; r.msg = '✓ ' + T('created', 'أُنشئت') + (r.txId ? ' #' + r.txId : '');
         return true;
-      } catch (e) { r.state = 'failed'; r.msg = '✗ ' + (e.unknown ? T('no answer from Jisr — check this employee in Jisr', 'لا رد من جسر — تحقّق من هذا الموظف في جسر') : e.message); return false; }
+      } catch (e) { r.state = 'failed'; r.msg = '✗ ' + (e.unknown ? T('no answer from Jisr: check this employee in Jisr', 'لا رد من جسر: تحقّق من هذا الموظف في جسر') : e.message); return false; }
     }
     async function runLive_() {
       const todo = S.rows.filter((r) => r.state === 'ready');
@@ -35639,7 +35878,7 @@ function jboRedact_(msg) {
       S.phase = 'running'; S.stop = false; S.busy = ' '; paint_();
       // the first transaction alone, checked before the rest
       const first = await createOne_(todo[0]); let done = 1;
-      if (first === 'stop') todo.slice(1).forEach((r) => { r.state = 'ready'; r.msg = T('not sent — the first transaction did not match', 'لم تُرسل — الحركة الأولى لم تطابق'); });
+      if (first === 'stop') todo.slice(1).forEach((r) => { r.state = 'ready'; r.msg = T('not sent: the first transaction did not match', 'لم تُرسل: الحركة الأولى لم تطابق'); });
       else {
         let halted = false;
         await pool_(todo.slice(1), 3, async (r) => {
@@ -35682,7 +35921,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.62.0
+// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.75.0
 // ###########################################################################
 
 /**
@@ -35786,7 +36025,7 @@ function jboRedact_(msg) {
     }
     if (!c.length) { const g = leaves.find((l) => isGone_(l.status) && l.start === row.start && (!row.end || !l.end || l.end === row.end)); if (g) return { matches: [], why: T('Already ', 'بالفعل ') + (g.statusLabel || g.status) }; }
     if (!c.length) return { matches: [], why: T('No open leave starting ', 'لا توجد إجازة مفتوحة تبدأ ') + row.start + (row.end ? T(' and ending ', ' وتنتهي ') + row.end : '') + (row.type ? ' (' + row.type + ')' : '') };
-    if (c.length > 1) return { matches: [], why: c.length + T(' leaves match — add the leave type or use the exported list (Leave request ID)', ' إجازات مطابقة — أضف نوع الإجازة أو استخدم القائمة المصدّرة (رقم طلب الإجازة)') };
+    if (c.length > 1) return { matches: [], why: c.length + T(' leaves match: add the leave type or use the exported list (Leave request ID)', ' إجازات مطابقة: أضف نوع الإجازة أو استخدم القائمة المصدّرة (رقم طلب الإجازة)') };
     return { matches: c, why: '' };
   }
 
@@ -35806,7 +36045,7 @@ function jboRedact_(msg) {
       try {
         res = await fetch(url, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: I.isAr() ? 'ar' : 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
       } catch (e) {
-        if (method !== 'GET') { const err = new Error(T('No answer from Jisr — check in Jisr before retrying', 'لا رد من جسر — تحقّق في جسر قبل إعادة المحاولة')); err.unknown = true; throw err; }
+        if (method !== 'GET') { const err = new Error(T('No answer from Jisr: check in Jisr before retrying', 'لا رد من جسر: تحقّق في جسر قبل إعادة المحاولة')); err.unknown = true; throw err; }
         await sleep_(800 * (a + 1)); continue;
       }
       if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول مجددًا.'));
@@ -36052,11 +36291,11 @@ function jboRedact_(msg) {
           const l = m.matches[0]; const k = r.emp.id + ':' + l.id;
           if (taken.has(k)) { r.state = 'skip'; r.msg = T('Same leave as row ', 'نفس الإجازة في الصف ') + taken.get(k); return; }
           taken.set(k, r.no); r.leave = l; r.state = 'ready';
-          if (l.imported === false) r.msg = T('ready — this leave was not imported (requested in Jisr)', 'جاهز — هذه الإجازة لم تُستورد (طُلبت في جسر)');
+          if (l.imported === false) r.msg = T('ready: this leave was not imported (requested in Jisr)', 'جاهز: هذه الإجازة لم تُستورد (طُلبت في جسر)');
         });
         S.dryDone = true;
         const rd = S.rows.filter((r) => r.state === 'ready').length;
-        S.note = T('Dry Run done — nothing was cancelled. ', 'انتهى التشغيل التجريبي — لم يُلغَ شيء. ') + rd + T(' leave(s) ready to cancel for ', ' إجازة جاهزة للإلغاء لـ ') + new Set(S.rows.filter((r) => r.state === 'ready').map((r) => r.emp.id)).size + T(' employee(s).', ' موظف.');
+        S.note = T('Dry Run done: nothing was cancelled. ', 'انتهى التشغيل التجريبي: لم يُلغَ شيء. ') + rd + T(' leave(s) ready to cancel for ', ' إجازة جاهزة للإلغاء لـ ') + new Set(S.rows.filter((r) => r.state === 'ready').map((r) => r.emp.id)).size + T(' employee(s).', ' موظف.');
         if (!types) S.note += T(' (Leave types could not be read, so types were matched by name only.)', ' (تعذّرت قراءة أنواع الإجازات، فطوبقت الأنواع بالاسم فقط.)');
         S.noteErr = false;
       } catch (e) { S.note = e.message; S.noteErr = true; }
@@ -36121,7 +36360,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.62.0
+// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.75.0
 // ###########################################################################
 
 /*
@@ -36310,7 +36549,7 @@ function jboRedact_(msg) {
     for (let a = 0; a < 4; a++) {
       let res;
       try { res = await fetch(url, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined }); }
-      catch (e) { if (method !== 'GET') { const err = new Error(T('No answer from Jisr — check the shift in Jisr before retrying', 'لا رد من جسر — تحقّق من الوردية في جسر')); err.unknown = true; throw err; } await sleep_(800 * (a + 1)); continue; }
+      catch (e) { if (method !== 'GET') { const err = new Error(T('No answer from Jisr: check the shift in Jisr before retrying', 'لا رد من جسر: تحقّق من الوردية في جسر')); err.unknown = true; throw err; } await sleep_(800 * (a + 1)); continue; }
       if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh and log in again.', 'غير مسجّل الدخول إلى جسر (HTTP 401). حدّث الصفحة وسجّل الدخول.'));
       if (res.status === 429 || (method === 'GET' && res.status >= 500)) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
       const json = await res.json().catch(() => null);
@@ -36415,11 +36654,11 @@ function jboRedact_(msg) {
     const resB = el('button', { class: 'jbo-btn', text: T('⬇ Results (.xlsx)', '⬇ النتائج (‎.xlsx)') });
 
     function render_() {
-      titleEl.textContent = T('Shifts — create, edit, duplicate, delete', 'الورديات — إنشاء وتعديل ونسخ وحذف');
+      titleEl.textContent = T('Shifts: create, edit, duplicate, delete', 'الورديات: إنشاء وتعديل ونسخ وحذف');
       body.innerHTML = ''; foot.innerHTML = '';
       body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '8px' }, text: T(
-        'Read the shifts, then use ✎ / ⧉ / 🗑 on any shift or ➕ New shift — or do many at once in the Excel. Every change waits in the list below until you run the Dry Run and apply it. Schedules keep using the shifts by their id.',
-        'اقرأ الورديات ثم استخدم ✎ / ⧉ / 🗑 على أي وردية أو ➕ وردية جديدة — أو نفّذ عدة تغييرات في ملف Excel. كل تغيير ينتظر في القائمة أدناه حتى تشغّل التجريبي وتطبّقه. الجداول تبقى مرتبطة بالورديات برقمها.') }));
+        'Read the shifts, then use ✎ / ⧉ / 🗑 on any shift or ➕ New shift; or do many at once in the Excel. Every change waits in the list below until you run the Dry Run and apply it. Schedules keep using the shifts by their id.',
+        'اقرأ الورديات ثم استخدم ✎ / ⧉ / 🗑 على أي وردية أو ➕ وردية جديدة؛ أو نفّذ عدة تغييرات في ملف Excel. كل تغيير ينتظر في القائمة أدناه حتى تشغّل التجريبي وتطبّقه. الجداول تبقى مرتبطة بالورديات برقمها.') }));
       body.appendChild(el('div', { class: 'jsh-bar' }, [readB, newB, xB, upB, flt]));
       body.append(formEl, listEl, pendEl, statusEl, fileIn);
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
@@ -36442,7 +36681,7 @@ function jboRedact_(msg) {
     const pendFor_ = (id) => S.pend.find((p) => p.id && String(p.id) === String(id) && p.action !== 'duplicate' && !/done/.test(p.state || ''));
     function listPaint_() {
       listEl.innerHTML = '';
-      if (!S.shifts.length) { listEl.appendChild(el('div', { class: 'jbo-muted', style: { padding: '10px' }, text: S.readOnce ? T('No shifts in Jisr yet — use ➕ New shift.', 'لا توجد ورديات في جسر — استخدم ➕ وردية جديدة.') : T('Click "Read shifts from Jisr" to start.', 'اضغط "قراءة الورديات من جسر" للبدء.') })); return; }
+      if (!S.shifts.length) { listEl.appendChild(el('div', { class: 'jbo-muted', style: { padding: '10px' }, text: S.readOnce ? T('No shifts in Jisr yet: use ➕ New shift.', 'لا توجد ورديات في جسر: استخدم ➕ وردية جديدة.') : T('Click "Read shifts from Jisr" to start.', 'اضغط "قراءة الورديات من جسر" للبدء.') })); return; }
       const q = clean_(S.filter).toLowerCase();
       const t = el('table');
       t.appendChild(el('tr', {}, [T('Shift', 'الوردية'), T('Time', 'الوقت'), T('Late / early allowed', 'التأخير / الخروج المبكر'), T('Flexible', 'المرونة'), T('Clock-in · clock-out windows', 'نوافذ الدخول · الخروج'), T('Overtime', 'الإضافي'), T('Effective', 'السريان'), ''].map((h) => el('th', { text: h }))));
@@ -36583,15 +36822,15 @@ function jboRedact_(msg) {
       try {
         if (!S.readOnce) await read_();
         const wb = XLSX.utils.book_new(); wb.__noRef = true;
-        const rd = XLSX.utils.aoa_to_sheet([['Shifts — how to fill this file'], [''],
-          ['Every row is one shift. Choose the Action: Keep (nothing), Edit (change the cells you need), Duplicate (a new shift copied from this one — give it a new name and change what differs), Delete, or Create (a new row: leave Shift ID blank).'],
+        const rd = XLSX.utils.aoa_to_sheet([['Shifts: how to fill this file'], [''],
+          ['Every row is one shift. Choose the Action: Keep (nothing), Edit (change the cells you need), Duplicate (a new shift copied from this one; give it a new name and change what differs), Delete, or Create (a new row: leave Shift ID blank).'],
           ['Duplicate several times: copy the row as many times as needed, each with its own name.'],
           ['Times: 08:00 AM, 8:00 PM or 20:00. "Ends next day" is worked out from the times when left blank on new rows.'],
           ['Minutes: whole numbers (30) or "1 hr 30 mins". Effective date: YYYY-MM-DD (blank = today for edits and new shifts).'],
           ['Late arrival / early leave allowed: ' + EXCUSE_TIP],
           ['Nothing is changed in Jisr until you upload this file, run the Dry Run and apply. The first change is sent alone and checked before the rest.']]);
         rd['!cols'] = [{ wch: 160 }];
-        const ws = XLSX.utils.aoa_to_sheet([XH].concat(S.shifts.map((s) => rowOf_(s, 'Keep')), [['', 'Create', 'Example — Morning 8-5', '', '08:00 AM', '05:00 PM', 'No', 15, 15, 0, 60, 60, 60, 60, 0, 0, 'No', 'No', COLORS[1], today_()]]));
+        const ws = XLSX.utils.aoa_to_sheet([XH].concat(S.shifts.map((s) => rowOf_(s, 'Keep')), [['', 'Create', 'Example: Morning 8-5', '', '08:00 AM', '05:00 PM', 'No', 15, 15, 0, 60, 60, 60, 60, 0, 0, 'No', 'No', COLORS[1], today_()]]));
         ws['!cols'] = XH.map((h) => ({ wch: Math.max(10, Math.min(28, h.length + 2)) }));
         XLSX.utils.book_append_sheet(wb, rd, 'Read me'); XLSX.utils.book_append_sheet(wb, ws, 'Shifts');
         const yn = ['Yes', 'No'];
@@ -36628,7 +36867,7 @@ function jboRedact_(msg) {
           n++; if (x.errors.length) bad.push(k + 2);
         });
         S.dryDone = false;
-        S.note = n + T(' change(s) read from ', ' تغيير قُرئ من ') + f.name + (bad.length ? T(' — rows with problems: ', ' — صفوف بها مشاكل: ') + bad.slice(0, 10).join(', ') : '') + T('. Run the Dry Run next.', '. شغّل التشغيل التجريبي.'); S.noteErr = !!bad.length && !n;
+        S.note = n + T(' change(s) read from ', ' تغيير قُرئ من ') + f.name + (bad.length ? T('; rows with problems: ', '; صفوف بها مشاكل: ') + bad.slice(0, 10).join(', ') : '') + T('. Run the Dry Run next.', '. شغّل التشغيل التجريبي.'); S.noteErr = !!bad.length && !n;
       } catch (e) { S.note = e.message; S.noteErr = true; }
       listPaint_(); paint_();
     });
@@ -36653,14 +36892,14 @@ function jboRedact_(msg) {
           if ((p.action === 'edit' || p.action === 'delete' || p.action === 'duplicate') && ids && !ids.has(String(p.id))) e.push(T('This shift is no longer in Jisr', 'لم تعد هذه الوردية في جسر'));
           if (p.action !== 'delete') { const nm = (p.shift.name_en || p.shift.name_ar || '').toLowerCase(); if (nm && counts[nm] > 1) e.push(T('Two shifts would have the name "', 'ستحمل ورديتان الاسم "') + (p.shift.name_en || p.shift.name_ar) + '"'); }
           if (p.action === 'edit' || p.action === 'delete') { const k = String(p.id); if (touched.has(k)) e.push(T('Another change already touches this shift (', 'تغيير آخر يخص هذه الوردية (') + touched.get(k) + ')'); else touched.set(k, p.src); }
-          if (p.action === 'delete' && todo.some((q) => q.action === 'duplicate' && String(q.id) === String(p.id))) e.push(T('This shift is also being duplicated — apply the copy first, then delete', 'هذه الوردية تُنسخ أيضًا — طبّق النسخ أولًا ثم احذف'));
+          if (p.action === 'delete' && todo.some((q) => q.action === 'duplicate' && String(q.id) === String(p.id))) e.push(T('This shift is also being duplicated; apply the copy first, then delete', 'هذه الوردية تُنسخ أيضًا: طبّق النسخ أولًا ثم احذف'));
           if (e.length) { p.state = 'error'; p.msg = '✗ ' + Array.from(new Set(e)).join('\n✗ '); return; }
           p.state = 'ready';
-          if (p.action === 'delete') p.msg = T('ready — shifts used in schedules may be refused by Jisr', 'جاهز — قد يرفض جسر حذف وردية مستخدمة في جداول');
+          if (p.action === 'delete') p.msg = T('ready: shifts used in schedules may be refused by Jisr', 'جاهز: قد يرفض جسر حذف وردية مستخدمة في جداول');
         });
         S.dryDone = true;
         const rd = S.pend.filter((p) => p.state === 'ready').length;
-        S.note = T('Dry Run done — nothing was changed. ', 'انتهى التشغيل التجريبي — لم يتغير شيء. ') + rd + T(' change(s) ready.', ' تغيير جاهز.'); S.noteErr = false;
+        S.note = T('Dry Run done: nothing was changed. ', 'انتهى التشغيل التجريبي: لم يتغير شيء. ') + rd + T(' change(s) ready.', ' تغيير جاهز.'); S.noteErr = false;
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; listPaint_(); paint_();
     });
@@ -36670,7 +36909,7 @@ function jboRedact_(msg) {
       try {
         if (p.action === 'delete') {
           const r = await request_('DELETE', '/v2/attendance/shifts/' + encodeURIComponent(p.id), null, null);
-          if (!r.ok) { p.state = 'failed'; p.msg = '✗ ' + (jisrMsg_(r.json) || 'HTTP ' + r.status) + (r.status === 404 || r.status === 405 ? T(' — Jisr deletes shifts another way; send a capture of deleting one shift', ' — يحذف جسر الورديات بطريقة أخرى؛ أرسل التقاطًا لحذف وردية') : ''); return 'stop'; }
+          if (!r.ok) { p.state = 'failed'; p.msg = '✗ ' + (jisrMsg_(r.json) || 'HTTP ' + r.status) + (r.status === 404 || r.status === 405 ? T('Jisr deletes shifts another way; send a capture of deleting one shift', '; يحذف جسر الورديات بطريقة أخرى؛ أرسل التقاطًا لحذف وردية') : ''); return 'stop'; }
           const back = await one_(p.id).catch(() => null);
           if (back && !back.gone) { p.state = 'failed'; p.msg = T('✗ Jisr answered OK but the shift is still there', '✗ رد جسر بالنجاح لكن الوردية ما زالت موجودة'); return 'stop'; }
           p.state = 'done'; p.msg = T('✓ deleted', '✓ حُذفت') + (back && back.gone ? T(' · checked', ' · تم التحقق') : ''); return true;
@@ -36694,7 +36933,7 @@ function jboRedact_(msg) {
         p.state = 'done'; p.newId = isNew ? id : null;
         p.msg = (isNew ? T('✓ created', '✓ أُنشئت') + (id ? ' #' + id : '') : T('✓ updated', '✓ عُدّلت')) + (back ? T(' · checked', ' · تم التحقق') : '');
         return true;
-      } catch (e) { p.state = 'failed'; p.msg = '✗ ' + (e.unknown ? T('no answer from Jisr — check in Jisr', 'لا رد من جسر — تحقّق في جسر') : e.message); return 'stop'; }
+      } catch (e) { p.state = 'failed'; p.msg = '✗ ' + (e.unknown ? T('no answer from Jisr: check in Jisr', 'لا رد من جسر: تحقّق في جسر') : e.message); return 'stop'; }
     }
     runB.addEventListener('click', async () => {
       const todo = S.pend.filter((p) => p.state === 'ready');
@@ -36710,7 +36949,7 @@ function jboRedact_(msg) {
         const firstDelete = p.action === 'delete' && !todo.slice(0, i).some((q) => q.action === 'delete');
         const r = await apply1_(p);
         done++; S.busy = T('Applying… ', 'جارٍ التطبيق… ') + done + '/' + todo.length; paint_();
-        if (r === 'stop' && (i === 0 || firstDelete)) { S.stop = true; todo.slice(i + 1).forEach((q) => { q.msg = T('not sent — the first change did not go through as asked', 'لم يُرسل — التغيير الأول لم يتم كما طُلب'); }); continue; }
+        if (r === 'stop' && (i === 0 || firstDelete)) { S.stop = true; todo.slice(i + 1).forEach((q) => { q.msg = T('not sent: the first change did not go through as asked', 'لم يُرسل: التغيير الأول لم يتم كما طُلب'); }); continue; }
         if (i === 0 && todo.length > 1 && r === true && !confirm(T('The first change (', 'التغيير الأول (') + (p.shift.name_en || p.shift.name_ar) + T(') was applied and checked. Continue with the other ', ') طُبّق وتحقق. متابعة بقية التغييرات (') + (todo.length - 1) + '?')) { S.stop = true; todo.slice(1).forEach((q) => { q.msg = T('not sent (stopped after the first)', 'لم يُرسل (توقف بعد الأول)'); }); }
         if (firstDelete && r === true && todo.slice(i + 1).some((q) => q.action === 'delete') && !confirm(T('The first delete worked and was checked. Delete the other ', 'نجح الحذف الأول وتم التحقق. حذف بقية الورديات (') + todo.slice(i + 1).filter((q) => q.action === 'delete').length + T(' shift(s)?', ')؟'))) { S.stop = true; todo.slice(i + 1).forEach((q) => { q.msg = T('not sent (stopped after the first delete)', 'لم يُرسل (توقف بعد الحذف الأول)'); }); }
       }
@@ -36733,7 +36972,7 @@ function jboRedact_(msg) {
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
-    g.modules[MODULE_ID] = { title: 'Shifts — Create, Edit, Duplicate, Delete', open: openTool_, version: SECTION_VERSION };
+    g.modules[MODULE_ID] = { title: 'Shifts: Create, Edit, Duplicate, Delete', open: openTool_, version: SECTION_VERSION };
     W.__jisrShifts = { time_, minutes_, fromJisr_, body_, check_, fromRow_, diff_, length_, XH };
     if (g._rerender) g._rerender();
   }
@@ -36741,7 +36980,7 @@ function jboRedact_(msg) {
 })();
 
 // ###########################################################################
-// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.62.0
+// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.75.0
 // ###########################################################################
 
 /**
@@ -36869,7 +37108,7 @@ function jboRedact_(msg) {
   /** Cell text -> { off, shiftIds } | { error } */
   function parseDay_(text, catalog) {
     const t = String(text == null ? '' : text).trim();
-    if (!t) return { error: T('empty — write OFF or a shift', 'فارغ — اكتب OFF أو اسم وردية') };
+    if (!t) return { error: T('empty: write OFF or a shift', 'فارغ: اكتب OFF أو اسم وردية') };
     if (isOff_(t)) return { off: true, shiftIds: [] };
     const ids = [];
     for (const part of t.split(/\s*\+\s*/)) {
@@ -36878,7 +37117,7 @@ function jboRedact_(msg) {
       const k = part.toLowerCase();
       const hits = Array.from(catalog.entries()).filter(([, s]) => [s.name_i18n, s.name_en, s.name_ar, s.name].some((n) => n && String(n).trim().toLowerCase() === k));
       if (!hits.length) return { error: T('shift "', 'الوردية "') + part + T('" not found', '" غير موجودة') };
-      if (hits.length > 1) return { error: T('shift "', 'الوردية "') + part + T('" matches ', '" تطابق ') + hits.length + T(' shifts — write it as "', ' ورديات — اكتبها "') + part + ' #' + hits[0][0] + '"' };
+      if (hits.length > 1) return { error: T('shift "', 'الوردية "') + part + T('" matches ', '" تطابق ') + hits.length + T(' shifts: write it as "', ' ورديات: اكتبها "') + part + ' #' + hits[0][0] + '"' };
       ids.push(hits[0][0]);
     }
     return { off: false, shiftIds: ids };
@@ -36901,7 +37140,7 @@ function jboRedact_(msg) {
       try {
         res = await fetch(url, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: I.isAr() ? 'ar' : 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
       } catch (e) {
-        if (method !== 'GET') { const err = new Error(T('No answer from Jisr — check the schedule in Jisr before retrying', 'لا رد من جسر — تحقّق من الجدول في جسر قبل إعادة المحاولة')); err.unknown = true; throw err; }
+        if (method !== 'GET') { const err = new Error(T('No answer from Jisr: check the schedule in Jisr before retrying', 'لا رد من جسر: تحقّق من الجدول في جسر قبل إعادة المحاولة')); err.unknown = true; throw err; }
         await sleep_(800 * (a + 1)); continue;
       }
       if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول مجددًا.'));
@@ -36990,7 +37229,7 @@ function jboRedact_(msg) {
 
     const wdSel = el('select', {}, [el('option', { value: 'sun', text: T('Sunday', 'الأحد') }), el('option', { value: 'mon', text: T('Monday', 'الاثنين') })]);
     wdSel.value = gmGet_('fixedHoursWeekday0', 'sun');
-    wdSel.addEventListener('change', () => { gmSet_('fixedHoursWeekday0', wdSel.value); S.dryDone = false; S.note = T('Day setting changed — export again before editing.', 'تغيّر إعداد الأيام — صدّر مجددًا قبل التعديل.'); paint_(); });
+    wdSel.addEventListener('change', () => { gmSet_('fixedHoursWeekday0', wdSel.value); S.dryDone = false; S.note = T('Day setting changed: export again before editing.', 'تغيّر إعداد الأيام: صدّر مجددًا قبل التعديل.'); paint_(); });
     const expB = el('button', { class: 'jbo-btn', text: T('⬇ Schedules & assignments (.xlsx)', '⬇ الجداول والتعيينات (‎.xlsx)') });
     const upB = el('button', { class: 'jbo-btn', text: T('⬆ Upload the edited file', '⬆ رفع الملف المعدّل') });
     const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls', style: { display: 'none' } });
@@ -37003,7 +37242,7 @@ function jboRedact_(msg) {
     const monday = () => wdSel.value === 'mon';
 
     function render_() {
-      titleEl.textContent = T('Fixed Working Hours — Bulk', 'ساعات العمل الثابتة — جماعي');
+      titleEl.textContent = T('Fixed Working Hours (Bulk)', 'ساعات العمل الثابتة (جماعي)');
       body.innerHTML = ''; foot.innerHTML = '';
       body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
         'Download the schedules and assignments, then in the file: edit names, days and shifts (sheet Schedules), add rows without an ID to create schedules, type DELETE to delete one, and set each employee\'s schedule (sheet Assignments; NONE = unassign). Upload it, Dry Run, then apply.',
@@ -37093,7 +37332,7 @@ function jboRedact_(msg) {
         } else XLSX.writeFile(wb, 'jisr-fixed-working-hours-' + slug_() + '.xlsx');
         S.dayMode = wdSel.value;
         const partial = tpls.filter((m) => !m.complete).length;
-        S.note = tpls.length + T(' schedule(s), ', ' جدول، ') + S.catalog.size + T(' shift(s) and ', ' وردية و') + emps.length + T(' employee(s) exported.', ' موظف صُدّروا.') + (partial ? T(' ', ' ') + partial + T(' schedule(s) could not be read day by day (shown as ?) — they can be assigned to but not edited.', ' جدول تعذّرت قراءة أيامه (يظهر ?) — يمكن التعيين عليه دون تعديله.') : ''); S.noteErr = false;
+        S.note = tpls.length + T(' schedule(s), ', ' جدول، ') + S.catalog.size + T(' shift(s) and ', ' وردية و') + emps.length + T(' employee(s) exported.', ' موظف صُدّروا.') + (partial ? T(' ', ' ') + partial + T(' schedule(s) could not be read day by day (shown as ?); they can be assigned to but not edited.', ' جدول تعذّرت قراءة أيامه (يظهر ?)؛ يمكن التعيين عليه دون تعديله.') : ''); S.noteErr = false;
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; paint_();
     });
@@ -37187,7 +37426,7 @@ function jboRedact_(msg) {
             const errs = [];
             if (r.action === 'DELETE') { err(where, r.en, T('DELETE needs the Schedule ID', 'الحذف يحتاج رقم الجدول')); continue; }
             if (!r.en || !r.ar) errs.push(T('New schedule needs both names', 'الجدول الجديد يحتاج الاسمين'));
-            if (tpls.some((m) => nameKey(m.nameEn) === nameKey(r.en))) errs.push(T('A schedule named "', 'يوجد جدول باسم "') + r.en + T('" already exists — fill its Schedule ID to edit it', '" — املأ رقم الجدول لتعديله'));
+            if (tpls.some((m) => nameKey(m.nameEn) === nameKey(r.en))) errs.push(T('A schedule named "', 'يوجد جدول باسم "') + r.en + T('" already exists: fill its Schedule ID to edit it', '": املأ رقم الجدول لتعديله'));
             if (plans.has('new:' + nameKey(r.en))) errs.push(T('Same name as ', 'نفس الاسم في ') + plans.get('new:' + nameKey(r.en)).where);
             const eff = date_(r.effRaw); if (eff === null) errs.push(T('Effective date not understood', 'لم يُفهم تاريخ السريان'));
             const rp = parseRepeat_(r.repRaw) || { unit: 'forever', value: null };
@@ -37241,7 +37480,7 @@ function jboRedact_(msg) {
         plans.forEach((p) => {
           const it = { where: p.where || 'Assignments', label: p.label, kind: p.kind, p, plan: (p.plan || []).slice() };
           if (p.kind === 'delete') {
-            it.actionLabel = T('Delete', 'حذف'); it.plan.push(T('Delete schedule', 'حذف الجدول') + (p.m.employeeIds.length ? T(' — it still has ', ' — ما زال به ') + p.m.employeeIds.length + T(' employee(s); Jisr may refuse', ' موظف؛ قد يرفض جسر') : ''));
+            it.actionLabel = T('Delete', 'حذف'); it.plan.push(T('Delete schedule', 'حذف الجدول') + (p.m.employeeIds.length ? T('; it still has ', '; ما زال به ') + p.m.employeeIds.length + T(' employee(s); Jisr may refuse', ' موظف؛ قد يرفض جسر') : ''));
           } else {
             it.actionLabel = p.kind === 'create' ? T('Create', 'إنشاء') : T('Edit', 'تعديل');
             if (p.added && p.added.length) it.plan.push('+ ' + p.added.length + T(' employee(s): ', ' موظف: ') + p.added.slice(0, 5).map((e) => e.name || e.code).join(', ') + (p.added.length > 5 ? '…' : ''));
@@ -37258,7 +37497,7 @@ function jboRedact_(msg) {
         S.empById = empById;
         S.dryDone = true;
         const rd = items.filter((x) => x.state === 'ready');
-        S.note = T('Dry Run done — nothing was saved. ', 'انتهى التشغيل التجريبي — لم يُحفظ شيء. ') + rd.filter((x) => x.kind === 'create').length + T(' to create, ', ' للإنشاء، ') + rd.filter((x) => x.kind === 'update').length + T(' to edit, ', ' للتعديل، ') + rd.filter((x) => x.kind === 'delete').length + T(' to delete.', ' للحذف.');
+        S.note = T('Dry Run done: nothing was saved. ', 'انتهى التشغيل التجريبي: لم يُحفظ شيء. ') + rd.filter((x) => x.kind === 'create').length + T(' to create, ', ' للإنشاء، ') + rd.filter((x) => x.kind === 'update').length + T(' to edit, ', ' للتعديل، ') + rd.filter((x) => x.kind === 'delete').length + T(' to delete.', ' للحذف.');
         S.noteErr = false;
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; paint_();
@@ -37293,7 +37532,7 @@ function jboRedact_(msg) {
         const id = p.kind === 'create' ? (t && t.id) : p.m.id;
         if (p.kind === 'create') p.newId = id;
         it.state = 'done'; it.msg = '✓ ' + (p.kind === 'create' ? T('created', 'أُنشئ') + (id != null ? ' #' + id : '') : T('saved', 'حُفظ')) + (id != null ? await verify_(id, p.want) : '');
-      } catch (e) { it.state = 'failed'; it.msg = '✗ ' + (e.unknown ? T('no answer from Jisr — check this schedule in Jisr', 'لا رد من جسر — تحقّق من هذا الجدول في جسر') : e.message); }
+      } catch (e) { it.state = 'failed'; it.msg = '✗ ' + (e.unknown ? T('no answer from Jisr: check this schedule in Jisr', 'لا رد من جسر: تحقّق من هذا الجدول في جسر') : e.message); }
     }
     async function runLive_() {
       const todo = S.items.filter((x) => x.state === 'ready');
@@ -37328,7 +37567,7 @@ function jboRedact_(msg) {
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
-    g.modules[MODULE_ID] = { title: 'Fixed Working Hours — Bulk', open: openTool_, version: SECTION_VERSION };
+    g.modules[MODULE_ID] = { title: 'Fixed Working Hours (Bulk)', open: openTool_, version: SECTION_VERSION };
     W.__jisrFixedHours = { readTemplate_, body_, parseDay_, dayText_, toWeekday_, date_, parseRepeat_, repeatText_ };
     if (g._rerender) g._rerender();
   }
@@ -37337,7 +37576,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.62.0
+// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.75.0
 // ###########################################################################
 
 /**
@@ -37411,7 +37650,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.62.0
+// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.75.0
 // ###########################################################################
 
 /**
@@ -37424,7 +37663,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.62.0
+// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.75.0
 // ###########################################################################
 
 /*
@@ -37690,7 +37929,7 @@ function jboRedact_(msg) {
       try { (await members_(pid)).forEach((m) => { if (!ids.has(m.empId) && empIds.map(String).includes(m.empId) && m.recId && m.recId !== m.empId) ids.set(m.empId, m.recId); }); } catch (e) { /* ignore */ }
     }
     const missing = empIds.filter((e) => !ids.has(String(e)));
-    if (missing.length) return { ok: false, step: 1, started: true, ids, msg: T('Jisr did not return the new enrolment ids — the enrolment was started but not submitted. Open the policy in Jisr to finish or discard it.', 'لم يُرجع جسر أرقام التسجيل الجديدة — بدأ التسجيل ولم يُرسل. افتح السياسة في جسر لإكماله أو إلغائه.') };
+    if (missing.length) return { ok: false, step: 1, started: true, ids, msg: T('Jisr did not return the new enrolment ids; the enrolment was started but not submitted. Open the policy in Jisr to finish or discard it.', 'لم يُرجع جسر أرقام التسجيل الجديدة؛ بدأ التسجيل ولم يُرسل. افتح السياسة في جسر لإكماله أو إلغائه.') };
     const pairs = empIds.map((e) => [String(e), ids.get(String(e))]);
     let r2; try { r2 = await request_('POST', P, null, enrolStep2Body_(pairs)); } catch (e) { r2 = null; }
     if (!r2 || !r2.ok) return Object.assign(fail(2, r2, T('Destinations step failed (enrolment not submitted): ', 'فشلت خطوة الوجهات (لم يُرسل التسجيل): ')), { started: true, ids });
@@ -37833,11 +38072,11 @@ function jboRedact_(msg) {
     }
 
     function render_() {
-      titleEl.textContent = T('Flight Ticket Allowance — Bulk', 'بدل تذاكر الطيران — جماعي');
+      titleEl.textContent = T('Flight Ticket Allowance (Bulk)', 'بدل تذاكر الطيران (جماعي)');
       body.innerHTML = ''; foot.innerHTML = '';
       body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
-        'See each employee\'s flight ticket policy and balances, then for many employees at once: assign them to a policy, move them between policies, remove them, change the originally allocated tickets or set the custom (manual adjustment) balance — up to 2 tickets. Existing airports and destinations are never changed.',
-        'اعرض سياسة تذاكر الطيران وأرصدة كل موظف، ثم لعدة موظفين دفعة واحدة: عيّنهم في سياسة، أو انقلهم بين السياسات، أو أزلهم، أو غيّر التذاكر المخصصة أصلًا، أو اضبط الرصيد الإضافي (التعديل اليدوي) — حتى تذكرتين. لا تتغير المطارات والوجهات الحالية أبدًا.') }));
+        'See each employee\'s flight ticket policy and balances, then for many employees at once: assign them to a policy, move them between policies, remove them, change the originally allocated tickets or set the custom (manual adjustment) balance; up to 2 tickets. Existing airports and destinations are never changed.',
+        'اعرض سياسة تذاكر الطيران وأرصدة كل موظف، ثم لعدة موظفين دفعة واحدة: عيّنهم في سياسة، أو انقلهم بين السياسات، أو أزلهم، أو غيّر التذاكر المخصصة أصلًا، أو اضبط الرصيد الإضافي (التعديل اليدوي)؛ حتى تذكرتين. لا تتغير المطارات والوجهات الحالية أبدًا.') }));
       body.appendChild(el('div', { class: 'jft-steps' }, [
         el('div', { class: 'jft-step' }, [el('b', { text: T('1. Balances', '1. الأرصدة') }), viewB, tplB, el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Every employee with their policy and current balances.', 'كل موظف مع سياسته وأرصدته الحالية.') })]),
         el('div', { class: 'jft-step' }, [el('b', { text: T('2. Fill and upload', '2. التعبئة والرفع') }), upB, el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Fill only what changes: New originally allocated, New manual adjustment (0–2), Remove from policy (Yes), Assign to policy. Remove + Assign on one row = move.', 'املأ ما يتغير فقط: المخصص الجديد، التعديل اليدوي الجديد (0–2)، الإزالة من السياسة (Yes)، التعيين في سياسة. الإزالة + التعيين في صف واحد = نقل.') })]),
@@ -37982,16 +38221,16 @@ function jboRedact_(msg) {
             r.assignTo = tgt;
             if (rem0 !== true) {
               const others = insA.filter((x) => x.pol.active);
-              if (others.length) { r.state = 'error'; r.msg = '✗ ' + T('Already in "', 'موجود بالفعل في "') + others.map((x) => x.pol.name).join('", "') + T('" — to move them, write Yes in "Remove from policy" on this row (the Policy column says which policy to leave)', '" — لنقله اكتب Yes في "Remove from policy" في هذا الصف (عمود Policy يحدد السياسة التي يغادرها)'); return; }
+              if (others.length) { r.state = 'error'; r.msg = '✗ ' + T('Already in "', 'موجود بالفعل في "') + others.map((x) => x.pol.name).join('", "') + T('": to move them, write Yes in "Remove from policy" on this row (the Policy column says which policy to leave)', '": لنقله اكتب Yes في "Remove from policy" في هذا الصف (عمود Policy يحدد السياسة التي يغادرها)'); return; }
               r.state = 'ready'; r.plan = T('➕ Assign to "', '➕ تعيين إلى "') + tgt.name + '"'; return;
             }
           }
           const ins = map.get(String(r.emp.id)) || [];
           let hit = ins;
           if (r.polText && !/^\(not in a policy\)$/i.test(r.polText)) hit = ins.filter((x) => x.pol.name.toLowerCase() === r.polText.toLowerCase() || x.pol.id === r.polText);
-          if (!ins.length) errs.push(T('Not in any flight ticket policy — choose one in "Assign to policy" first (balances can be set in a second run)', 'غير مضاف لأي سياسة تذاكر طيران — اختر سياسة في "Assign to policy" أولًا (يمكن ضبط الأرصدة في تشغيل ثانٍ)'));
-          else if (!hit.length) errs.push(T('Not in the policy "', 'غير موجود في السياسة "') + r.polText + T('" — they are in: ', '" — موجود في: ') + ins.map((x) => x.pol.name).join(', '));
-          else if (hit.length > 1) errs.push(T('In more than one policy (', 'في أكثر من سياسة (') + hit.map((x) => x.pol.name).join(', ') + T(') — write the policy name in the Policy column', ') — اكتب اسم السياسة في عمود Policy'));
+          if (!ins.length) errs.push(T('Not in any flight ticket policy; choose one in "Assign to policy" first (balances can be set in a second run)', 'غير مضاف لأي سياسة تذاكر طيران؛ اختر سياسة في "Assign to policy" أولًا (يمكن ضبط الأرصدة في تشغيل ثانٍ)'));
+          else if (!hit.length) errs.push(T('Not in the policy "', 'غير موجود في السياسة "') + r.polText + T('": they are in: ', '": موجود في: ') + ins.map((x) => x.pol.name).join(', '));
+          else if (hit.length > 1) errs.push(T('In more than one policy (', 'في أكثر من سياسة (') + hit.map((x) => x.pol.name).join(', ') + T('); write the policy name in the Policy column', ')؛ اكتب اسم السياسة في عمود Policy'));
           const rem = yes_(r.remRaw);
           if (rem === undefined) errs.push(T('Remove from policy: write Yes (or leave it blank)', 'الإزالة من السياسة: اكتب Yes (أو اتركها فارغة)'));
           r.remove = rem === true;
@@ -38006,7 +38245,7 @@ function jboRedact_(msg) {
           const key = r.emp.id + '|' + r.pol.id;
           if (seen.has(key)) { r.state = 'error'; r.msg = '✗ ' + T('Same employee and policy as row ', 'نفس الموظف والسياسة في الصف ') + seen.get(key); return; }
           seen.set(key, r.no);
-          if (r.remove && (!r.mem.recId || r.mem.recId === r.mem.empId)) { r.state = 'error'; r.msg = '✗ ' + T('Jisr did not give this employee\'s policy-membership id — remove them in Jisr', 'لم يُرجع جسر رقم عضوية الموظف في السياسة — أزله من جسر'); return; }
+          if (r.remove && (!r.mem.recId || r.mem.recId === r.mem.empId)) { r.state = 'error'; r.msg = '✗ ' + T('Jisr did not give this employee\'s policy-membership id; remove them in Jisr', 'لم يُرجع جسر رقم عضوية الموظف في السياسة؛ أزله من جسر'); return; }
           if (!r.remove && !r.pol.active) { r.state = 'error'; r.msg = '✗ ' + T('The policy "', 'السياسة "') + r.pol.name + T('" is not active (', '" غير نشطة (') + r.pol.status + ')'; return; }
           if (rem === false && r.manNew == null && r.allocNew == null) { r.state = 'skip'; r.msg = T('kept in the policy', 'يبقى في السياسة'); return; }
           todo.push(r);
@@ -38025,7 +38264,7 @@ function jboRedact_(msg) {
             r.state = 'ready'; return;
           }
           const cp = condProblem_(v);
-          if (cp) { r.state = 'error'; r.msg = '✗ ' + T('Not saved — ', 'لم يُحفظ — ') + cp + T(' (they must be sent back unchanged). Edit this employee in Jisr.', ' (يجب إرسالها كما هي). عدّل هذا الموظف في جسر.'); return; }
+          if (cp) { r.state = 'error'; r.msg = '✗ ' + T('Not saved: ', 'لم يُحفظ: ') + cp + T(' (they must be sent back unchanged). Edit this employee in Jisr.', ' (يجب إرسالها كما هي). عدّل هذا الموظف في جسر.'); return; }
           if (r.manNew != null && r.manNew > v.max + 1e-9) { r.state = 'error'; r.msg = '✗ ' + T('Up to ', 'الحد الأقصى ') + fmt_(v.max) + T(' ticket(s) allowed as manual adjustment in this policy', ' تذكرة كتعديل يدوي في هذه السياسة'); return; }
           r.want = {};
           const pl = [];
@@ -38037,7 +38276,7 @@ function jboRedact_(msg) {
         });
         S.dryDone = true;
         const rd = S.rows.filter((r) => r.state === 'ready');
-        S.note = T('Dry Run done — nothing was saved. ', 'انتهى التشغيل التجريبي — لم يُحفظ شيء. ') + rd.filter((r) => !r.remove && !r.assignTo).length + T(' to update, ', ' للتحديث، ') + rd.filter((r) => r.remove).length + T(' to remove from a policy, ', ' للإزالة من سياسة، ') + rd.filter((r) => r.assignTo).length + T(' to assign to a policy.', ' للتعيين في سياسة.');
+        S.note = T('Dry Run done: nothing was saved. ', 'انتهى التشغيل التجريبي: لم يُحفظ شيء. ') + rd.filter((r) => !r.remove && !r.assignTo).length + T(' to update, ', ' للتحديث، ') + rd.filter((r) => r.remove).length + T(' to remove from a policy, ', ' للإزالة من سياسة، ') + rd.filter((r) => r.assignTo).length + T(' to assign to a policy.', ' للتعيين في سياسة.');
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; paint_();
     });
@@ -38049,10 +38288,10 @@ function jboRedact_(msg) {
       const upd = todo.filter((r) => !r.remove && !r.assignTo), rem = todo.filter((r) => r.remove), asg = todo.filter((r) => r.assignTo);
       let ask = T('Flight tickets in ', 'تذاكر الطيران في ') + slug_() + ':\n';
       if (upd.length) ask += '• ' + T('update ', 'تحديث ') + upd.length + T(' employee(s)', ' موظف') + '\n';
-      if (rem.length) ask += '• ' + T('REMOVE ', 'إزالة ') + rem.length + T(' employee(s) from their policy — their balance in that policy is lost', ' موظف من سياستهم — يُفقد رصيدهم في تلك السياسة') + '\n';
+      if (rem.length) ask += '• ' + T('REMOVE ', 'إزالة ') + rem.length + T(' employee(s) from their policy: their balance in that policy is lost', ' موظف من سياستهم: يُفقد رصيدهم في تلك السياسة') + '\n';
       if (asg.length) ask += '• ' + T('ASSIGN ', 'تعيين ') + asg.length + T(' employee(s) to a policy (all airports and destinations allowed, policy defaults)', ' موظف في سياسة (كل المطارات والوجهات، إعدادات السياسة)') + '\n';
       if (!confirm(ask + T('Continue?', 'متابعة؟'))) return;
-      if (rem.length >= 10 && (prompt(T('Type the company slug to confirm removing ', 'اكتب معرّف الشركة لتأكيد إزالة ') + rem.length + T(' employees:', ' موظف:')) || '').trim() !== slug_()) { S.note = T('Not confirmed — nothing was saved.', 'لم يتم التأكيد — لم يُحفظ شيء.'); S.noteErr = true; paint_(); return; }
+      if (rem.length >= 10 && (prompt(T('Type the company slug to confirm removing ', 'اكتب معرّف الشركة لتأكيد إزالة ') + rem.length + T(' employees:', ' موظف:')) || '').trim() !== slug_()) { S.note = T('Not confirmed: nothing was saved.', 'لم يتم التأكيد: لم يُحفظ شيء.'); S.noteErr = true; paint_(); return; }
       S.running = true; S.stop = false; S.busy = ' '; paint_();
       let done = 0;
       const tick = () => { done++; S.busy = T('Saving… ', 'جارٍ الحفظ… ') + done + '/' + todo.length; paint_(); };
@@ -38073,7 +38312,7 @@ function jboRedact_(msg) {
               if (v) r.cur = Object.assign({}, v, { manual: r.cur.manual, alloc: r.cur.alloc });
               if (v && same(v.manual, r.want.manual) && same(v.alloc, r.want.alloc)) { r.state = 'done'; r.msg = T('✓ saved · verified', '✓ حُفظ · تم التحقق') + (v.total != null ? T(' · total now ', ' · الإجمالي الآن ') + fmt_(v.total) : ''); }
               else if (v) { r.state = 'check'; r.msg = T('⚠ saved, but Jisr now shows allocated ', '⚠ حُفظ، لكن جسر يعرض المخصص ') + fmt_(v.alloc) + T(', manual adjustment ', '، التعديل اليدوي ') + fmt_(v.manual); }
-              else { r.state = res ? 'done' : 'check'; r.msg = res ? T('✓ saved (could not read back)', '✓ حُفظ (تعذّرت القراءة للتحقق)') : T('⚠ no answer — check in Jisr', '⚠ لا رد — تحقّق في جسر'); }
+              else { r.state = res ? 'done' : 'check'; r.msg = res ? T('✓ saved (could not read back)', '✓ حُفظ (تعذّرت القراءة للتحقق)') : T('⚠ no answer: check in Jisr', '⚠ لا رد: تحقّق في جسر'); }
             }
           } catch (e) { r.state = 'failed'; r.msg = '✗ ' + e.message; }
           tick();
@@ -38094,14 +38333,14 @@ function jboRedact_(msg) {
           part.forEach((r) => {
             if (still && !still.has(String(r.emp.id))) { r.state = 'done'; r.msg = T('✓ removed · verified', '✓ أُزيل · تم التحقق'); }
             else if (still) { r.state = 'check'; r.msg = T('⚠ Jisr still lists this employee in the policy', '⚠ لا يزال جسر يُدرج الموظف في السياسة'); }
-            else { r.state = res ? 'done' : 'check'; r.msg = res ? T('✓ removed (could not read back)', '✓ أُزيل (تعذّرت القراءة للتحقق)') : T('⚠ no answer — check in Jisr', '⚠ لا رد — تحقّق في جسر'); }
+            else { r.state = res ? 'done' : 'check'; r.msg = res ? T('✓ removed (could not read back)', '✓ أُزيل (تعذّرت القراءة للتحقق)') : T('⚠ no answer: check in Jisr', '⚠ لا رد: تحقّق في جسر'); }
             tick();
           });
         }
       }
       // assignments: grouped by policy; the very first employee goes alone (pilot) — if that fails, no other assignment is sent
       const asgGo = asg.filter((r) => !r.remove || r.state === 'done');
-      asg.filter((r) => r.remove && r.state !== 'done').forEach((r) => { r.msg = (r.msg ? r.msg + '\n' : '') + T('not assigned — the removal did not complete', 'لم يُعيَّن — لم تكتمل الإزالة'); });
+      asg.filter((r) => r.remove && r.state !== 'done').forEach((r) => { r.msg = (r.msg ? r.msg + '\n' : '') + T('not assigned: the removal did not complete', 'لم يُعيَّن: لم تكتمل الإزالة'); });
       if (asgGo.length) {
         const byT = new Map();
         asgGo.forEach((r) => { if (!byT.has(r.assignTo.id)) byT.set(r.assignTo.id, []); byT.get(r.assignTo.id).push(r); });
@@ -38123,7 +38362,7 @@ function jboRedact_(msg) {
           part.forEach((r) => {
             const pre = r.remove ? T('✓ removed from "', '✓ أُزيل من "') + r.pol.name + '", ' : '';
             if (inPol && inPol.has(String(r.emp.id)) && res.ok) { r.state = 'done'; r.msg = pre + T('✓ assigned to "', '✓ عُيّن في "') + r.assignTo.name + T('" · verified', '" · تم التحقق'); }
-            else if (res.ok) { r.state = 'check'; r.msg = pre + T('⚠ Jisr said enrolled, but the employee is not in the policy list yet — check "', '⚠ قال جسر إنه سُجّل، لكن الموظف ليس في قائمة السياسة بعد — تحقّق من "') + r.assignTo.name + '"'; }
+            else if (res.ok) { r.state = 'check'; r.msg = pre + T('⚠ Jisr said enrolled, but the employee is not in the policy list yet; check "', '⚠ قال جسر إنه سُجّل، لكن الموظف ليس في قائمة السياسة بعد؛ تحقّق من "') + r.assignTo.name + '"'; }
             else { r.state = 'failed'; r.msg = pre + '✗ ' + T('Assign to "', 'التعيين في "') + r.assignTo.name + '": ' + res.msg; }
           });
           if (!res.ok && b === 0) halted = true;
@@ -38151,7 +38390,7 @@ function jboRedact_(msg) {
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
-    g.modules[MODULE_ID] = { title: 'Flight Ticket Allowance — Bulk', open: openTool_, version: SECTION_VERSION };
+    g.modules[MODULE_ID] = { title: 'Flight Ticket Allowance (Bulk)', open: openTool_, version: SECTION_VERSION };
     W.__jisrFlightTickets = { enrolStep1Body_, enrolStep2Body_, enrolStep3Body_, hasDependents_, newIdsIn_, manual_, alloc_, yes_, memberOf_, valuesIn_, body_, removeBody_, listIn_, idsOf_, condProblem_ };
     if (g._rerender) g._rerender();
   }
@@ -38160,7 +38399,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 36 — Shifts & Day Offs: assign day offs / a shift, or clear — any range up to one year, week by week  v4.62.0
+// ##### SECTION 36 — Shifts & Day Offs: assign day offs / a shift, or clear — any range up to one year, week by week  v4.75.0
 // ###########################################################################
 
 /*
@@ -38359,7 +38598,7 @@ function jboRedact_(msg) {
       if (!f || !t) return { err: T('Choose both dates.', 'اختر التاريخين.') };
       const n = daysBetween_(f, t) + 1;
       if (n < 1) return { err: T('"To" is before "From".', 'تاريخ "إلى" قبل "من".') };
-      if (n > MAX_DAYS) return { err: T('Up to one year (366 days) per run — this range has ', 'حتى سنة واحدة (366 يومًا) في كل تشغيل — هذا النطاق ') + n + T(' days.', ' يومًا.') };
+      if (n > MAX_DAYS) return { err: T('Up to one year (366 days) per run; this range has ', 'حتى سنة واحدة (366 يومًا) في كل تشغيل؛ هذا النطاق ') + n + T(' days.', ' يومًا.') };
       return { f, t, n };
     }
     function rebuild_() {
@@ -38386,7 +38625,7 @@ function jboRedact_(msg) {
     const upB = el('button', { class: 'jbo-btn', type: 'button', text: T('⬆ Upload list', '⬆ رفع القائمة') });
     const pickedEl = el('div', { class: 'jsc-muted', style: { marginTop: '4px' } });
     const selBox = el('div', { style: { marginTop: '6px', display: 'none' } }, [pasteBox, el('div', {}, [addB, tplB, upB]), pickedEl,
-      el('div', { class: 'jsc-err', style: { fontSize: '11.5px', marginTop: '4px' }, text: T('⚠ Clearing for chosen employees only is not confirmed yet on Jisr — try one employee and one week first.', '⚠ المسح لموظفين محددين فقط لم يُتأكد منه بعد في جسر — جرّب موظفًا واحدًا وأسبوعًا واحدًا أولًا.') })]);
+      el('div', { class: 'jsc-err', style: { fontSize: '11.5px', marginTop: '4px' }, text: T('⚠ Clearing for chosen employees only is not confirmed yet on Jisr; try one employee and one week first.', '⚠ المسح لموظفين محددين فقط لم يُتأكد منه بعد في جسر؛ جرّب موظفًا واحدًا وأسبوعًا واحدًا أولًا.') })]);
     [whoAll, whoSel].forEach((r) => r.addEventListener('change', () => { S.who = whoSel.checked ? 'sel' : 'all'; selBox.style.display = S.who === 'sel' ? '' : 'none'; S.dryDone = false; paint_(); }));
     async function emps_() { return W.__jisrBulkOpsEmployees.get(false, (n) => { statusEl.textContent = T('Loading employees… ', 'جارٍ تحميل الموظفين… ') + n; }); }
     async function addRefs_(refs) {
@@ -38465,14 +38704,14 @@ function jboRedact_(msg) {
     }
 
     function render_() {
-      titleEl.textContent = T('Shifts & Day Offs — assign or clear, any range up to one year', 'الورديات وأيام الراحة — إسناد أو مسح لأي فترة حتى سنة');
+      titleEl.textContent = T('Shifts & Day Offs: assign or clear, any range up to one year', 'الورديات وأيام الراحة: إسناد أو مسح لأي فترة حتى سنة');
       body.innerHTML = ''; foot.innerHTML = '';
       paintMode_(); paintDays_(); fillShifts_();
       body.appendChild(modeBar);
       const cl = S.mode === 'clear';
       body.appendChild(el('div', { class: 'jsc-caution' }, [el('span', { text: cl ? '⚠️' : 'ℹ️' }), el('div', {}, [
         el('b', { text: cl ? T('Clears assigned shifts in the account ', 'يمسح الورديات المسندة في الحساب ') : S.mode === 'dayoff' ? T('Assigns day offs (e.g. the weekend) in the account ', 'يسند أيام الراحة (مثل عطلة نهاية الأسبوع) في الحساب ') : T('Assigns a shift in the account ', 'يسند وردية في الحساب ') }), el('span', { class: 'jsc-acct', text: slug_() }),
-        el('div', { text: cl ? T('Jisr only clears one week at a time; this tool sends the same request for every week in your range. Cleared shifts are not restored by the tool — download the Results after the Dry Run if you need a record.', 'جسر يمسح أسبوعًا واحدًا في كل مرة؛ هذه الأداة ترسل نفس الطلب لكل أسبوع في الفترة. لا تستعيد الأداة الورديات بعد مسحها — نزّل النتائج بعد التشغيل التجريبي إن احتجت سجلًا.')
+        el('div', { text: cl ? T('Jisr only clears one week at a time; this tool sends the same request for every week in your range. Cleared shifts are not restored by the tool; download the Results after the Dry Run if you need a record.', 'جسر يمسح أسبوعًا واحدًا في كل مرة؛ هذه الأداة ترسل نفس الطلب لكل أسبوع في الفترة. لا تستعيد الأداة الورديات بعد مسحها؛ نزّل النتائج بعد التشغيل التجريبي إن احتجت سجلًا.')
           : T('For clients who do not use the scheduler: the chosen weekdays get a day off (or the shift) for every week of the range, sent week by week like Jisr\'s own Schedule screen. To undo, use Clear for the same range.', 'للعملاء الذين لا يستخدمون الجدولة: تحصل أيام الأسبوع المختارة على يوم راحة (أو الوردية) في كل أسبوع من الفترة، تُرسل أسبوعًا بأسبوع مثل شاشة الجدولة في جسر. للتراجع استخدم المسح لنفس الفترة.') })])]));
       body.appendChild(el('div', { class: 'jsc-grid' }, [
         el('div', { class: 'jsc-box' }, [el('b', { class: 'h', text: T('1. Dates', '1. التواريخ') }),
@@ -38532,8 +38771,8 @@ function jboRedact_(msg) {
       await Promise.all([next(), next(), next()]);
       S.running = false; S.busy = ''; S.dryDone = true;
       const withS = S.weeks.filter((w) => w.before && w.before.n > 0).length;
-      if (S.mode !== 'clear') { const n = todo_().length; S.note = T('Dry Run done — nothing was sent. ', 'انتهى التشغيل التجريبي — لم يُرسل شيء. ') + n + T(' week(s) will get ', ' أسبوعًا ستحصل على ') + (S.mode === 'dayoff' ? T('day offs on ', 'أيام راحة يوم ') : T('the shift on ', 'الوردية يوم ')) + S.days.map((d) => T(DAY_EN[d], DAY_AR[d])).join(', ') + '.'; paint_(); return; }
-      S.note = T('Dry Run done — nothing was cleared. ', 'انتهى التشغيل التجريبي — لم يُمسح شيء. ') + withS + T(' of ', ' من ') + S.weeks.length + T(' week(s) have assigned shifts', ' أسبوعًا بها ورديات مسندة') + (S.who === 'all' ? T(' (weeks without shifts are skipped).', ' (الأسابيع بدون ورديات تُتخطّى).') : T(' (for chosen employees every week is sent).', ' (للموظفين المحددين يُرسل كل أسبوع).'));
+      if (S.mode !== 'clear') { const n = todo_().length; S.note = T('Dry Run done: nothing was sent. ', 'انتهى التشغيل التجريبي: لم يُرسل شيء. ') + n + T(' week(s) will get ', ' أسبوعًا ستحصل على ') + (S.mode === 'dayoff' ? T('day offs on ', 'أيام راحة يوم ') : T('the shift on ', 'الوردية يوم ')) + S.days.map((d) => T(DAY_EN[d], DAY_AR[d])).join(', ') + '.'; paint_(); return; }
+      S.note = T('Dry Run done: nothing was cleared. ', 'انتهى التشغيل التجريبي: لم يُمسح شيء. ') + withS + T(' of ', ' من ') + S.weeks.length + T(' week(s) have assigned shifts', ' أسبوعًا بها ورديات مسندة') + (S.who === 'all' ? T(' (weeks without shifts are skipped).', ' (الأسابيع بدون ورديات تُتخطّى).') : T(' (for chosen employees every week is sent).', ' (للموظفين المحددين يُرسل كل أسبوع).'));
       paint_();
     });
     runB.addEventListener('click', async () => {
@@ -38543,7 +38782,7 @@ function jboRedact_(msg) {
       const what = S.mode === 'clear' ? T('Clear assigned shifts for ', 'مسح الورديات المسندة لـ ') : S.mode === 'dayoff' ? T('Assign day offs on ', 'إسناد أيام راحة يوم ') + S.days.map((d) => DAY_EN[d]).join('/') + T(' to ', ' لـ ') : T('Assign the shift "', 'إسناد الوردية "') + (shiftObj ? shiftObj.name_en || shiftObj.name_i18n || shiftObj.id : '') + T('" on ', '" يوم ') + S.days.map((d) => DAY_EN[d]).join('/') + T(' to ', ' لـ ');
       const typed = prompt(what + who + T(' from ', ' من ') + dmy_(todo[0].from) + T(' to ', ' إلى ') + dmy_(todo[todo.length - 1].to) + ' (' + todo.length + T(' week(s)) in the account "', ' أسبوع) في الحساب "') + slug_() + T('".\n\nType the account name to continue:', '".\n\nاكتب اسم الحساب للمتابعة:'));
       if (typed == null) return;
-      if (typed.trim().toLowerCase() !== slug_().toLowerCase()) { S.note = T('The account name did not match — nothing was cleared.', 'اسم الحساب غير مطابق — لم يُمسح شيء.'); S.noteErr = true; paint_(); return; }
+      if (typed.trim().toLowerCase() !== slug_().toLowerCase()) { S.note = T('The account name did not match; nothing was cleared.', 'اسم الحساب غير مطابق: لم يُمسح شيء.'); S.noteErr = true; paint_(); return; }
       S.running = true; S.stop = false; S.note = ''; S.noteErr = false;
       const ids = S.who === 'all' ? null : S.picked.map((e) => e.id);
       const batches = ids ? Array.from({ length: Math.ceil(ids.length / IDS_PER_CALL) }, (_, k) => ids.slice(k * IDS_PER_CALL, (k + 1) * IDS_PER_CALL)) : [null];
@@ -38564,7 +38803,7 @@ function jboRedact_(msg) {
           w.state = 'done';
           w.msg = S.mode !== 'clear' ? (S.mode === 'dayoff' ? T('✓ day offs assigned', '✓ أُسندت أيام الراحة') : T('✓ shift assigned', '✓ أُسندت الوردية')) + (ids ? ' (' + ids.length + T(' employee(s))', ' موظف)') : '')
             : S.who === 'all' ? (w.after && w.after.n > 0 ? T('⚠ cleared, but Jisr still lists ', '⚠ مُسح، لكن جسر لا يزال يعرض ') + w.after.n : T('✓ cleared', '✓ مُسح')) : T('✓ sent for ', '✓ أُرسل لـ ') + ids.length + T(' employee(s)', ' موظف');
-        } catch (e) { w.state = 'failed'; w.msg = '✗ ' + e.message + (e.unknown ? T(' — check this week in Jisr', ' — تحقق من هذا الأسبوع في جسر') : ''); S.stop = true; S.note = e.message; S.noteErr = true; break; }
+        } catch (e) { w.state = 'failed'; w.msg = '✗ ' + e.message + (e.unknown ? T('; check this week in Jisr', '; تحقق من هذا الأسبوع في جسر') : ''); S.stop = true; S.note = e.message; S.noteErr = true; break; }
         paint_(); await sleep_(250);
       }
       S.running = false; S.busy = '';
@@ -38586,7 +38825,7 @@ function jboRedact_(msg) {
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
-    g.modules[MODULE_ID] = { title: 'Shifts & Day Offs — assign or clear, up to one year', open: openTool_, version: SECTION_VERSION };
+    g.modules[MODULE_ID] = { title: 'Shifts & Day Offs: assign or clear, up to one year', open: openTool_, version: SECTION_VERSION };
     W.__jisrShiftsClear = { weeks_, dmy_, iso_, countOf_, assignBody_, daysIn_ };
     if (g._rerender) g._rerender();
   }
@@ -38595,7 +38834,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 37 — Family Members (bulk add; passport numbers with letters; nationalities by name)  v4.62.0
+// ##### SECTION 37 — Family Members (bulk add; passport numbers with letters; nationalities by name)  v4.75.0
 // ###########################################################################
 
 /*
@@ -38804,7 +39043,7 @@ function jboRedact_(msg) {
     const upB = el('button', { class: 'jbo-btn', text: T('⬆ Upload file', '⬆ رفع الملف') });
     const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
     const natInfo = el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', marginTop: '4px' } });
-    const updSel = el('select', { class: 'jfm-upd', style: { maxWidth: '100%' } }, [['passport', T('Fix the passport number (+ expiry) — recommended', 'تصحيح رقم الجواز (+ تاريخ الانتهاء) — موصى به')], ['all', T('Update every field that differs from the file', 'تحديث كل حقل يختلف عن الملف')], ['skip', T('Leave them as they are (skip)', 'اتركهم كما هم (تخطٍّ)')]].map(([v, l]) => el('option', { value: v, selected: S.upd === v, text: l })));
+    const updSel = el('select', { class: 'jfm-upd', style: { maxWidth: '100%' } }, [['passport', T('Fix the passport number (+ expiry); recommended', 'تصحيح رقم الجواز (+ تاريخ الانتهاء)؛ موصى به')], ['all', T('Update every field that differs from the file', 'تحديث كل حقل يختلف عن الملف')], ['skip', T('Leave them as they are (skip)', 'اتركهم كما هم (تخطٍّ)')]].map(([v, l]) => el('option', { value: v, selected: S.upd === v, text: l })));
     updSel.addEventListener('change', () => { S.upd = updSel.value; S.dryDone = false; S.rows.forEach((r) => { if (r.state !== 'done' && r.state !== 'updated') { r.state = ''; r.msg = ''; } }); paint_(); });
     const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
     const statsEl = el('div', { class: 'jfm-stats' });
@@ -38830,7 +39069,7 @@ function jboRedact_(msg) {
       let hit = (S.nats || []).filter((n) => [n.en, n.ar].some((x) => x && norm_(x) === k));
       if (!hit.length && k.length >= 4) hit = (S.nats || []).filter((n) => [n.en, n.ar].some((x) => x && (norm_(x).startsWith(k) || k.startsWith(norm_(x)))));
       if (hit.length === 1) return { id: hit[0].id, label: hit[0].en || hit[0].ar };
-      return { id: null, err: hit.length > 1 ? T('Nationality "', 'الجنسية "') + t + T('" matches several: ', '" تطابق أكثر من واحدة: ') + hit.slice(0, 4).map((n) => n.en || n.ar).join(', ') : T('Nationality "', 'الجنسية "') + t + T('" is not in Jisr\'s list', '" غير موجودة في قائمة جسر') + (S.nats && S.nats.length ? '' : T(' (the list could not be read — write the nationality id as a number)', ' (تعذّرت قراءة القائمة — اكتب رقم الجنسية)')) };
+      return { id: null, err: hit.length > 1 ? T('Nationality "', 'الجنسية "') + t + T('" matches several: ', '" تطابق أكثر من واحدة: ') + hit.slice(0, 4).map((n) => n.en || n.ar).join(', ') : T('Nationality "', 'الجنسية "') + t + T('" is not in Jisr\'s list', '" غير موجودة في قائمة جسر') + (S.nats && S.nats.length ? '' : T(' (the list could not be read; write the nationality id as a number)', ' (تعذّرت قراءة القائمة؛ اكتب رقم الجنسية)')) };
     }
 
     tplB.addEventListener('click', async () => {
@@ -38845,18 +39084,18 @@ function jboRedact_(msg) {
         XLSX.utils.book_append_sheet(wb, ws, 'Family Details');
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['How to fill this file'], [''],
           ['One row per family member. Employee ID = the employee\'s ID in Jisr (Iqama or name also work).'],
-          ['Passport, ID and insurance numbers are kept exactly as written — letters included (e.g. AG6005287).'],
+          ['Passport, ID and insurance numbers are kept exactly as written; letters included (e.g. AG6005287).'],
           ['Nationality: pick from the list (Jisr\'s own names). Relationship, Gender and Marital status: pick from the list (Arabic also accepted).'],
           ['Dates: yyyy-mm-dd or dd/mm/yyyy. Member Name Ar may be left empty (the English name is used).'],
-          ['Jisr\'s own family_details.xls file can be uploaded as well — same columns.'],
-          ['Members already in Jisr (same ID number or name) are updated, not added again — by default only their passport number and passport expiry.']]), 'How to use');
+          ['Jisr\'s own family_details.xls file can be uploaded as well; same columns.'],
+          ['Members already in Jisr (same ID number or name) are updated, not added again; by default only their passport number and passport expiry.']]), 'How to use');
         const X = W.__jisrBulkOpsXlsx; const fn = 'jisr-family-members-' + slug_() + '.xlsx';
         const picks = [{ sheet: 'Family Details', col: 4, strict: false, title: 'Relationship', values: RELS.map((x) => x[0]) },
           { sheet: 'Family Details', col: 5, strict: true, title: 'Gender', values: GENDERS.map((x) => x[0]) },
           { sheet: 'Family Details', col: 7, strict: false, title: 'Marital status', values: MARITALS.map((x) => x[0]) }];
         if (nats.length) picks.push({ sheet: 'Family Details', col: 6, strict: true, title: 'Nationality', values: nats.map((n) => (n.en || n.ar) + ' · #' + n.id) });
         if (X) await X.saveWithDropdowns(wb, fn, picks); else XLSX.writeFile(wb, fn);
-        S.note = T('Template downloaded', 'تم تنزيل القالب') + (nats.length ? T(' with Jisr\'s ', ' مع ') + nats.length + T(' nationalities.', ' جنسية من جسر.') : T('. Jisr\'s nationality list could not be read — write nationalities as Jisr names them, or their id.', '. تعذّرت قراءة قائمة الجنسيات — اكتب الجنسية كما يسميها جسر أو رقمها.')); S.noteErr = false;
+        S.note = T('Template downloaded', 'تم تنزيل القالب') + (nats.length ? T(' with Jisr\'s ', ' مع ') + nats.length + T(' nationalities.', ' جنسية من جسر.') : T('. Jisr\'s nationality list could not be read; write nationalities as Jisr names them, or their id.', '. تعذّرت قراءة قائمة الجنسيات: اكتب الجنسية كما يسميها جسر أو رقمها.')); S.noteErr = false;
       } catch (e) { S.note = e.message; S.noteErr = true; }
       paint_();
     });
@@ -38870,7 +39109,7 @@ function jboRedact_(msg) {
         const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
         const txt = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
         const hi = raw.findIndex((r) => r.some((c) => /member name/i.test(String(c))));
-        if (hi < 0) throw new Error(T('This file has no "Member Name" column — use Jisr\'s family_details file or this tool\'s template.', 'لا يحتوي الملف على عمود "Member Name" — استخدم ملف family_details من جسر أو قالب الأداة.'));
+        if (hi < 0) throw new Error(T('This file has no "Member Name" column; use Jisr\'s family_details file or this tool\'s template.', 'لا يحتوي الملف على عمود "Member Name"؛ استخدم ملف family_details من جسر أو قالب الأداة.'));
         const H = raw[hi].map((h) => clean_(h).toLowerCase());
         const col = {}; HEAD.forEach((h, i) => { col[KEYS[i]] = H.indexOf(h.toLowerCase()); });
         if (col.emp < 0) col.emp = H.findIndex((h) => /employee id|الرقم الوظيفي/.test(h));
@@ -38897,7 +39136,7 @@ function jboRedact_(msg) {
       if (!ref) e.push(T('No Employee ID', 'لا يوجد رقم وظيفي'));
       else { const hit = empBy.get(digits_(ref)) || empBy.get(norm_(ref)); if (!hit || hit.length !== 1) e.push(T('Employee "', 'الموظف "') + ref + (hit && hit.length > 1 ? T('" matches several', '" يطابق أكثر من موظف') : T('" is not in Jisr', '" غير موجود في جسر'))); else r.emp = hit[0]; }
       if (!r.out.name) e.push(T('Member Name is empty', 'اسم الفرد فارغ'));
-      const rel = pick_(RELS, v.rel); if (!rel) e.push(rel === '' ? T('Relationship is empty', 'صلة القرابة فارغة') : T('Relationship "', 'صلة القرابة "') + clean_(v.rel) + T('" — use Son, Daughter, Wife, Husband, Father, Mother, Brother or Sister', '" — استخدم ابن، ابنة، زوجة، زوج، أب، أم، أخ، أخت')); r.out.rel = rel;
+      const rel = pick_(RELS, v.rel); if (!rel) e.push(rel === '' ? T('Relationship is empty', 'صلة القرابة فارغة') : T('Relationship "', 'صلة القرابة "') + clean_(v.rel) + T('": use Son, Daughter, Wife, Husband, Father, Mother, Brother or Sister', '": استخدم ابن، ابنة، زوجة، زوج، أب، أم، أخ، أخت')); r.out.rel = rel;
       const g = pick_(GENDERS, v.gender); r.out.gender = g || (rel ? { Son: 'Male', Husband: 'Male', Father: 'Male', Brother: 'Male', Daughter: 'Female', Wife: 'Female', Mother: 'Female', Sister: 'Female' }[rel] : '');
       if (g === undefined) e.push(T('Gender: Male or Female', 'الجنس: ذكر أو أنثى'));
       const ms = pick_(MARITALS, v.marital); if (ms === undefined) e.push(T('Marital status: Single, Married, Divorced or Widowed', 'الحالة الاجتماعية: أعزب، متزوج، مطلق، أرمل')); r.out.marital = ms || '';
@@ -38942,11 +39181,11 @@ function jboRedact_(msg) {
           }
           if (seen.has(key)) { r.state = 'error'; r.msg = T('✗ Same member twice in the file (row ', '✗ نفس الفرد مرتين في الملف (الصف ') + seen.get(key) + ')'; return; }
           seen.set(key, r.no);
-          r.msg = T('ready — ', 'جاهز — ') + r.out.rel + ' · ' + r.out.natLabel + (r.out.passport ? T(' · passport ', ' · جواز ') + r.out.passport : '');
+          r.msg = T('ready: ', 'جاهز: ') + r.out.rel + ' · ' + r.out.natLabel + (r.out.passport ? T(' · passport ', ' · جواز ') + r.out.passport : '');
         });
         S.dryDone = true;
         const c = (s) => S.rows.filter((r) => r.state === s).length;
-        S.note = T('Dry Run done — nothing was sent. ', 'انتهى التشغيل التجريبي — لم يُرسل شيء. ') + c('ready') + T(' to add, ', ' للإضافة، ') + c('update') + T(' to update, ', ' للتحديث، ') + c('skip') + T(' already correct / skipped, ', ' صحيح / متخطى، ') + c('error') + T(' to fix in the file.', ' للتصحيح في الملف.');
+        S.note = T('Dry Run done: nothing was sent. ', 'انتهى التشغيل التجريبي: لم يُرسل شيء. ') + c('ready') + T(' to add, ', ' للإضافة، ') + c('update') + T(' to update, ', ' للتحديث، ') + c('skip') + T(' already correct / skipped, ', ' صحيح / متخطى، ') + c('error') + T(' to fix in the file.', ' للتصحيح في الملف.');
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.running = false; S.busy = ''; paint_();
     });
@@ -38978,7 +39217,7 @@ function jboRedact_(msg) {
           ok = true; if (!way) { way = [m, tail]; gmSet_('famEdit', way); } break;
         }
         if (ok) { r.state = 'updated'; r.msg = '✓ ' + T('updated #', 'حُدّث #') + r.member.id + ': ' + Object.entries(r.chg).map(([k, v]) => k.replace(/_/g, ' ') + ' ' + v).join('; '); }
-        else { r.state = 'failed'; r.msg = '✗ ' + T('update: ', 'التحديث: ') + last; if (!way) { S.stop = true; S.note = T('The first update did not save — nothing else was changed. Please capture Jisr\'s own edit of a family member (DevTools → Network) so the tool can match it.', 'لم يُحفظ التحديث الأول — لم يُغيّر شيء آخر. التقط تعديل فرد عائلة من جسر نفسه (DevTools ← Network) لتطابقه الأداة.'); S.noteErr = true; } }
+        else { r.state = 'failed'; r.msg = '✗ ' + T('update: ', 'التحديث: ') + last; if (!way) { S.stop = true; S.note = T('The first update did not save; nothing else was changed. Please capture Jisr\'s own edit of a family member (DevTools → Network) so the tool can match it.', 'لم يُحفظ التحديث الأول: لم يُغيّر شيء آخر. التقط تعديل فرد عائلة من جسر نفسه (DevTools ← Network) لتطابقه الأداة.'); S.noteErr = true; } }
         paint_();
       }
       let done = 0;
@@ -38992,7 +39231,7 @@ function jboRedact_(msg) {
             const g = await request_('GET', famPath_(r.emp.id)).catch(() => null);
             const l = g && g.ok ? listIn_(g.json, (x) => x.id != null && (x.name != null || x.name_ar != null)) : [];
             const m = l.find((x) => norm_(x.name) === norm_(r.out.name));
-            if (!m) { r.state = 'check'; r.msg = T('⚠ Jisr answered OK but the member is not listed yet — check the employee', '⚠ رد جسر بنجاح لكن الفرد غير ظاهر بعد — تحقق من الموظف'); }
+            if (!m) { r.state = 'check'; r.msg = T('⚠ Jisr answered OK but the member is not listed yet; check the employee', '⚠ رد جسر بنجاح لكن الفرد غير ظاهر بعد؛ تحقق من الموظف'); }
             else {
               const pOk = !r.out.passport || docNo_(m.passport_number) === r.out.passport;
               const nOk = !(m.nationality_id != null || (m.nationality && m.nationality.id != null)) || String(m.nationality_id != null ? m.nationality_id : m.nationality.id) === String(r.out.natId);
@@ -39000,12 +39239,12 @@ function jboRedact_(msg) {
               r.msg = (pOk && nOk ? '✓ ' : '⚠ ') + T('added #', 'أُضيف #') + m.id + (r.out.passport ? (pOk ? T(' · passport ', ' · الجواز ') + r.out.passport + ' ✓' : T(' · passport in Jisr: ', ' · الجواز في جسر: ') + (m.passport_number || '—')) : '') + (nOk ? '' : T(' · nationality differs in Jisr', ' · الجنسية مختلفة في جسر'));
             }
           }
-        } catch (e) { r.state = 'failed'; r.msg = '✗ ' + e.message + (e.unknown ? T(' — check the employee in Jisr before running again', ' — تحقق من الموظف في جسر قبل إعادة التشغيل') : ''); if (e.unknown) S.stop = true; }
+        } catch (e) { r.state = 'failed'; r.msg = '✗ ' + e.message + (e.unknown ? T('; check the employee in Jisr before running again', '; تحقق من الموظف في جسر قبل إعادة التشغيل') : ''); if (e.unknown) S.stop = true; }
         done++; paint_();
       }
       S.running = false; S.busy = '';
       const ok = S.rows.filter((r) => r.state === 'done').length, okU = S.rows.filter((r) => r.state === 'updated').length;
-      if (!S.noteErr) { S.note = ok + T(' of ', ' من ') + todo.length + T(' added, ', ' أُضيفوا، ') + okU + T(' of ', ' من ') + upds.length + T(' updated — all checked in Jisr.', ' حُدّثوا — وتم التحقق في جسر.'); S.noteErr = ok < todo.length || okU < upds.length; }
+      if (!S.noteErr) { S.note = ok + T(' of ', ' من ') + todo.length + T(' added, ', ' أُضيفوا، ') + okU + T(' of ', ' من ') + upds.length + T(' updated: all checked in Jisr.', ' حُدّثوا: وتم التحقق في جسر.'); S.noteErr = ok < todo.length || okU < upds.length; }
       paint_();
     });
     stopB.addEventListener('click', () => { S.stop = true; });
@@ -39016,15 +39255,15 @@ function jboRedact_(msg) {
     });
 
     function render_() {
-      titleEl.textContent = T('Family Members — Bulk (passport numbers with letters)', 'أفراد العائلة — جماعي (أرقام الجواز بالحروف)');
+      titleEl.textContent = T('Family Members: Bulk (passport numbers with letters)', 'أفراد العائلة: جماعي (أرقام الجواز بالحروف)');
       body.innerHTML = ''; foot.innerHTML = '';
       body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
-        'Adds family members to employees from Jisr\'s own family_details file or this tool\'s template. Unlike Jisr\'s import, passport, ID and insurance numbers are kept exactly as written — letters included — and nationalities are matched by name to Jisr\'s list.',
-        'يضيف أفراد العائلة للموظفين من ملف family_details الخاص بجسر أو من قالب الأداة. بخلاف استيراد جسر، تُحفظ أرقام الجواز والهوية والتأمين كما كُتبت تمامًا — مع الحروف — وتُطابق الجنسيات بالاسم مع قائمة جسر.') }));
+        'Adds family members to employees from Jisr\'s own family_details file or this tool\'s template. Unlike Jisr\'s import, passport, ID and insurance numbers are kept exactly as written, letters included, and nationalities are matched by name to Jisr\'s list.',
+        'يضيف أفراد العائلة للموظفين من ملف family_details الخاص بجسر أو من قالب الأداة. بخلاف استيراد جسر، تُحفظ أرقام الجواز والهوية والتأمين كما كُتبت تمامًا، مع الحروف، وتُطابق الجنسيات بالاسم مع قائمة جسر.') }));
       body.appendChild(el('div', { class: 'jfm-steps' }, [
         el('div', { class: 'jfm-step' }, [el('b', { text: T('1. File', '1. الملف') }), tplB, upB, natInfo]),
         el('div', { class: 'jfm-step' }, [el('b', { text: T('2. Check', '2. الفحص') }), el('div', { class: 'jbo-muted', text: T('Dry Run matches employees and nationalities and reads each employee\'s current family. Members already in Jisr:', 'التشغيل التجريبي يطابق الموظفين والجنسيات ويقرأ أفراد العائلة الحاليين. الأفراد الموجودون في جسر:') }), updSel]),
-        el('div', { class: 'jfm-step' }, [el('b', { text: T('3. Add', '3. الإضافة') }), el('div', { class: 'jbo-muted', text: T('One member at a time; each is read back from Jisr — the passport number must match exactly.', 'فرد واحد في كل مرة؛ ويُقرأ كل منهم من جسر — يجب أن يطابق رقم الجواز تمامًا.') })]),
+        el('div', { class: 'jfm-step' }, [el('b', { text: T('3. Add', '3. الإضافة') }), el('div', { class: 'jbo-muted', text: T('One member at a time; each is read back from Jisr; the passport number must match exactly.', 'فرد واحد في كل مرة؛ ويُقرأ كل منهم من جسر؛ يجب أن يطابق رقم الجواز تمامًا.') })]),
       ]));
       body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn);
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
@@ -39034,7 +39273,7 @@ function jboRedact_(msg) {
     }
     function paint_() {
       statusEl.textContent = S.busy || S.note; statusEl.style.color = S.noteErr && !S.busy ? '#c5221f' : '';
-      natInfo.textContent = S.nats == null ? T('Reading nationalities…', 'جارٍ قراءة الجنسيات…') : S.nats.length ? '✓ ' + S.nats.length + T(' nationalities from Jisr', ' جنسية من جسر') : T('⚠ Jisr\'s nationality list could not be read here — names are matched to nationalities already used, or write the id.', '⚠ تعذّرت قراءة قائمة الجنسيات — تُطابق الأسماء مع الجنسيات المستخدمة أو اكتب الرقم.');
+      natInfo.textContent = S.nats == null ? T('Reading nationalities…', 'جارٍ قراءة الجنسيات…') : S.nats.length ? '✓ ' + S.nats.length + T(' nationalities from Jisr', ' جنسية من جسر') : T('⚠ Jisr\'s nationality list could not be read here; names are matched to nationalities already used, or write the id.', '⚠ تعذّرت قراءة قائمة الجنسيات: تُطابق الأسماء مع الجنسيات المستخدمة أو اكتب الرقم.');
       const c = (s) => S.rows.filter((r) => r.state === s).length;
       statsEl.innerHTML = '';
       if (S.rows.length) [[S.rows.length + T(' rows', ' صف')], [c('ready') + T(' to add', ' للإضافة')], [c('update') + T(' to update', ' للتحديث')], [c('skip') + T(' already correct / skipped', ' صحيح / متخطى')], [c('error') + T(' to fix', ' للتصحيح')], [c('done') + T(' added', ' أُضيف')], [c('updated') + T(' updated', ' حُدّث')], [c('failed') + c('check') + T(' need a look', ' تحتاج مراجعة')]].forEach(([t]) => statsEl.appendChild(el('span', { text: t })));
@@ -39059,7 +39298,7 @@ function jboRedact_(msg) {
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
-    g.modules[MODULE_ID] = { title: 'Family Members — Bulk', open: openTool_, version: SECTION_VERSION };
+    g.modules[MODULE_ID] = { title: 'Family Members (Bulk)', open: openTool_, version: SECTION_VERSION };
     W.__jisrFamily = { date_, docNo_, body_, pick_, RELS, GENDERS, MARITALS, mergeBody_, diff_ };
     if (g._rerender) g._rerender();
   }
@@ -39068,7 +39307,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 38 — Letter Templates: open, edit and save Jisr's letters directly (simple editor + variables)  v4.62.0
+// ##### SECTION 38 — Letter Templates: open, edit and save Jisr's letters directly (simple editor + variables)  v4.75.0
 // ###########################################################################
 
 /*
@@ -39091,8 +39330,9 @@ function jboRedact_(msg) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.62.0';
+  const SECTION_VERSION = '4.75.0';
   const MODULE_ID = 'letter-templates';
+  function gmSet_(k, v) { try { GM_setValue('jisrBulkOps_' + k, v); } catch (e) { /* ignore */ } }
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
@@ -39177,6 +39417,765 @@ const CATALOG_SRC = [
 ];
   const CATALOG = []; CATALOG_SRC.forEach(([group, items]) => items.forEach(([key, en, ar, ...aliases]) => CATALOG.push({ key, en, ar, group, aliases })));
   const catBy = new Map(CATALOG.map((c) => [c.key, c]));
+  // v4.67: "@" keys are the Letter Converter's composites — Jisr has no such field; they are written out as first + middle + last name.
+  // (Saving "{{{@employee_full_name_ar}}}" made Jisr refuse the letter: "Letter template is not valid, make sure all field names…")
+  const COMPOSITE = {
+    '@employee_full_name': '{{{employee_first_name}}} {{{employee_middle_name}}} {{{employee_last_name}}}',
+    '@employee_full_name_ar': '{{{employee_first_name_ar}}} {{{employee_middle_name_ar}}} {{{employee_last_name_ar}}}',
+  };
+  const keyText_ = (k) => COMPOSITE[k] || '{{{' + k + '}}}';
+  const COMPOSITE_RE = [
+    ['@employee_full_name_ar', /\{\{\{\s*employee_first_name_ar\s*\}\}\}\s+\{\{\{\s*employee_middle_name_ar\s*\}\}\}\s+\{\{\{\s*employee_last_name_ar\s*\}\}\}/g],
+    ['@employee_full_name', /\{\{\{\s*employee_first_name\s*\}\}\}\s+\{\{\{\s*employee_middle_name\s*\}\}\}\s+\{\{\{\s*employee_last_name\s*\}\}\}/g],
+  ];
+  /** Before saving: every {{{field}}} must be a plain name (letters, digits, _) with nothing between its braces, or Jisr refuses the letter. */
+  function fieldProblems_(html) {
+    const out = []; const h = String(html || '');
+    const scrub = h.replace(/<img[^>]*>/gi, (m) => m.replace(/\{\{\{\s*letter_attachment_\d+\s*\}\}\}/g, '')); // picture addresses are fine
+    let m; const re = /\{\{\{([\s\S]*?)\}\}\}/g;
+    while ((m = re.exec(scrub))) { const k = m[1].trim(); if (/</.test(m[1])) out.push(T('formatting inside ', 'تنسيق داخل ') + '{{{' + m[1].replace(/<[^>]+>/g, '').trim() + '}}}'); else if (!/^[A-Za-z0-9_]+$/.test(k)) out.push('{{{' + k + '}}}'); }
+    const left = scrub.replace(re, '');
+    if (/\{\{\{|\}\}\}/.test(left)) out.push(T('a variable with missing braces', 'متغير بأقواس ناقصة'));
+    return out;
+  }
+
+  // ======================================================================= v4.65: import Word (.docx) and PDF into the editor
+  // The Word reader and the placeholder matcher are the Letter Converter's own code (same results as the old tool), running here
+  // with a small zip reader built on SheetJS (already loaded) instead of JSZip.
+  const WORD_ = (function () {
+    'use strict';
+    const MM = 96 / 25.4;
+    const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const round = (n, d) => { const f = Math.pow(10, d == null ? 2 : d); return Math.round(n * f) / f; };
+    const AR_RE = /[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/g;
+    const LAT_RE = /[A-Za-z]/g;
+    const isArabicText = (s) => { const a = (String(s).match(AR_RE) || []).length; const l = (String(s).match(LAT_RE) || []).length; return a > 0 && a >= l; };
+    function zipOf_(u8) {
+      const X = (typeof XLSX !== 'undefined' && XLSX) || unsafeWindow.XLSX;
+      if (!X || !X.CFB) throw new Error('The Excel/zip library did not load (check the script\'s @require lines).');
+      let cfb; try { cfb = X.CFB.read(u8, { type: 'array' }); } catch (e) { throw new Error('This file could not be opened as a Word .docx file.'); }
+      const byPath = {}; (cfb.FullPaths || []).forEach((fp, i) => { const k = String(fp).replace(/^Root Entry\//, '').replace(/^\//, ''); byPath[k] = cfb.FileIndex[i]; });
+      return {
+        file(path) {
+          const e = byPath[String(path).replace(/^\//, '')];
+          if (!e || !e.content) return null;
+          const u = e.content instanceof Uint8Array ? e.content : new Uint8Array(e.content);
+          return { async: async (t) => {
+            if (t === 'string') return new TextDecoder('utf-8').decode(u);
+            if (t === 'base64') { let b = ''; for (let i = 0; i < u.length; i += 0x8000) b += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(b); }
+            return u;
+          } };
+        },
+      };
+    }
+    const JSZip = { loadAsync: async (file) => zipOf_(new Uint8Array(await file.arrayBuffer())) };
+    /* ===================================================================== FUZZY MATCHING */
+    const SYN = { dob: 'birth', iqama: 'id', 'هويه': 'id', 'اقامه': 'id', 'الاقامه': 'id', phone: 'mobile', 'جوال': 'mobile', position: 'title', designation: 'title', occupation: 'title', dept: 'department', mgr: 'manager', emp: 'employee', staff: 'employee', no: 'number', num: 'number', nbr: 'number', 'رقم': 'number', gross: 'total', fullname: 'full name' };
+    const STOP = new Set(['the', 'of', 'a', 'an', 'mr', 'mrs', 'ms', 'his', 'her', 'and', 'in']);
+    function normTxt(s) {
+      return String(s || '').toLowerCase()
+        .replace(/[\u064B-\u065F\u0670\u0640]/g, '').replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي')
+        .replace(/[_\-.\/:()\[\]{}<>«»'"،,]+/g, ' ').replace(/[^a-z0-9\u0600-\u06ff ]+/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    function toks(s) {
+      return normTxt(s).split(' ').map((t) => (t.length > 3 && /^ال/.test(t) ? t.slice(2) : t)).filter((t) => t && !STOP.has(t)).map((t) => SYN[t] || t).join(' ').split(' ').filter(Boolean);
+    }
+    function lev(a, b) {
+      if (a === b) return 0; const m = a.length, n = b.length; if (!m || !n) return m || n;
+      let prev = Array.from({ length: n + 1 }, (_, j) => j);
+      for (let i = 1; i <= m; i++) { const cur = [i]; for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = cur; }
+      return prev[n];
+    }
+    const tokEq = (a, b) => a === b || (a.length >= 4 && b.length >= 4 && lev(a, b) <= (Math.min(a.length, b.length) >= 7 ? 2 : 1));
+    function dice(A, B) {
+      if (!A.length || !B.length) return 0;
+      const used = new Array(B.length).fill(false); let m = 0;
+      A.forEach((a) => { const j = B.findIndex((b, k) => !used[k] && tokEq(a, b)); if (j >= 0) { used[j] = true; m++; } });
+      return (2 * m) / (A.length + B.length);
+    }
+    function matchVar(label) {
+      const A = toks(label); const n = normTxt(label).replace(/ /g, '_');
+      const ar = isArabicText(label);
+      let best = null, score = 0;
+      CATALOG.forEach((c) => {
+        let s = 0;
+        if (n === c.key || n === c.key.replace(/^@/, '')) s = 1;
+        else {
+          const texts = [c.en, c.ar, c.key.replace(/^@/, '').replace(/_/g, ' ')].concat(c.aliases || []);
+          texts.forEach((t) => { if (!t) return; const v = normTxt(t) === normTxt(label) ? 0.98 : dice(A, toks(t)); if (v > s) s = v; });
+        }
+        if (s > 0) {
+          const isAr = /_ar$/.test(c.key);
+          if (ar && isAr) s += 0.04; else if (ar && !isAr && c.key.replace(/^@/, '') + '_ar' && CATALOG.some((x) => x.key === c.key + '_ar')) s -= 0.06;
+          if (!ar && isAr) s -= 0.08;
+        }
+        if (s > score) { score = s; best = c; }
+      });
+      return { key: best ? best.key : null, score: round(Math.max(0, Math.min(1, score)), 2) };
+    }
+
+
+    /* ===================================================================== DOCX READER (OOXML walker) */
+    const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    const kids = (el, n) => (el ? Array.from(el.children).filter((c) => c.localName === n) : []);
+    const kid = (el, n) => (el ? Array.from(el.children).find((c) => c.localName === n) || null : null);
+    const desc = (el, n) => (el ? Array.from(el.getElementsByTagNameNS('*', n)) : []);
+    const wv = (el, a) => { if (!el) return null; const v = el.getAttribute('w:' + (a || 'val')); return v != null ? v : el.getAttributeNS(W_NS, a || 'val'); };
+    const onOff = (el) => { if (!el) return undefined; const v = wv(el); return !(v === '0' || v === 'false' || v === 'off'); };
+    const twPt = (tw) => (tw == null || isNaN(tw) ? null : tw / 20);
+
+    function readPPr(pPr) {
+      const o = {}; if (!pPr) return o;
+      const jc = kid(pPr, 'jc'); if (jc) o.jc = wv(jc);
+      const bidi = kid(pPr, 'bidi'); if (bidi) o.bidi = onOff(bidi);
+      const sp = kid(pPr, 'spacing');
+      if (sp) { ['before', 'after', 'line'].forEach((k) => { const v = wv(sp, k); if (v != null) o[k] = +v; }); const lr = wv(sp, 'lineRule'); if (lr) o.lineRule = lr; if (onOff(sp) && (wv(sp, 'beforeAutospacing') === '1')) o.before = 280; if (wv(sp, 'afterAutospacing') === '1') o.after = 280; }
+      const ind = kid(pPr, 'ind');
+      if (ind) { const g = (k) => { const v = wv(ind, k); return v == null ? null : +v; }; const l = g('left') != null ? g('left') : g('start'); const r = g('right') != null ? g('right') : g('end'); if (l != null) o.indL = l; if (r != null) o.indR = r; if (g('firstLine') != null) o.first = g('firstLine'); if (g('hanging') != null) o.hang = g('hanging'); }
+      const num = kid(pPr, 'numPr'); if (num) { o.numId = wv(kid(num, 'numId')); o.ilvl = +(wv(kid(num, 'ilvl')) || 0); }
+      if (onOff(kid(pPr, 'pageBreakBefore'))) o.pbb = true;
+      const ps = kid(pPr, 'pStyle'); if (ps) o.style = wv(ps);
+      return o;
+    }
+    function readRPr(rPr) {
+      const o = {}; if (!rPr) return o;
+      ['b', 'bCs', 'i', 'iCs', 'strike', 'dstrike', 'caps', 'vanish'].forEach((k) => { const e = kid(rPr, k); if (e) o[k] = onOff(e); });
+      const u = kid(rPr, 'u'); if (u) o.u = wv(u) !== 'none';
+      const sz = kid(rPr, 'sz'); if (sz) o.sz = +wv(sz) / 2;
+      const szc = kid(rPr, 'szCs'); if (szc) o.szCs = +wv(szc) / 2;
+      const c = kid(rPr, 'color'); if (c) { const v = wv(c); if (v && v !== 'auto' && !/^0{6}$/.test(v)) o.color = '#' + v; else o.color = null; }
+      const hl = kid(rPr, 'highlight'); if (hl) { const v = wv(hl); if (v && v !== 'none') o.hl = v; }
+      const shd = kid(rPr, 'shd'); if (shd) { const f = wv(shd, 'fill'); if (f && f !== 'auto' && !/^f{6}$/i.test(f)) o.shd = '#' + f; }
+      const rtl = kid(rPr, 'rtl'); if (rtl) o.rtl = onOff(rtl);
+      const rs = kid(rPr, 'rStyle'); if (rs) o.style = wv(rs);
+      const va = kid(rPr, 'vertAlign'); if (va) o.va = wv(va);
+      return o;
+    }
+    const merge = (...objs) => Object.assign({}, ...objs.filter(Boolean));
+
+    async function readDocx(file) {
+      const zip = await JSZip.loadAsync(file);
+      const parse = async (p) => { const f = zip.file(p); if (!f) return null; return new DOMParser().parseFromString(await f.async('string'), 'application/xml'); };
+      const doc = await parse('word/document.xml');
+      if (!doc) throw new Error('This is not a Word .docx file (word/document.xml is missing).');
+      const relsOf = async (partPath) => {
+        const dir = partPath.replace(/[^/]+$/, ''); const name = partPath.split('/').pop();
+        const x = await parse(dir + '_rels/' + name + '.rels'); const m = {};
+        if (x) Array.from(x.getElementsByTagName('Relationship')).forEach((r) => { let t = r.getAttribute('Target'); if (r.getAttribute('TargetMode') === 'External') { m[r.getAttribute('Id')] = { ext: t }; return; } t = t.startsWith('/') ? t.slice(1) : (dir + t).replace(/[^/]+\/\.\.\//g, ''); m[r.getAttribute('Id')] = { path: t, type: r.getAttribute('Type') }; });
+        return m;
+      };
+      // styles
+      const stylesX = await parse('word/styles.xml');
+      const styles = {}; let defPara = null; let docDefP = {}, docDefR = {};
+      if (stylesX) {
+        const dd = desc(stylesX, 'docDefaults')[0];
+        if (dd) { docDefP = readPPr(desc(dd, 'pPr')[0]); docDefR = readRPr(desc(dd, 'rPr')[0]); }
+        desc(stylesX, 'style').forEach((s) => {
+          const id = wv(s, 'styleId'); const type = wv(s, 'type');
+          const tblPr = kid(s, 'tblPr');
+          styles[id] = { type, basedOn: wv(kid(s, 'basedOn')), pPr: readPPr(kid(s, 'pPr')), rPr: readRPr(kid(s, 'rPr')), tblBorders: tblPr ? kid(tblPr, 'tblBorders') : null, name: wv(kid(s, 'name')) };
+          if (type === 'paragraph' && (s.getAttribute('w:default') === '1' || s.getAttributeNS(W_NS, 'default') === '1')) defPara = id;
+        });
+      }
+      const chain = (id, field, seen) => { const st = styles[id]; if (!st || (seen = seen || new Set()).has(id)) return {}; seen.add(id); return merge(chain(st.basedOn, field, seen), st[field]); };
+      const styleBorders = (id) => { let st = styles[id], n = 0; while (st && n++ < 10) { if (st.tblBorders) return st.tblBorders; st = styles[st.basedOn]; } return null; };
+      // numbering
+      const numX = await parse('word/numbering.xml');
+      const numFmt = (numId, ilvl) => {
+        if (!numX) return 'bullet';
+        const num = desc(numX, 'num').find((n) => wv(n, 'numId') === String(numId)); if (!num) return 'bullet';
+        const absId = wv(kid(num, 'abstractNumId'));
+        const abs = desc(numX, 'abstractNum').find((a) => wv(a, 'abstractNumId') === absId); if (!abs) return 'bullet';
+        const lvl = kids(abs, 'lvl').find((l) => wv(l, 'ilvl') === String(ilvl)) || kids(abs, 'lvl')[0];
+        return (lvl && wv(kid(lvl, 'numFmt'))) || 'bullet';
+      };
+      // section / geometry
+      const body = desc(doc, 'body')[0];
+      const sect = kids(body, 'sectPr').pop() || desc(body, 'sectPr').pop();
+      const geom = { pageW: 210, pageH: 297, mT: 25.4, mB: 25.4, mL: 25.4, mR: 25.4 };
+      if (sect) {
+        const pg = kid(sect, 'pgSz'); if (pg) { geom.pageW = round(+wv(pg, 'w') / 1440 * 25.4, 1); geom.pageH = round(+wv(pg, 'h') / 1440 * 25.4, 1); }
+        const mg = kid(sect, 'pgMar'); if (mg) { geom.mT = round(Math.abs(+wv(mg, 'top')) / 1440 * 25.4, 1); geom.mB = round(Math.abs(+wv(mg, 'bottom')) / 1440 * 25.4, 1); geom.mL = round(+wv(mg, 'left') / 1440 * 25.4, 1); geom.mR = round(+wv(mg, 'right') / 1440 * 25.4, 1); }
+      }
+      const textWidthTw = (geom.pageW - geom.mL - geom.mR) / 25.4 * 1440;
+      const images = []; const notes = []; const marks = [];
+      const mediaCache = {};
+      const mediaUrl = async (path) => {
+        if (mediaCache[path] !== undefined) return mediaCache[path];
+        const f = zip.file(path); if (!f) return (mediaCache[path] = null);
+        const ext = path.split('.').pop().toLowerCase();
+        const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp', svg: 'image/svg+xml', webp: 'image/webp' }[ext];
+        if (!mime) { notes.push('Image ' + path.split('/').pop() + ' is in a format browsers cannot show (' + ext + '); a placeholder box is used.'); return (mediaCache[path] = null); }
+        return (mediaCache[path] = 'data:' + mime + ';base64,' + (await f.async('base64')));
+      };
+
+      // ---- block walker for one part (body, header or footer)
+      async function walkPart(rootEl, partName, rels) {
+        const out = [];
+        const listStack = []; // [{tag, numId, ilvl}]
+        const closeLists = (toDepth) => { while (listStack.length > toDepth) out.push('</' + listStack.pop().tag + '>'); };
+        async function blocks(container, ctx) {
+          const children = Array.from(container.children);
+          for (const el of children) {
+            const ln = el.localName;
+            if (ln === 'p') {
+              const r = await para(el, ctx);
+              if (r.pageBreakBefore && !ctx.inTable) { closeLists(0); out.push('<!-- pagebreak -->'); }
+              if (r.list && !ctx.inTable) {
+                const fmt = numFmt(r.list.numId, r.list.ilvl);
+                const tag = fmt === 'bullet' || fmt === 'none' ? 'ul' : 'ol';
+                const depth = r.list.ilvl + 1;
+                if (listStack.length >= depth && (listStack[depth - 1].numId !== r.list.numId || listStack[depth - 1].tag !== tag)) closeLists(depth - 1);
+                closeLists(depth);
+                while (listStack.length < depth) {
+                  const lst = { decimal: 'decimal', lowerLetter: 'lower-alpha', upperLetter: 'upper-alpha', lowerRoman: 'lower-roman', upperRoman: 'upper-roman' }[fmt];
+                  out.push('<' + tag + ' style="margin: 0 0 ' + (r.marginBottom || 0) + 'pt 0; ' + (r.rtl ? 'padding-right' : 'padding-left') + ': 24pt;' + (lst ? ' list-style-type: ' + lst + ';' : '') + '"' + (r.rtl ? ' dir="rtl"' : '') + '>');
+                  listStack.push({ tag, numId: r.list.numId });
+                }
+                out.push('<li style="' + r.liStyle + '">' + (r.inner || '&nbsp;') + '</li>');
+              } else {
+                if (!ctx.inTable) closeLists(0);
+                out.push(r.html);
+              }
+              r.after.forEach((h) => out.push(h));
+              if (r.pageBreakAfter && !ctx.inTable) { closeLists(0); out.push('<!-- pagebreak -->'); }
+            } else if (ln === 'tbl') { closeLists(0); out.push(await table(el, ctx)); }
+            else if (ln === 'sdt') { await blocks(kid(el, 'sdtContent') || el, ctx); }
+            else if (ln === 'customXml' || ln === 'ins' || ln === 'smartTag') { await blocks(el, ctx); }
+          }
+        }
+        async function para(p, ctx) {
+          const direct = readPPr(kid(p, 'pPr'));
+          const stId = direct.style || defPara;
+          const pp = merge(docDefP, ctx.tblStyle ? chain(ctx.tblStyle, 'pPr') : null, chain(stId, 'pPr'), direct);
+          const baseR = merge(docDefR, ctx.tblStyle ? chain(ctx.tblStyle, 'rPr') : null, chain(stId, 'rPr'));
+          const segs = []; const after = []; let pageBreakAfter = false;
+          const fld = { instr: false };
+          async function walkRuns(node) {
+            for (const c of Array.from(node.children)) {
+              const ln = c.localName;
+              if (ln === 'r') await run(c);
+              else if (['hyperlink', 'ins', 'smartTag', 'customXml', 'fldSimple', 'moveTo', 'sdtContent', 'dir', 'bdo'].includes(ln)) await walkRuns(c);
+              else if (ln === 'sdt') await walkRuns(kid(c, 'sdtContent') || c);
+            }
+          }
+          async function run(r) {
+            const rd = readRPr(kid(r, 'rPr'));
+            const rp = merge(baseR, rd.style ? chain(rd.style, 'rPr') : null, rd);
+            if (rp.vanish) return;
+            for (const c of Array.from(r.children)) {
+              const ln = c.localName;
+              if (ln === 'fldChar') { const t = wv(c, 'fldCharType'); fld.instr = t === 'begin'; continue; }
+              if (ln === 'instrText' || fld.instr) continue;
+              if (ln === 't') segs.push({ t: c.textContent, p: rp });
+              else if (ln === 'tab' || ln === 'ptab') segs.push({ t: '\u00a0\u00a0\u00a0\u00a0', p: rp });
+              else if (ln === 'br' || ln === 'cr') { if (wv(c, 'type') === 'page') { if (segs.length) pageBreakAfter = true; else pageBreakAfter = pageBreakAfter || false, segs.push({ pb: true }); } else segs.push({ br: true }); }
+              else if (ln === 'noBreakHyphen') segs.push({ t: '-', p: rp });
+              else if (ln === 'sym') { const ch = parseInt(wv(c, 'char') || '20', 16); segs.push({ t: ch >= 0xF000 ? '\u2022' : String.fromCharCode(ch), p: rp }); }
+              else if (ln === 'drawing' || ln === 'pict' || ln === 'object') await drawing(c, rp);
+              else if (ln === 'AlternateContent') { const alt = kid(c, 'Choice') || kid(c, 'Fallback'); if (alt) for (const cc of Array.from(alt.children)) if (['drawing', 'pict', 'object'].includes(cc.localName)) await drawing(cc, rp); } // v4.66: text boxes / shapes Word wraps in mc:AlternateContent
+            }
+          }
+          async function drawing(d, rp) {
+            // v4.66: Word's own watermark (Design › Watermark) — kept aside and turned into the editor's watermark
+            const vsh = desc(d, 'shape')[0]; const vid = vsh ? vsh.getAttribute('id') || '' : '';
+            if (/^(PowerPlusWaterMarkObject|WordPictureWatermark)/i.test(vid)) {
+              const tp = desc(d, 'textpath')[0], idat = desc(d, 'imagedata')[0], vst = vsh.getAttribute('style') || '';
+              const wpt = (vst.match(/width:([\d.]+)pt/) || [])[1], rot = (vst.match(/rotation:(-?[\d.]+)/) || [])[1];
+              if (tp) marks.push({ kind: 'text', text: tp.getAttribute('string') || '', color: vsh.getAttribute('fillcolor') || '', wPt: wpt ? +wpt : 0, angle: rot ? -(+rot) : 0 });
+              else if (idat) { const rid2 = idat.getAttribute('r:id') || idat.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id'); const rel2 = rels[rid2]; marks.push({ kind: 'image', dataUrl: rel2 && rel2.path ? await mediaUrl(rel2.path) : null, wPt: wpt ? +wpt : 0, washout: !!idat.getAttribute('gain') }); }
+              return;
+            }
+            const anchor = desc(d, 'anchor')[0];
+            const ext = desc(d, 'extent')[0];
+            let w = ext ? Math.round(+ext.getAttribute('cx') / 9525) : 0, h = ext ? Math.round(+ext.getAttribute('cy') / 9525) : 0;
+            const blip = desc(d, 'blip')[0] || desc(d, 'imagedata')[0];
+            const rid = blip ? (blip.getAttribute('r:embed') || blip.getAttribute('r:id') || blip.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'embed')) : null;
+            const tx = desc(d, 'txbxContent')[0];
+            if (tx) { const sub = await walkPartInner(tx, ctx); after.push(...sub); }
+            if (!rid) return;
+            if (!w || !h) { const shape = desc(d, 'shape')[0]; const st = shape ? shape.getAttribute('style') || '' : ''; const mw = st.match(/width:([\d.]+)pt/), mh = st.match(/height:([\d.]+)pt/); if (mw) w = Math.round(+mw[1] * 96 / 72); if (mh) h = Math.round(+mh[1] * 96 / 72); }
+            const rel = rels[rid]; const path = rel && rel.path;
+            const dataUrl = path ? await mediaUrl(path) : null;
+            const pageWpx = geom.pageW * MM, pageHpx = geom.pageH * MM;
+            const behind = anchor && (anchor.getAttribute('behindDoc') === '1');
+            const background = !!anchor && ((w >= pageWpx * 0.7 && h >= pageHpx * 0.5) || (behind && w >= pageWpx * 0.6 && h >= pageHpx * 0.3)); // v4.66: thin full-width lines are not backgrounds
+            const n = images.length;
+            images.push({ n, name: (path || 'image').split('/').pop(), dataUrl, w: w || 120, h: h || 60, attId: '', part: partName, background });
+            if (background) { notes.push('“' + images[n].name + '” is a full-page background / letterhead image in the Word ' + partName + '. Jisr letters have no page background: upload the letterhead top and bottom as Header / Footer images instead. It was left out of the HTML.'); return; }
+            segs.push({ img: n, p: rp });
+          }
+          await walkRuns(p);
+          // paragraph direction + font size
+          const text = segs.map((s) => s.t || '').join('');
+          const rtl = pp.bidi !== undefined ? !!pp.bidi : ((text.match(AR_RE) || []).length > 0 && !(text.match(LAT_RE) || []).length); // Word's own direction; purely Arabic text falls back to RTL
+          const sizeOf = (rp) => { const cs = (rp.rtl || isArabicText(text)) && rp.szCs; return cs || rp.sz || 10; };
+          const tally = {}; segs.forEach((s) => { if (s.t && s.p) { const k = sizeOf(s.p); tally[k] = (tally[k] || 0) + s.t.length; } });
+          let pSize = sizeOf(baseR); let best = -1; Object.keys(tally).forEach((k) => { if (tally[k] > best) { best = tally[k]; pSize = +k; } });
+          // runs -> html
+          let inner = ''; let curKey = null; let buf = ''; let curP = null;
+          const fmtKey = (rp) => { const cs = rp.rtl || isArabicText(text); return JSON.stringify({ b: cs && rp.bCs !== undefined ? rp.bCs : rp.b, i: cs && rp.iCs !== undefined ? rp.iCs : rp.i, u: rp.u, s: rp.strike || rp.dstrike, sz: sizeOf(rp), c: rp.color || null, hl: rp.hl || rp.shd || null, va: rp.va || null, caps: rp.caps || false }); };
+          const flush = () => {
+            if (!buf) return;
+            const k = JSON.parse(curKey); let h = esc(k.caps ? buf.toUpperCase() : buf).replace(/ {2}/g, ' &nbsp;').replace(/^ /, '&nbsp;');
+            const st = [];
+            if (k.sz && k.sz !== pSize) st.push('font-size: ' + k.sz + 'pt;');
+            if (k.c) st.push('color: ' + k.c + ';');
+            if (k.s) st.push('text-decoration: line-through;');
+            if (st.length) h = '<span style="' + st.join(' ') + '">' + h + '</span>';
+            if (k.u) h = '<span style="text-decoration: underline;">' + h + '</span>';
+            if (k.i) h = '<em>' + h + '</em>';
+            if (k.b) h = '<strong>' + h + '</strong>';
+            if (k.va === 'superscript') h = '<sup>' + h + '</sup>'; else if (k.va === 'subscript') h = '<sub>' + h + '</sub>';
+            if (k.hl) h = '<span data-hl="1">' + h + '</span>';
+            inner += h; buf = '';
+          };
+          let lead = false;
+          segs.forEach((s) => {
+            if (s.pb) { lead = true; return; }
+            if (s.br) { flush(); curKey = null; inner += '<br>'; return; }
+            if (s.img != null) {
+              flush(); curKey = null; const im = images[s.img];
+              inner += '<img data-jimg="' + s.img + '" width="' + im.w + '" height="' + im.h + '" alt="">'; return;
+            }
+            const k = fmtKey(s.p);
+            if (k !== curKey) { flush(); curKey = k; curP = s.p; }
+            buf += s.t;
+          });
+          flush();
+          const empty = !text.replace(/[\s\u00a0]/g, '') && !/<img /.test(inner);
+          // paragraph style
+          const st = [];
+          const logical = { left: 'start', start: 'start', right: 'end', end: 'end', center: 'center', both: 'justify', distribute: 'justify', lowKashida: 'justify', mediumKashida: 'justify', highKashida: 'justify', thaiDistribute: 'justify' }[pp.jc];
+          let align = null;
+          if (logical === 'center' || logical === 'justify') align = logical;
+          else if (logical === 'end') align = rtl ? 'left' : 'right';
+          else if (logical === 'start' && rtl) align = 'right';
+          if (align) st.push('text-align: ' + align + ';');
+          const mt = twPt(pp.before) || 0, mb = twPt(pp.after) || 0;
+          const iL = twPt(pp.indL) || 0, iR = twPt(pp.indR) || 0;
+          const ms = rtl ? [mt, iL, mb, iR] : [mt, iR, mb, iL];
+          st.push('margin: ' + ms.map((v) => (v ? round(v, 1) + 'pt' : '0')).join(' ') + ';');
+          if (pp.first) st.push('text-indent: ' + round(twPt(pp.first), 1) + 'pt;'); else if (pp.hang) st.push('text-indent: -' + round(twPt(pp.hang), 1) + 'pt;');
+          if (pp.line) { if (!pp.lineRule || pp.lineRule === 'auto') { const lh = round(pp.line / 240, 2); if (lh !== 1) st.push('line-height: ' + lh + ';'); } else st.push('line-height: ' + round(twPt(pp.line), 1) + 'pt;'); }
+          st.push('font-size: ' + pSize + 'pt;');
+          const dirA = ' dir="' + (rtl ? 'rtl' : 'ltr') + '"';
+          const emptyA = empty ? ' data-empty="1"' : '';
+          const html = '<p' + dirA + emptyA + ' style="' + st.join(' ') + '">' + (empty ? '&nbsp;' : inner) + '</p>';
+          const liStyle = st.filter((x) => !/^margin|^text-indent/.test(x)).join(' ') + ' margin: 0 0 ' + round(mb, 1) + 'pt 0;';
+          const list = pp.numId && pp.numId !== '0' && !ctx.inTable ? { numId: pp.numId, ilvl: pp.ilvl || 0 } : null;
+          return { html, inner: empty ? '' : inner, empty, rtl, list, liStyle, marginBottom: round(mb, 1), pageBreakBefore: !!pp.pbb || lead, pageBreakAfter, after };
+        }
+        async function walkPartInner(el, ctx) {
+          const save = out.length; await blocks(el, Object.assign({}, ctx, { inTable: true }));
+          return out.splice(save);
+        }
+        function borderCss(b) {
+          if (!b) return null; const v = wv(b); if (!v || v === 'nil' || v === 'none') return 'none';
+          const sz = +(wv(b, 'sz') || 4) / 8; const col = wv(b, 'color'); const px = Math.max(1, Math.round(sz * 96 / 72));
+          return px + 'px ' + (v === 'double' ? 'double' : v === 'dotted' ? 'dotted' : v === 'dashed' ? 'dashed' : 'solid') + ' ' + (col && col !== 'auto' ? '#' + col : '#000');
+        }
+        async function table(tbl, ctx) {
+          const tblPr = kid(tbl, 'tblPr');
+          const tStyle = tblPr && wv(kid(tblPr, 'tblStyle'));
+          const grid = kids(kid(tbl, 'tblGrid'), 'gridCol').map((g) => +wv(g, 'w') || 0);
+          const total = grid.reduce((a, b) => a + b, 0) || 1;
+          let widthPct = 100;
+          const tw = tblPr && kid(tblPr, 'tblW');
+          if (tw) { const type = wv(tw, 'type'), w = +wv(tw, 'w'); if (type === 'pct') widthPct = w > 100 ? w / 50 : w; else if (type === 'dxa' && w) widthPct = (w / textWidthTw) * 100; else widthPct = Math.min(100, (total / textWidthTw) * 100); }
+          else widthPct = Math.min(100, (total / textWidthTw) * 100);
+          widthPct = Math.max(10, Math.min(100, round(widthPct, 1)));
+          const jc = tblPr && wv(kid(tblPr, 'jc'));
+          const rtl = !!(tblPr && onOff(kid(tblPr, 'bidiVisual')));
+          const tb = (tblPr && kid(tblPr, 'tblBorders')) || (tStyle && styleBorders(tStyle));
+          const tbs = {}; if (tb) ['top', 'left', 'bottom', 'right', 'insideH', 'insideV', 'start', 'end'].forEach((k) => { const b = kid(tb, k); if (b) tbs[k] = borderCss(b); });
+          const rows = kids(tbl, 'tr');
+          // grid matrix for vertical merges
+          const matrix = rows.map((tr) => { let col = 0; return kids(tr, 'tc').map((tc) => { const tcPr = kid(tc, 'tcPr'); const span = +(wv(kid(tcPr, 'gridSpan')) || 1); const vmEl = kid(tcPr, 'vMerge'); const vm = vmEl ? (wv(vmEl) === 'restart' ? 'restart' : 'continue') : null; const c = { tc, tcPr, col, span, vm }; col += span; return c; }); });
+          const ctxT = Object.assign({}, ctx, { inTable: true, tblStyle: tStyle || null });
+          let html = '<table' + (rtl ? ' dir="rtl"' : '') + ' style="width: ' + widthPct + '%; border-collapse: collapse;' + (jc === 'center' ? ' margin-left: auto; margin-right: auto;' : '') + '">';
+          if (grid.length > 1) html += '<colgroup>' + grid.map((g) => '<col style="width: ' + round((g / total) * 100, 1) + '%;">').join('') + '</colgroup>';
+          html += '<tbody>';
+          for (let ri = 0; ri < rows.length; ri++) {
+            html += '<tr>';
+            for (const c of matrix[ri]) {
+              if (c.vm === 'continue') continue;
+              let rowspan = 1;
+              if (c.vm === 'restart') { for (let k = ri + 1; k < rows.length; k++) { const d = matrix[k].find((x) => x.col === c.col); if (d && d.vm === 'continue') rowspan++; else break; } }
+              const pct = round((grid.slice(c.col, c.col + c.span).reduce((a, b) => a + b, 0) / total) * 100, 1);
+              const st = ['width: ' + pct + '%;', 'padding: 2pt 5pt;'];
+              const va = wv(kid(c.tcPr, 'vAlign')); if (va) st.push('vertical-align: ' + (va === 'center' ? 'middle' : va) + ';'); else st.push('vertical-align: top;');
+              const shd = kid(c.tcPr, 'shd'); if (shd) { const f = wv(shd, 'fill'); if (f && f !== 'auto' && !/^f{6}$/i.test(f)) st.push('background-color: #' + f + ';'); }
+              const cb = kid(c.tcPr, 'tcBorders');
+              const side = (name, fallback) => { const own = cb && kid(cb, name); return own ? borderCss(own) : fallback; };
+              const top = side('top', ri === 0 ? tbs.top : tbs.insideH), bottom = side('bottom', ri === rows.length - 1 ? tbs.bottom : tbs.insideH);
+              const first = c.col === 0, last = c.col + c.span >= grid.length;
+              const left = side('left', side('start', first ? (tbs.left || tbs.start) : tbs.insideV)), right = side('right', side('end', last ? (tbs.right || tbs.end) : tbs.insideV));
+              [['top', top], ['right', right], ['bottom', bottom], ['left', left]].forEach(([k, v]) => { if (v && v !== 'none') st.push('border-' + k + ': ' + v + ';'); });
+              const saveLen = out.length; await blocks(c.tc, ctxT); const inner = out.splice(saveLen).join('');
+              html += '<td' + (c.span > 1 ? ' colspan="' + c.span + '"' : '') + (rowspan > 1 ? ' rowspan="' + rowspan + '"' : '') + ' style="' + st.join(' ') + '">' + (inner || '&nbsp;') + '</td>';
+            }
+            html += '</tr>';
+          }
+          return html + '</tbody></table>';
+        }
+        await blocks(rootEl, { inTable: false, tblStyle: null });
+        closeLists(0);
+        return out.join('\n');
+      }
+
+      const bodyRels = await relsOf('word/document.xml');
+      const parts = { header: '', body: '', footer: '' }; const lines = {};
+      parts.body = await walkPart(body, 'body', bodyRels);
+      if (sect) {
+        const titlePg = !!onOff(kid(sect, 'titlePg'));
+        for (const [tag, key] of [['headerReference', 'header'], ['footerReference', 'footer']]) {
+          const refs = kids(sect, tag);
+          const ref = (titlePg && refs.find((r) => wv(r, 'type') === 'first')) || refs.find((r) => wv(r, 'type') === 'default') || refs[0];
+          if (!ref) continue;
+          const rid = ref.getAttribute('r:id') || ref.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
+          const rel = bodyRels[rid]; if (!rel || !rel.path) continue;
+          const x = await parse(rel.path); if (!x) continue;
+          const pr = await relsOf(rel.path);
+          parts[key] = await walkPart(x.documentElement, key, pr);
+          try { if (/prst="line"|<v:line\b|<w:pBdr>[\s\S]*?<w:(top|bottom)\b/.test(new XMLSerializer().serializeToString(x))) lines[key] = true; } catch (e) { /* ignore */ } // v4.74: a rule drawn in the header / footer
+        }
+      }
+      return { parts, images, notes, geom, marks, lines };
+    }
+
+
+    return { readDocx, matchVar, isArabicText };
+  })();
+
+  // what Jisr's letter editor keeps (the Letter Converter's list): tags and inline styles
+  const KEEP_TAGS = new Set(['P', 'BR', 'STRONG', 'EM', 'SPAN', 'TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TD', 'TH', 'COLGROUP', 'COL', 'UL', 'OL', 'LI', 'IMG', 'A', 'SUP', 'SUB', 'HR']);
+  const KEEP_STYLE = /^(text-align|font-size|font-weight|font-style|text-decoration|color|background-color|margin(-top|-bottom|-left|-right)?|padding(-top|-bottom|-left|-right)?|width|height|border(-top|-bottom|-left|-right)?(-width|-style|-color)?|border-collapse|vertical-align|line-height|text-indent|list-style-type|display|direction)$/i;
+  /** Imported HTML -> only what Jisr keeps (divs/headings become paragraphs, unknown tags unwrapped, styles filtered). */
+  function cleanImported_(root) {
+    const walk = (node) => {
+      Array.from(node.childNodes).forEach((n) => {
+        if (n.nodeType === 8) { n.remove(); return; }
+        if (n.nodeType !== 1) return;
+        let e = n; const tag = e.tagName;
+        if (/^(SCRIPT|STYLE|LINK|META|TITLE|HEAD|NOSCRIPT|IFRAME|OBJECT|SVG|XML)$/.test(tag) || /:/.test(tag)) { e.remove(); return; }
+        const swap = (to, extra) => { const x = document.createElement(to); Array.from(e.attributes).forEach((a) => x.setAttribute(a.name, a.value)); if (extra) x.setAttribute('style', (x.getAttribute('style') || '') + extra); while (e.firstChild) x.appendChild(e.firstChild); e.replaceWith(x); return x; };
+        if (/^H[1-6]$/.test(tag)) e = swap('p', 'font-weight:bold;font-size:' + ({ H1: 18, H2: 16, H3: 14 }[tag] || 12) + 'pt;');
+        else if (tag === 'B') e = swap('strong'); else if (tag === 'I') e = swap('em');
+        else if (tag === 'U') e = swap('span', 'text-decoration:underline;');
+        else if (/^(DIV|SECTION|ARTICLE|CENTER|BLOCKQUOTE|HEADER|FOOTER|MAIN)$/.test(tag)) {
+          if (Array.from(e.children).some((c) => /^(P|DIV|TABLE|UL|OL|H[1-6]|SECTION|BLOCKQUOTE)$/.test(c.tagName))) { walk(e); const par = e.parentNode; while (e.firstChild) par.insertBefore(e.firstChild, e); e.remove(); return; }
+          e = swap('p', tag === 'CENTER' ? 'text-align:center;' : '');
+        } else if (!KEEP_TAGS.has(tag)) { walk(e); const par = e.parentNode; while (e.firstChild) par.insertBefore(e.firstChild, e); e.remove(); return; }
+        Array.from(e.attributes).forEach((a) => {
+          const nm = a.name.toLowerCase();
+          if (nm === 'style') {
+            const keep = String(a.value).split(';').map((q) => q.trim()).filter((q) => { const i = q.indexOf(':'); return i > 0 && KEEP_STYLE.test(q.slice(0, i).trim()); });
+            if (keep.length) e.setAttribute('style', keep.join(';') + ';'); else e.removeAttribute('style');
+          } else if (!['dir', 'colspan', 'rowspan', 'src', 'width', 'height', 'alt', 'href', 'class', 'data-name'].includes(nm)) e.removeAttribute(a.name);
+        });
+        if (e.getAttribute('class') && e.getAttribute('class') !== 'jlt-newimg') e.removeAttribute('class');
+        walk(e);
+      });
+    };
+    walk(root);
+    return root;
+  }
+  // placeholders in imported text: {{{key}}}, {{label}}, «label» / <<label>>, [label], and Word's highlighted words
+  const PH_RX = [
+    { kind: 'jisr', re: /\{\{\{\s*([A-Za-z0-9_@]+)\s*\}\}\}/ }, { kind: 'curly', re: /\{\{\s*([^{}]{1,60}?)\s*\}\}/ },
+    { kind: 'angle', re: /(?:<<|«)\s*([^<>«»]{1,60}?)\s*(?:>>|»)/ }, { kind: 'square', re: /\[\s*([^\[\]\n]{2,60}?)\s*\]/ },
+  ];
+  /** Turns placeholders Jisr can fill into {{{key}}}; returns what was matched and what was not. */
+  function placeholders_(root) {
+    const found = [], missed = [];
+    const put = (label, raw, node) => {
+      const m = (catBy.has(label.trim()) ? { key: label.trim(), score: 1 } : WORD_.matchVar(label));
+      if (m && m.key && m.score >= 0.5) { node.replaceWith(document.createTextNode('{{{' + m.key + '}}}')); found.push({ label, key: m.key }); return true; }
+      missed.push(label); return false;
+    };
+    root.querySelectorAll('span[data-hl]').forEach((sp) => {
+      const t = sp.textContent.trim();
+      if (t && t.length <= 60 && !PH_RX.some((r) => r.re.test(t)) && put(t, t, sp)) return;
+      const par = sp.parentNode; while (sp.firstChild) par.insertBefore(sp.firstChild, sp); sp.remove();
+    });
+    const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const nodes = []; while (tw.nextNode()) nodes.push(tw.currentNode);
+    nodes.forEach((node) => {
+      let cur = node;
+      for (let guard = 0; guard < 200 && cur; guard++) {
+        const txt = cur.nodeValue; let best = null;
+        PH_RX.forEach((r) => { const m = r.re.exec(txt); if (m && (!best || m.index < best.m.index)) best = { r, m }; });
+        if (!best) break;
+        const { r, m } = best; const label = (m[1] || m[0]).trim();
+        if (r.kind === 'jisr') { cur = m.index + m[0].length < txt.length ? cur.splitText(m.index + m[0].length) : null; found.push({ label, key: label }); continue; }
+        if (r.kind === 'square' && (/^\d+$/.test(label) || /^[\s.\-_]+$/.test(label))) { cur = cur.splitText(m.index + m[0].length); continue; }
+        const start = m.index ? cur.splitText(m.index) : cur; const after = start.splitText(m[0].length);
+        put(label, m[0], start); cur = after;
+      }
+    });
+    return { found, missed };
+  }
+  /** .docx -> { parts: {header, body, footer} as editor HTML, pictures, matched / missed placeholders, notes, wm }
+   *  v4.66: lengths scaled from Word's page to Jisr's printable width; Arabic "presentation form" letters (PDF→Word files) turned
+   *  back into normal letters; a letterhead at the top of the body (logo / date / rule) moves to the header when Word's own header
+   *  is empty; Word's watermark becomes the editor's watermark. */
+  async function wordImport_(file, jisrPage) {
+    const r = await WORD_.readDocx(file);
+    const out = { parts: {}, pics: 0, found: [], missed: [], notes: (r.notes || []).slice(), moved: 0, wm: null, scale: 1, lines: r.lines || {} };
+    const g = r.geom || { pageW: 210, mL: 25.4, mR: 25.4 };
+    const jp = jisrPage || PAGE0; const jW = jp.pageW - jp.mL - jp.mR;
+    const wordW = Math.max(40, g.pageW - g.mL - g.mR);
+    let k = jW / wordW; if (Math.abs(k - 1) < 0.08) k = 1; k = Math.max(0.3, Math.min(1.6, k));
+    let kf = Math.min(1, jp.pageW / g.pageW); if (Math.abs(kf - 1) < 0.05) kf = 1;
+    let kPage = Math.max(0.3, Math.min(1.6, jp.pageW / g.pageW)); if (Math.abs(kPage - 1) < 0.08) kPage = 1; // header / footer pictures are measured against the whole page
+    const wordTextPx = wordW * 96 / 25.4, pagePx = jp.pageW * 96 / 25.4, textPx = jW * 96 / 25.4;
+    out.scale = k;
+    const LEN_RE = /(-?[\d.]+)(pt|px|mm|cm|in)\b/g;
+    const scaleCss = (css, f) => css.replace(LEN_RE, (m, n, u) => Math.round(parseFloat(n) * f * 10) / 10 + u);
+    const PRES = /[ﭐ-﷿ﹰ-﻿]/;
+    const fix = (d, part) => {
+      d.querySelectorAll('[style]').forEach((e) => {
+        const st = e.getAttribute('style').split(';').map((q) => q.trim()).filter(Boolean).map((q) => {
+          const i = q.indexOf(':'); const pr = q.slice(0, i).trim().toLowerCase(), v = q.slice(i + 1);
+          if (pr === 'line-height') { // PDF→Word files use squeezed line spacing that makes lines overlap on the web
+            const n = parseFloat(v); const fs = parseFloat(((e.getAttribute('style') || '').match(/font-size:\s*([\d.]+)pt/) || [])[1]) || 12;
+            if (/^\s*[\d.]+\s*$/.test(v)) return n < 1.05 ? 'line-height:1.15' : q;
+            if (/pt/.test(v) && n < fs * 1.05) return 'line-height:1.15';
+            return kf === 1 ? q : pr + ':' + scaleCss(v, kf);
+          }
+          if (pr === 'font-size') return kf === 1 ? q : pr + ':' + scaleCss(v, kf);
+          if (/^(margin|padding|text-indent|width|height)/.test(pr)) return k === 1 ? q : pr + ':' + scaleCss(v, k);
+          return q;
+        });
+        e.setAttribute('style', st.join(';') + ';');
+      });
+      // pictures: width only (never a fixed height, so they keep their shape). Header / footer pictures that span the Word page run edge to edge like Jisr's;
+      // body pictures never exceed the text area.
+      d.querySelectorAll('img').forEach((im) => {
+        const w0 = +im.getAttribute('width') || 0; if (!w0) return;
+        const edge = part !== 'body';
+        let w = Math.round(w0 * (edge ? kPage : k));
+        const alone = !(im.parentElement && im.parentElement !== d && im.parentElement.textContent.replace(/[\s\u00a0]/g, ''));
+        if (edge && alone && (w0 >= wordTextPx * 0.85 || w >= pagePx * 0.9)) {
+          w = Math.round(pagePx); im.setAttribute('width', String(w)); im.style.cssText = 'width:100%;height:auto;'; im.removeAttribute('height');
+          const p = im.parentElement; if (p && p !== d && p.tagName === 'P') { p.style.marginLeft = '0'; p.style.marginRight = '0'; p.style.textIndent = '0'; p.style.textAlign = 'center'; }
+          out.fullBleed = (out.fullBleed || 0) + 1;
+        } else {
+          const maxW = edge ? pagePx : textPx; if (w > maxW) w = Math.round(maxW);
+          im.setAttribute('width', String(w)); im.removeAttribute('height'); im.style.cssText = 'width:' + w + 'px;height:auto;';
+        }
+      });
+      const tw = document.createTreeWalker(d, NodeFilter.SHOW_TEXT); const ts = []; while (tw.nextNode()) ts.push(tw.currentNode);
+      ts.forEach((t) => { if (PRES.test(t.nodeValue)) t.nodeValue = t.nodeValue.normalize('NFKC').replace(/\u06CC/g, '\u064A').replace(/\u06A9/g, '\u0643'); }); // Persian ye / kaf that PDF converters use -> Arabic
+    };
+    const prep = (html, part) => {
+      const d = document.createElement('div'); d.innerHTML = jboSafeHtml_(html || '');
+      d.querySelectorAll('img[data-jimg]').forEach((im) => {
+        const pic = r.images[+im.getAttribute('data-jimg')];
+        if (!pic || !pic.dataUrl) { im.remove(); return; }
+        im.setAttribute('src', pic.dataUrl); im.setAttribute('class', 'jlt-newimg'); im.setAttribute('data-name', pic.name || 'image'); im.removeAttribute('data-jimg');
+        if (pic.w) { im.setAttribute('width', String(pic.w)); im.removeAttribute('height'); }
+        out.pics++;
+      });
+      return d;
+    };
+    const dom = { header: prep(r.parts.header, 'header'), body: prep(r.parts.body, 'body'), footer: prep(r.parts.footer, 'footer') };
+    const hasContent = (d) => !!(d.textContent.replace(/[\s ]/g, '') || d.querySelector('img'));
+    // letterhead band at the top of the body -> header (only if Word's header has nothing of its own)
+    if (!hasContent(dom.header)) {
+      const blocks = Array.from(dom.body.children); let last = -1;
+      for (let i = 0; i < Math.min(blocks.length, 7); i++) {
+        const b = blocks[i]; const txt = b.textContent.replace(/[\s ]/g, '');
+        if (b.querySelector('img')) last = i; else if (txt.length > 45) break;
+      }
+      if (last >= 0) { dom.header.innerHTML = ''; for (let i = 0; i <= last; i++) dom.header.appendChild(blocks[i]); out.moved = last + 1; }
+    }
+    ['header', 'body', 'footer'].forEach((k2) => fix(dom[k2], k2)); // after the move, so a letterhead that came from the body is sized as a header
+    ['header', 'body', 'footer'].forEach((k2) => {
+      const d = dom[k2];
+      const ph = placeholders_(d); out.found.push(...ph.found); out.missed.push(...ph.missed);
+      cleanImported_(d);
+      out.parts[k2] = d.innerHTML.replace(/<p>\s*<\/p>/g, '<p><br></p>');
+    });
+    out.samples = findSamples_(out.parts.header + out.parts.body + out.parts.footer);
+    // Word's watermark
+    const mk = (r.marks || []).find((m) => (m.kind === 'image' && m.dataUrl) || (m.kind === 'text' && m.text));
+    if (mk) {
+      const wmm = mk.wPt ? Math.round(Math.min(jW, mk.wPt * 25.4 / 72 * k)) : 120;
+      out.wm = mk.kind === 'image' ? { kind: 'image', src: mk.dataUrl, w: wmm, op: mk.washout ? 25 : 60, angle: 0, pos: 'center', place: 'flow' }
+        : { kind: 'text', text: mk.text, color: /^#[0-9a-f]{6}$/i.test(mk.color) ? mk.color : '#808080', size: 60, op: 25, angle: mk.angle || -45, pos: 'center', place: 'flow' };
+    }
+    return out;
+  }
+  // v4.66: a letter issued for one employee (e.g. downloaded from Jisr and edited in Word) carries that employee's details.
+  // These are spotted by their shape and the words around them, and offered as variables (the user ticks which to use).
+  const SAMPLE_RULES = [
+    { key: 'bank_iban', re: /\b(SA\d{22})\b/g },
+    { key: 'identification_document_number', re: /(?<![\d])([12]\d{9})(?![\d])/g },
+    { key: 'request_date', re: /(?:التاريخ|التأريخ|Date)\s*[:：]?\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2}\/\d{4})/gi },
+    { key: 'employee_joining_date', re: /(?:من\s+تاريخ|منذ|تاريخ\s+الالتحاق|تاريخ\s+التعيين|since|from|joining\s+date\s*:?)\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2}\/\d{4})/gi },
+    { key: '@employee_full_name_ar', re: /(?:الموظف|الموظفة|السيد|السيدة)\s*[/:]\s*([؀-ۿ][؀-ۿ ]{2,45}?)\s*[،,]/g },
+    { key: '@employee_full_name', re: /(?:Mr\.?|Mrs\.?|Ms\.?|employee\s*[/:])\s*([A-Z][A-Za-z.' -]{2,45}?)\s*[,(]/g },
+    { key: 'organization_job_title_ar', re: /(?:بوظيفة|بمسمى|بمهنة|المسمى\s+الوظيفي\s*:?)\s*[()]?\s*([؀-ۿ][؀-ۿ ]{2,40}?)\s*[()،,]/g },
+    { key: 'compensation_full_package', re: /(?:قدره|قدرها|إجمالي|total\s+salary\s+of|salary\s+of)\s*[()]?\s*(\d[\d,]*(?:\.\d+)?)/gi },
+  ];
+  function findSamples_(html) {
+    const txt = (() => { const d = document.createElement('div'); d.innerHTML = html; return d.textContent.replace(/ /g, ' '); })();
+    const out = [];
+    SAMPLE_RULES.forEach((r) => { r.re.lastIndex = 0; let m; while ((m = r.re.exec(txt))) { const v = m[1].trim(); if (v && !out.some((o) => o.value === v)) out.push({ key: r.key, value: v }); } });
+    return out;
+  }
+  /** Replace each ticked sample value in the text with its {{{key}}}. */
+  function applySamples_(html, list) {
+    if (!list || !list.length) return html;
+    const d = document.createElement('div'); d.innerHTML = html;
+    const tw = document.createTreeWalker(d, NodeFilter.SHOW_TEXT); const ts = []; while (tw.nextNode()) ts.push(tw.currentNode);
+    ts.forEach((t) => { let v = t.nodeValue; list.forEach((x) => { if (v.includes(x.value)) v = v.split(x.value).join('{{{' + x.key + '}}}'); }); if (v !== t.nodeValue) t.nodeValue = v; });
+    return d.innerHTML;
+  }
+  /** PDF -> { html, pages, firstPagePng } . Text: lines grouped by height on the page, paragraphs by the gaps between them. */
+  async function pdfImport_(file, picture) {
+    const lib = (typeof pdfjsLib !== 'undefined' && pdfjsLib) || unsafeWindow.pdfjsLib;
+    if (!lib) throw new Error(T('PDF support did not load (check that the script\'s @require lines are intact).', 'لم يتم تحميل دعم ملفات PDF (تأكد من سطور ‎@require في السكربت).'));
+    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false }).promise;
+    if (picture) {
+      const page = await doc.getPage(1); const vp = page.getViewport({ scale: 2 });
+      const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+      const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+      await page.render({ canvasContext: x, viewport: vp }).promise;
+      let url = c.toDataURL('image/png'); if (url.length > 1500000) url = c.toDataURL('image/jpeg', 0.85);
+      return { pages: doc.numPages, png: url, wmm: Math.round(page.getViewport({ scale: 1 }).width * 25.4 / 72) };
+    }
+    const html = []; const escT = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    for (let pn = 1; pn <= doc.numPages; pn++) {
+      const page = await doc.getPage(pn); const W1 = page.getViewport({ scale: 1 }).width;
+      const tc = await page.getTextContent();
+      const items = tc.items.filter((it) => it.str && it.str.trim()).map((it) => ({ s: it.str, x: it.transform[4], y: it.transform[5], w: it.width || 0, h: Math.abs(it.transform[3]) || it.height || 10, bold: /bold|black|heavy/i.test(it.fontName || '') || /bold/i.test(((tc.styles || {})[it.fontName] || {}).fontFamily || '') }));
+      const lines = [];
+      items.sort((a, b) => b.y - a.y || a.x - b.x).forEach((it) => { const ln = lines.find((l) => Math.abs(l.y - it.y) <= Math.max(2, it.h * 0.35)); if (ln) ln.items.push(it); else lines.push({ y: it.y, items: [it] }); });
+      lines.sort((a, b) => b.y - a.y);
+      const gaps = []; for (let i = 1; i < lines.length; i++) gaps.push(lines[i - 1].y - lines[i].y);
+      const med = gaps.length ? gaps.slice().sort((a, b) => a - b)[Math.floor(gaps.length / 2)] : 14;
+      let para = [];
+      const flush = () => {
+        if (!para.length) return;
+        const txt = para.map((l) => l.text).join(' ');
+        const ar = WORD_.isArabicText(txt);
+        const cx = para.reduce((a, l) => a + l.cx, 0) / para.length, full = para.some((l) => l.wid > W1 * 0.6);
+        const align = !full && Math.abs(cx - W1 / 2) < W1 * 0.08 ? 'center' : ar ? 'right' : null;
+        const pt = Math.round(para.reduce((a, l) => a + l.h, 0) / para.length);
+        const st = (align ? 'text-align:' + align + ';' : '') + (pt && pt !== 12 ? 'font-size:' + Math.max(7, Math.min(28, pt)) + 'pt;' : '');
+        const inner = para.map((l) => (l.bold ? '<strong>' + escT(l.text) + '</strong>' : escT(l.text))).join('<br>');
+        html.push('<p' + (ar ? ' dir="rtl"' : '') + (st ? ' style="' + st + '"' : '') + '>' + inner + '</p>'); para = [];
+      };
+      lines.forEach((ln, i) => {
+        const ar = WORD_.isArabicText(ln.items.map((x) => x.s).join(''));
+        const its = ln.items.slice().sort((a, b) => (ar ? b.x - a.x : a.x - b.x));
+        // join pieces: a space only where the PDF leaves a gap (Arabic often comes letter by letter, in presentation forms)
+        let text = '';
+        its.forEach((x, j) => {
+          if (j) { const prev = its[j - 1]; const gap = ar ? prev.x - (x.x + x.w) : x.x - (prev.x + prev.w); if (gap > Math.max(1.5, x.h * 0.22) && !/\s$/.test(text) && !/^\s/.test(x.s)) text += ' '; }
+          text += x.s;
+        });
+        text = text.normalize('NFKC').replace(/\s+/g, ' ').trim();
+        const x0 = Math.min(...ln.items.map((x) => x.x)), x1 = Math.max(...ln.items.map((x) => x.x + x.w));
+        const rec = { text, cx: (x0 + x1) / 2, wid: x1 - x0, h: Math.max(...ln.items.map((x) => x.h)), bold: ln.items.every((x) => x.bold) };
+        if (i > 0) { const gap = lines[i - 1].y - ln.y, lh = Math.max(rec.h, para.length ? para[para.length - 1].h : rec.h); if (gap > lh * 1.75 || gap > med * 1.45) flush(); }
+        para.push(rec);
+      });
+      flush();
+    }
+    const d = document.createElement('div'); d.innerHTML = html.join('');
+    const ph = placeholders_(d);
+    return { pages: doc.numPages, html: d.innerHTML, found: ph.found, missed: ph.missed };
+  }
+
+  // ======================================================================= v4.65: the page (A4) and Jisr-safe spacing
+  // Jisr prints header, body and footer one after the other ("flow"): the footer follows the text, it is not pinned to the page
+  // bottom — that is why it came out high. The editor now shows the real A4 page with its margins, lines for the top and the end
+  // of each page, and can push the footer to the end of the page with a spacer. Spacers are a transparent picture of a set height
+  // (pictures and their size are kept by Jisr; wrapper <div>s and positioning are not).
+  // v4.68: read from Jisr's own print preview (class "letter-pdf", @page letter { size: a3 }, @page { margin: 0 }):
+  // the page is A3 (297 x 420 mm) with NO page margin; the header and the footer run edge to edge; the text sits between them with
+  // 50 px of padding on both sides; the footer is pinned to the bottom of the page (margin-bottom -10px); header/footer pictures are
+  // max-width 100% and max-height 400px; everything is one page (what does not fit is cut off); body text 15px.
+  const JP_SIDE_PX = 50, JP_FOOT_BLEED_PX = -10, JP_FONT_PX = 15, JP_IMG_MAXH = 400;
+  const PIN_SAFE_MM = 8; // v4.73: left free under the pushed footer so a line that wraps in a real letter never throws it onto a second page
+  // v4.70: A4 is the default page (A3 stays available); the choice is remembered
+  const PAPERS = { A4: [210, 297], A3: [297, 420] };
+  const paperName_ = () => { const v = gmGet_('letterPaper', 'A3'); return PAPERS[v] ? v : 'A3'; };
+  function pageGeom_(name) { const n = PAPERS[name] ? name : paperName_(); return { paper: n, pageW: PAPERS[n][0], pageH: PAPERS[n][1], mT: 0, mB: 0, mL: JP_SIDE_PX * 25.4 / 96, mR: JP_SIDE_PX * 25.4 / 96, printH: null, src: 'jisr' }; }
+  const printHOf_ = (g) => g.printH || (g.pageH - g.mT - g.mB);
+  const GIF1 = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  function spacerHtml_(part, mm, pin, safe, pos) {
+    const h = Math.max(0, Math.round(mm * 10) / 10); if (!h) return '';
+    // v4.73: Jisr caps every picture in the header / footer at 400 px high — a taller gap is saved as several pictures stacked one above the other
+    const MAXSEG = 100, n = Math.ceil(h / MAXSEG); let out = '';
+    for (let i = 0; i < n; i++) {
+      const seg = Math.round((i < n - 1 ? MAXSEG : h - MAXSEG * (n - 1)) * 10) / 10;
+      out += '<p style="margin:0;line-height:0;font-size:1px;"><img alt="jlt-spacer;part=' + part + ';h=' + h + (pin ? ';pin=1;safe=' + safe : '') + (pos ? ';pos=' + pos : '') + (n > 1 ? ';seg=' + (i + 1) + '/' + n : '') + '" src="' + GIF1 + '" width="1" height="' + Math.round(seg * 96 / 25.4) + '" style="width:1px;height:' + seg + 'mm;"></p>';
+    }
+    return out;
+  }
+  /** Part HTML -> { html without the spacer, mm, pin, safe } */
+  function spacerSplit_(html) {
+    const d = document.createElement('div'); d.innerHTML = jboSafeHtml_(html || '');
+    const im = d.querySelector('img[alt^="jlt-spacer"]');
+    if (!im) return { html: html || '', mm: 0, pin: false, safe: 5, pos: '', paper: '', nopin: false };
+    const kv = {}; String(im.getAttribute('alt')).split(';').slice(1).forEach((q) => { const i = q.indexOf('='); if (i > 0) kv[q.slice(0, i)] = q.slice(i + 1); });
+    let w = im; while (w.parentElement && w.parentElement !== d && w.parentElement.childNodes.length === 1) w = w.parentElement;
+    w.remove();
+    return { html: d.innerHTML, mm: Number(kv.h) || 0, pin: kv.pin === '1', safe: isFinite(Number(kv.safe)) ? Number(kv.safe) : 5, pos: kv.pos || '', paper: kv.paper || '', nopin: kv.nopin === '1' };
+  }
+  /** v4.73: remembers that the footer was deliberately NOT pushed down (otherwise a letter opens with the push switched on) */
+  function noPinMarker_() { return '<p style="margin:0;line-height:0;font-size:1px;"><img alt="jlt-spacer;part=footer;h=0.1;nopin=1" src="' + GIF1 + '" width="1" height="1" style="width:1px;height:0.1mm;"></p>'; }
+  /** v4.70: a tiny invisible picture that remembers which page (A3 / A4) the letter was laid out on */
+  function paperMarker_(paper) { return '<p style="margin:0;line-height:0;font-size:1px;"><img alt="jlt-spacer;part=header;h=0.1;paper=' + paper + '" src="' + GIF1 + '" width="1" height="1" style="width:1px;height:0.1mm;"></p>'; }
+  const LENPX_ = (v) => { const m = /^\s*(-?\d*\.?\d+)\s*(px|pt|mm|cm|in)?\s*$/.exec(String(v == null ? '' : v)); if (!m) return NaN; const n = Number(m[1]), u = m[2] || 'px'; return u === 'px' ? n : u === 'pt' ? n * 96 / 72 : u === 'mm' ? n * 96 / 25.4 : u === 'cm' ? n * 96 / 2.54 : n * 96; };
+  /**
+   * v4.70: fit a part's layout to another page width. Word saves positions as fixed side margins ("528 pt from the left") — on a narrower
+   * page those leave the text a few pixels wide. Side margins, indents, widths and pictures are scaled with the page; a narrow block of
+   * plain text (a greeting set on one side) keeps its width and keeps its side. Returns how many things were changed.
+   */
+  function refitBox_(root, fromW, toW) {
+    const r = toW / fromW; if (!isFinite(r) || r <= 0 || Math.abs(r - 1) < 0.002) return 0; let n = 0;
+    const setPx = (e, prop, v) => { e.style[prop] = Math.round(v * 10) / 10 + 'px'; n++; };
+    root.querySelectorAll('p,div,h1,h2,h3,h4,h5,h6,li,ul,ol,blockquote,table,td,th').forEach((e) => {
+      const st = e.style; const top = e.parentElement === root;
+      let L = LENPX_(st.marginLeft), R = LENPX_(st.marginRight);
+      const hasL = isFinite(L) && st.marginLeft !== '', hasR = isFinite(R) && st.marginRight !== '';
+      if (hasL || hasR) {
+        L = hasL ? L : 0; R = hasR ? R : 0; const wo = fromW - L - R;
+        const plain = top && /^(P|DIV|H[1-6])$/.test(e.tagName) && !e.querySelector('img,table') && !/(^|;)\s*(float|width)\s*:/i.test(st.cssText);
+        if (plain && wo <= 0.55 * fromW && L + R >= 0.3 * fromW) { // a block set on one side: keep its width, keep its side
+          const small = Math.min(L, R) * r, w2 = Math.min(wo, Math.max(0.2 * toW, 0.9 * toW - small)), large = Math.max(0, toW - w2 - small);
+          if (L >= R) { L = large; R = small; } else { R = large; L = small; }
+        } else { L *= r; R *= r; }
+        if (hasL || L) setPx(e, 'marginLeft', L); if (hasR || R) setPx(e, 'marginRight', R);
+      }
+      ['paddingLeft', 'paddingRight', 'textIndent'].forEach((p) => { const v = LENPX_(st[p]); if (isFinite(v) && v && st[p] !== '') setPx(e, p, v * r); });
+      const w = LENPX_(st.width); if (isFinite(w) && w && st.width !== '' && !/%/.test(st.width)) setPx(e, 'width', Math.min(w * r, toW));
+      if (/^(TABLE|TD|TH)$/.test(e.tagName)) { const wa = Number(e.getAttribute('width')); if (wa && !/%/.test(e.getAttribute('width'))) { e.setAttribute('width', String(Math.round(wa * r))); n++; } }
+    });
+    root.querySelectorAll('img').forEach((im) => {
+      const sw = im.style.width; if (/%/.test(sw)) return;
+      const wa = Number(im.getAttribute('width')), wsty = LENPX_(sw); const w = isFinite(wsty) && wsty ? wsty : wa; if (!w) return;
+      const nw = Math.round(Math.min(w * r, toW)); im.setAttribute('width', String(nw)); im.style.width = nw + 'px'; if (!im.style.height || !/auto/.test(im.style.height)) { im.removeAttribute('height'); im.style.height = 'auto'; } n++;
+    });
+    return n;
+  }
+  /** a block whose side margins leave (almost) no room for text is brought back to a readable width */
+  function guardBox_(root, W) {
+    let n = 0;
+    Array.from(root.children).forEach((e) => {
+      if (!/^(P|DIV|H[1-6])$/.test(e.tagName) || e.querySelector('img,table')) return;
+      const L = LENPX_(e.style.marginLeft), R = LENPX_(e.style.marginRight); if (!isFinite(L) || !isFinite(R)) return;
+      if (W - L - R >= Math.max(140, 0.2 * W) || !(e.textContent || '').trim()) return;
+      const small = Math.min(L, R), large = Math.max(0, W - small - Math.round(0.5 * W));
+      e.style.marginLeft = Math.round((L >= R ? large : small) * 10) / 10 + 'px'; e.style.marginRight = Math.round((L >= R ? small : large) * 10) / 10 + 'px'; n++;
+    });
+    return n;
+  }
   const GROUP_LABEL = { request: ['Request', 'الطلب'], employee: ['Employee', 'الموظف'], insurance: ['Insurance', 'التأمين'], identification: ['Identification', 'الهوية'], bank: ['Bank', 'البنك'], gosi: ['GOSI', 'التأمينات'], organization: ['Organization', 'المنظمة'], salary: ['Salary', 'الراتب'], company: ['Company', 'الشركة'], contract: ['Contract', 'العقد'], leave: ['Leave', 'الإجازة'], letter: ['Letter', 'الخطاب'] };
   const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
   const VAR_RE = /\{\{\{\s*([A-Za-z0-9_.@-]+)\s*\}\}\}/g;
@@ -39188,7 +40187,7 @@ const CATALOG_SRC = [
     for (let a = 0; a < 3; a++) {
       let res;
       try { res = await fetch(apiBase_() + path + '?' + q.toString(), { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined }); }
-      catch (e) { if (method !== 'GET') { const err = new Error(T('No answer from Jisr — check in Jisr whether it was saved.', 'لا رد من جسر — تحقق في جسر هل حُفظ.')); err.unknown = true; throw err; } await sleep_(800 * (a + 1)); continue; }
+      catch (e) { if (method !== 'GET') { const err = new Error(T('No answer from Jisr: check in Jisr whether it was saved.', 'لا رد من جسر: تحقق في جسر هل حُفظ.')); err.unknown = true; throw err; } await sleep_(800 * (a + 1)); continue; }
       if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول.'));
       if (res.status === 429 || (method === 'GET' && res.status >= 500)) { await sleep_((a + 1) * 1000); continue; }
       const json = await res.json().catch(() => null);
@@ -39254,6 +40253,7 @@ const CATALOG_SRC = [
     host.querySelectorAll('img').forEach((im) => { const src = im.getAttribute('src') || ''; const m = src.match(/letter_attachment_(\d+)/); if (!m) return; im.setAttribute('data-jsrc', src); const u = atts && (atts['letter_attachment_' + m[1]] || atts[m[1]]); const url = typeof u === 'string' ? u : u && (u.url || u.file_url); if (url) im.setAttribute('src', url); else { im.removeAttribute('src'); im.setAttribute('alt', T('[image ', '[صورة ') + m[1] + ']'); } });
     const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
     const texts = []; let n; while ((n = walker.nextNode())) if (/\{\{\{\s*[A-Za-z0-9_.@-]+\s*\}\}\}/.test(n.nodeValue)) texts.push(n);
+    texts.forEach((t) => { let v = t.nodeValue; COMPOSITE_RE.forEach(([k, re]) => { re.lastIndex = 0; v = v.replace(re, '{{{' + k + '}}}'); }); if (v !== t.nodeValue) t.nodeValue = v; }); // first + middle + last -> one "full name" chip
     texts.forEach((t) => {
       const frag = document.createDocumentFragment(); let last = 0; const s = t.nodeValue; VAR_RE.lastIndex = 0; let m;
       while ((m = VAR_RE.exec(s))) { if (m.index > last) frag.appendChild(document.createTextNode(s.slice(last, m.index))); frag.appendChild(chip_(m[1])); last = m.index + m[0].length; }
@@ -39284,52 +40284,189 @@ const CATALOG_SRC = [
     if (k === 'header') return '<div' + at + ' style="margin-top:' + (-lay.off) + 'mm;margin-bottom:' + lay.gap + 'mm;' + (lay.h ? 'height:' + lay.h + 'mm;overflow:hidden;' : '') + '">' + html + '</div>';
     return '<div' + at + ' style="margin-top:' + lay.gap + 'mm;margin-bottom:' + (-lay.off) + 'mm;">' + (lay.h ? '<table style="width:100%;height:' + lay.h + 'mm;border-collapse:collapse;table-layout:fixed;"><tr><td data-jlt-box="1" style="vertical-align:bottom;padding:0;overflow:hidden;">' + html + '</td></tr></table>' : '<div>' + html + '</div>') + '</div>';
   }
-  // ---- v4.62: watermark — one element at the top of the letter body, fixed to the page so a PDF repeats it on every page.
-  //   text:  <div data-jlt="watermark" data-kind="text" data-size data-color data-op data-angle data-pos style="position:fixed;…"><span style="…">TEXT</span></div>
-  //   image: <div data-jlt="watermark" data-kind="image" data-w data-op data-angle data-pos style="position:fixed;…"><img src="SRC" style="…"></div>
-  //   SRC is a picture already in the letter ({{{letter_attachment_N}}}), a web address, or a small uploaded picture (data:image/png|jpeg).
-  const WM0 = () => ({ kind: '', text: '', size: 60, color: '#000000', op: 12, angle: -30, pos: 'center', src: '', w: 120 });
+  // ---- watermark (v4.62 → v4.64). Jisr has no watermark of its own, so the tool adds one element at the top of the letter body.
+  // v4.64 — live finding: a watermark placed with position:fixed showed at the TOP of Jisr's letter (the page placement is not kept by
+  //   Jisr's letter/PDF output). New default placement "flow", which needs no positioning at all:
+  //     <div data-jlt="watermark" … style="height:0;overflow:visible;text-align:center;line-height:0;">
+  //       <img alt="jlt-watermark;…settings…" src="data:image/png…" style="width:Wmm;margin-top:Ymm;"></div>
+  //   A zero-height block at the top of the body; the picture hangs down from it and the letter text that follows is painted OVER it
+  //   (normal paint order: later text draws on top of earlier pictures), so it sits behind the text. It is on the first page.
+  //   Old "page" placement (position:fixed, every page) stays as an option for PDF makers that keep it.
+  // Everything visual is BAKED into one PNG: text is drawn on a canvas (font, colour, rotation), pictures are re-drawn lighter and
+  //   rotated — so nothing depends on CSS opacity / transform / colour surviving Jisr's editor. Settings are also kept in the picture's
+  //   alt text (attributes like data-* may be removed), and the original picture in data-orig when Jisr keeps it.
+  const WM0 = () => ({ kind: '', text: '', size: 60, color: '#000000', op: 15, angle: -30, pos: 'center', src: '', w: 120, layer: 'behind', place: 'flow', baked: '' });
   const WM_TOP = { top: '12%', center: '42%', bottom: '72%' };
+  const WM_DOWN = { top: 5, center: 55, bottom: 120 }; // mm below the start of the body, for "flow"
   const clampN_ = (v, lo, hi, d) => { const n = Number(v); return isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
+  const SRC_RE = /^(\{\{\{\s*letter_attachment_\d+\s*\}\}\}|https:\/\/[^\s"'<>]+|data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+)$/;
   function wmNorm_(w) {
     const o = Object.assign(WM0(), w || {});
     o.kind = o.kind === 'text' || o.kind === 'image' ? o.kind : '';
-    o.text = String(o.text || '').slice(0, 80); o.size = clampN_(o.size, 10, 200, 60); o.op = clampN_(o.op, 3, 60, 12); o.angle = clampN_(o.angle, -90, 90, -30); o.w = clampN_(o.w, 20, 200, 120);
+    o.text = String(o.text || '').slice(0, 80); o.size = clampN_(o.size, 10, 200, 60); o.op = Math.round(clampN_(o.op, 3, 100, 15)); o.angle = clampN_(o.angle, -90, 90, -30); o.w = clampN_(o.w, 20, 200, 120);
     o.color = /^#[0-9a-f]{6}$/i.test(o.color) ? o.color.toLowerCase() : '#000000'; o.pos = WM_TOP[o.pos] ? o.pos : 'center';
-    o.src = String(o.src || '');
-    if (o.src && !/^(\{\{\{\s*letter_attachment_\d+\s*\}\}\}|https:\/\/[^\s"'<>]+|data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+)$/.test(o.src)) o.src = '';
+    o.layer = o.layer === 'front' ? 'front' : 'behind'; o.place = o.place === 'page' ? 'page' : 'flow';
+    o.src = String(o.src || ''); if (o.src && !SRC_RE.test(o.src)) o.src = '';
+    o.baked = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(String(o.baked || '')) ? o.baked : '';
     if (o.kind === 'text' && !o.text.trim()) o.kind = '';
     if (o.kind === 'image' && !o.src) o.kind = '';
     return o;
   }
-  /** Letter body HTML -> { html without the watermark, wm } */
+  /** #rrggbb at v % strength on white paper -> the lighter #rrggbb that looks the same without transparency. */
+  function fadeColor_(hex, v) {
+    const n = parseInt(String(hex).slice(1), 16), k = clampN_(v, 0, 100, 100) / 100;
+    const ch = (c) => Math.round(255 - (255 - c) * k);
+    return '#' + [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((c) => ch(c).toString(16).padStart(2, '0')).join('');
+  }
+  /** Lighten every pixel of a canvas towards white (v %), transparency kept. */
+  function fadeCanvas_(c, v) {
+    const x = c.getContext('2d'), d = x.getImageData(0, 0, c.width, c.height), px = d.data, k = clampN_(v, 0, 100, 100) / 100;
+    for (let i = 0; i < px.length; i += 4) { px[i] = 255 - (255 - px[i]) * k; px[i + 1] = 255 - (255 - px[i + 1]) * k; px[i + 2] = 255 - (255 - px[i + 2]) * k; }
+    x.putImageData(d, 0, 0);
+  }
+  /** Draw `src` canvas rotated by `deg` onto a new canvas that fits it. */
+  function rotateCanvas_(src, deg) {
+    if (!deg) return src;
+    const r = deg * Math.PI / 180, cw = src.width, ch = src.height;
+    const w = Math.ceil(Math.abs(cw * Math.cos(r)) + Math.abs(ch * Math.sin(r))), h = Math.ceil(Math.abs(cw * Math.sin(r)) + Math.abs(ch * Math.cos(r)));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const x = c.getContext('2d'); x.translate(w / 2, h / 2); x.rotate(r); x.drawImage(src, -cw / 2, -ch / 2);
+    return c;
+  }
+  /** A picture (URL or data:) -> lighter (v %) and rotated (deg) PNG data URL + its width in mm at `wmm`; null if it can't be read. */
+  function bakeImage_(url, v, deg) {
+    return new Promise((resolve) => {
+      if (!url) return resolve(null);
+      const im = new Image();
+      if (!/^data:/.test(url)) im.crossOrigin = 'anonymous';
+      const t = setTimeout(() => resolve(null), 8000);
+      im.onerror = () => { clearTimeout(t); resolve(null); };
+      im.onload = () => {
+        clearTimeout(t);
+        try {
+          const draw = (maxW) => {
+            const sc = Math.min(1, maxW / (im.naturalWidth || 1));
+            const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(im.naturalWidth * sc)); c.height = Math.max(1, Math.round(im.naturalHeight * sc));
+            c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+            fadeCanvas_(c, v);
+            const r = rotateCanvas_(c, deg || 0);
+            return { url: r.toDataURL('image/png'), ratio: r.width / c.width };
+          };
+          let out = draw(1000); if (out.url.length > 400000) out = draw(600); if (out.url.length > 400000) out = draw(380);
+          resolve(out);
+        } catch (e) { resolve(null); } // a picture from another site that doesn't allow reading
+      };
+      im.src = url;
+    });
+  }
+  /** Text watermark -> PNG data URL (bold, faded colour, rotated) + its width in mm. */
+  function bakeText_(o) {
+    try {
+      const SC = 3, px = o.size * 96 / 72 * SC; // pt -> CSS px, drawn 3x for sharp print
+      const font = 'bold ' + px + 'px Arial, "Segoe UI", Tahoma, sans-serif';
+      const m = document.createElement('canvas').getContext('2d'); m.font = font;
+      const tw = Math.ceil(m.measureText(o.text).width) + Math.ceil(px * 0.2), th = Math.ceil(px * 1.3);
+      const c = document.createElement('canvas'); c.width = Math.max(1, tw); c.height = Math.max(1, th);
+      const x = c.getContext('2d'); x.font = font; x.fillStyle = fadeColor_(o.color, o.op); x.textBaseline = 'middle'; x.textAlign = 'center';
+      x.direction = /[؀-ۿ]/.test(o.text) ? 'rtl' : 'ltr';
+      x.fillText(o.text, c.width / 2, c.height / 2);
+      const r = rotateCanvas_(c, o.angle);
+      return { url: r.toDataURL('image/png'), wmm: Math.round(r.width / SC * 25.4 / 96 * 10) / 10 };
+    } catch (e) { return null; }
+  }
+  // settings in the picture's alt text: jlt-watermark;k=text;op=15;a=-30;p=center;pl=flow;ly=behind;s=60;c=#000000;w=120;t=<encoded text>
+  function wmAlt_(o) {
+    return 'jlt-watermark;k=' + o.kind + ';op=' + o.op + ';a=' + o.angle + ';p=' + o.pos + ';pl=' + o.place + ';ly=' + o.layer + ';w=' + o.w +
+      (o.kind === 'text' ? ';s=' + o.size + ';c=' + o.color + ';t=' + encodeURIComponent(o.text) : '') + (/^\{\{\{/.test(o.src) ? ';src=' + encodeURIComponent(o.src) : '');
+  }
+  function wmFromAlt_(alt) {
+    const out = {}; String(alt || '').split(';').slice(1).forEach((kv) => { const i = kv.indexOf('='); if (i > 0) out[kv.slice(0, i)] = kv.slice(i + 1); });
+    const dec = (v) => { try { return decodeURIComponent(v || ''); } catch (e) { return ''; } };
+    return { kind: out.k, op: out.op, angle: out.a, pos: out.p, place: out.pl, layer: out.ly, w: out.w, size: out.s, color: out.c, text: dec(out.t), src: dec(out.src) };
+  }
+  /** Letter body HTML -> { html without the watermark, wm }. Finds it by data-jlt or by the picture's alt text. */
   function wmSplit_(html) {
     const d = document.createElement('div'); d.innerHTML = jboSafeHtml_(html || '');
-    const w = d.querySelector('[data-jlt="watermark"]');
+    let w = d.querySelector('[data-jlt="watermark"]');
+    const altImg = d.querySelector('img[alt^="jlt-watermark"]');
+    if (!w && altImg) { w = altImg; while (w.parentElement && w.parentElement !== d && w.parentElement.children.length === 1) w = w.parentElement; }
     if (!w) return { html: html || '', wm: WM0() };
-    const kind = w.getAttribute('data-kind') === 'image' ? 'image' : 'text';
-    const img = w.querySelector('img');
-    const wm = wmNorm_({ kind, text: kind === 'text' ? (w.textContent || '').trim() : '', size: w.getAttribute('data-size'), color: w.getAttribute('data-color'), op: w.getAttribute('data-op'),
-      angle: w.getAttribute('data-angle'), pos: w.getAttribute('data-pos'), w: w.getAttribute('data-w'), src: img ? img.getAttribute('src') : '' });
+    const img = w.tagName === 'IMG' ? w : w.querySelector('img');
+    const fromAlt = img && /^jlt-watermark/.test(img.getAttribute('alt') || '') ? wmFromAlt_(img.getAttribute('alt')) : {};
+    const attr = (k) => w.getAttribute(k);
+    const kind = fromAlt.kind || (attr('data-kind') === 'image' ? 'image' : 'text');
+    const orig = attr('data-orig') || fromAlt.src || '';
+    const imgSrc = img ? img.getAttribute('src') || '' : '';
+    const wm = wmNorm_({
+      kind, text: fromAlt.text || (kind === 'text' && !img ? (w.textContent || '').trim() : ''),
+      size: fromAlt.size || attr('data-size'), color: fromAlt.color || attr('data-color'), op: fromAlt.op || attr('data-op'), angle: fromAlt.angle || attr('data-angle'),
+      pos: fromAlt.pos || attr('data-pos'), w: fromAlt.w || attr('data-w'), layer: fromAlt.layer || attr('data-layer') || 'front',
+      place: fromAlt.place || (/position:\s*fixed/i.test(attr('style') || '') ? 'page' : (fromAlt.kind ? 'flow' : 'page')),
+      src: kind === 'image' ? (orig || imgSrc) : '', baked: /^data:image\/png/.test(imgSrc) && (kind === 'text' || orig) ? imgSrc : '',
+    });
     w.remove();
     return { html: d.innerHTML, wm };
   }
   const escAttr_ = (v) => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  /** wm -> the HTML saved at the top of the body ('' for none). */
+  /** v4.64: compare what Jisr stored with what was sent, ignoring what Jisr is known to drop or reword:
+   *  data-* attributes, CSS it does not keep (positioning, opacity, transform, blend) and the watermark (checked on its own by wmLost_). */
+  function samePart_(k, saved, sent) {
+    const clean = (h) => {
+      let x = String(h || '');
+      if (k === 'template') x = wmSplit_(x).html;
+      const d = document.createElement('div'); d.innerHTML = jboSafeHtml_(x);
+      d.querySelectorAll('*').forEach((n) => {
+        Array.from(n.attributes).forEach((a) => { if (/^data-/.test(a.name)) n.removeAttribute(a.name); });
+        const st = n.getAttribute('style'); if (st == null) return;
+        const keep = st.split(';').map((q) => q.trim()).filter((q) => q && !/^(position|top|left|right|bottom|z-index|opacity|-webkit-transform|transform|mix-blend-mode|pointer-events)\s*:/i.test(q)).map((q) => q.replace(/\s*:\s*/, ':'));
+        if (keep.length) n.setAttribute('style', keep.join(';') + ';'); else n.removeAttribute('style');
+      });
+      return normHtml_(d.innerHTML);
+    };
+    const a = clean(saved), b = clean(sent);
+    if (a === b) return true;
+    // v4.68: Jisr rewrites formatting (attribute order, width/height, entities, style spelling, empty paragraphs). That is not an error:
+    // the part counts as saved when its words and its structure (pictures, tables, rows, cells, variables) are the same.
+    const sig = (h) => { const d = document.createElement('div'); d.innerHTML = h;
+      const txt = d.textContent.replace(/[\s\u00a0\u200b-\u200f]+/g, '').normalize('NFKC');
+      const n = (q) => d.querySelectorAll(q).length;
+      return [txt, n('img'), n('table'), n('tr'), n('td,th'), n('li')].join('|'); };
+    return sig(a) === sig(b);
+  }
+  /** wm (+ wm.baked PNG and wm.bakedW mm for text) -> the HTML saved at the top of the body ('' for none). */
   function wmHtml_(w) {
     const o = wmNorm_(w); if (!o.kind) return '';
-    const rot = '-webkit-transform:rotate(' + o.angle + 'deg);transform:rotate(' + o.angle + 'deg);';
-    const box = 'position:fixed;left:0;right:0;top:' + WM_TOP[o.pos] + ';text-align:center;z-index:0;pointer-events:none;';
-    const at = ' data-jlt="watermark" data-kind="' + o.kind + '" data-op="' + o.op + '" data-angle="' + o.angle + '" data-pos="' + o.pos + '"';
-    if (o.kind === 'text') return '<div' + at + ' data-size="' + o.size + '" data-color="' + o.color + '" style="' + box + '"><span style="display:inline-block;white-space:nowrap;font-family:Arial,sans-serif;font-weight:bold;font-size:' + o.size + 'pt;color:' + o.color + ';opacity:' + (o.op / 100) + ';' + rot + '">' + escAttr_(o.text) + '</span></div>';
-    return '<div' + at + ' data-w="' + o.w + '" style="' + box + '"><img src="' + escAttr_(o.src) + '" alt="" style="width:' + o.w + 'mm;opacity:' + (o.op / 100) + ';' + rot + '"></div>';
+    const wmm = o.kind === 'text' ? clampN_(w && w.bakedW, 5, 400, 150) : Math.round(o.w * clampN_(w && w.bakedRatio, 0.2, 3, 1) * 10) / 10;
+    const at = ' data-jlt="watermark" data-kind="' + o.kind + '" data-op="' + o.op + '" data-angle="' + o.angle + '" data-pos="' + o.pos + '" data-place="' + o.place + '" data-layer="' + o.layer + '"' +
+      (o.kind === 'text' ? ' data-size="' + o.size + '" data-color="' + o.color + '"' : ' data-w="' + o.w + '"') + (o.kind === 'image' && o.baked ? ' data-orig="' + escAttr_(o.src) + '"' : '');
+    const alt = ' alt="' + escAttr_(wmAlt_(o)) + '"';
+    const src = o.baked || (o.kind === 'image' ? o.src : '');
+    const fallbackFade = o.baked ? '' : 'opacity:' + (o.op / 100) + ';-webkit-transform:rotate(' + o.angle + 'deg);transform:rotate(' + o.angle + 'deg);';
+    if (o.kind === 'text' && !o.baked) // no canvas (should not happen in a browser): plain faded text
+      return '<p' + at + ' style="height:0;margin:0;overflow:visible;text-align:center;"><span style="display:inline-block;margin-top:' + WM_DOWN[o.pos] + 'mm;white-space:nowrap;font-family:Arial,sans-serif;font-weight:bold;font-size:' + o.size + 'pt;color:' + fadeColor_(o.color, o.op) + ';">' + escAttr_(o.text) + '</span></p>';
+    if (o.place === 'flow')
+      return '<p' + at + ' style="height:0;margin:0;overflow:visible;text-align:center;line-height:0;"><img' + alt + ' src="' + escAttr_(src) + '" style="width:' + wmm + 'mm;max-width:100%;margin-top:' + WM_DOWN[o.pos] + 'mm;' + fallbackFade + '"></p>';
+    const front = o.layer === 'front';
+    return '<div' + at + ' style="position:fixed;left:0;right:0;top:' + WM_TOP[o.pos] + ';text-align:center;z-index:' + (front ? 0 : -1) + ';pointer-events:none;"><img' + alt + ' src="' + escAttr_(src) + '" style="width:' + wmm + 'mm;' + (front ? 'mix-blend-mode:multiply;' : '') + fallbackFade + '"></div>';
+  }
+  /** After a save: which of the watermark's settings did Jisr keep? -> list of what it removed. */
+  function wmLost_(sentTemplate, savedTemplate) {
+    if (!/jlt-watermark/.test(sentTemplate)) return [];
+    const s = String(savedTemplate || ''), lost = [];
+    if (!/jlt-watermark/.test(s)) return [T('the whole watermark', 'العلامة المائية كاملة')];
+    if (!/<img[^>]+src="data:image\/png/i.test(s) && /src="data:image\/png/.test(sentTemplate)) lost.push(T('the picture', 'الصورة'));
+    if (/height:0/.test(sentTemplate) && !/height:\s*0/.test(s)) lost.push('height:0');
+    if (/margin-top:\d/.test(sentTemplate) && !/margin-top:\s*\d/.test(s)) lost.push('margin-top');
+    if (/position:fixed/.test(sentTemplate) && !/position:\s*fixed/.test(s)) lost.push('position:fixed');
+    return lost;
   }
 
   /** Editor DOM -> Jisr HTML: chips back to {{{key}}}, editor-only markup removed. */
   function fromEditor_(host) {
     const c = host.cloneNode(true);
-    c.querySelectorAll('.jlt-var').forEach((v) => v.replaceWith(document.createTextNode('{{{' + v.getAttribute('data-key') + '}}}')));
+    c.querySelectorAll('.jlt-var').forEach((v) => v.replaceWith(document.createTextNode(keyText_(v.getAttribute('data-key')))));
     c.querySelectorAll('[contenteditable]').forEach((x) => x.removeAttribute('contenteditable'));
+    c.querySelectorAll('.jlt-picsel').forEach((x) => { x.classList.remove('jlt-picsel'); if (!x.getAttribute('class')) x.removeAttribute('class'); });
     c.querySelectorAll('img[data-jsrc]').forEach((im) => { im.setAttribute('src', im.getAttribute('data-jsrc')); im.removeAttribute('data-jsrc'); if (/^\[(image|صورة) /.test(im.getAttribute('alt') || '')) im.removeAttribute('alt'); });
     let h = c.innerHTML.replace(/<br class="jlt-tmp">/g, '');
     if (normHtml_(h) === '<br>' || !normHtml_(h)) h = '';
@@ -39350,11 +40487,47 @@ const CATALOG_SRC = [
       .jlt-top input[type=text] { padding: 6px 10px; border: 1px solid #dadce0; border-radius: 8px; min-width: 220px; }
       .jlt-ed { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 12px; flex: 1; min-height: 0; }
       .jlt-paperwrap { overflow: auto; background: #eef0f3; border-radius: 12px; padding: 16px; min-height: 0; }
-      .jlt-paper { width: 794px; max-width: 100%; margin: 0 auto; background: #fff; box-shadow: 0 2px 14px rgba(0,0,0,.12); padding: 40px 56px; box-sizing: border-box; min-height: 1000px; font-family: Arial, sans-serif; font-size: 14px; color: #000; }
-      .jlt-part { position: relative; border: 1px dashed transparent; border-radius: 6px; margin: 0 -10px 10px; padding: 18px 10px 8px; }
-      .jlt-part:hover, .jlt-part:focus-within { border-color: #aecbfa; }
-      .jlt-part > .lbl { position: absolute; top: 2px; inset-inline-start: 8px; font: 600 10.5px system-ui, sans-serif; color: #1a73e8; letter-spacing: .04em; text-transform: uppercase; }
-      .jlt-part > .area { outline: none; min-height: 40px; }
+      .jlt-scale { margin: 0 auto; position: relative; }
+      .jlt-paper { background: #fff; box-shadow: 0 2px 14px rgba(0,0,0,.12); box-sizing: border-box; font-family: Arial, sans-serif; font-size: 15px; line-height: 1.5; color: #212529; flex: none; display: flex; flex-direction: column; transform-origin: 0 0; position: absolute; left: 0; top: 0; }
+      .jlt-paper p { margin: 0; }
+      .jlt-part { position: relative; margin: 0; padding: 0; outline: 1px dashed transparent; outline-offset: -1px; display: flow-root; }
+      .jlt-part.header, .jlt-part.footer { flex: none; }
+      .jlt-part.body { flex: none; padding: 0 50px; min-height: 0; }
+      .jlt-part.footer { margin-bottom: -10px; }
+      .jlt-part.header img, .jlt-part.footer img { max-width: 100%; max-height: 400px; height: auto; }
+      .jlt-sp-pin { flex: none; position: relative; box-sizing: border-box; background: repeating-linear-gradient(135deg, rgba(26,115,232,.07) 0 6px, transparent 6px 12px); border-top: 1px dashed #aecbfa; border-bottom: 1px dashed #aecbfa; pointer-events: none; z-index: 2; }
+      .jlt-sp-pin.zero { display: none; }
+      .jlt-sp-pin > span { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font: 600 11px system-ui, sans-serif; color: #1a73e8; background: rgba(255,255,255,.9); padding: 1px 8px; border-radius: 10px; white-space: nowrap; }
+      .jlt-part img { cursor: pointer; }
+      .jlt-part img.jlt-picsel { outline: 2px solid #1a73e8; outline-offset: 1px; }
+      .jlt-vguide { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dotted #9aa0a6; pointer-events: none; z-index: 4; }
+      .jlt-vguide i { position: absolute; top: 4px; left: 3px; font: 600 9.5px system-ui, sans-serif; color: #5f6368; font-style: normal; white-space: nowrap; }
+      .jlt-imgbar { display: none; gap: 6px; align-items: center; flex-wrap: wrap; padding: 5px 10px; margin-bottom: 8px; border: 1px solid #aecbfa; background: #f6f9fe; border-radius: 10px; font-size: 12px; }
+      .jlt-imgbar.on { display: flex; }
+      .jlt-imgbar input[type=number] { width: 70px; }
+      .jlt-part:hover, .jlt-part:focus-within { outline-color: #aecbfa; }
+      .jlt-part > .lbl { position: absolute; top: 2px; left: 4px; z-index: 6; font: 600 9.5px system-ui, sans-serif; color: #1a73e8; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; background: rgba(255,255,255,.88); padding: 0 5px; border-radius: 4px; pointer-events: none; }
+      .jlt-part > .area { outline: none; min-height: 1.3em; }
+      .jlt-sp { position: relative; background: repeating-linear-gradient(135deg, #f3f6fb 0 6px, #e8eef8 6px 12px); cursor: ns-resize; }
+      .jlt-sp.zero { height: 0 !important; background: none; }
+      .jlt-sp.zero::after { content: ''; position: absolute; left: 35%; right: 35%; top: -3px; height: 6px; border-radius: 4px; background: #c6dafc; }
+      .jlt-sp.zero:hover::after { background: #1a73e8; }
+      .jlt-sp.pin { background: repeating-linear-gradient(135deg, #f0f7f2 0 6px, #e1f0e5 6px 12px); cursor: default; }
+      .jlt-sp span { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); font: 600 10px system-ui, sans-serif; color: #5f6368; background: rgba(255,255,255,.85); padding: 0 4px; border-radius: 4px; white-space: nowrap; }
+      .jlt-sp.zero span { display: none; }
+      .jlt-guides { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
+      .jlt-guide { position: absolute; left: 0; right: 0; height: 0; border-top: 1.5px dashed #d93025; }
+      .jlt-guide.top { border-top: 1px dashed #1a73e8; }
+      .jlt-guide.edge { border-top: 2px solid #5f6368; }
+      .jlt-guide b { position: absolute; right: 6px; font: 700 10px system-ui, sans-serif; color: #d93025; background: #fff; padding: 1px 6px; border-radius: 4px; transform: translateY(-50%); white-space: nowrap; box-shadow: 0 0 0 1px #f4c7c3; }
+      .jlt-guide.top b { color: #1a73e8; box-shadow: 0 0 0 1px #c6dafc; }
+      .jlt-guide.edge b { color: #3c4043; box-shadow: 0 0 0 1px #dadce0; }
+      .jlt-guide i { position: absolute; left: 6px; font: 600 10px system-ui, sans-serif; color: #5f6368; transform: translateY(4px); font-style: normal; }
+      .jlt-pagestat { font-weight: 600; color: #3c4043; }
+      .jlt-pagestat.bad { color: #c5221f; }
+      .jlt-imp { border: 1px solid #aecbfa; background: #f6f9fe; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; font-size: 12.5px; }
+      .jlt-imp .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+      .jlt-imp .miss { color: #b06000; }
       .jlt-part.fixed > .area { overflow: hidden; min-height: 0; }
       .jlt-part.fixed { outline: 1px dashed #f29900; outline-offset: -1px; }
       .jlt-part.fixed > .lbl::after { content: attr(data-fix); color: #b06000; margin-inline-start: 6px; text-transform: none; }
@@ -39364,8 +40537,11 @@ const CATALOG_SRC = [
       .jlt-handle span { position: absolute; inset-inline-end: 0; top: -6px; font: 600 10.5px system-ui, sans-serif; color: #1a73e8; background: #fff; padding: 0 4px; border-radius: 4px; }
       .jlt-lay { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; font-size: 12px; margin-bottom: 8px; padding: 6px 10px; border: 1px solid #e8eaed; border-radius: 10px; }
       .jlt-lay b { font-size: 12px; }
-      .jlt-paper { position: relative; }
-      .jlt-wm { position: absolute; left: 0; right: 0; text-align: center; pointer-events: none; z-index: 2; }
+            .jlt-wm { position: absolute; left: 0; right: 0; text-align: center; pointer-events: none; z-index: 0; }
+      .jlt-wm.front { z-index: 3; mix-blend-mode: multiply; }
+      .jlt-paper .jlt-part { z-index: 1; }
+      .jlt-wmbar input[type=range] { width: 150px; accent-color: #1a73e8; }
+      .jlt-wmbar .jlt-wm-opv { min-width: 36px; font-variant-numeric: tabular-nums; font-weight: 600; }
       .jlt-wm span { display: inline-block; white-space: nowrap; font-family: Arial, sans-serif; font-weight: bold; }
       .jlt-wmbar input[type=text] { width: 180px; padding: 3px 6px; border: 1px solid #dadce0; border-radius: 6px; }
       .jlt-wmbar input[type=color] { width: 30px; height: 24px; padding: 0; border: 1px solid #dadce0; border-radius: 6px; }
@@ -39374,7 +40550,7 @@ const CATALOG_SRC = [
       .jlt-dupres { font-size: 12.5px; margin: 6px 0; }
       .jlt-lay label { display: inline-flex; gap: 4px; align-items: center; }
       .jlt-lay input[type=number] { width: 58px; padding: 3px 6px; border: 1px solid #dadce0; border-radius: 6px; }
-      .jlt-part.body > .area { min-height: 420px; }
+      .jlt-part.body > .area { min-height: 3em; }
       .jlt-part > .area:empty::before { content: attr(data-ph); color: #9aa0a6; }
       .jlt-var { display: inline-block; background: #e8f0fe; color: #174ea6; border: 1px solid #aecbfa; border-radius: 6px; padding: 0 6px; margin: 0 1px; font: 600 12px system-ui, sans-serif; line-height: 18px; cursor: grab; user-select: all; white-space: nowrap; }
       .jlt-var.sel { background: #1a73e8; color: #fff; }
@@ -39394,8 +40570,166 @@ const CATALOG_SRC = [
       .jlt-names input { padding: 7px 10px; border: 1px solid #dadce0; border-radius: 8px; font-size: 13.5px; }
       .jlt-badge { font-size: 11px; border-radius: 999px; padding: 1px 8px; background: #f1f3f4; color: #5f6368; }
       .jlt-msg { min-height: 18px; font-size: 12.5px; margin: 4px 0; white-space: pre-line; }
+      .jlt-lh-found { font-size: 12.5px; } .jlt-lh-bits { margin-top: 2px; }
+      .jlt-lh-prev { margin: 6px 0 4px; } .jlt-lh-prevbox { border: 1px solid #dadce0; border-radius: 6px; overflow: hidden; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+      .jlt-lh-page { background: #fff; } .jlt-lh-page .jlt-part .lbl { display: none; } .jlt-lh-page .jlt-part img { max-width: 100%; max-height: 400px; height: auto; }
+      .jlt-lh-gap { position: relative; background: repeating-linear-gradient(135deg, #eef1fb 0 6px, #f7f8fd 6px 12px); border-top: 1px dashed #aab3e8; border-bottom: 1px dashed #aab3e8; } .jlt-lh-gap span { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font: 600 22px system-ui, sans-serif; color: #5560c9; }
+      .jlt-lh-line { height: 12px; margin: 0 0 22px; border-radius: 6px; background: #eceef3; }
+      .jlt-lh-opts label { display: inline-flex; align-items: center; gap: 4px; } .jlt-lh-opts input[type=number] { width: 56px; }
+      .jlt-lh-list { flex: none; min-height: 70px; max-height: 260px; overflow: auto; } .jlt-lh-row { display: flex; gap: 20px; align-items: flex-start; flex: none; flex-wrap: wrap; } .jlt-lh-row .jlt-lh-opts { flex: 1 1 260px; flex-direction: column; align-items: flex-start; gap: 8px; } .jlt-lh-found, .jlt-lh-sum { flex: none; }
       @media (max-width: 900px) { .jlt-ed { grid-template-columns: 1fr; } .jlt-side { max-height: 240px; } }
     ` }));
+  }
+
+/** Pictures added from Word / PDF are uploaded to Jisr as letter pictures, as Jisr's own editor does. areaEls: the editor areas that hold them; newAtts collects letter_attachment_N -> url. */
+async function uploadPics_(areaEls, newAtts, say, doneMap) {
+  const pics = areaEls.flatMap((a) => Array.from(a.querySelectorAll('img'))).filter((im) => /^data:image\/(png|jpe?g|gif|webp)/i.test(im.getAttribute('src') || '') && !im.getAttribute('data-jsrc') && !/^jlt-/.test(im.getAttribute('alt') || ''));
+  const done = doneMap || {}; // the same picture used twice (e.g. a logo in the header and the footer) is uploaded once
+  for (let i = 0; i < pics.length; i++) {
+    const im = pics[i]; let data = im.getAttribute('src');
+    if (done[data]) { im.setAttribute('data-jsrc', done[data]); im.removeAttribute('class'); im.removeAttribute('data-name'); continue; }
+    say(T('Uploading picture ', 'جارٍ رفع الصورة ') + (i + 1) + ' / ' + pics.length + '…');
+    if (data.length > 1500000) data = await shrinkPic_(data); // big Word pictures: at most 1800 px wide
+    const ext = ((data.match(/^data:image\/(\w+)/) || [])[1] || 'png').replace('jpeg', 'jpg');
+    const base = String(im.getAttribute('data-name') || 'picture').replace(/\.[^.]+$/, '').replace(/[^\w\- ]+/g, '_').slice(0, 60) || 'picture';
+    let r;
+    for (let tryN = 0; tryN < 2; tryN++) {
+      try { r = await request_('POST', '/v2/letter_attachments', null, { letter_attachment: { attachment: { data, filename: base + '.' + ext } } }); } catch (e) { if (tryN) throw e; await sleep_(1200); continue; }
+      if (r.ok || (r.status < 500 && r.status !== 429)) break; await sleep_(1500);
+    }
+    if (!r.ok) throw new Error(T('A picture could not be uploaded to Jisr (HTTP ', 'تعذّر رفع صورة إلى جسر (HTTP ') + r.status + ')' + (r.msg ? ': ' + r.msg : ''));
+    let id = null, url = '';
+    (function walk(v, d) { if (id != null || !v || typeof v !== 'object' || d > 5) return; if (!Array.isArray(v) && v.id != null) { id = v.id; (function deep(o, dd) { if (url || !o || typeof o !== 'object' || dd > 3) return; Object.values(o).forEach((x) => { if (!url && typeof x === 'string' && /^https?:\/\//.test(x)) url = x; else deep(x, dd + 1); }); })(v, 0); return; } (Array.isArray(v) ? v : Object.values(v)).forEach((x) => walk(x, d + 1)); })(r.json, 0);
+    if (id == null) throw new Error(T('Jisr accepted a picture but its number was not in the answer.', 'قبل جسر الصورة لكن رقمها غير موجود في الرد.'));
+    newAtts['letter_attachment_' + id] = url;
+    im.setAttribute('data-jsrc', '{{{letter_attachment_' + id + '}}}'); im.removeAttribute('class'); im.removeAttribute('data-name');
+    done[im.getAttribute('src')] = '{{{letter_attachment_' + id + '}}}';
+  }
+}
+/** A big picture -> at most 1800 px wide (JPEG for photos, PNG when it is already a PNG under 3 MB). */
+async function shrinkPic_(data) {
+  try {
+    const im = await new Promise((res, rej) => { const x = new Image(); x.onload = () => res(x); x.onerror = rej; x.src = data; });
+    const k = Math.min(1, 1800 / (im.naturalWidth || 1800)); const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(im.naturalWidth * k)); c.height = Math.max(1, Math.round(im.naturalHeight * k));
+    const g = c.getContext('2d'); const png = /^data:image\/png/i.test(data) && data.length < 3000000;
+    if (!png) { g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); }
+    g.drawImage(im, 0, 0, c.width, c.height);
+    const out = png ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.9);
+    return out.length < data.length ? out : data;
+  } catch (e) { return data; }
+}
+  // ======================================================================= v4.74: a letterhead from a Word file
+  // The company's Word letterhead (header picture, footer, watermark) is put on letters that already exist in Jisr. Only the header,
+  // the footer and the watermark of each letter are replaced; the text of the letter is passed through as Jisr has it.
+  const LH_WM_RE_ = /^\s*<(p|div)\b[^>]*\bdata-jlt="watermark"[^>]*>[\s\S]*?<\/\1>/i;
+  /** The letter's text with its watermark swapped. An old watermark that is the first block is cut out of the string as written, so the rest stays exactly as saved. */
+  function bodyWithWm_(tpl, wmHtml) {
+    const t = String(tpl || '');
+    if (!/jlt-watermark|data-jlt="watermark"/.test(t)) return wmHtml + t;
+    const m = LH_WM_RE_.exec(t);
+    if (m) return wmHtml + t.slice(m[0].length);
+    return wmHtml + wmSplit_(t).html; // Jisr rewrote the old watermark: take it out with the parser
+  }
+  /** header / footer HTML -> { html without its spacer pictures, found: the spacers (gap, pin, page marker) } */
+  function stripSp_(h0) {
+    let html = h0 || ''; const found = [];
+    for (let i = 0; i < 14; i++) { const x = spacerSplit_(html); if (!x.mm) break; html = x.html; found.push(x); }
+    return { html, found };
+  }
+  const waitImgs_ = (root, ms) => Promise.race([
+    Promise.all(Array.from(root.querySelectorAll('img')).filter((im) => !im.complete).map((im) => new Promise((r) => { im.addEventListener('load', r, { once: true }); im.addEventListener('error', r, { once: true }); }))),
+    new Promise((r) => setTimeout(r, ms || 6000)),
+  ]);
+  /** Lay a header, a text and a footer out at the real page size (hidden) -> the blank space that pushes the footer to the page bottom */
+  async function lhMeasure_(hHtml, bodyHtml, fHtml, atts, geom, hgapMM) {
+    const MM = 96 / 25.4;
+    const area = (html) => { const a = el('div', { class: 'area' }); toEditor_(html, a, atts); return a; };
+    const part = (cls, a, extra) => el('div', { class: 'jlt-part ' + cls }, [el('span', { class: 'lbl' }), a].concat(extra || []));
+    const aH = area(hHtml), aB = area(bodyHtml), aF = area(fHtml);
+    const pH = part('header', aH, [el('div', { style: { height: (hgapMM || 0) * MM + 'px' } })]), pB = part('body', aB), pF = part('footer', aF);
+    const paper = el('div', { class: 'jlt-paper', style: { position: 'fixed', left: '-99999px', top: '0', width: geom.pageW * MM + 'px', visibility: 'hidden' } }, [pH, pB, pF]);
+    document.body.appendChild(paper);
+    try {
+      await waitImgs_(paper, 6000);
+      const pageH = geom.pageH * MM, hH = pH.offsetHeight, fH = pF.offsetHeight + JP_FOOT_BLEED_PX, need = aB.offsetHeight;
+      return { hH, fH, need, tall: need > pageH - hH - fH + 0.5, mm: Math.max(0, Math.floor((pageH - hH - fH - need) / MM - PIN_SAFE_MM)) };
+    } finally { paper.remove(); }
+  }
+  const BLACK_GIF_ = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAAAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==';
+  /** A thin rule across the page, as a picture (Jisr keeps pictures and their size; borders and shapes are not kept reliably) */
+  function lhRule_(pagePx) { return '<p style="margin:0;line-height:0;font-size:1px;"><img alt="jlt-rule" src="' + BLACK_GIF_ + '" width="' + pagePx + '" height="2" style="width:' + pagePx + 'px;height:2px;"></p>'; }
+  /**
+   * Word header / footer HTML -> tidier HTML for a Jisr letter. Word keeps empty paragraphs to anchor drawn shapes and centres text with runs of spaces;
+   * on a web page both come out as blank lines and a block pushed to one side. Blank edge paragraphs go, space runs become one space and such a paragraph is centred;
+   * a rule drawn in Word (line shape or paragraph border) becomes a rule picture (above a footer, under a header).
+   */
+  function lhTidy_(html, kind, hasRule, pagePx) {
+    const d = document.createElement('div'); d.innerHTML = jboSafeHtml_(html || '');
+    const blank = (n) => n.nodeType === 1 && /^(P|DIV)$/.test(n.tagName) && !n.querySelector('img,table') && !n.textContent.replace(/[\s\u00a0]/g, '');
+    while (d.firstElementChild && blank(d.firstElementChild)) d.firstElementChild.remove();
+    while (d.lastElementChild && blank(d.lastElementChild)) d.lastElementChild.remove();
+    d.querySelectorAll('p,div').forEach((p) => {
+      if (p.querySelector('img,table,p,div') || !p.textContent.replace(/[\s\u00a0]/g, '')) return;
+      const spaced = /[\s\u00a0]{3,}/.test(p.textContent);
+      const tw = document.createTreeWalker(p, NodeFilter.SHOW_TEXT); const ts = []; while (tw.nextNode()) ts.push(tw.currentNode);
+      ts.forEach((t) => { t.nodeValue = t.nodeValue.replace(/[\s\u00a0]{2,}/g, ' '); });
+      if (ts.length) { ts[0].nodeValue = ts[0].nodeValue.replace(/^[\s\u00a0]+/, ''); ts[ts.length - 1].nodeValue = ts[ts.length - 1].nodeValue.replace(/[\s\u00a0]+$/, ''); }
+      if (spaced) { p.style.textAlign = 'center'; p.style.textIndent = '0'; p.style.marginLeft = '0'; p.style.marginRight = '0'; }
+    });
+    let out = d.innerHTML;
+    if (!out.replace(/<[^>]*>/g, '').replace(/&nbsp;|\s/g, '') && !/<img/.test(out)) return '';
+    if (hasRule) out = kind === 'footer' ? lhRule_(pagePx) + out : out + lhRule_(pagePx);
+    return out;
+  }
+  /** v4.75.0: left / centre / right for everything in a header or footer (text, logos). 'word' keeps the alignment the Word file had. */
+  function lhAlign_(html, a) {
+    if (!html || !/^(left|center|right)$/.test(a || '')) return html || '';
+    const d = document.createElement('div'); d.innerHTML = jboSafeHtml_(html);
+    Array.from(d.childNodes).forEach((n) => { if (n.nodeType === 1 && n.tagName === 'IMG') { const w = document.createElement('p'); n.replaceWith(w); w.appendChild(n); } else if (n.nodeType === 3 && n.nodeValue.trim()) { const w = document.createElement('p'); n.replaceWith(w); w.appendChild(n); } });
+    d.querySelectorAll('p,div,h1,h2,h3,h4,h5,h6,li').forEach((e) => { if (!e.querySelector('p,div,h1,h2,h3,h4,h5,h6,li')) { e.style.textAlign = a; e.removeAttribute('align'); if (/^(DIV|P)$/.test(e.tagName)) { e.style.textIndent = '0'; } } });
+    d.querySelectorAll('table').forEach((t) => { t.style.marginLeft = a === 'left' ? '0' : 'auto'; t.style.marginRight = a === 'right' ? '0' : 'auto'; });
+    return d.innerHTML;
+  }
+  /**
+   * v4.74: a header or footer drawn as pictures, exactly as Word shows it (fonts, spacing, rule, logos) and with a fixed height, so the footer lands at the
+   * bottom of the page the same way every time. Cut into slices of at most 400 px, the tallest picture Jisr prints in a header / footer.
+   * Text with {{{variables}}} stays text (a picture cannot be filled in per employee). Returns '' when it cannot be drawn.
+   */
+  async function lhBake_(html, kind, pagePx) {
+    if (!html || /\{\{\{/.test(html)) return '';
+    const box = document.createElement('div');
+    box.setAttribute('style', 'width:' + pagePx + 'px;box-sizing:border-box;background:#fff;color:#212529;font:15px/1.5 Arial,"Segoe UI",Tahoma,sans-serif;');
+    box.innerHTML = '<style>p{margin:0}img{max-width:100%;height:auto}</style>' + jboSafeHtml_(html);
+    Array.from(box.children).forEach((c) => { if (c.tagName !== 'STYLE' && !c.querySelector('img,table')) { c.style.padding = '0 50px'; c.style.boxSizing = 'border-box'; } });
+    const holder = document.createElement('div'); holder.setAttribute('style', 'position:fixed;left:-99999px;top:0;visibility:hidden;'); holder.appendChild(box); document.body.appendChild(holder);
+    try {
+      await waitImgs_(box, 6000);
+      const H = Math.ceil(box.scrollHeight); if (H < 2 || H > 4000) return '';
+      const x = new XMLSerializer().serializeToString(box);
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + pagePx + '" height="' + H + '"><foreignObject x="0" y="0" width="100%" height="100%">' + x + '</foreignObject></svg>';
+      const im = await new Promise((res, rej) => { const i = new Image(); const t = setTimeout(() => rej(new Error('timeout')), 8000); i.onload = () => { clearTimeout(t); res(i); }; i.onerror = () => { clearTimeout(t); rej(new Error('draw')); }; i.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); });
+      for (const SC of [2, 1.5, 1]) {
+        const c = document.createElement('canvas'); c.width = Math.round(pagePx * SC); c.height = Math.round(H * SC);
+        c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+        const parts = []; let total = 0;
+        for (let y = 0; y < H; y += 400) {
+          const h = Math.min(400, H - y), sc = document.createElement('canvas'); sc.width = c.width; sc.height = Math.max(1, Math.round(h * SC));
+          sc.getContext('2d').drawImage(c, 0, Math.round(y * SC), c.width, sc.height, 0, 0, c.width, sc.height);
+          const url = sc.toDataURL('image/png'); total += url.length;
+          parts.push('<p style="margin:0;line-height:0;font-size:1px;"><img alt="letterhead-' + kind + '" src="' + url + '" width="' + pagePx + '" height="' + h + '" style="width:' + pagePx + 'px;max-width:100%;height:auto;"></p>');
+        }
+        if (total < 1400000 || SC === 1) return parts.join('');
+      }
+      return '';
+    } catch (e) { return ''; } finally { holder.remove(); }
+  }
+  /** The watermark found in the Word file -> the HTML saved at the top of a letter ('' for none) */
+  async function lhWatermark_(wm) {
+    const o = wmNorm_(wm); if (!o.kind) return '';
+    const w = Object.assign({}, wm);
+    if (o.kind === 'image') { const r = await bakeImage_(o.src, o.op, o.angle); if (!r) return ''; w.baked = r.url; w.bakedRatio = r.ratio; }
+    else { const r = bakeText_(o); if (!r) return ''; w.baked = r.url; w.bakedW = r.wmm; }
+    return wmHtml_(w);
   }
 
   function openTool_() {
@@ -39431,9 +40765,9 @@ const CATALOG_SRC = [
       if (!r.ok) throw new Error(T('Jisr refused the copy (HTTP ', 'رفض جسر النسخة (HTTP ') + r.status + ')' + (r.msg ? ': ' + r.msg : ''));
       const l = await listLetters_(); S.list = l;
       const made = l.find((x) => (x.name || '').trim() === name);
-      if (!made) return { name, warn: T('Jisr answered OK but the copy is not in the list yet — refresh.', 'رد جسر بنجاح لكن النسخة غير ظاهرة بعد — حدّث.') };
+      if (!made) return { name, warn: T('Jisr answered OK but the copy is not in the list yet; refresh.', 'رد جسر بنجاح لكن النسخة غير ظاهرة بعد؛ حدّث.') };
       const copy = await letter_(made.id, made);
-      const diff = ['header', 'template', 'footer'].filter((k) => normHtml_(copy[k]) !== normHtml_(ch[k]));
+      const diff = ['header', 'template', 'footer'].filter((k) => !samePart_(k, copy[k], ch[k]));
       const fa = full.letter_attachments && typeof full.letter_attachments === 'object' ? full.letter_attachments : {};
       const ca = copy.letter_attachments && typeof copy.letter_attachments === 'object' ? copy.letter_attachments : {};
       const lostPics = Object.keys(fa).filter((k) => fa[k] && !ca[k]);
@@ -39449,7 +40783,7 @@ const CATALOG_SRC = [
         if (nm === null) return;
         const name = nm.trim();
         if (!name) { say(T('The copy needs a name.', 'النسخة تحتاج اسمًا.'), true); return; }
-        if (taken.has(name.toLowerCase())) { say(T('A letter with this English name already exists — choose another name.', 'يوجد خطاب بهذا الاسم — اختر اسمًا آخر.'), true); return; }
+        if (taken.has(name.toLowerCase())) { say(T('A letter with this English name already exists; choose another name.', 'يوجد خطاب بهذا الاسم: اختر اسمًا آخر.'), true); return; }
         plan = [{ t, name, nameAr: copyNameAr_(t.name_ar) }];
       } else {
         plan = list.map((t) => { const name = copyName_(t.name || t.name_i18n, taken); taken.add(name.toLowerCase()); return { t, name, nameAr: copyNameAr_(t.name_ar) }; });
@@ -39464,26 +40798,271 @@ const CATALOG_SRC = [
       S.sel.clear();
       const okN = res.filter((r) => r.id && !r.err).length;
       const notes = res.filter((r) => r.err || r.warn || (r.diff && r.diff.length) || (r.lostPics && r.lostPics.length)).map((r) => '• ' + r.name + ': ' +
-        (r.err || r.warn || [r.diff && r.diff.length ? T('Jisr shows a different ', 'جسر يعرض ') + r.diff.join(', ') : '', r.lostPics && r.lostPics.length ? r.lostPics.length + T(' picture(s) not copied — add them again in Jisr', ' صورة لم تُنسخ — أضفها مجددًا في جسر') : ''].filter(Boolean).join('; ')));
+        (r.err || r.warn || [r.diff && r.diff.length ? T('Jisr shows a different ', 'جسر يعرض ') + r.diff.join(', ') : '', r.lostPics && r.lostPics.length ? r.lostPics.length + T(' picture(s) not copied: add them again in Jisr', ' صورة لم تُنسخ: أضفها مجددًا في جسر') : ''].filter(Boolean).join('; ')));
       await showList_(false);
-      say((okN === res.length && !notes.length ? '✓ ' : '⚠ ') + okN + ' / ' + res.length + T(' copied', ' نُسخت') + (notes.length ? ' — ' + notes.join('  ') : ''), okN < res.length);
+      say((okN === res.length && !notes.length ? '✓ ' : '⚠ ') + okN + ' / ' + res.length + T(' copied', ' نُسخت') + (notes.length ? ' · ' + notes.join('  ') : ''), okN < res.length);
     }
 
     // ------------------------------------------------------------------ list
+    // ---- v4.74: letterhead from a Word file -> header, footer and watermark of the letters already in Jisr
+    async function showLetterhead_() {
+      S.view = 'letterhead'; S.cur = null;
+      titleEl.textContent = T('Letterhead from Word', 'ترويسة من ملف Word');
+      body.innerHTML = ''; foot.innerHTML = '';
+      const LH = { hdr: '', ftr: '', hdr0: '', ftr0: '', hdrPic: '', ftrPic: '', wm: null, wmHtml: '', wmPrev: '', hdrFinal: '', ftrFinal: '', atts: null, file: '' };
+      const R = { done: [], busy: false, stop: false, sel: new Set() };
+      const PG = pageGeom_();
+      const fileIn = el('input', { type: 'file', accept: '.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document', class: 'jlt-lh-file', style: { display: 'none' } });
+      const pickB = el('button', { type: 'button', class: 'jbo-btn jbo-btn-primary jlt-lh-pick', text: T('Choose Word file…', 'اختيار ملف Word…') });
+      const foundEl = el('div', { class: 'jlt-lh-found' });
+      const prevEl = el('div', { class: 'jlt-lh-prev' });
+      const optEl = el('div', { class: 'jlt-lay jlt-lh-opts', style: { display: 'none' } });
+      const listEl = el('div', { class: 'jlt-list jlt-lh-list' });
+      const sumEl = el('div', { class: 'jlt-msg jlt-lh-sum' });
+      const opt = { header: true, footer: true, wm: true, pin: true, hgap: 0, pic: true, push: 'auto', fixed: 30, hAlign: 'word', fAlign: 'word' };
+      // header / footer as text from Word, or as the pictures drawn from it (opt.pic)
+      const useLook_ = () => { LH.hdr = opt.pic && LH.hdrPic ? LH.hdrPic : lhAlign_(LH.hdr0, opt.hAlign); LH.ftr = opt.pic && LH.ftrPic ? LH.ftrPic : lhAlign_(LH.ftr0, opt.fAlign); LH.hdrFinal = LH.ftrFinal = ''; LH.atts = null; };
+      // draws the pictures for the chosen alignment (kept per alignment, so switching back is instant)
+      async function bakeLook_() {
+        const pagePx = Math.round(PG.pageW * 96 / 25.4); LH.cache = LH.cache || {};
+        for (const [kind, src, al] of [['header', LH.hdr0, opt.hAlign], ['footer', LH.ftr0, opt.fAlign]]) {
+          const key = kind + '|' + al; if (!(key in LH.cache)) LH.cache[key] = await lhBake_(lhAlign_(src, al), kind, pagePx);
+          if (kind === 'header') LH.hdrPic = LH.cache[key]; else LH.ftrPic = LH.cache[key];
+        }
+        useLook_();
+      }
+      const checkB = el('button', { class: 'jbo-btn jlt-lh-check', text: T('Check', 'فحص') });
+      const applyB = el('button', { class: 'jbo-btn jbo-btn-primary jlt-lh-apply', text: T('Apply to Jisr', 'تطبيق في جسر') });
+      const stopB = el('button', { class: 'jbo-btn jlt-lh-stop', text: T('Stop', 'إيقاف'), style: { display: 'none' } });
+      const undoB = el('button', { class: 'jbo-btn jlt-lh-undo', text: T('↩ Undo this run', '↩ التراجع عن هذه الدفعة'), style: { display: 'none' } });
+      const backB = el('button', { class: 'jbo-btn', text: T('← All letters', '← كل الخطابات') });
+      const stCell = {}; // letter id -> status cell
+      const setSt = (id, kind, text) => { const c = stCell[id]; if (!c) return; c.className = kind === 'ok' ? 'jbo-status-ok' : kind === 'err' ? 'jbo-status-err' : 'jbo-status-pending'; c.textContent = text; };
+      const picked = () => (S.list || []).filter((t) => R.sel.has(String(t.id)));
+      const paintBtns = () => {
+        const n = picked().length;
+        const any = (opt.header && !!LH.hdr) || (opt.footer && !!LH.ftr) || (opt.wm && !!LH.wmHtml);
+        checkB.disabled = applyB.disabled = R.busy || !any || !n;
+        applyB.textContent = T('Apply to Jisr', 'تطبيق في جسر') + (n ? ' (' + n + ')' : '');
+        stopB.style.display = R.busy ? '' : 'none'; undoB.style.display = !R.busy && R.done.length ? '' : 'none';
+        pickB.disabled = R.busy; backB.disabled = R.busy;
+      };
+      const clone = (x) => JSON.parse(JSON.stringify(x));
+      // ---- one letter: what it would become
+      async function plan_(t) {
+        const full = await letter_(t.id, t);
+        const atts = full.letter_attachments && typeof full.letter_attachments === 'object' && !Array.isArray(full.letter_attachments) ? full.letter_attachments : {};
+        const oH = stripSp_(unwrap_('header', full.header || '').html), oF = stripSp_(unwrap_('footer', full.footer || '').html);
+        const pap = (oH.found.concat(oF.found).find((x) => x.paper && PAPERS[x.paper]) || {}).paper || PG.paper;
+        const geom = pageGeom_(pap);
+        const hadPin = oF.found.some((x) => x.pin);
+        const doH = opt.header && !!LH.hdr, doF = opt.footer && !!LH.ftr, doW = opt.wm && !!LH.wmHtml;
+        const repin = opt.pin && !(opt.push === 'fixed') && (doF || (doH && hadPin));
+        const notes = []; const ch = { name: full.name || full.name_i18n || '', name_ar: full.name_ar || '', header: full.header || '', template: full.template || '', footer: full.footer || '' };
+        if (doH) { ch.header = (LH.hdrFinal || LH.hdr) + spacerHtml_('header', opt.hgap) + paperMarker_(geom.paper); notes.push(T('header', 'الترويسة')); }
+        if (doW) ch.template = bodyWithWm_(full.template, LH.wmHtml);
+        let pinMM = 0, tall = false;
+        if (opt.push === 'fixed' && doF) {
+          const m = await lhMeasure_(doH ? LH.hdr : oH.html, wmSplit_(full.template).html, LH.ftr, atts, geom, doH ? opt.hgap : ((oH.found.find((x) => !x.paper && !x.pin && !x.nopin) || {}).mm || 0));
+          const gapPx = opt.fixed * 96 / 25.4, room = geom.pageH * 96 / 25.4 - m.hH - m.fH - m.need;
+          ch.footer = spacerHtml_('footer', opt.fixed, false, 0, 'fixed') + noPinMarker_() + (LH.ftrFinal || LH.ftr);
+          notes.push(T('footer (space above it: ' + opt.fixed + ' mm)', 'التذييل (مسافة فوقه: ' + opt.fixed + ' مم)'));
+          if (gapPx > room) notes.push(T('⚠ the space does not fit under this text, so the footer goes to a second page', '⚠ المسافة لا تتسع تحت هذا النص، لذا ينتقل التذييل إلى صفحة ثانية'));
+        } else if (doF || repin) {
+          const fInner = doF ? (LH.ftrFinal || LH.ftr) : oF.html;
+          const fInnerEd = doF ? LH.ftr : oF.html, hEd = doH ? LH.hdr : oH.html;
+          const hgapOld = (oH.found.find((x) => !x.paper && !x.pin && !x.nopin) || {}).mm || 0;
+          if (opt.pin) {
+            const m = await lhMeasure_(hEd, wmSplit_(full.template).html, fInnerEd, atts, geom, doH ? opt.hgap : hgapOld);
+            tall = m.tall; pinMM = tall ? 0 : m.mm;
+          }
+          ch.footer = (opt.pin && !tall && pinMM ? spacerHtml_('footer', pinMM, true, 0) : noPinMarker_()) + fInner;
+          notes.push(doF ? T('footer', 'التذييل') : T('footer re-aligned', 'محاذاة التذييل'));
+          if (opt.pin && pinMM) notes[notes.length - 1] += T(' (pushed ' + pinMM + ' mm to the bottom)', ' (مدفوع ' + pinMM + ' مم إلى الأسفل)');
+          if (tall) notes.push(T('⚠ the text fills the page, so the footer follows it', '⚠ النص يملأ الصفحة، لذا يتبعه التذييل'));
+        }
+        if (doW) notes.push(T('watermark', 'العلامة المائية'));
+        return { full, ch, notes, atts, doH, doF, doW };
+      }
+      // ---- the Word file
+      async function readWord_(file) {
+        foundEl.textContent = T('Reading ', 'جارٍ قراءة ') + file.name + '…'; foundEl.style.color = ''; prevEl.innerHTML = ''; optEl.style.display = 'none';
+        let out;
+        try { out = await wordImport_(file, PG); } catch (e) { foundEl.textContent = e.message || String(e); foundEl.style.color = '#c5221f'; return; }
+        const has = (h) => { const d = el('div'); d.innerHTML = jboSafeHtml_(h || ''); return !!(d.textContent.replace(/[\s ]/g, '') || d.querySelector('img')); };
+        const pagePx = Math.round(PG.pageW * 96 / 25.4);
+        LH.file = file.name; LH.hdr0 = has(out.parts.header) ? lhTidy_(out.parts.header, 'header', !!(out.lines && out.lines.header), pagePx) : ''; LH.ftr0 = has(out.parts.footer) ? lhTidy_(out.parts.footer, 'footer', !!(out.lines && out.lines.footer), pagePx) : ''; LH.wm = out.wm || null;
+        foundEl.textContent = T('Drawing the header and footer as pictures…', 'جارٍ رسم الترويسة والتذييل كصور…');
+        LH.cache = {}; await bakeLook_();
+        LH.hdrFinal = LH.ftrFinal = ''; LH.atts = null; LH.wmHtml = ''; LH.wmPrev = '';
+        if (LH.wm) { LH.wmHtml = await lhWatermark_(LH.wm); const m = /<img[^>]+src="([^"]+)"/.exec(LH.wmHtml); LH.wmPrev = m ? m[1].replace(/&amp;/g, '&') : ''; }
+        const bits = [
+          (LH.hdr ? '✓ ' : '✗ ') + T('Header', 'الترويسة') + (LH.hdr ? '' : T(' (none in this file)', ' (غير موجودة في الملف)')),
+          (LH.ftr ? '✓ ' : '✗ ') + T('Footer', 'التذييل') + (LH.ftr ? '' : T(' (none in this file)', ' (غير موجود في الملف)')),
+          (LH.wmHtml ? '✓ ' : '✗ ') + T('Watermark', 'العلامة المائية') + (LH.wmHtml ? (LH.wm.kind === 'text' ? T(' (text)', ' (نص)') : T(' (picture)', ' (صورة)')) : T(' (none in this file)', ' (غير موجودة في الملف)')),
+        ];
+        foundEl.innerHTML = ''; foundEl.appendChild(el('b', { text: file.name })); foundEl.appendChild(el('div', { class: 'jlt-lh-bits', text: bits.join('   ·   ') }));
+        if ((LH.hdr0 && !LH.hdrPic) || (LH.ftr0 && !LH.ftrPic)) foundEl.appendChild(el('div', { class: 'jbo-muted jlt-lh-nopic', text: T('The ' + [LH.hdr0 && !LH.hdrPic ? 'header' : '', LH.ftr0 && !LH.ftrPic ? 'footer' : ''].filter(Boolean).join(' and ') + ' cannot be kept as a picture here (it has variables, or it could not be drawn), so it stays text.', 'تعذّر حفظ ' + [LH.hdr0 && !LH.hdrPic ? 'الترويسة' : '', LH.ftr0 && !LH.ftrPic ? 'التذييل' : ''].filter(Boolean).join(' و') + ' كصورة (فيه متغيرات أو تعذّر رسمه)، لذا يبقى نصاً.') }));
+        if (out.moved) foundEl.appendChild(el('div', { class: 'jbo-muted', text: T('The Word header is empty, so the header was taken from the top of the page (' + out.moved + ' block(s)).', 'ترويسة Word فارغة، لذا أُخذت الترويسة من أعلى الصفحة (' + out.moved + ' عنصر).') }));
+        paintPrev_(); paintOpts_(); paintBtns();
+      }
+      function paintPrev_() {
+        prevEl.innerHTML = '';
+        if (!(LH.hdr || LH.ftr || LH.wmPrev)) return;
+        const W = PG.pageW * 96 / 25.4, H = PG.pageH * 96 / 25.4, K = Math.min(1, 380 / W);
+        const mk = (cls, html) => { const a = el('div', { class: 'area' }); toEditor_(html, a, {}); return el('div', { class: 'jlt-part ' + cls }, [a]); };
+        const page = el('div', { class: 'jlt-paper jlt-lh-page', style: { width: W + 'px', height: H + 'px', transform: 'scale(' + K + ')', transformOrigin: 'top left', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' } });
+        if (LH.hdr && opt.header) page.appendChild(mk('header', LH.hdr));
+        page.appendChild(el('div', { class: 'jlt-lh-bodybox', style: { flex: opt.push === 'auto' ? '1 1 auto' : '0 0 auto', padding: '40px 50px' } }, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((i) => el('div', { class: 'jlt-lh-line', style: { width: (i % 5 === 4 ? 55 : 100) + '%' } }))));
+        if (opt.push === 'fixed' && LH.ftr && opt.footer) page.appendChild(el('div', { class: 'jlt-lh-gap', style: { height: Math.round(opt.fixed * 96 / 25.4) + 'px', flex: 'none' }, title: opt.fixed + ' mm' }, [el('span', { text: opt.fixed + ' mm' })]));
+        if (LH.ftr && opt.footer) { const fp = mk('footer', LH.ftr); if (opt.push === 'auto') fp.style.marginBottom = Math.round(PIN_SAFE_MM * 96 / 25.4) + 'px'; page.appendChild(fp); }
+        if (LH.wmPrev && opt.wm) page.appendChild(el('img', { src: LH.wmPrev, class: 'jlt-lh-wm', alt: '', style: { position: 'absolute', left: '50%', top: '42%', transform: 'translateX(-50%)', width: Math.round((LH.wm && LH.wm.w ? LH.wm.w : 120) * 96 / 25.4) + 'px', maxWidth: '70%', pointerEvents: 'none' } }));
+        prevEl.appendChild(el('div', { class: 'jlt-lh-prevbox', style: { width: Math.round(W * K) + 'px', height: Math.round(H * K) + 'px' } }, [page]));
+        prevEl.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', marginTop: '4px' }, text: T('Preview on a ' + PG.paper + ' page. The grey lines stand for the letter text, which is not changed.', 'معاينة على صفحة ' + PG.paper + '. الخطوط الرمادية تمثل نص الخطاب ولا يتغير.') }));
+      }
+      function paintOpts_() {
+        optEl.style.display = ''; optEl.innerHTML = '';
+        const ck = (key, label, avail) => { const i = el('input', { type: 'checkbox', class: 'jlt-lh-' + key }); i.checked = !!avail && opt[key]; i.disabled = !avail; i.addEventListener('change', () => { opt[key] = i.checked; paintPrev_(); paintBtns(); }); return el('label', {}, [i, ' ' + label]); };
+        optEl.appendChild(el('b', { text: T('Replace', 'استبدال') }));
+        optEl.appendChild(ck('header', T('Header', 'الترويسة'), !!LH.hdr));
+        optEl.appendChild(ck('footer', T('Footer', 'التذييل'), !!LH.ftr));
+        optEl.appendChild(ck('wm', T('Watermark', 'العلامة المائية'), !!LH.wmHtml));
+        const pic = el('input', { type: 'checkbox', class: 'jlt-lh-pic' }); pic.checked = opt.pic; pic.disabled = !(LH.hdrPic || LH.ftrPic);
+        pic.addEventListener('change', () => { opt.pic = pic.checked; useLook_(); paintPrev_(); paintBtns(); });
+        optEl.appendChild(el('label', { title: T('The header and footer are drawn from the Word file and saved as pictures: the look is exactly the same as in Word, and the footer reaches the bottom of the page more reliably because its height is fixed. Turn off to save them as editable text.', 'تُرسم الترويسة والتذييل من ملف Word وتُحفظ كصور: الشكل مطابق لـ Word ويصل التذييل إلى أسفل الصفحة بشكل أدق لأن ارتفاعه ثابت. أوقفه لحفظهما كنص قابل للتعديل.') }, [pic, ' ' + T('Keep header and footer as pictures', 'حفظ الترويسة والتذييل كصور')]));
+        const sel = (cls, cur, opts, fn) => { const x = el('select', { class: cls }, opts.map(([v, l]) => el('option', { value: v, text: l }))); x.value = cur; x.addEventListener('change', () => fn(x.value)); return x; };
+        const alOpts = () => [['word', T('as in Word', 'كما في Word')], ['left', T('left', 'يسار')], ['center', T('center', 'وسط')], ['right', T('right', 'يمين')]];
+        const realign = async (key, v) => { opt[key] = v; const old = sumEl.textContent; sumEl.textContent = T('Drawing…', 'جارٍ الرسم…'); R.busy = true; paintBtns(); try { await bakeLook_(); } finally { R.busy = false; sumEl.textContent = old === T('Drawing…', 'جارٍ الرسم…') ? '' : old; } paintPrev_(); paintBtns(); };
+        optEl.appendChild(el('label', { class: 'jlt-lh-al' }, [T('Header position', 'موضع الترويسة'), ' ', sel('jlt-lh-halign', opt.hAlign, alOpts(), (v) => realign('hAlign', v))]));
+        optEl.appendChild(el('label', { class: 'jlt-lh-al' }, [T('Footer position', 'موضع التذييل'), ' ', sel('jlt-lh-falign', opt.fAlign, alOpts(), (v) => realign('fAlign', v))]));
+        const fx = el('input', { type: 'number', min: '0', max: '300', step: '1', value: String(opt.fixed), class: 'jlt-lh-fixed' }); fx.style.display = opt.push === 'fixed' ? '' : 'none';
+        fx.addEventListener('change', () => { opt.fixed = Math.max(0, Math.min(300, Number(fx.value) || 0)); fx.value = String(opt.fixed); paintPrev_(); });
+        const fxu = el('span', { text: ' mm' }); fxu.style.display = fx.style.display;
+        optEl.appendChild(el('label', { title: T('Auto: a blank space worked out for each letter pushes the footer to the bottom (Jisr may still print it right after the text). Fixed: you type the blank space above the footer, the same for every letter; add or remove millimetres until it sits where you want. None: the footer follows the text.', 'تلقائي: مسافة فارغة تُحسب لكل خطاب تدفع التذييل إلى الأسفل (وقد يطبعه جسر بعد النص مباشرة). ثابت: تكتب أنت المسافة الفارغة فوق التذييل وهي نفسها لكل الخطابات؛ زد أو أنقص الملّيمترات حتى يستقر في المكان المطلوب. بدون: يتبع التذييل النص.') }, [T('Footer space', 'مسافة التذييل'), ' ', sel('jlt-lh-push', opt.push, [['auto', T('Auto (to the bottom)', 'تلقائي (إلى الأسفل)')], ['fixed', T('Fixed space above', 'مسافة ثابتة فوقه')], ['none', T('None', 'بدون')]], (v) => { opt.push = v; opt.pin = v === 'auto'; fx.style.display = fxu.style.display = v === 'fixed' ? '' : 'none'; paintPrev_(); }), ' ', fx, fxu]));
+        const gap = el('input', { type: 'number', min: '0', max: '100', step: '1', value: String(opt.hgap), class: 'jlt-lh-hgap' }); gap.addEventListener('change', () => { opt.hgap = Math.max(0, Math.min(100, Number(gap.value) || 0)); });
+        optEl.appendChild(el('label', {}, [T('Space under the header', 'مسافة تحت الترويسة'), ' ', gap, ' mm']));
+      }
+      // ---- the letters
+      function paintList_() {
+        listEl.innerHTML = '';
+        if (!S.list) { listEl.appendChild(el('div', { class: 'jbo-muted', style: { padding: '12px' }, text: T('Reading letters from Jisr…', 'جارٍ قراءة الخطابات من جسر…') })); return; }
+        const tb = el('tbody'); const allCk = el('input', { type: 'checkbox', class: 'jlt-lh-all', title: T('Select all', 'تحديد الكل') });
+        allCk.checked = S.list.length > 0 && S.list.every((t) => R.sel.has(String(t.id)));
+        allCk.addEventListener('change', () => { S.list.forEach((t) => { if (allCk.checked) R.sel.add(String(t.id)); else R.sel.delete(String(t.id)); }); paintList_(); paintBtns(); });
+        S.list.forEach((t) => {
+          const ck = el('input', { type: 'checkbox', class: 'jlt-lh-ck', 'data-id': String(t.id) }); ck.checked = R.sel.has(String(t.id));
+          ck.addEventListener('change', () => { if (ck.checked) R.sel.add(String(t.id)); else R.sel.delete(String(t.id)); paintBtns(); });
+          const st = el('td', { class: 'jbo-status-pending', text: '—' }); stCell[String(t.id)] = st;
+          tb.appendChild(el('tr', {}, [el('td', { class: 'ck' }, [ck]), el('td', { text: t.name || t.name_i18n || '' }), el('td', { dir: 'rtl', text: t.name_ar || '' }), el('td', { text: String(t.id) }), st]));
+        });
+        listEl.appendChild(el('table', {}, [el('thead', {}, [el('tr', {}, [el('th', { class: 'ck' }, [allCk])].concat([T('Letter (EN)', 'الخطاب (EN)'), T('Letter (AR)', 'الخطاب (AR)'), 'ID', T('Result', 'النتيجة')].map((h) => el('th', { text: h }))))]), tb]));
+      }
+      // ---- check: nothing is sent
+      checkB.addEventListener('click', async () => {
+        R.busy = true; R.stop = false; paintBtns(); sumEl.textContent = ''; sumEl.style.color = '';
+        let ready = 0, bad = 0; const list = picked();
+        for (let i = 0; i < list.length && !R.stop; i++) {
+          const t = list[i]; setSt(String(t.id), 'pending', T('checking…', 'جارٍ الفحص…'));
+          try {
+            const p = await plan_(t);
+            const fp = ['header', 'footer'].flatMap((k) => fieldProblems_(p.ch[k]));
+            if (fp.length) { bad++; setSt(String(t.id), 'err', T('✗ Jisr would refuse these variables: ', '✗ سيرفض جسر هذه المتغيرات: ') + Array.from(new Set(fp)).join(', ')); }
+            else { ready++; setSt(String(t.id), 'ok', T('ready: ', 'جاهز: ') + p.notes.join(', ')); }
+          } catch (e) { bad++; setSt(String(t.id), 'err', '✗ ' + (e.message || e)); }
+        }
+        R.busy = false; paintBtns();
+        sumEl.textContent = T('Checked ', 'تم فحص ') + list.length + ': ' + ready + T(' ready, ', ' جاهز، ') + bad + T(' with a problem. Nothing was sent to Jisr.', ' بها مشكلة. لم يُرسل شيء إلى جسر.'); sumEl.style.color = bad ? '#c5221f' : '#137333';
+      });
+      // ---- apply
+      applyB.addEventListener('click', async () => {
+        const list = picked(); if (!list.length) return;
+        const what = [opt.header && LH.hdr ? T('header', 'الترويسة') : '', opt.footer && LH.ftr ? T('footer', 'التذييل') : '', opt.wm && LH.wmHtml ? T('watermark', 'العلامة المائية') : ''].filter(Boolean).join(', ');
+        if (!confirm(T('Replace the ' + what + ' of ' + list.length + ' letter(s) in ' + slug_() + '? The text of each letter is not changed, and employees get the new letterhead from now on. You can undo this run afterwards.', 'استبدال (' + what + ') في ' + list.length + ' خطاب في ' + slug_() + '؟ لا يتغير نص أي خطاب، وسيحصل الموظفون على الترويسة الجديدة من الآن. يمكنك التراجع عن هذه الدفعة بعد ذلك.'))) return;
+        R.busy = true; R.stop = false; R.done = []; paintBtns(); sumEl.textContent = ''; sumEl.style.color = '';
+        try {
+          // pictures are uploaded once for all the letters
+          if (!LH.atts && ((opt.header && LH.hdr) || (opt.footer && LH.ftr))) {
+            const newAtts = {}, aH = el('div'), aF = el('div'); toEditor_(opt.header ? LH.hdr : '', aH, {}); toEditor_(opt.footer ? LH.ftr : '', aF, {});
+            await uploadPics_([aH, aF], newAtts, (m) => { sumEl.textContent = m; });
+            LH.hdrFinal = opt.header && LH.hdr ? fromEditor_(aH) : ''; LH.ftrFinal = opt.footer && LH.ftr ? fromEditor_(aF) : ''; LH.atts = newAtts;
+          }
+        } catch (e) { R.busy = false; paintBtns(); sumEl.textContent = '✗ ' + (e.message || e); sumEl.style.color = '#c5221f'; return; }
+        let okN = 0, warnN = 0, badN = 0;
+        for (let i = 0; i < list.length && !R.stop; i++) {
+          const t = list[i], id = String(t.id); setSt(id, 'pending', T('saving…', 'جارٍ الحفظ…'));
+          try {
+            const p = await plan_(t); const full = p.full;
+            const fp = ['header', 'footer'].flatMap((k) => fieldProblems_(p.ch[k]));
+            if (fp.length) throw new Error(T('Jisr would refuse these variables: ', 'سيرفض جسر هذه المتغيرات: ') + Array.from(new Set(fp)).join(', '));
+            if (!(id in S.savedOrig)) S.savedOrig[id] = clone(full);
+            const orig = clone(full);
+            const payload = payload_(Object.assign({}, full, { letter_attachments: Object.assign({}, p.atts, LH.atts || {}) }), p.ch);
+            const r = await request_('PUT', '/v2/letter_types/' + encodeURIComponent(full.id), null, payload);
+            if (!r.ok) throw new Error(T('Jisr refused the change (HTTP ', 'رفض جسر التغيير (HTTP ') + r.status + ')' + (r.msg ? ': ' + r.msg : ''));
+            R.done.push({ id: full.id, orig });
+            // read it back from Jisr: the letterhead is there and the text is the same
+            const l = await listLetters_().catch(() => null); if (l) S.list = l;
+            let now = l && l.find((x) => String(x.id) === id); if (now && !['header', 'template', 'footer'].some((k) => typeof now[k] === 'string')) now = null;
+            if (!now) now = await letter_(full.id, null).catch(() => null);
+            const bad = [];
+            if (!now) bad.push(T('(could not be read back)', '(تعذرت القراءة بعد الحفظ)'));
+            else {
+              if (p.doH && !samePart_('header', now.header, p.ch.header)) bad.push(T('header', 'الترويسة'));
+              if (p.doF && !samePart_('footer', now.footer, p.ch.footer)) bad.push(T('footer', 'التذييل'));
+              if (!samePart_('template', now.template, orig.template)) bad.push(T('TEXT (differs from before)', 'النص (يختلف عما كان)'));
+              if (p.doW) { const g = wmLost_(p.ch.template, now.template); if (g.length) bad.push(T('watermark: ', 'العلامة المائية: ') + g.join(', ')); }
+            }
+            if (bad.length) { warnN++; setSt(id, 'err', T('⚠ Saved, but Jisr shows a different ', '⚠ حُفظ، لكن جسر يعرض مختلفًا: ') + bad.join(', ')); }
+            else { okN++; setSt(id, 'ok', T('✓ Saved: ', '✓ حُفظ: ') + p.notes.join(', ') + T('. Text unchanged.', '. النص دون تغيير.')); }
+          } catch (e) { badN++; setSt(id, 'err', '✗ ' + (e.message || e)); }
+          await sleep_(250);
+        }
+        R.busy = false; paintBtns();
+        sumEl.textContent = (R.stop ? T('Stopped. ', 'تم الإيقاف. ') : '') + okN + T(' saved and checked in Jisr', ' محفوظ ومتحقق منه في جسر') + (warnN ? ', ' + warnN + T(' saved with a difference', ' محفوظ مع اختلاف') : '') + (badN ? ', ' + badN + T(' failed', ' فشل') : '') + '.';
+        sumEl.style.color = badN || warnN ? '#c5221f' : '#137333';
+      });
+      stopB.addEventListener('click', () => { R.stop = true; stopB.disabled = true; });
+      undoB.addEventListener('click', async () => {
+        if (!R.done.length || !confirm(T('Put the ' + R.done.length + ' letter(s) changed in this run back exactly as they were in Jisr?', 'إرجاع ' + R.done.length + ' خطاب تغيّر في هذه الدفعة كما كان في جسر؟'))) return;
+        R.busy = true; paintBtns(); let n = 0, f = 0;
+        for (const d of R.done.slice().reverse()) {
+          try {
+            const o = d.orig; const r = await request_('PUT', '/v2/letter_types/' + encodeURIComponent(o.id), null, payload_(o, { name: o.name || o.name_i18n || '', name_ar: o.name_ar || '', header: o.header || '', template: o.template || '', footer: o.footer || '' }));
+            if (!r.ok) throw new Error('HTTP ' + r.status); n++; setSt(String(o.id), 'ok', T('↩ Put back as it was', '↩ أُعيد كما كان'));
+          } catch (e) { f++; setSt(String(d.id), 'err', '✗ ' + T('could not be put back: ', 'تعذّرت الإعادة: ') + (e.message || e)); }
+        }
+        R.done = []; R.busy = false; try { S.list = await listLetters_(); } catch (e) { /* ignore */ }
+        paintBtns(); sumEl.textContent = n + T(' put back', ' أُعيد') + (f ? ', ' + f + T(' could not be put back', ' تعذّرت إعادته') : '') + '.'; sumEl.style.color = f ? '#c5221f' : '#137333';
+      });
+      backB.addEventListener('click', () => showList_(true));
+      pickB.addEventListener('click', () => fileIn.click());
+      fileIn.addEventListener('change', async () => { const f = fileIn.files && fileIn.files[0]; fileIn.value = ''; if (f) { if (!/\.docx$/i.test(f.name)) { foundEl.textContent = T('Choose a Word .docx file (for an old .doc file: open it in Word and use Save As .docx).', 'اختر ملف Word ‏(.docx). للملفات .doc القديمة: افتحها في Word واحفظها بصيغة .docx.'); return; } await readWord_(f); } });
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '8px' }, text: T('Choose a Word file that carries the company letterhead: the header picture, the footer and the watermark. They replace the header, footer and watermark of the letters you tick below. The text of those letters is not rewritten.', 'اختر ملف Word يحمل ترويسة الشركة: صورة الترويسة والتذييل والعلامة المائية. تحل محل ترويسة وتذييل وعلامة الخطابات التي تحددها أدناه. لا يُعاد كتابة نص هذه الخطابات.') }));
+      body.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' } }, [pickB, fileIn, foundEl]));
+      body.appendChild(el('div', { class: 'jlt-lh-row' }, [prevEl, optEl]));
+      body.appendChild(el('b', { style: { display: 'block', margin: '10px 0 4px' }, text: T('Letters to change', 'الخطابات المراد تغييرها') }));
+      body.appendChild(listEl); body.appendChild(sumEl);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, [backB, el('span', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Changes are saved into ', 'تُحفظ التغييرات في ') + slug_() })]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [undoB, stopB, checkB, applyB]));
+      paintBtns(); paintList_();
+      if (!S.list) { try { S.list = await listLetters_(); } catch (e) { sumEl.textContent = e.message; sumEl.style.color = '#c5221f'; } paintList_(); paintBtns(); }
+    }
+
     async function showList_(reload) {
       S.view = 'list'; S.cur = null;
-      titleEl.textContent = T('Letter Templates — open, edit and save in Jisr', 'قوالب الخطابات — فتح وتعديل وحفظ في جسر');
+      titleEl.textContent = T('Letter Templates: open, edit and save in Jisr', 'قوالب الخطابات: فتح وتعديل وحفظ في جسر');
       body.innerHTML = ''; foot.innerHTML = '';
       const search = el('input', { type: 'text', class: 'jlt-search', placeholder: T('Search letters…', 'ابحث في الخطابات…'), value: S.q });
       const newB = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('+ New letter', '+ خطاب جديد') });
       const refB = el('button', { class: 'jbo-btn', text: T('↻ Refresh', '↻ تحديث') });
-      const wordB = el('button', { class: 'jbo-btn', text: T('Word → letter (converter)', 'Word ← خطاب (المحوّل)') });
+      const wordB = el('button', { class: 'jbo-btn jlt-new-from', text: T('+ New from Word / PDF', '+ جديد من Word / PDF') });
+      const lhB = el('button', { class: 'jbo-btn jlt-lh-btn', text: T('🏷 Letterhead from Word', '🏷 ترويسة من Word'), title: T('Put the header, footer and watermark from a Word file on letters that already exist in Jisr; their text stays as it is', 'وضع الترويسة والتذييل والعلامة المائية من ملف Word على خطابات موجودة في جسر؛ يبقى نصها كما هو') });
       const dupSelB = el('button', { class: 'jbo-btn jlt-dup-sel', text: '' });
       const paintSel = () => { const n = S.list ? S.list.filter((t) => S.sel.has(String(t.id))).length : 0; dupSelB.textContent = T('⧉ Duplicate selected', '⧉ نسخ المحدد') + (n ? ' (' + n + ')' : ''); dupSelB.disabled = !n; };
       dupSelB.addEventListener('click', () => duplicateAsk_(S.list.filter((t) => S.sel.has(String(t.id)))));
       const listEl = el('div', { class: 'jlt-list' });
-      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '8px' }, text: T('Every letter template in this company. Open one to edit its header, body and footer with variables, then Save to Jisr — the change shows in Jisr straight away.', 'كل قوالب الخطابات في هذه الشركة. افتح أيًا منها لتعديل الترويسة والنص والتذييل مع المتغيرات، ثم احفظ في جسر — يظهر التغيير في جسر فورًا.') }));
-      body.appendChild(el('div', { class: 'jlt-top' }, [search, newB, refB, dupSelB, el('span', { style: { flex: '1' } }), wordB]));
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '8px' }, text: T('Every letter template in this company. Open one to edit its header, body and footer with variables, then Save to Jisr; the change shows in Jisr straight away.', 'كل قوالب الخطابات في هذه الشركة. افتح أيًا منها لتعديل الترويسة والنص والتذييل مع المتغيرات، ثم احفظ في جسر؛ يظهر التغيير في جسر فورًا.') }));
+      body.appendChild(el('div', { class: 'jlt-top' }, [search, newB, wordB, lhB, refB, dupSelB]));
       body.appendChild(msgEl); body.appendChild(listEl);
       const paint = () => {
         listEl.innerHTML = '';
@@ -39503,14 +41082,15 @@ const CATALOG_SRC = [
           ck.addEventListener('change', () => { if (ck.checked) S.sel.add(String(t.id)); else S.sel.delete(String(t.id)); paintSel(); });
           tb.appendChild(el('tr', {}, [el('td', { class: 'ck' }, [ck]), el('td', { text: t.name || t.name_i18n || '' }), el('td', { dir: 'rtl', text: t.name_ar || '' }), el('td', {}, [t.is_default ? el('span', { class: 'jlt-badge', text: T('Jisr default', 'افتراضي من جسر') }) : null]), el('td', { class: 'jbo-muted', text: '#' + t.id }), el('td', { style: { textAlign: 'end', whiteSpace: 'nowrap' } }, [dupB, ' ', openB])]));
         });
-        if (!rows.length) tb.appendChild(el('tr', {}, [el('td', { colspan: '6', class: 'jbo-muted', text: S.list.length ? T('No letter matches the search.', 'لا يوجد خطاب يطابق البحث.') : T('This company has no letter templates yet — click + New letter.', 'لا توجد قوالب خطابات بعد — اضغط + خطاب جديد.') })]));
+        if (!rows.length) tb.appendChild(el('tr', {}, [el('td', { colspan: '6', class: 'jbo-muted', text: S.list.length ? T('No letter matches the search.', 'لا يوجد خطاب يطابق البحث.') : T('This company has no letter templates yet; click + New letter.', 'لا توجد قوالب خطابات بعد: اضغط + خطاب جديد.') })]));
         paintSel();
         listEl.appendChild(el('table', {}, [el('thead', {}, [el('tr', {}, [el('th', { class: 'ck' }, [allCk])].concat([T('Letter (EN)', 'الخطاب (EN)'), T('Letter (AR)', 'الخطاب (AR)'), '', 'ID', ''].map((h) => el('th', { text: h }))))]), tb]));
       };
       search.addEventListener('input', () => { S.q = search.value; paint(); });
       newB.addEventListener('click', () => openLetter_(null));
       refB.addEventListener('click', () => showList_(true));
-      wordB.addEventListener('click', () => { const m = W.__jisrBulkOps && W.__jisrBulkOps.modules['letter-converter']; if (m) m.open(); });
+      wordB.addEventListener('click', async () => { await openLetter_(null); if (S.importPick_) S.importPick_(); });
+      lhB.addEventListener('click', () => showLetterhead_());
       foot.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Changes are saved into ', 'تُحفظ التغييرات في ') + slug_() }));
       paint();
       if (!S.list || reload) { S.list = null; paint(); try { S.list = await listLetters_(); say(''); } catch (e) { S.list = []; say(e.message, true); } paint(); }
@@ -39521,92 +41101,202 @@ const CATALOG_SRC = [
       say(t ? T('Opening…', 'جارٍ الفتح…') : '');
       let full = null;
       if (t) { try { full = await letter_(t.id, t); } catch (e) { say(e.message, true); return; } }
-      S.view = 'edit'; S.isNew = !t; S.orig = full ? JSON.parse(JSON.stringify(full)) : null; S.cur = full; S.dirty = false;
+      S.view = 'edit'; S.isNew = !t; S.orig = full ? JSON.parse(JSON.stringify(full)) : null; S.cur = full; S.dirty = false; S.newAtts = {};
       if (full && !(String(full.id) in S.savedOrig)) S.savedOrig[String(full.id)] = JSON.parse(JSON.stringify(full));
-      titleEl.textContent = t ? T('Edit letter — ', 'تعديل خطاب — ') + (full.name || full.name_i18n || '#' + full.id) : T('New letter', 'خطاب جديد');
+      titleEl.textContent = t ? T('Edit letter: ', 'تعديل خطاب: ') + (full.name || full.name_i18n || '#' + full.id) : T('New letter', 'خطاب جديد');
       body.innerHTML = ''; foot.innerHTML = '';
       const nameEn = el('input', { type: 'text', class: 'jlt-name-en', placeholder: T('Letter name (English)', 'اسم الخطاب (إنجليزي)'), value: full ? full.name || full.name_i18n || '' : '' });
       const nameAr = el('input', { type: 'text', class: 'jlt-name-ar', dir: 'rtl', placeholder: T('Letter name (Arabic)', 'اسم الخطاب (عربي)'), value: full ? full.name_ar || '' : '' });
       [nameEn, nameAr].forEach((i) => i.addEventListener('input', () => { S.dirty = true; paintFoot_(); }));
-      // the page
+      // the page — Jisr's real sheet: A3, no page margin, header and footer edge to edge, text 50 px from the sides, footer pinned to the bottom
       const areas = {}, partEls = {};
-      const L = { header: LAY0(), footer: LAY0() };
       let WM = WM0();
       const MM = 96 / 25.4;
+      let PG = pageGeom_();
+      const L = { hgap: 0, fbelow: 0, fgap: 0, legacy: false, pin: true, nopin: false, hadPin: false, pinNote: false, paper: '', fitted: '' };
+      let ZK = 1; // how much the page is shrunk on screen so it fits the window (Jisr prints it at full size)
       const paper = el('div', { class: 'jlt-paper' }, PARTS.map(([k, en, ar]) => {
         const a = el('div', { class: 'area', contenteditable: 'true', 'data-part': k, 'data-ph': T('Type the ', 'اكتب ') + T(en.toLowerCase(), ar) + T(' here, or drag variables in…', ' هنا أو اسحب المتغيرات…') });
         let html = full ? full[k] || '' : '';
-        if (k !== 'template') { const u = unwrap_(k, html); html = u.html; L[k] = u.lay; }
-        else { const ws = wmSplit_(html); html = ws.html; WM = ws.wm; }
+        if (k === 'template') { const ws = wmSplit_(html); html = ws.html; WM = ws.wm; }
+        else {
+          const u = unwrap_(k, html); html = u.html; // v4.60 layout boxes (kept only their spacing)
+          if (u.lay.h || u.lay.off) L.legacy = true;
+          const sp = spacerSplit_(html); html = sp.html;
+          // a part may carry several spacers: space below the header / above or under the footer, and the page marker
+          const found = [sp]; for (let i = 0; i < 10 && found[found.length - 1].mm; i++) { const s2 = spacerSplit_(html); if (!s2.mm) break; html = s2.html; found.push(s2); }
+          found.forEach((x) => { if (x.paper && PAPERS[x.paper]) L.paper = x.paper; });
+          const real = found.filter((x) => x.mm && !x.paper && !x.nopin);
+          if (found.some((x) => x.nopin)) L.nopin = true;
+          if (k === 'header') L.hgap = (real[0] && real[0].mm) || u.lay.gap || 0;
+          else {
+            const pinS = real.find((x) => x.pin), belowS = real.find((x) => x.pos === 'below'), fixS = real.find((x) => x.pos === 'fixed');
+            if (fixS && !pinS) { L.fgap = fixS.mm; L.pin = false; }
+            if (pinS) { L.pin = true; L.hadPin = true; } else if (L.nopin) L.pin = false; if (belowS) L.fbelow = belowS.mm; else if (pinS) L.fbelow = pinS.safe;
+          }
+        }
         toEditor_(html, a, full && full.letter_attachments); areas[k] = a;
         partEls[k] = el('div', { class: 'jlt-part ' + (k === 'template' ? 'body' : k) }, [el('span', { class: 'lbl', text: T(en, ar) }), a]);
         return partEls[k];
       }));
-      // drag handles: under the header = space before the body; above the footer = space after the body
-      const handle_ = (k) => {
-        const h = el('div', { class: 'jlt-handle jlt-handle-' + k, title: k === 'header' ? T('Drag down for more space between the header and the body', 'اسحب للأسفل لزيادة المسافة بين الترويسة والنص') : T('Drag up/down to move the footer away from the body', 'اسحب لتحريك التذييل بعيدًا عن النص') }, [el('span')]);
-        h.addEventListener('mousedown', (e) => {
-          e.preventDefault(); const y0 = e.clientY, g0 = L[k].gap; h.classList.add('on');
-          const mv = (ev) => { L[k].gap = Math.max(0, Math.min(120, Math.round((g0 + (ev.clientY - y0) / MM) * 2) / 2)); applyLay_(); }; // dragging down = more space (header pushes the body down; footer moves down)
-          const up = () => { h.classList.remove('on'); document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); S.dirty = true; paintFoot_(); paintLay_(); };
-          document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
-        });
-        return h;
-      };
-      const hHead = handle_('header'), hFoot = handle_('footer');
-      paper.insertBefore(hHead, partEls.template); paper.insertBefore(hFoot, partEls.footer);
-      function applyLay_() {
-        ['header', 'footer'].forEach((k) => {
-          const p = partEls[k], a = areas[k], l = L[k];
-          p.classList.toggle('fixed', !!l.h); p.querySelector('.lbl').setAttribute('data-fix', l.h ? T('fixed ', 'ثابت ') + l.h + ' mm' : '');
-          a.style.height = l.h ? l.h * MM + 'px' : ''; a.style.display = l.h && k === 'footer' ? 'flex' : ''; a.style.flexDirection = 'column'; a.style.justifyContent = k === 'footer' && l.h ? 'flex-end' : '';
-          if (k === 'header') { p.style.marginTop = (-l.off * MM) + 'px'; p.style.marginBottom = (10 + l.gap * MM) + 'px'; }
-          else { p.style.marginTop = l.gap * MM + 'px'; p.style.marginBottom = (10 - l.off * MM) + 'px'; }
-        });
-        hHead.querySelector('span').textContent = L.header.gap ? L.header.gap + ' mm' : '';
-        hFoot.querySelector('span').textContent = L.footer.gap ? L.footer.gap + ' mm' : '';
+      const hSp = el('div', { class: 'jlt-sp jlt-sp-h', title: T('Space between the header and the text; drag to change', 'المسافة بين الترويسة والنص: اسحب للتغيير') }, [el('span')]);
+      const fSp = el('div', { class: 'jlt-sp jlt-sp-f', title: T('Space under the footer (lifts it off the bottom edge); drag up to add', 'المسافة تحت التذييل (ترفعه عن حافة الصفحة)؛ اسحب للأعلى للإضافة') }, [el('span')]);
+      partEls.header.appendChild(hSp); partEls.footer.appendChild(fSp);
+      // v4.73: Jisr does not pin the footer — it prints right after the text. This blank gap (saved as a picture above the footer) is what pushes it to the bottom.
+      const pinSp = el('div', { class: 'jlt-sp-pin zero', title: T('Blank space saved above the footer so that it starts at the bottom of the page; it is worked out again every time you save', 'مسافة فارغة تُحفظ فوق التذييل ليبدأ من أسفل الصفحة؛ تُحسب من جديد عند كل حفظ') }, [el('span')]);
+      partEls.footer.parentNode.insertBefore(pinSp, partEls.footer);
+      const guides = el('div', { class: 'jlt-guides' }); paper.appendChild(guides);
+      const scaleBox = el('div', { class: 'jlt-scale' }, [paper]);
+      const statEl = el('span', { class: 'jlt-pagestat' });
+      const dragSp_ = (sp, key, dir) => sp.addEventListener('mousedown', (e) => {
+        e.preventDefault(); const y0 = e.clientY, g0 = L[key];
+        const mv = (ev) => { L[key] = Math.max(0, Math.min(200, Math.round((g0 + dir * (ev.clientY - y0) / (MM * ZK)) * 2) / 2)); relayout_(); };
+        const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); S.dirty = true; paintFoot_(); paintLay_(); };
+        document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+      });
+      dragSp_(hSp, 'hgap', 1); dragSp_(fSp, 'fbelow', -1);
+      /** v4.70: blank space above the footer so that it starts at the page bottom even where Jisr does not pin it (what is left of the page, minus 6 mm so the text is never cut). */
+      function pinMM_() {
+        const pageH = PG.pageH * MM, hH = partEls.header.offsetHeight, fH = partEls.footer.offsetHeight + JP_FOOT_BLEED_PX, need = areas.template.offsetHeight;
+        return Math.max(0, Math.floor((pageH - hH - fH - need) / MM - PIN_SAFE_MM));
       }
+      function applyGeom_() {
+        paper.style.width = PG.pageW * MM + 'px';
+        paper.style.minHeight = PG.pageH * MM + 'px';
+      }
+      /** Shrink the page on screen to the window width (the saved letter is not affected). */
+      function fit_() {
+        const wrap = scaleBox.parentElement; if (!wrap || !wrap.clientWidth) return;
+        const full = PG.pageW * MM; ZK = Math.max(0.3, Math.min(1, (wrap.clientWidth - 34) / full));
+        paper.style.transform = ZK === 1 ? '' : 'scale(' + ZK + ')';
+        scaleBox.style.width = Math.round(full * ZK) + 'px'; scaleBox.style.height = Math.round(paper.offsetHeight * ZK) + 'px';
+      }
+      let relayT = 0;
+      /** Measure the parts at real size: where the text area ends, whether the text fits on the page, draw the page lines. */
+      function relayout_() {
+        hSp.style.height = L.hgap * MM + 'px'; hSp.classList.toggle('zero', !L.hgap); hSp.querySelector('span').textContent = L.hgap ? L.hgap + ' mm' : '';
+        fSp.style.height = L.fbelow * MM + 'px'; fSp.classList.toggle('zero', !L.fbelow); fSp.querySelector('span').textContent = L.fbelow ? L.fbelow + ' mm' : '';
+        const pageH = PG.pageH * MM, W = PG.pageW * MM;
+        const hH = partEls.header.offsetHeight, fH = partEls.footer.offsetHeight + JP_FOOT_BLEED_PX;
+        const avail = pageH - hH - fH, need = areas.template.offsetHeight;
+        const tall = need > avail + 0.5;
+        const hasFoot = !!fromEditor_(areas.footer); const gapMM = hasFoot && !tall ? (L.pin ? pinMM_() : L.fgap || 0) : 0;
+        pinSp.style.height = gapMM * MM + 'px'; pinSp.classList.toggle('zero', !gapMM); pinSp.querySelector('span').textContent = gapMM ? T('blank space ' + gapMM + ' mm: pushes the footer to the bottom', 'مسافة فارغة ' + gapMM + ' مم: تدفع التذييل إلى الأسفل') : '';
+        paper.style.minHeight = pageH + 'px';
+        guides.innerHTML = '';
+        const line = (y, cls, label, sub) => guides.appendChild(el('div', { class: 'jlt-guide ' + cls, style: { top: y + 'px' } }, [label ? el('b', { text: label }) : null, sub ? el('i', { text: sub }) : null]));
+        line(0, 'edge', T('Top of the page: Jisr prints from here, no margin', 'أعلى الصفحة: تبدأ الطباعة من هنا بلا هامش'));
+        line(hH, 'top', T('Header ends: the text starts here', 'تنتهي الترويسة: يبدأ النص هنا'));
+        if (hasFoot) line(partEls.footer.offsetTop, 'top', gapMM ? T('Footer starts: pushed to the bottom of the page', 'يبدأ التذييل: مدفوع إلى أسفل الصفحة') : T('Footer starts: Jisr prints it right after the text, not at the page bottom', 'يبدأ التذييل: يطبعه جسر بعد النص مباشرة وليس أسفل الصفحة'));
+        line(pageH, tall ? '' : 'edge', tall ? T('⚠ The page ends here: Jisr continues on a second page', '⚠ تنتهي الصفحة هنا: يكمل جسر على صفحة ثانية') : T('Bottom of the page', 'أسفل الصفحة'), tall ? '' : T('A3 sheet, no margin', 'ورقة A3 بلا هامش'));
+        const side = PG.mL * MM;
+        [side, W - side].forEach((x, i) => guides.appendChild(el('div', { class: 'jlt-vguide', style: { left: x + 'px' } }, i ? null : [el('i', { style: { top: hH + 6 + 'px' }, text: T('text starts ', 'يبدأ النص ') + Math.round(PG.mL) + T(' mm from the side', ' مم من الجانب') })])));
+        statEl.textContent = tall ? T('⚠ The text is ', '⚠ النص أطول بـ ') + Math.max(1, Math.round((need - avail) / MM)) + T(' mm longer than one page: Jisr continues on a second page and the footer follows the text', ' مم عن صفحة واحدة: يكمل جسر على صفحة ثانية ويأتي التذييل بعد النص')
+          : T(PG.paper + ' page · ', 'صفحة ' + PG.paper + ' · ') + Math.round((avail - need) / MM) + T(' mm still free for text', ' مم متبقية للنص');
+        statEl.classList.toggle('bad', tall);
+        fit_();
+      }
+      const relayoutSoon_ = () => { cancelAnimationFrame(relayT); relayT = requestAnimationFrame(() => { relayout_(); if (typeof paintWmPreview_ === 'function') paintWmPreview_(); }); };
+      try { const ro = new ResizeObserver(relayoutSoon_); Object.values(partEls).forEach((p) => ro.observe(p)); setTimeout(() => { if (scaleBox.parentElement) ro.observe(scaleBox.parentElement); }, 0); } catch (e) { /* older browser: inputs below still relayout */ }
       // the layout bar
       const layEl = el('div', { class: 'jlt-lay' });
       function paintLay_() {
         layEl.innerHTML = '';
-        const nIn = (k, f, min, max, title) => { const i = el('input', { type: 'number', step: '0.5', min: String(min), max: String(max), value: L[k][f] == null ? '' : String(L[k][f]), placeholder: f === 'h' ? T('auto', 'تلقائي') : '0', class: 'jlt-lay-' + k + '-' + f, title }); i.addEventListener('change', () => { const v = i.value === '' ? null : Math.max(min, Math.min(max, Number(i.value))); L[k][f] = f === 'h' ? (v || null) : (v || 0); applyLay_(); S.dirty = true; paintFoot_(); }); return i; };
-        const fix = (k) => { const c = el('input', { type: 'checkbox', class: 'jlt-lay-' + k + '-fix' }); c.checked = !!L[k].h; c.addEventListener('change', () => { L[k].h = c.checked ? (L[k].h || (k === 'header' ? 30 : 20)) : null; applyLay_(); paintLay_(); S.dirty = true; paintFoot_(); }); return c; };
+        const nIn = (val, min, max, cls, on, title) => { const i = el('input', { type: 'number', step: '0.5', min: String(min), max: String(max), value: String(val), class: cls, title: title || '' }); i.addEventListener('change', () => { on(Math.max(min, Math.min(max, Number(i.value) || 0))); S.dirty = true; paintFoot_(); relayout_(); }); return i; };
+        layEl.appendChild(el('b', { text: T('Page', 'الصفحة') }));
+        const paperSel = el('select', { class: 'jlt-lay-paper', title: T('The page size the letter is laid out on. Jisr prints its letters on A3 (checked on a real PDF), so A3 is the default and the footer push is worked out for it. Choose A4 only if your letters really print on A4.', 'حجم الصفحة التي يُرتَّب عليها الخطاب. يطبع جسر خطاباته على A3 (تم التحقق من ملف PDF حقيقي) لذلك A3 هو الافتراضي وتُحسب دفعة التذييل له. اختر A4 فقط إذا كانت خطاباتك تُطبع فعلًا على A4.') }, Object.keys(PAPERS).map((n) => el('option', { value: n, text: n + ' · ' + PAPERS[n][0] + ' × ' + PAPERS[n][1] + ' mm' })));
+        paperSel.value = PG.paper;
+        paperSel.addEventListener('change', () => {
+          const from = PG.paper, to = paperSel.value; if (from === to) return;
+          gmSet_('letterPaper', to); const n = refitAll_(from, to); PG = pageGeom_(to); L.paper = to; L.fitted = n ? from + ' → ' + to : '';
+          if (n) { S.dirty = true; paintFoot_(); } applyGeom_(); paintLay_(); relayout_();
+        });
+        layEl.appendChild(paperSel);
+        layEl.appendChild(el('span', { class: 'jbo-muted jlt-geo', title: T('Read from Jisr\'s own print preview: no page margin; the header and footer run edge to edge; the text has 50 px (13 mm) on each side.', 'من معاينة الطباعة في جسر: بلا هوامش؛ الترويسة والتذييل بعرض الصفحة؛ للنص 50 بكسل (13 مم) من كل جانب.'), text: T('no page margin · text ' + Math.round(PG.mL) + ' mm from the sides', 'بلا هوامش · النص ' + Math.round(PG.mL) + ' مم من الجانبين') }));
+        layEl.appendChild(el('span', { style: { width: '1px', height: '20px', background: '#dadce0' } }));
         layEl.appendChild(el('b', { text: T('Header', 'الترويسة') }));
-        layEl.appendChild(el('label', { title: T('A fixed-height box: anything taller (e.g. a big logo) is cut at the box edge and never pushes into the body', 'صندوق بارتفاع ثابت: ما يزيد عنه (مثل شعار كبير) يُقص عند حافة الصندوق ولا يدخل في النص') }, [fix('header'), T('Fixed height', 'ارتفاع ثابت'), L.header.h ? nIn('header', 'h', 5, 120) : null, L.header.h ? 'mm' : null]));
-        layEl.appendChild(el('label', {}, [T('Move up', 'رفع للأعلى'), nIn('header', 'off', -40, 25, T('Negative moves it down', 'السالب يخفضها')), 'mm']));
-        layEl.appendChild(el('label', {}, [T('Space below', 'مسافة أسفلها'), nIn('header', 'gap', 0, 120), 'mm']));
+        layEl.appendChild(el('label', {}, [T('Space below', 'مسافة أسفلها'), nIn(L.hgap, 0, 200, 'jlt-lay-hgap', (v) => { L.hgap = v; }), 'mm']));
         layEl.appendChild(el('span', { style: { width: '1px', height: '20px', background: '#dadce0' } }));
         layEl.appendChild(el('b', { text: T('Footer', 'التذييل') }));
-        layEl.appendChild(el('label', { title: T('A fixed-height box with the footer at its bottom: it can never ride up into the body', 'صندوق بارتفاع ثابت والتذييل في أسفله: لا يصعد إلى النص') }, [fix('footer'), T('Fixed height', 'ارتفاع ثابت'), L.footer.h ? nIn('footer', 'h', 5, 120) : null, L.footer.h ? 'mm' : null]));
-        layEl.appendChild(el('label', {}, [T('Move down', 'خفض للأسفل'), nIn('footer', 'off', -40, 25, T('Negative moves it up', 'السالب يرفعه')), 'mm']));
-        layEl.appendChild(el('label', {}, [T('Space above', 'مسافة أعلاه'), nIn('footer', 'gap', 0, 120), 'mm']));
-        const reset = el('button', { class: 'jbo-btn', type: 'button', text: T('Reset layout', 'إعادة التخطيط'), style: { padding: '3px 10px' } });
-        reset.addEventListener('click', () => { L.header = LAY0(); L.footer = LAY0(); applyLay_(); paintLay_(); S.dirty = true; paintFoot_(); });
-        layEl.appendChild(reset);
+        layEl.appendChild(el('label', { title: T('Extra space between the footer and the bottom edge of the page (lifts it), e.g. if the printer clips the edge.', 'مسافة إضافية بين التذييل وأسفل الصفحة (ترفعه)، مثلًا إذا قصّ الطابعُ الحافة.') }, [T('Space under it', 'مسافة تحته'), nIn(L.fbelow, 0, 100, 'jlt-lay-fbelow', (v) => { L.fbelow = v; }), 'mm']));
+        layEl.appendChild(statEl);
+        if (L.pinNote && L.pin) layEl.appendChild(el('span', { class: 'jbo-muted jlt-pinnote', text: T('✓ The footer will be pushed to the bottom of the page; save to apply.', '✓ سيُدفع التذييل إلى أسفل الصفحة؛ احفظ للتطبيق.') }));
+        if (L.fitted) layEl.appendChild(el('span', { class: 'jbo-muted jlt-fitnote', text: T('✓ Fitted to the page (' + L.fitted + '); check the letter, then save.', '✓ تم ضبط الخطاب على الصفحة (' + L.fitted + ')؛ راجعه ثم احفظ.') }));
+        const pinCb = el('input', { type: 'checkbox', class: 'jlt-lay-pin' }); pinCb.checked = !!L.pin;
+        pinCb.addEventListener('change', () => { L.pin = pinCb.checked; S.dirty = true; paintFoot_(); });
+        layEl.appendChild(el('label', { title: T('Jisr does not pin the footer: it prints it right after the text, so on a short letter it floats up. Leave this ticked and a blank space is saved above the footer so it starts at the bottom of the page (worked out when you save; if you make the text longer later in Jisr, save again from here).', 'لا يثبّت جسر التذييل: يطبعه بعد النص مباشرة فيرتفع في الخطاب القصير. اترك هذا مفعّلًا لتُحفظ مسافة فارغة فوق التذييل ليبدأ من أسفل الصفحة (تُحسب عند الحفظ؛ إذا طوّلت النص لاحقًا في جسر فاحفظ مجددًا من هنا).') }, [pinCb, T('Push the footer to the bottom', 'ادفع التذييل إلى الأسفل')]));
+        const fgIn = el('input', { type: 'number', min: '0', max: '300', step: '1', value: String(L.fgap || 0), class: 'jlt-lay-fgap' });
+        const fgSync = () => { fgIn.disabled = !!L.pin; };
+        fgIn.addEventListener('change', () => { L.fgap = Math.max(0, Math.min(300, Number(fgIn.value) || 0)); fgIn.value = String(L.fgap); S.dirty = true; paintFoot_(); });
+        pinCb.addEventListener('change', fgSync); fgSync();
+        layEl.appendChild(el('label', { title: T('Used when the push to the bottom above is off: this many millimetres of blank space are saved above the footer, the same on every save. Add or remove until the footer sits where you want.', 'يُستخدم عند إيقاف الدفع إلى الأسفل أعلاه: هذا العدد من المليمترات يُحفظ كمسافة فارغة فوق التذييل في كل حفظ. زد أو أنقص حتى يستقر التذييل في المكان المطلوب.') }, [T('Fixed space above the footer', 'مسافة ثابتة فوق التذييل'), ' ', fgIn, ' mm']));
+        if (L.legacy) layEl.appendChild(el('span', { class: 'jbo-muted', text: T('(old fixed-height boxes were removed; Jisr does not keep them)', '(أُزيلت الصناديق الثابتة القديمة؛ جسر لا يحتفظ بها)') }));
       }
-      applyLay_(); paintLay_();
+      /** widths the parts are laid out on (px): header / footer run edge to edge, the body has 50 px at each side */
+      const partW_ = (paperName, k) => PAPERS[paperName][0] * MM - (k === 'template' ? 2 * JP_SIDE_PX : 0);
+      function refitAll_(fromP, toP) { let n = 0; Object.keys(areas).forEach((k) => { n += refitBox_(areas[k], partW_(fromP, k), partW_(toP, k)); }); if (WM && WM.w) WM.w = Math.max(20, Math.round(WM.w * PAPERS[toP][0] / PAPERS[fromP][0])); return n; }
+      (function fitOnOpen_() {
+        let from = L.paper; if (!from) { const wide = Array.from(paper.querySelectorAll('img')).some((i) => Number(i.getAttribute('width')) >= 1000 && !/%/.test(i.style.width || '')) || Array.from(paper.querySelectorAll('img')).some((i) => Number(i.getAttribute('width')) >= 1000); from = wide ? 'A3' : ''; }
+        let n = 0; if (from && PAPERS[from] && from !== PG.paper) { n = refitAll_(from, PG.paper); if (n) L.fitted = from + ' → ' + PG.paper; }
+        const g = Object.keys(areas).reduce((a, k) => a + guardBox_(areas[k], partW_(PG.paper, k)), 0);
+        if (n || g) { S.dirty = true; if (!L.fitted) L.fitted = T('side margins narrowed', 'تضييق الهوامش الجانبية'); }
+        L.paper = PG.paper;
+      })();
+      // v4.73: a letter that was never pushed down (Jisr floats its footer up) is offered the push right away: Save becomes available
+      if (full && !L.hadPin && !L.nopin && (areas.footer.querySelector('img') || (areas.footer.textContent || '').replace(/\s|\u00a0/g, ''))) { L.pinNote = true; S.dirty = true; }
+      applyGeom_(); paintLay_(); setTimeout(relayout_, 0);
+      Object.values(areas).forEach((a) => a.addEventListener('input', relayoutSoon_));
+
       // ---- watermark (v4.62): preview on the page + settings bar
       const wmEl = el('div', { class: 'jlt-wm', 'aria-hidden': 'true' }); paper.appendChild(wmEl);
       const atts = (full && full.letter_attachments && typeof full.letter_attachments === 'object') ? full.letter_attachments : {};
       const picUrl_ = (src) => { const m = String(src || '').match(/letter_attachment_(\d+)/); return m ? (atts['letter_attachment_' + m[1]] || atts[m[1]] || '') : src; };
+      // the baked picture (text or picture → lighter, rotated PNG) is re-made (debounced) whenever a setting that shows in it changes
+      let bakeT = null, bakeP = Promise.resolve(), bakeKey = '';
+      const bakeKeyOf_ = (o) => o.kind === 'text' ? ['t', o.text, o.size, o.color, o.op, o.angle].join('|') : ['i', o.src, o.op, o.angle].join('|');
+      function rebake_() {
+        const o = wmNorm_(WM);
+        if (!o.kind) { WM.baked = ''; return; }
+        const key = bakeKeyOf_(o);
+        if (key === bakeKey && WM.baked) return;
+        WM.baked = ''; bakeKey = key; clearTimeout(bakeT);
+        bakeP = new Promise((res) => {
+          bakeT = setTimeout(async () => {
+            let out = null;
+            if (o.kind === 'text') { const r = bakeText_(o); if (r) out = { url: r.url, wmm: r.wmm }; }
+            else { const r = await bakeImage_(picUrl_(o.src), o.op, o.angle); if (r) out = { url: r.url, ratio: r.ratio }; }
+            if (bakeKey === key) { WM.baked = out ? out.url : ''; WM.bakedW = out && out.wmm; WM.bakedRatio = out && out.ratio; WM.bakeFailed = !out; paintWmPreview_(); paintWmNote_(); }
+            res();
+          }, 120);
+        });
+      }
       function paintWmPreview_() {
         const o = wmNorm_(WM); wmEl.innerHTML = '';
         wmEl.style.display = o.kind ? '' : 'none'; if (!o.kind) return;
-        wmEl.style.top = WM_TOP[o.pos];
-        const rot = 'rotate(' + o.angle + 'deg)';
-        if (o.kind === 'text') wmEl.appendChild(el('span', { class: 'jlt-wm-text', text: o.text, style: { fontSize: o.size + 'pt', color: o.color, opacity: String(o.op / 100), transform: rot } }));
-        else { const u = picUrl_(o.src); wmEl.appendChild(u ? el('img', { src: u, alt: '', style: { width: o.w * MM + 'px', opacity: String(o.op / 100), transform: rot } }) : el('span', { text: T('[picture]', '[صورة]'), style: { fontSize: '28pt', color: '#9aa0a6', transform: rot } })); }
+        wmEl.classList.toggle('front', o.place === 'page' && o.layer === 'front');
+        // where it lands: "page" = share of the page height; "flow" = mm below the top of the body
+        if (o.place === 'page') wmEl.style.top = WM_TOP[o.pos];
+        else { const bodyPart = paper.querySelector('.jlt-part.body'); wmEl.style.top = ((bodyPart ? bodyPart.offsetTop : 0) + WM_DOWN[o.pos] * MM) + 'px'; }
+        if (o.baked || WM.baked) {
+          const wmm = o.kind === 'text' ? clampN_(WM.bakedW, 5, 400, 150) : o.w * clampN_(WM.bakedRatio, 0.2, 3, 1);
+          wmEl.appendChild(el('img', { src: WM.baked, alt: '', style: { width: wmm * MM + 'px', maxWidth: '100%' } }));
+        } else if (o.kind === 'image' && picUrl_(o.src)) {
+          wmEl.appendChild(el('img', { src: picUrl_(o.src), alt: '', style: { width: o.w * MM + 'px', opacity: String(o.op / 100), transform: 'rotate(' + o.angle + 'deg)' } }));
+        } else wmEl.appendChild(el('span', { class: 'jlt-wm-text', text: o.kind === 'text' ? o.text : T('[picture]', '[صورة]'), style: { fontSize: (o.kind === 'text' ? o.size : 28) + 'pt', color: fadeColor_(o.kind === 'text' ? o.color : '#9aa0a6', o.op), transform: 'rotate(' + o.angle + 'deg)' } }));
+      }
+      const wmNote = el('span', { class: 'jbo-muted jlt-wm-note' });
+      function paintWmNote_() {
+        wmNote.textContent = WM.kind === 'image' && WM.bakeFailed ? T('This picture can\'t be re-drawn here, so it is faded with transparency instead. For a guaranteed result, upload the logo file.', 'تعذّر إعادة رسم هذه الصورة هنا، فستُبهت بالشفافية. للحصول على نتيجة مضمونة ارفع ملف الشعار.') : '';
       }
       const wmBar = el('div', { class: 'jlt-lay jlt-wmbar' });
       function paintWmBar_() {
         wmBar.innerHTML = '';
-        const changed = () => { S.dirty = true; paintFoot_(); paintWmPreview_(); };
+        const changed = () => { S.dirty = true; paintFoot_(); rebake_(); paintWmPreview_(); };
         const kindSel = el('select', { class: 'jlt-wm-kind' }, [['', T('None', 'بدون')], ['text', T('Text', 'نص')], ['image', T('Picture', 'صورة')]].map(([v, l]) => el('option', { value: v, text: l })));
         kindSel.value = WM.kind || '';
         kindSel.addEventListener('change', () => { WM.kind = kindSel.value; if (WM.kind === 'text' && !WM.text) WM.text = T('CONFIDENTIAL', 'سري'); paintWmBar_(); changed(); });
         wmBar.appendChild(el('b', { text: T('Watermark', 'علامة مائية') })); wmBar.appendChild(kindSel);
-        if (!WM.kind) { wmBar.appendChild(el('span', { class: 'jbo-muted', text: T('Shows faintly behind the letter on every page of the PDF.', 'تظهر باهتة خلف الخطاب في كل صفحة من ملف PDF.') })); return; }
+        if (!WM.kind) { wmBar.appendChild(el('span', { class: 'jbo-muted', text: T('Jisr has no watermark of its own; this adds a faint text or picture behind the letter text.', 'لا يوجد في جسر علامة مائية؛ هذه تضيف نصًا أو صورة باهتة خلف نص الخطاب.') })); return; }
         const num = (f, min, max, step, title) => { const i = el('input', { type: 'number', min: String(min), max: String(max), step: String(step), value: String(WM[f]), class: 'jlt-wm-' + f, title: title || '' }); i.addEventListener('input', () => { WM[f] = Number(i.value); changed(); }); return i; };
         if (WM.kind === 'text') {
           const tx = el('input', { type: 'text', class: 'jlt-wm-text-in', value: WM.text, maxlength: '80', placeholder: T('e.g. CONFIDENTIAL, DRAFT, company name', 'مثل: سري، مسودة، اسم الشركة') });
@@ -39625,20 +41315,37 @@ const CATALOG_SRC = [
           upB.addEventListener('click', () => up.click());
           up.addEventListener('change', () => {
             const f = up.files && up.files[0]; if (!f) return;
-            if (f.size > 250 * 1024) { say(T('Picture too large: keep it under 250 KB (a PNG logo is usually 20–80 KB).', 'الصورة كبيرة: يجب أن تكون أقل من 250 ك.ب.'), true); return; }
-            const rd = new FileReader(); rd.onload = () => { WM.src = String(rd.result); picSel.value = ''; changed(); say(''); }; rd.readAsDataURL(f);
+            if (f.size > 2 * 1024 * 1024) { say(T('Picture too large: keep it under 2 MB.', 'الصورة كبيرة: يجب أن تكون أقل من 2 م.ب.'), true); return; }
+            const rd = new FileReader();
+            rd.onload = async () => { const src = String(rd.result); const r = await bakeImage_(src, 100, 0); WM.src = r ? r.url : src; picSel.value = ''; changed(); say(''); paintWmBar_(); }; // stored at most 1000 px wide
+            rd.readAsDataURL(f);
           });
           wmBar.appendChild(picSel); wmBar.appendChild(upB); wmBar.appendChild(up);
           if (/^data:/.test(WM.src)) wmBar.appendChild(el('span', { class: 'jbo-muted', text: T('uploaded picture', 'صورة مرفوعة') }));
           wmBar.appendChild(el('label', {}, [T('Width', 'العرض'), num('w', 20, 200, 5), 'mm']));
         }
-        wmBar.appendChild(el('label', {}, [T('Strength', 'الوضوح'), num('op', 3, 60, 1, T('3 = very faint, 60 = strong', '3 = باهت جدًا، 60 = واضح')), '%']));
+        // the meter: how visible the watermark is (faint … strong)
+        const opV = el('span', { class: 'jlt-wm-opv', text: WM.op + '%' });
+        const op = el('input', { type: 'range', min: '3', max: '100', step: '1', value: String(WM.op), class: 'jlt-wm-op', title: T('Drag left = fainter, right = clearer', 'لليسار أبهت، لليمين أوضح'), 'aria-label': T('Watermark visibility', 'وضوح العلامة المائية') });
+        op.addEventListener('input', () => { WM.op = Number(op.value); opV.textContent = WM.op + '%'; changed(); });
+        wmBar.appendChild(el('label', {}, [T('Visibility', 'الوضوح'), el('small', { class: 'jbo-muted', text: T('faint', 'باهت') }), op, el('small', { class: 'jbo-muted', text: T('clear', 'واضح') }), opV]));
         wmBar.appendChild(el('label', {}, [T('Angle', 'الزاوية'), num('angle', -90, 90, 5), '°']));
         const posSel = el('select', { class: 'jlt-wm-pos' }, [['top', T('Top', 'أعلى')], ['center', T('Middle', 'وسط')], ['bottom', T('Bottom', 'أسفل')]].map(([v, l]) => el('option', { value: v, text: l })));
         posSel.value = WM.pos; posSel.addEventListener('change', () => { WM.pos = posSel.value; changed(); });
         wmBar.appendChild(el('label', {}, [T('Place', 'الموضع'), posSel]));
+        const plSel = el('select', { class: 'jlt-wm-place', title: T('Behind the text: works in Jisr (first page). Every page: only if the PDF keeps page positioning.', 'خلف النص: يعمل في جسر (الصفحة الأولى). كل الصفحات: فقط إذا احتفظ ملف PDF بالتموضع.') },
+          [['flow', T('Behind the text', 'خلف النص')], ['page', T('Every page (fixed)', 'كل الصفحات (ثابت)')]].map(([v, l]) => el('option', { value: v, text: l })));
+        plSel.value = WM.place === 'page' ? 'page' : 'flow';
+        plSel.addEventListener('change', () => { WM.place = plSel.value; paintWmBar_(); changed(); });
+        wmBar.appendChild(el('label', {}, [T('Layout', 'التخطيط'), plSel]));
+        if (WM.place === 'page') {
+          const beh = el('input', { type: 'checkbox', class: 'jlt-wm-behind' }); beh.checked = WM.layer !== 'front';
+          beh.addEventListener('change', () => { WM.layer = beh.checked ? 'behind' : 'front'; changed(); });
+          wmBar.appendChild(el('label', { title: T('Untick if the printed letter hides it: it is then drawn over the text, blended so the text stays dark.', 'ألغِ التحديد إذا اختفت في الخطاب المطبوع: تُرسم فوق النص مع بقاء النص داكنًا.') }, [beh, T('Under the text', 'تحت النص')]));
+        }
+        wmBar.appendChild(wmNote); paintWmNote_();
       }
-      paintWmBar_(); paintWmPreview_();
+      paintWmBar_(); if (WM.kind) { if (WM.baked && WM.kind === 'image') { bakeKey = bakeKeyOf_(wmNorm_(WM)); } rebake_(); } paintWmPreview_();
       Object.values(areas).forEach((a) => {
         a.addEventListener('input', () => { S.dirty = true; paintFoot_(); });
         a.addEventListener('focus', () => { S.lastArea = a; });
@@ -39702,16 +41409,142 @@ const CATALOG_SRC = [
       vq.addEventListener('input', paintVars_); paintVars_();
       const side = el('div', { class: 'jlt-side' }, [el('b', { style: { fontSize: '13px', marginBottom: '6px' }, text: T('Variables', 'المتغيرات') }), el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', marginBottom: '6px' }, text: T('Click one to put it where the cursor is, or drag it into the letter. Drag a chip in the letter to move it.', 'اضغط متغيرًا لإدراجه عند المؤشر أو اسحبه إلى الخطاب. اسحب أي متغير في الخطاب لنقله.') }), vq, vlist]);
       body.appendChild(el('div', { class: 'jlt-names' }, [nameEn, nameAr]));
+      // ---- import Word / PDF (v4.65)
+      const impIn = el('input', { type: 'file', accept: '.docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document', class: 'jlt-imp-file', style: { display: 'none' } });
+      const impB = el('button', { type: 'button', class: 'jbo-btn jlt-imp-btn', text: T('📄 Import Word / PDF…', '📄 استيراد Word / PDF…'), title: T('Bring a .docx letter (header, body, footer, pictures, placeholders) or a PDF into this editor', 'استيراد خطاب Word ‏(.docx) أو PDF إلى هذا المحرر') });
+      const impBox = el('div', { class: 'jlt-imp', style: { display: 'none' } });
+      impB.addEventListener('click', () => impIn.click());
+      S.importPick_ = () => impIn.click();
+      body.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' } }, [impB, impIn, el('span', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Word: header, body, footer and pictures come in, placeholders like «Employee Name» become variables. PDF: its text, or page 1 as a picture (e.g. a letterhead).', 'Word: تُستورد الترويسة والنص والتذييل والصور، وتتحول عبارات مثل «اسم الموظف» إلى متغيرات. PDF: نصه، أو الصفحة الأولى كصورة (مثل ورق رسمي).') })]));
+      body.appendChild(impBox);
+      const listTxt = (arr, n) => arr.slice(0, n).join(', ') + (arr.length > n ? '…' : '');
+      function insertAtCursor_(html) {
+        const tmp = el('div'); toEditor_(html, tmp, full && full.letter_attachments);
+        const a = areas.template; a.focus();
+        let r = S.savedRange && a.contains(S.savedRange.startContainer) ? S.savedRange : null;
+        if (!r) { r = document.createRange(); r.selectNodeContents(a); r.collapse(false); }
+        const frag = document.createDocumentFragment(); while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+        r.insertNode(frag);
+      }
+      function showImport_(title, lines, actions) {
+        impBox.innerHTML = ''; impBox.style.display = '';
+        impBox.appendChild(el('b', { text: title }));
+        lines.filter(Boolean).forEach((l) => impBox.appendChild(el('div', { class: l.cls || '', text: l.text || l })));
+        const row = el('div', { class: 'row' });
+        actions.forEach(([label, fn, primary]) => { const b = el('button', { type: 'button', class: 'jbo-btn' + (primary ? ' jbo-btn-primary' : ''), text: label }); b.addEventListener('click', async () => { try { await fn(); } catch (e) { say(e.message, true); } }); row.appendChild(b); });
+        const cancel = el('button', { type: 'button', class: 'jbo-btn', text: T('Cancel', 'إلغاء') }); cancel.addEventListener('click', () => { impBox.style.display = 'none'; }); row.appendChild(cancel);
+        impBox.appendChild(row);
+      }
+      const doneImport_ = (msg) => { impBox.style.display = 'none'; S.dirty = true; paintFoot_(); paintVars_(); relayout_(); say('✓ ' + msg); };
+      impIn.addEventListener('change', async () => {
+        const f = impIn.files && impIn.files[0]; impIn.value = ''; if (!f) return;
+        if (f.size > 25 * 1024 * 1024) { say(T('The file is larger than 25 MB.', 'الملف أكبر من 25 م.ب.'), true); return; }
+        say(T('Reading ', 'جارٍ قراءة ') + f.name + '…');
+        try {
+          if (/\.docx$/i.test(f.name)) {
+            const r = await wordImport_(f, PG);
+            const cnt = (h) => (String(h).match(/<(p|li|tr)\b/g) || []).length;
+            const empty = !['header', 'template', 'footer'].some((k) => fromEditor_(areas[k]));
+            const smpBoxes = (r.samples || []).map((x) => { const c = el('input', { type: 'checkbox', class: 'jlt-smp', 'data-key': x.key }); c.checked = true; c._x = x; return c; });
+            const picked = () => smpBoxes.filter((c) => c.checked).map((c) => c._x);
+            const repl = () => {
+              const P = picked(); ['header', 'body', 'footer'].forEach((k2) => { r.parts[k2] = applySamples_(r.parts[k2], P); });
+              toEditor_(r.parts.header, areas.header, {}); toEditor_(r.parts.body, areas.template, {}); toEditor_(r.parts.footer, areas.footer, {});
+              if (!nameEn.value.trim()) nameEn.value = f.name.replace(/\.docx$/i, '').replace(/[-_]+/g, ' ').trim();
+              if (r.wm) { WM = Object.assign(WM0(), r.wm); WM.baked = ''; paintWmBar_(); rebake_(); paintWmPreview_(); }
+              paintLay_();
+              doneImport_(T('Word letter imported: check it, then Save to Jisr.', 'استُورد خطاب Word: راجعه ثم احفظ في جسر.'));
+            };
+            showImport_(f.name, [
+              T('Header ', 'الترويسة ') + cnt(r.parts.header) + T(' · body ', ' · النص ') + cnt(r.parts.body) + T(' · footer ', ' · التذييل ') + cnt(r.parts.footer) + T(' paragraph(s) · ', ' فقرة · ') + r.pics + T(' picture(s)', ' صورة') + (r.fullBleed ? T(' · ' + r.fullBleed + ' run(s) edge to edge', ' · ' + r.fullBleed + ' بعرض الصفحة') : ''),
+              r.moved ? T('The letterhead at the top of the page (', 'الترويسة أعلى الصفحة (') + r.moved + T(' block(s): logo / date / line) goes into the Header.', ' فقرة: شعار / تاريخ / خط) ستكون في الترويسة.') : null,
+              r.wm ? T('Word\'s watermark becomes the letter\'s watermark (', 'العلامة المائية في Word تصبح علامة الخطاب (') + (r.wm.kind === 'image' ? T('picture', 'صورة') : r.wm.text) + ').' : null,
+              r.scale !== 1 ? T('The Word page is a different size: sizes were scaled ×', 'صفحة Word بحجم مختلف: غُيّرت المقاسات ×') + Math.round(r.scale * 100) / 100 + T(' to fit the ' + PG.paper + ' page.', ' لتناسب صفحة ' + PG.paper + '.') : null,
+              r.found.length ? T('Became variables: ', 'تحولت إلى متغيرات: ') + listTxt(r.found.map((x) => x.label + ' → ' + varLabel_(x.key)), 8) : T('No placeholders found.', 'لم يُعثر على عبارات متغيرة.'),
+              r.missed.length ? { cls: 'miss', text: T('Not recognised (left as text; replace them with variables): ', 'غير معروفة (تُركت نصًا؛ استبدلها بمتغيرات): ') + listTxt(r.missed, 8) } : null,
+            ].concat(r.notes.map((n) => ({ cls: 'miss', text: n }))),
+            [[empty ? T('Use this letter', 'استخدم هذا الخطاب') : T('Replace header, body and footer', 'استبدال الترويسة والنص والتذييل'), repl, true],
+              [T('Insert its body at the cursor', 'إدراج نصه عند المؤشر'), () => { insertAtCursor_(applySamples_(r.parts.body, picked())); doneImport_(T('Inserted into the body.', 'أُدرج في النص.')); }]]);
+            if (smpBoxes.length) {
+              const box = el('div', { class: 'jlt-smpbox' }, [el('div', { style: { marginTop: '6px', fontWeight: '600' }, text: T('This letter was issued for one employee. Turn these details into variables so every employee gets their own:', 'هذا الخطاب صادر لموظف واحد. حوّل هذه البيانات إلى متغيرات ليحصل كل موظف على بياناته:') })]);
+              smpBoxes.forEach((c) => box.appendChild(el('label', { style: { display: 'block', margin: '2px 0' } }, [c, ' ', el('span', { dir: 'auto', text: c._x.value }), ' → ', el('b', { text: varLabel_(c._x.key) })])));
+              impBox.insertBefore(box, impBox.querySelector('.row'));
+            }
+            say('');
+          } else if (/\.pdf$/i.test(f.name)) {
+            const asText = async (target) => {
+              const r = await pdfImport_(f, false);
+              if (!r.html.replace(/<[^>]+>/g, '').trim()) { say(T('This PDF has no text to read (it is probably a scan). Use "Page as picture" instead.', 'لا يحتوي ملف PDF على نص قابل للقراءة (غالبًا مسح ضوئي). استخدم "الصفحة كصورة".'), true); return; }
+              if (target === 'replace') toEditor_(r.html, areas.template, {}); else insertAtCursor_(r.html);
+              doneImport_(T('PDF text imported (', 'استُورد نص PDF (') + r.pages + T(' page(s)); check the layout; ', ' صفحة)؛ راجع التنسيق؛ ') + (r.found.length ? r.found.length + T(' placeholder(s) became variables', ' عبارة أصبحت متغيرات') : '') + (r.missed.length ? T('; not recognised: ', '؛ غير معروفة: ') + listTxt(r.missed, 6) : ''));
+            };
+            const asPic = async (target) => {
+              const r = await pdfImport_(f, true);
+              const img = '<p style="text-align:center;"><img class="jlt-newimg" data-name="' + f.name.replace(/[^\w.\- ]/g, '_') + '" src="' + r.png + '" width="' + (target === 'header' ? Math.round(printWOf_() * MM) : 450) + '" style="width:' + (target === 'header' ? '100%' : '450px') + ';height:auto;"></p>';
+              if (target === 'header') { const keep = fromEditor_(areas.header); toEditor_(img + (keep || ''), areas.header, full && full.letter_attachments); } else insertAtCursor_(img);
+              doneImport_(T('Page 1 added as a picture; it is uploaded to Jisr when you save.', 'أُضيفت الصفحة 1 كصورة: تُرفع إلى جسر عند الحفظ.'));
+            };
+            showImport_(f.name, [T('How should this PDF come in?', 'كيف يُستورد ملف PDF؟')], [
+              [T('Text → replace the body', 'النص ← استبدال النص'), () => asText('replace'), true],
+              [T('Text → at the cursor', 'النص ← عند المؤشر'), () => asText('insert')],
+              [T('Page 1 as a picture → header (letterhead)', 'الصفحة 1 كصورة ← الترويسة'), () => asPic('header')],
+              [T('Page 1 as a picture → at the cursor', 'الصفحة 1 كصورة ← عند المؤشر'), () => asPic('insert')]]);
+            say('');
+          } else say(T('Choose a Word .docx or a PDF file (old .doc files: open them in Word and Save As .docx).', 'اختر ملف Word ‏(.docx) أو PDF (ملفات ‎.doc القديمة: افتحها في Word واحفظها بصيغة ‎.docx).'), true);
+        } catch (e) { say(f.name + ': ' + (e.message || e), true); }
+      });
+      const printWOf_ = () => PG.pageW; // a header picture runs edge to edge in Jisr
+      const textWOf_ = () => PG.pageW - PG.mL - PG.mR;
+      // ---- pictures (v4.68): align, full width, exact width, keep proportions. Click a picture in the page.
+      const imgBar = el('div', { class: 'jlt-imgbar' });
+      let PIC = null;
+      const isPic_ = (im) => im && im.tagName === 'IMG' && !/^jlt-/.test(im.getAttribute('alt') || '') && !im.closest('.jlt-wm');
+      function alignPic_(im, how) {
+        const area = im.closest('[data-part]'); let p = im.parentElement;
+        while (p && p !== area && !/^(P|TD|TH|LI)$/.test(p.tagName)) p = p.parentElement;
+        if (!p || p === area) { p = document.createElement('p'); im.replaceWith(p); p.appendChild(im); }
+        p.style.textAlign = how;
+      }
+      /** Width in px (the page is 96 dpi). Only the width is written, never a fixed height, so the picture keeps its shape. */
+      function sizePic_(im, px, full) {
+        im.setAttribute('width', String(Math.round(px))); im.removeAttribute('height');
+        im.style.width = full ? '100%' : Math.round(px) + 'px'; im.style.height = 'auto';
+      }
+      function selectPic_(im) {
+        if (PIC) PIC.classList.remove('jlt-picsel');
+        PIC = isPic_(im) ? im : null; if (PIC) PIC.classList.add('jlt-picsel');
+        paintImgBar_();
+      }
+      function paintImgBar_() {
+        imgBar.innerHTML = ''; imgBar.classList.toggle('on', !!PIC);
+        if (!PIC) return;
+        const part = (PIC.closest('[data-part]') || {}).getAttribute ? PIC.closest('[data-part]').getAttribute('data-part') : '';
+        const edge = part === 'header' || part === 'footer';
+        const maxW = Math.round((edge ? PG.pageW : PG.pageW - PG.mL - PG.mR) * MM);
+        imgBar.appendChild(el('b', { text: T('Picture', 'الصورة') }));
+        const btn = (cls, label, title, fn) => { const b = el('button', { type: 'button', class: 'jbo-btn ' + cls, text: label, title }); b.addEventListener('mousedown', (e) => e.preventDefault()); b.addEventListener('click', () => { fn(); S.dirty = true; paintFoot_(); relayout_(); paintImgBar_(); }); imgBar.appendChild(b); };
+        btn('jlt-pic-left', '⇤', T('Align left', 'محاذاة لليسار'), () => alignPic_(PIC, 'left'));
+        btn('jlt-pic-center', '↔', T('Centre', 'توسيط'), () => alignPic_(PIC, 'center'));
+        btn('jlt-pic-right', '⇥', T('Align right', 'محاذاة لليمين'), () => alignPic_(PIC, 'right'));
+        btn('jlt-pic-full', edge ? T('Full page width', 'بعرض الصفحة') : T('Full text width', 'بعرض النص'), edge ? T('As wide as the page (edge to edge)', 'بعرض الصفحة كاملة') : T('As wide as the text area', 'بعرض منطقة النص'), () => sizePic_(PIC, maxW, true));
+        const w = el('input', { type: 'number', min: '10', max: String(maxW), step: '10', value: String(Math.round(PIC.offsetWidth)), class: 'jlt-pic-w' });
+        w.addEventListener('change', () => { sizePic_(PIC, Math.max(10, Math.min(maxW, Number(w.value) || 10)), false); S.dirty = true; paintFoot_(); relayout_(); paintImgBar_(); });
+        imgBar.appendChild(el('label', {}, [T('Width', 'العرض'), w, 'px']));
+        btn('jlt-pic-prop', T('Keep proportions', 'حفظ النسبة'), T('Remove the fixed height so the picture is not squashed or stretched', 'إزالة الارتفاع الثابت لئلا تُضغط الصورة أو تُمط'), () => { PIC.removeAttribute('height'); PIC.style.height = 'auto'; });
+        imgBar.appendChild(el('span', { class: 'jbo-muted', text: (edge ? T('Header and footer pictures run edge to edge (max 400 px tall). ', 'صور الترويسة والتذييل بعرض الصفحة (حتى 400 بكسل ارتفاعًا). ') : '') + Math.round(PIC.offsetWidth) + '×' + Math.round(PIC.offsetHeight) + ' px' }));
+      }
+      paper.addEventListener('click', (e) => { const im = e.target && e.target.closest ? e.target.closest('img') : null; if (im) selectPic_(im); else if (PIC) selectPic_(null); });
       body.appendChild(tools);
+      body.appendChild(imgBar);
       body.appendChild(layEl);
       body.appendChild(wmBar);
-      body.appendChild(el('div', { class: 'jlt-ed' }, [el('div', { class: 'jlt-paperwrap' }, [paper]), side]));
+      body.appendChild(el('div', { class: 'jlt-ed' }, [el('div', { class: 'jlt-paperwrap' }, [scaleBox]), side]));
       // footer buttons
       const backB = el('button', { class: 'jbo-btn', text: T('← All letters', '← كل الخطابات') });
       const revertB = el('button', { class: 'jbo-btn', text: T('Discard my edits', 'تجاهل التعديلات') });
       const undoSaveB = el('button', { class: 'jbo-btn jlt-undo-save', text: T('↩ Undo my save (put back what Jisr had)', '↩ التراجع عن الحفظ (إرجاع ما كان في جسر)') });
       const dupB = el('button', { class: 'jbo-btn jlt-dup-cur', text: T('⧉ Duplicate', '⧉ نسخ'), title: T('Copy the letter as saved in Jisr', 'نسخ الخطاب كما هو محفوظ في جسر') });
-      dupB.addEventListener('click', () => { if (S.dirty && !confirm(T('The copy is made from the version saved in Jisr — your unsaved edits are not included. Continue?', 'تُنشأ النسخة من النسخة المحفوظة في جسر — لا تشمل تعديلاتك غير المحفوظة. متابعة؟'))) return; S.dirty = false; duplicateAsk_([S.cur]); });
+      dupB.addEventListener('click', () => { if (S.dirty && !confirm(T('The copy is made from the version saved in Jisr; your unsaved edits are not included. Continue?', 'تُنشأ النسخة من النسخة المحفوظة في جسر؛ لا تشمل تعديلاتك غير المحفوظة. متابعة؟'))) return; S.dirty = false; duplicateAsk_([S.cur]); });
       const saveB = el('button', { class: 'jbo-btn jbo-btn-primary jlt-save' });
       backB.addEventListener('click', () => { if (S.dirty && !confirm(T('Leave without saving to Jisr?', 'المغادرة دون الحفظ في جسر؟'))) return; showList_(false); });
       revertB.addEventListener('click', () => { if (!confirm(T('Discard the edits you have not saved?', 'تجاهل التعديلات غير المحفوظة؟'))) return; openLetter_(S.cur && !S.isNew ? S.cur : null); });
@@ -39721,44 +41554,55 @@ const CATALOG_SRC = [
         try { await save_(o, { name: o.name || o.name_i18n || '', name_ar: o.name_ar || '', header: o.header || '', template: o.template || '', footer: o.footer || '' }, true); } catch (e) { say(e.message, true); }
       });
       saveB.addEventListener('click', async () => {
+        await bakeP; // the faded picture, if one is being made
+        try { await uploadNewPics_(); } catch (e) { say(e.message, true); return; }
         const bodyHtml = fromEditor_(areas.template);
         if (WM.kind === 'image' && !wmNorm_(WM).kind) { say(T('Choose or upload a picture for the watermark, or set it to None.', 'اختر أو ارفع صورة للعلامة المائية، أو اجعلها بدون.'), true); return; }
         if (WM.kind === 'text' && !wmNorm_(WM).kind) { say(T('Type the watermark text, or set it to None.', 'اكتب نص العلامة المائية، أو اجعلها بدون.'), true); return; }
-        const ch = { name: nameEn.value.trim(), name_ar: nameAr.value.trim(), header: wrap_('header', fromEditor_(areas.header), L.header), template: wmHtml_(WM) + bodyHtml, footer: wrap_('footer', fromEditor_(areas.footer), L.footer) };
+        relayout_();
+        const hHtml = fromEditor_(areas.header), fHtml = fromEditor_(areas.footer);
+        const ch = { name: nameEn.value.trim(), name_ar: nameAr.value.trim(),
+          header: hHtml ? hHtml + spacerHtml_('header', L.hgap) + paperMarker_(PG.paper) : '',
+          template: wmHtml_(WM) + bodyHtml,
+          footer: fHtml ? (L.pin ? spacerHtml_('footer', pinMM_(), true, L.fbelow) : (L.fgap ? spacerHtml_('footer', L.fgap, false, 0, 'fixed') : '') + noPinMarker_()) + fHtml + spacerHtml_('footer', L.fbelow, false, 0, 'below') : '' };
         if (!ch.name) { say(T('Give the letter an English name first.', 'أدخل اسم الخطاب بالإنجليزية أولًا.'), true); nameEn.focus(); return; }
+        const fp = ['header', 'template', 'footer'].flatMap((k2) => fieldProblems_(ch[k2]));
+        if (fp.length) { say(T('Jisr would refuse these variables: remove them and add them again from the list: ', 'سيرفض جسر هذه المتغيرات: احذفها وأضفها مجددًا من القائمة: ') + Array.from(new Set(fp)).join(', '), true); return; }
         if (!bodyHtml.replace(/<[^>]+>/g, '').trim() && !/\{\{\{/.test(bodyHtml)) { say(T('The body is empty.', 'نص الخطاب فارغ.'), true); return; }
         if (!S.isNew && !confirm(T('Save "', 'حفظ "') + ch.name + T('" in ', '" في ') + slug_() + T('? Employees will get this version from now on.', '؟ سيحصل الموظفون على هذه النسخة من الآن.'))) return;
         try { await save_(S.isNew ? null : S.cur, ch, false); } catch (e) { say(e.message, true); }
       });
+      const uploadNewPics_ = () => uploadPics_(Object.values(areas), S.newAtts, say);
       async function save_(base, ch, isUndo) {
         S.saving = true; paintFoot_(); say(T('Saving to Jisr…', 'جارٍ الحفظ في جسر…'));
         try {
           if (!base) {
-            if (S.list && S.list.some((t) => (t.name || '').trim().toLowerCase() === ch.name.toLowerCase())) throw new Error(T('A letter with this English name already exists — choose another name.', 'يوجد خطاب بهذا الاسم — اختر اسمًا آخر.'));
-            const r = await request_('POST', '/v2/letter_types', null, payload_(null, ch));
-            if (!r.ok) throw new Error(T('Jisr refused the new letter (HTTP ', 'رفض جسر الخطاب الجديد (HTTP ') + r.status + ')' + (r.msg ? ': ' + r.msg : ''));
+            if (S.list && S.list.some((t) => (t.name || '').trim().toLowerCase() === ch.name.toLowerCase())) throw new Error(T('A letter with this English name already exists; choose another name.', 'يوجد خطاب بهذا الاسم: اختر اسمًا آخر.'));
+            const r = await request_('POST', '/v2/letter_types', null, payload_({ letter_attachments: Object.assign({}, S.newAtts), is_default: false }, ch));
+            if (!r.ok) throw new Error(T('Jisr refused the new letter (HTTP ', 'رفض جسر الخطاب الجديد (HTTP ') + r.status + ')' + (r.msg ? ': ' + r.msg : '') + (/field name/i.test(r.msg || '') ? T('; a variable is not in the form Jisr accepts; send a screenshot of this message.', '; أحد المتغيرات ليس بالصيغة التي يقبلها جسر؛ أرسل لقطة لهذه الرسالة.') : ''));
             const l = await listLetters_(); S.list = l;
             const made = l.find((t) => (t.name || '').trim() === ch.name) || null;
-            if (!made) { say(T('⚠ Jisr answered OK but the letter is not in the list yet — refresh the list.', '⚠ رد جسر بنجاح لكن الخطاب غير ظاهر بعد — حدّث القائمة.'), true); return; }
+            if (!made) { say(T('⚠ Jisr answered OK but the letter is not in the list yet; refresh the list.', '⚠ رد جسر بنجاح لكن الخطاب غير ظاهر بعد؛ حدّث القائمة.'), true); return; }
             const full = await letter_(made.id, made);
-            const bad = ['header', 'template', 'footer'].filter((k) => normHtml_(full[k]) !== normHtml_(ch[k]));
+            const bad = ['header', 'template', 'footer'].filter((k) => !samePart_(k, full[k], ch[k]));
             S.isNew = false; S.cur = full; S.orig = JSON.parse(JSON.stringify(full)); S.savedOrig[String(full.id)] = null; S.dirty = false;
-            titleEl.textContent = T('Edit letter — ', 'تعديل خطاب — ') + ch.name;
-            say(bad.length ? T('⚠ Created as #', '⚠ أُنشئ برقم #') + full.id + T(', but Jisr shows a different ', '، لكن جسر يعرض ') + bad.join(', ') + T(' — check it in Jisr.', ' مختلفًا — تحقق في جسر.') : T('✓ Created in Jisr (#', '✓ أُنشئ في جسر (#') + full.id + T(') and checked.', ') وتم التحقق.'), !!bad.length);
+            titleEl.textContent = T('Edit letter: ', 'تعديل خطاب: ') + ch.name;
+            say(bad.length ? T('⚠ Created as #', '⚠ أُنشئ برقم #') + full.id + T(', but Jisr shows a different ', '، لكن جسر يعرض ') + bad.join(', ') + T('; check it in Jisr.', ' مختلفًا: تحقق في جسر.') : T('✓ Created in Jisr (#', '✓ أُنشئ في جسر (#') + full.id + T(') and checked.', ') وتم التحقق.'), !!bad.length);
             return;
           }
-          const payload = payload_(base, ch);
+          const payload = payload_(Object.assign({}, base, { letter_attachments: Object.assign({}, base.letter_attachments && typeof base.letter_attachments === 'object' && !Array.isArray(base.letter_attachments) ? base.letter_attachments : {}, isUndo ? {} : S.newAtts) }), ch);
           const r = await request_('PUT', '/v2/letter_types/' + encodeURIComponent(base.id), null, payload);
           if (!r.ok) throw new Error(T('Jisr refused the change (HTTP ', 'رفض جسر التغيير (HTTP ') + r.status + ')' + (r.msg ? ': ' + r.msg : ''));
           // read back from Jisr and compare
           const l = await listLetters_().catch(() => null); if (l) S.list = l;
           let now = l && l.find((t) => String(t.id) === String(base.id)); if (now && !['header', 'template', 'footer'].some((k) => typeof now[k] === 'string')) now = null;
           if (!now) now = await letter_(base.id, null).catch(() => null);
-          const bad = now ? ['header', 'template', 'footer'].filter((k) => normHtml_(now[k]) !== normHtml_(ch[k])).concat((now.name || '').trim() !== String(ch.name || '').trim() ? ['name'] : []) : ['(not readable)'];
+          const bad = now ? ['header', 'template', 'footer'].filter((k) => !samePart_(k, now[k], ch[k])).concat((now.name || '').trim() !== String(ch.name || '').trim() ? ['name'] : []) : ['(not readable)'];
           if (now) { S.cur = now; } S.dirty = false;
-          if (now && /data-jlt="watermark"/.test(ch.template) && !/position:\s*fixed/.test(String(now.template || ''))) bad.push(T('watermark (Jisr removed its placement)', 'العلامة المائية (حذف جسر موضعها)'));
+          const wmGone = now ? wmLost_(ch.template, now.template) : [];
+          if (wmGone.length) { const i = bad.indexOf('template'); if (i >= 0) bad.splice(i, 1); bad.push(T('watermark: Jisr removed: ', 'العلامة المائية: حذف جسر: ') + wmGone.join(', ')); }
           if (isUndo) { S.savedOrig[String(base.id)] = JSON.parse(JSON.stringify(now || base)); await openLetter_(now || base); }
-          say((bad.length ? T('⚠ Saved, but Jisr shows a different ', '⚠ حُفظ، لكن جسر يعرض ') + bad.join(', ') + T(' — check the letter in Jisr.', ' مختلفًا — تحقق من الخطاب في جسر.') : (isUndo ? T('✓ Put back as it was, and checked in Jisr.', '✓ أُعيد كما كان، وتم التحقق في جسر.') : T('✓ Saved in Jisr and checked — the letter now shows this version.', '✓ حُفظ في جسر وتم التحقق — يظهر الخطاب الآن بهذه النسخة.'))), !!bad.length);
+          say((bad.length ? T('⚠ Saved, but Jisr shows a different ', '⚠ حُفظ، لكن جسر يعرض ') + bad.join(', ') + T('; check the letter in Jisr.', ' مختلفًا: تحقق من الخطاب في جسر.') : (isUndo ? T('✓ Put back as it was, and checked in Jisr.', '✓ أُعيد كما كان، وتم التحقق في جسر.') : T('✓ Saved in Jisr and checked; the letter now shows this version.', '✓ حُفظ في جسر وتم التحقق؛ يظهر الخطاب الآن بهذه النسخة.'))), !!bad.length);
         } finally { S.saving = false; paintFoot_(); }
       }
       function paintFoot_() {
@@ -39779,8 +41623,8 @@ const CATALOG_SRC = [
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
-    g.modules[MODULE_ID] = { title: 'Letter Templates — edit in Jisr', open: openTool_, version: SECTION_VERSION };
-    W.__jisrLetters = { toEditor_, fromEditor_, payload_, CATALOG, wrap_, unwrap_, wmSplit_, wmHtml_, wmNorm_ };
+    g.modules[MODULE_ID] = { title: 'Letter Templates: edit in Jisr', open: openTool_, version: SECTION_VERSION };
+    W.__jisrLetters = { toEditor_, fromEditor_, payload_, CATALOG, wrap_, unwrap_, wmSplit_, wmHtml_, wmNorm_, fadeColor_, bakeImage_, bakeText_, wmLost_, spacerHtml_, spacerSplit_, wordImport_, pdfImport_, pageGeom_, cleanImported_, findSamples_, applySamples_, fieldProblems_, COMPOSITE };
     if (g._rerender) g._rerender();
   }
   register_();
@@ -39788,7 +41632,7 @@ const CATALOG_SRC = [
 
 
 // ###########################################################################
-// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.62.0
+// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.75.0
 // ###########################################################################
 
 /*
@@ -40041,7 +41885,7 @@ const CATALOG_SRC = [
       dupEl.innerHTML = '';
       if (!S.rows.length) { dupEl.appendChild(el('div', { class: 'jbo-muted', text: T('Read the approval cycles first.', 'اقرأ سلاسل الموافقات أولًا.') })); return; }
       const withSteps = S.rows.filter((r) => r.wf && r.steps.length);
-      const src = el('select', { class: 'jac-src' }, [el('option', { value: '', text: T('— choose the cycle to copy —', '— اختر السلسلة المراد نسخها —') }), el('option', { value: '__build__', selected: S.src === '__build__', text: T('✎ Build the steps — choose an approver for each level', '✎ بناء الخطوات — اختر موافقًا لكل مستوى') })].concat(withSteps.map((r) => el('option', { value: r.key, selected: r.key === S.src, text: nameOf_(r) + ' · ' + wfName_(r) + ' — ' + r.steps.map(stepText_).join(' → ') }))));
+      const src = el('select', { class: 'jac-src' }, [el('option', { value: '', text: T('— choose the cycle to copy —', '— اختر السلسلة المراد نسخها —') }), el('option', { value: '__build__', selected: S.src === '__build__', text: T('✎ Build the steps: choose an approver for each level', '✎ بناء الخطوات: اختر موافقًا لكل مستوى') })].concat(withSteps.map((r) => el('option', { value: r.key, selected: r.key === S.src, text: nameOf_(r) + ' · ' + wfName_(r) + ' · ' + r.steps.map(stepText_).join(' → ') }))));
       src.addEventListener('change', async () => {
         S.src = src.value; S.mode = 'dup'; S.plan = []; S.dryDone = false; S.targets.clear(); // a new source starts with nothing ticked
         if (S.src === '__build__' && !S.emps) { try { await emps_(); } catch (e) { S.note = e.message; S.noteErr = true; } }
@@ -40093,7 +41937,7 @@ const CATALOG_SRC = [
     }
 
     function render_() {
-      titleEl.textContent = T('Approval Cycles — Duplicate & Bulk Edit', 'سلاسل الموافقات — نسخ وتعديل جماعي');
+      titleEl.textContent = T('Approval Cycles: Duplicate & Bulk Edit', 'سلاسل الموافقات: نسخ وتعديل جماعي');
       body.innerHTML = ''; foot.innerHTML = '';
       body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
         'See every request type\'s approval cycle side by side, copy one cycle onto many request types, or edit the steps of many cycles in Excel. Existing cycles are edited; new conditional cycles are not created.',
@@ -40187,7 +42031,7 @@ const CATALOG_SRC = [
           const key = clean_(r[ti]) + ':' + clean_(r[ci]);
           if (key === ':') return;
           const row = byKey.get(key);
-          if (!row) { S.plan.push({ row: { key: 'x' + k, type: { id: r[ti], name_en: T('Row ', 'صف ') + (k + 2) }, wf: null, steps: [] }, steps: null, state: 'error', msg: '✗ ' + T('No such request type / cycle in Jisr — read the cycles again and use a fresh Excel', 'لا يوجد هذا النوع/السلسلة في جسر — أعد القراءة واستخدم ملفًا جديدًا') }); return; }
+          if (!row) { S.plan.push({ row: { key: 'x' + k, type: { id: r[ti], name_en: T('Row ', 'صف ') + (k + 2) }, wf: null, steps: [] }, steps: null, state: 'error', msg: '✗ ' + T('No such request type / cycle in Jisr; read the cycles again and use a fresh Excel', 'لا يوجد هذا النوع/السلسلة في جسر؛ أعد القراءة واستخدم ملفًا جديدًا') }); return; }
           const cells = sc.map((i) => clean_(r[i]));
           const last = cells.reduce((m, c, i) => (c ? i : m), -1);
           const errs = []; const steps = [];
@@ -40196,7 +42040,7 @@ const CATALOG_SRC = [
             const s = parseApprover_(c, emps, tokens);
             if (s.error) errs.push(T('Step ', 'الخطوة ') + (i + 1) + ': ' + s.error); else steps.push(s);
           });
-          if (!steps.length && !errs.length) errs.push(T('No steps — a cycle needs at least one approver', 'لا خطوات — السلسلة تحتاج موافقًا واحدًا على الأقل'));
+          if (!steps.length && !errs.length) errs.push(T('No steps: a cycle needs at least one approver', 'لا خطوات: السلسلة تحتاج موافقًا واحدًا على الأقل'));
           S.plan.push({ row, steps: errs.length ? null : steps, errs, state: '', msg: errs.length ? '✗ ' + errs.join('\n✗ ') : '' });
         });
         S.mode = 'excel'; S.dryDone = false;
@@ -40220,13 +42064,13 @@ const CATALOG_SRC = [
         if (p.errs && p.errs.length) { p.state = 'error'; return; }
         if (p.state === 'error') return;
         if (!p.row.wf) { p.state = 'error'; p.msg = '✗ ' + T('No approval cycle to edit on this request type', 'لا توجد سلسلة موافقات لتعديلها'); return; }
-        if (p.row.wf._noSteps) { p.state = 'error'; p.msg = '✗ ' + T('Current steps could not be read — not changed', 'تعذّرت قراءة الخطوات الحالية — لن تُغيَّر'); return; }
+        if (p.row.wf._noSteps) { p.state = 'error'; p.msg = '✗ ' + T('Current steps could not be read; not changed', 'تعذّرت قراءة الخطوات الحالية: لن تُغيَّر'); return; }
         p.before = p.row.steps.slice();
         if (signature_(p.steps) === p.row.sig) { p.state = 'skip'; p.msg = T('already the same', 'متطابق بالفعل'); return; }
         p.state = 'ready'; p.msg = '';
       });
       S.dryDone = true;
-      S.note = T('Dry Run done — nothing was saved. ', 'انتهى التشغيل التجريبي — لم يُحفظ شيء. ') + S.plan.filter((p) => p.state === 'ready').length + T(' cycle(s) will change.', ' سلسلة ستتغير.');
+      S.note = T('Dry Run done: nothing was saved. ', 'انتهى التشغيل التجريبي: لم يُحفظ شيء. ') + S.plan.filter((p) => p.state === 'ready').length + T(' cycle(s) will change.', ' سلسلة ستتغير.');
       paint_();
     });
 
@@ -40249,12 +42093,12 @@ const CATALOG_SRC = [
             if (!now) { try { const back = await readType_(r.type.id); const wf = back.wfs.find((w) => String(w.id) === String(r.wf.id)); now = wf ? stepsOf_(wf) : null; } catch (e) { now = null; } }
             if (now && signature_(now) === signature_(p.steps)) { p.state = 'done'; p.msg = T('✓ saved · verified', '✓ حُفظ · تم التحقق'); r.steps = now; r.sig = signature_(now); }
             else if (now) { p.state = 'check'; p.msg = T('⚠ saved, but Jisr now shows: ', '⚠ حُفظ، لكن جسر يعرض: ') + now.map(stepText_).join(' → '); }
-            else { p.state = res ? 'done' : 'check'; p.msg = res ? T('✓ saved (could not read back)', '✓ حُفظ (تعذّرت القراءة للتحقق)') : T('⚠ no answer — check in Jisr', '⚠ لا رد — تحقّق في جسر'); }
+            else { p.state = res ? 'done' : 'check'; p.msg = res ? T('✓ saved (could not read back)', '✓ حُفظ (تعذّرت القراءة للتحقق)') : T('⚠ no answer: check in Jisr', '⚠ لا رد: تحقّق في جسر'); }
           }
         } catch (e) { p.state = 'failed'; p.msg = '✗ ' + e.message; }
         done++; S.busy = T('Saving… ', 'جارٍ الحفظ… ') + done + '/' + todo.length; paint_();
         if (done === 1 && todo.length > 1) {
-          if (p.state !== 'done') { S.stop = true; todo.slice(1).forEach((x) => { x.msg = T('not sent — the first one did not complete', 'لم يُرسل — لم يكتمل الأول'); }); continue; }
+          if (p.state !== 'done') { S.stop = true; todo.slice(1).forEach((x) => { x.msg = T('not sent: the first one did not complete', 'لم يُرسل: لم يكتمل الأول'); }); continue; }
           if (!confirm(T('The first cycle (', 'السلسلة الأولى (') + nameOf_(r) + T(') was saved and checked. Look at it in Jisr if you want.\n\nContinue with the other ', ') حُفظت وتم التحقق منها. راجعها في جسر إن أردت.\n\nمتابعة بقية السلاسل (') + (todo.length - 1) + T('?', ')؟'))) { S.stop = true; todo.slice(1).forEach((x) => { x.msg = T('not sent (stopped after the first)', 'لم يُرسل (توقف بعد الأول)'); }); }
         }
       }
@@ -40277,7 +42121,7 @@ const CATALOG_SRC = [
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
-    g.modules[MODULE_ID] = { title: 'Approval Cycles — Duplicate & Bulk Edit', open: openTool_, version: SECTION_VERSION };
+    g.modules[MODULE_ID] = { title: 'Approval Cycles: Duplicate & Bulk Edit', open: openTool_, version: SECTION_VERSION };
     W.__jisrApprovalCycles = { stepOf_, stepsOf_, signature_, patchBody_, parseApprover_, stepText_ };
     if (g._rerender) g._rerender();
   }
@@ -40286,7 +42130,7 @@ const CATALOG_SRC = [
 
 
 // ###########################################################################
-// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.62.0
+// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.75.0
 // ###########################################################################
 
 /*
@@ -40396,10 +42240,10 @@ const CATALOG_SRC = [
     const groups = groupsIn.map((g) => Object.assign({}, g, { criteria: g.criteria.map((c) => Object.assign({}, c)) }));
     if (!groups.length) { errors.push(T('No groups', 'لا توجد مجموعات')); return { groups, notes, errors }; }
     const gBlank = groups.filter((g) => g.weight == null);
-    if (gBlank.length === groups.length) { const each = r2_(TOT / groups.length); groups.forEach((g, i) => { g.weight = i === groups.length - 1 ? r2_(TOT - each * (groups.length - 1)) : each; }); notes.push(T('Group weights were blank — split equally', 'أوزان المجموعات فارغة — وُزّعت بالتساوي')); }
+    if (gBlank.length === groups.length) { const each = r2_(TOT / groups.length); groups.forEach((g, i) => { g.weight = i === groups.length - 1 ? r2_(TOT - each * (groups.length - 1)) : each; }); notes.push(T('Group weights were blank: split equally', 'أوزان المجموعات فارغة: وُزّعت بالتساوي')); }
     else if (gBlank.length) { const used = groups.reduce((s, g) => s + (g.weight || 0), 0); const each = r2_((TOT - used) / gBlank.length); if (each <= 0) errors.push(T('Some group weights are blank and the others already add up to ', 'بعض أوزان المجموعات فارغة والباقي يساوي ') + TOT); else { gBlank.forEach((g) => { g.weight = each; }); notes.push(T('Blank group weights got the remaining weight', 'أخذت المجموعات بدون وزن الوزن المتبقي')); } }
     const gSum = r2_(groups.reduce((s, g) => s + (g.weight || 0), 0));
-    if (Math.abs(gSum - TOT) > 0.05) errors.push(T('Group weights add up to ', 'مجموع أوزان المجموعات ') + gSum + T(', not ', '، وليس ') + TOT + (TOT !== 100 ? T(' — the template\'s own groups already have ', ' — مجموعات النموذج نفسه لديها ') + r2_(100 - TOT) + T('%, and together they must make 100%', '%، ويجب أن يكون المجموع معًا 100%') : ''));
+    if (Math.abs(gSum - TOT) > 0.05) errors.push(T('Group weights add up to ', 'مجموع أوزان المجموعات ') + gSum + T(', not ', '، وليس ') + TOT + (TOT !== 100 ? T('; the template\'s own groups already have ', '; مجموعات النموذج نفسه لديها ') + r2_(100 - TOT) + T('%, and together they must make 100%', '%، ويجب أن يكون المجموع معًا 100%') : ''));
     groups.forEach((g) => {
       if (!g.criteria.length) { errors.push(T('Group "', 'المجموعة "') + g.en + T('" has no criteria', '" بلا معايير')); return; }
       const cb = g.criteria.filter((c) => c.weight == null);
@@ -40410,7 +42254,7 @@ const CATALOG_SRC = [
       // v4.43: every objective at 100% (seen in client reports: 3 objectives × 100%) — the source scored them equally, so split equally
       if (g.criteria.length > 1 && g.criteria.every((c) => Math.abs(c.weight - 100) <= 0.05 || Math.abs(c.weight - g.weight) <= 0.05)) {
         const each = r2_(g.weight / g.criteria.length); g.criteria.forEach((c, i) => { c.weight = i === g.criteria.length - 1 ? r2_(g.weight - each * (g.criteria.length - 1)) : each; });
-        notes.push(T('Group "', 'المجموعة "') + g.en + T('": every criterion was 100% — split equally (', '": كل معيار 100% — وُزّعت بالتساوي (') + each + '%)');
+        notes.push(T('Group "', 'المجموعة "') + g.en + T('": every criterion was 100%: split equally (', '": كل معيار 100%: وُزّعت بالتساوي (') + each + '%)');
         return;
       }
       if (Math.abs(cSum - 100) <= 0.05 && g.weight !== 100) {
@@ -40419,7 +42263,7 @@ const CATALOG_SRC = [
         notes.push(T('Group "', 'المجموعة "') + g.en + T('": criteria weights (out of 100) scaled to the group weight ', '": أوزان المعايير (من 100) حُوّلت إلى وزن المجموعة ') + g.weight);
         return;
       }
-      errors.push(T('Group "', 'المجموعة "') + g.en + '" ' + g.weight + T('%: its criteria add up to ', '%: مجموع معاييرها ') + cSum + T('% — the criteria must add up to exactly the group weight (', '% — يجب أن يساوي مجموع المعايير وزن المجموعة تمامًا (') + g.weight + '%)');
+      errors.push(T('Group "', 'المجموعة "') + g.en + '" ' + g.weight + T('%: its criteria add up to ', '%: مجموع معاييرها ') + cSum + T('%: the criteria must add up to exactly the group weight (', '%: يجب أن يساوي مجموع المعايير وزن المجموعة تمامًا (') + g.weight + '%)');
     });
     return { groups, notes, errors };
   }
@@ -40797,7 +42641,7 @@ const CATALOG_SRC = [
   function finish_(raw, defaults) {
     const errors = [], notes = [];
     const t = { en: clean_(raw.en), ar: clean_(raw.ar), src: raw.src, description: clean_(raw.description != null ? raw.description : defaults.description || '') };
-    if (!t.en && t.ar) { t.en = t.ar; notes.push(T('No English name — the Arabic name is used for both', 'لا يوجد اسم إنجليزي — يُستخدم الاسم العربي للغتين')); }
+    if (!t.en && t.ar) { t.en = t.ar; notes.push(T('No English name: the Arabic name is used for both', 'لا يوجد اسم إنجليزي: يُستخدم الاسم العربي للغتين')); }
     if (!t.en) errors.push(T('Template name is required', 'اسم النموذج مطلوب'));
     if (t.en && !t.ar && isAr_(t.en)) t.ar = t.en;
     const pick = (rawV, list, def) => { const s = clean_(rawV).toLowerCase(); if (!s) return def; const f = list.find((x) => [x.key, x.en, x.ar].some((y) => String(y).toLowerCase() === s)); return f ? f.key : undefined; };
@@ -40911,7 +42755,47 @@ const CATALOG_SRC = [
   // NOT tried (offered separately, first one checked): PUT /v2/forms/{id}/complete = launch (Jisr's wizard "Complete").
   const EVAL_PAT_EN = '{{{title}}} - {{{employee_code}}} - {{{employee_full_name}}}';
   const EVAL_PAT_AR = '{{{title_ar}}} - {{{employee_code}}} - {{{employee_full_name_ar}}}';
-  function formPayload_(f, en, ar) {
+  // v4.75: frequency of an evaluation. Captured from the Jisr wizard (PUT /v2/forms/{id}, frequency "semi_annual", 2 periods): the form carries
+  // following_forms[{ position, is_active, name_i18n, recurrence_label_i18n, start_date, end_date, evaluation_start_date, evaluation_submission_date }] and its own
+  // evaluation_start_date / evaluation_submission_date are those of the first period. In the capture the evaluation window of each period opened on the 15th of the
+  // month before the period's last month and ran 11 days (Jun 30 -> 15 to 26 May; Dec 31 -> 15 to 26 Nov); periods that were already over were switched off.
+  const FREQ_OPTS = [['', 'As the base template', 'كما في النموذج الأساسي'], ['semi_annual', 'Semi-annually', 'نصف سنوي'], ['quarterly', 'Quarterly', 'ربع سنوي']];
+  const FREQ_LABELS = { semi_annual: ['First half', 'Second half'], quarterly: ['First quarter', 'Second quarter', 'Third quarter', 'Fourth quarter'] };
+  const utc_ = (y, m, d) => new Date(Date.UTC(y, m, d)), iso_ = (d) => d.toISOString().slice(0, 10);
+  const parseIso_ = (v) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v || '')); return m ? utc_(+m[1], +m[2] - 1, +m[3]) : null; };
+  const addMonths_ = (d, n) => utc_(d.getUTCFullYear(), d.getUTCMonth() + n, d.getUTCDate());
+  /** opt: { freq: 'semi_annual'|'quarterly', day: 15, len: 11, past: false }; today: ISO date. Returns null when the period dates are not readable. */
+  function freqPlan_(form, opt, name, today) {
+    const per = FREQ_LABELS[opt.freq]; if (!per || !form) return null;
+    const a = parseIso_(form.period_start_date || form.start_date), z = parseIso_(form.period_end_date); if (!a || !z) return null;
+    const months = 12 / per.length, total = (z.getUTCFullYear() - a.getUTCFullYear()) * 12 + z.getUTCMonth() - a.getUTCMonth() + 1;
+    const n = Math.max(1, Math.round(total / months)), day = Math.max(1, Math.min(28, Number(opt.day) || 15)), len = Math.max(1, Math.min(60, Number(opt.len) || 11));
+    const old = Array.isArray(form.following_forms) ? form.following_forms : [];
+    const ff = [];
+    for (let k = 0; k < n; k++) {
+      const s0 = addMonths_(a, k * months), e0 = new Date(addMonths_(a, (k + 1) * months).getTime() - 86400000);
+      const es = utc_(e0.getUTCFullYear(), e0.getUTCMonth() - 1, day), sub = new Date(es.getTime() + len * 86400000);
+      ff.push(Object.assign({}, old.length === n && old[k] && typeof old[k] === 'object' ? old[k] : {}, { position: k, is_active: !!opt.past || iso_(es) >= today, name_i18n: name, recurrence_label_i18n: per[k] || ('#' + (k + 1)),
+        start_date: iso_(s0), end_date: iso_(e0), evaluation_start_date: iso_(es), evaluation_submission_date: iso_(sub) }));
+    }
+    let fixed = false; if (!ff.some((x) => x.is_active)) { ff[ff.length - 1].is_active = true; fixed = true; }
+    return { frequency: opt.freq, following_forms: ff, evaluation_start_date: ff[0].evaluation_start_date, evaluation_submission_date: ff[0].evaluation_submission_date, lastForced: fixed };
+  }
+  /** what Jisr kept of a plan: '' = all of it */
+  function freqCheck_(plan, form) {
+    if (!plan || !form) return '';
+    const out = [];
+    if (form.frequency !== plan.frequency) out.push(T('frequency is ', 'التكرار ') + (form.frequency || '?'));
+    const got = Array.isArray(form.following_forms) ? form.following_forms : [];
+    if (got.length !== plan.following_forms.length) out.push(got.length + T(' periods (expected ', ' فترات (المتوقع ') + plan.following_forms.length + ')');
+    else plan.following_forms.forEach((w, k) => { const g = got[k] || {}; ['start_date', 'end_date', 'evaluation_start_date', 'evaluation_submission_date'].forEach((f) => { if (String(g[f] || '').slice(0, 10) !== w[f]) out.push(T('period ', 'الفترة ') + (k + 1) + ' ' + f + ' ' + (g[f] || '?')); }); if (!!g.is_active !== !!w.is_active) out.push(T('period ', 'الفترة ') + (k + 1) + (g.is_active ? T(' is on', ' مفعّلة') : T(' is off', ' معطّلة'))); });
+    return out.slice(0, 4).join('; ');
+  }
+  function formPayload_(f, en, ar, plan) {
+    const pl = plan ? { frequency: plan.frequency, following_forms: plan.following_forms, evaluation_start_date: plan.evaluation_start_date, evaluation_submission_date: plan.evaluation_submission_date } : null;
+    const body = formPayload0_(f, en, ar); if (pl) Object.assign(body.form, pl); return body;
+  }
+  function formPayload0_(f, en, ar) {
     return { form: { name_en: en, name_ar: ar || null, description: f.description || null,
       evaluation_review_types: (f.evaluation_review_types || []).map((x) => ({ evaluation_review_type_id: x.evaluation_review_type_id != null ? x.evaluation_review_type_id : x.id, is_enabled: !!x.is_enabled, is_anonymous: !!x.is_anonymous })),
       type: f.type, frequency: f.frequency || undefined, period_start_date: f.period_start_date || undefined, period_end_date: f.period_end_date || undefined,
@@ -40928,9 +42812,10 @@ const CATALOG_SRC = [
     return body;
   }
   /** Does what Jisr shows match what was asked? '' = yes, else the difference. */
-  function evalCheck_(t, form, groups, empId, kept) {
+  function evalCheck_(t, form, groups, empId, kept, plan) {
     kept = kept || [];
     const out = [];
+    { const fc = freqCheck_(plan, form); if (fc) out.push(fc); }
     if (form && !(form.employee_ids || []).map(String).includes(String(empId))) out.push(T('employee not assigned', 'الموظف غير مُسند'));
     if (form && clean_(form.name_en) !== clean_(t.en)) out.push(T('name is "', 'الاسم "') + form.name_en + '"');
     if (groups) {
@@ -41015,7 +42900,7 @@ const CATALOG_SRC = [
     injectCss_();
     const S = { mode: '', sheets: [], ours: null, rows: [], busy: '', note: '', noteErr: false, dryDone: false, running: false, stop: false,
       def: { access: 'admins', evalType: 'calendar', frequency: 'annually', startDay: 1, startMonth: 1, endDay: 31, endMonth: 12, scopes: ['downward'], anonymous: false, remarks: false, probStart: 30, probEnd: 10, structure: 'asis', description: '', title: '', titleAr: '',
-        patEn: '{{{title}}} - {{{employee_full_name}}} {{{employee_code}}}', patAr: '{{{title_ar}}} - {{{employee_full_name_ar}}} {{{employee_code}}}' }, ids: null, fileName: '', sheetFilter: '', jisr: null, lastPat: 'en', tpls: null, src: null, emp: null, fill: 'groups', only: '', target: new Map(), tgtInfo: {}, out: 'templates', base: '', empMap: null, evalOpt: { tpl: 'keep', same: 'merge' }, groupMap: new Map(), fileGroups: new Map() };
+        patEn: '{{{title}}} - {{{employee_full_name}}} {{{employee_code}}}', patAr: '{{{title_ar}}} - {{{employee_full_name_ar}}} {{{employee_code}}}' }, ids: null, fileName: '', sheetFilter: '', jisr: null, lastPat: 'en', tpls: null, src: null, emp: null, fill: 'groups', only: '', target: new Map(), tgtInfo: {}, out: 'templates', base: '', empMap: null, evalOpt: { tpl: 'keep', same: 'merge', freq: '', day: 15, len: 11, past: false }, groupMap: new Map(), fileGroups: new Map() };
     const body = el('div', { class: 'jbo-modal-body' });
     const foot = el('div', { class: 'jbo-modal-foot' });
     const titleEl = el('div', { class: 'jbo-modal-title' });
@@ -41052,9 +42937,9 @@ const CATALOG_SRC = [
       const num = (val, min, max, on) => { const i = el('input', { type: 'number', min: String(min), max: String(max), value: String(val) }); i.addEventListener('change', () => { on(Number(i.value)); invalidate_(); }); return i; };
       const d = S.def;
       setEl.appendChild(el('div', {}, [el('label', { class: 'l', text: T('Access', 'الصلاحية') }), sel([['admins', T('Admins', 'المسؤولون')], ['employees', T('Any authorized employee', 'أي موظف مصرح له')]], d.access, (v) => { d.access = v; })]));
-      setEl.appendChild(el('div', {}, [el('label', { class: 'l', text: T('Evaluation type', 'نوع التقييم') }), sel(EVAL_TYPES.map((x) => [x.key, T(x.en, x.ar) + (x.ready ? '' : T(' — needs a capture', ' — يحتاج التقاطًا')), !x.ready]), d.evalType, (v) => { d.evalType = v; settings_(); })]));
+      setEl.appendChild(el('div', {}, [el('label', { class: 'l', text: T('Evaluation type', 'نوع التقييم') }), sel(EVAL_TYPES.map((x) => [x.key, T(x.en, x.ar) + (x.ready ? '' : T('; needs a capture', '; يحتاج التقاطًا')), !x.ready]), d.evalType, (v) => { d.evalType = v; settings_(); })]));
       const isDays = !!(EVAL_TYPES.find((x) => x.key === d.evalType) || {}).days;
-      if (!isDays) setEl.appendChild(el('div', {}, [el('label', { class: 'l', text: T('Frequency', 'التكرار') }), sel(FREQS.map((x) => [x.key, T(x.en, x.ar) + (x.ready ? '' : T(' — needs a capture', ' — يحتاج التقاطًا')), !x.ready]), d.frequency, (v) => { d.frequency = v; })]));
+      if (!isDays) setEl.appendChild(el('div', {}, [el('label', { class: 'l', text: T('Frequency', 'التكرار') }), sel(FREQS.map((x) => [x.key, T(x.en, x.ar) + (x.ready ? '' : T('; needs a capture', '; يحتاج التقاطًا')), !x.ready]), d.frequency, (v) => { d.frequency = v; })]));
       else setEl.appendChild(el('div', {}, [el('label', { class: 'l', text: T('Frequency', 'التكرار') }), el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Once, during each employee\'s probation', 'مرة واحدة خلال فترة تجربة كل موظف') })]));
       const scopes = el('div', { class: 'chk' }, SCOPES.map((s) => {
         const known = s.key === 'downward' || !S.ids || S.ids.byScope[s.key] != null;
@@ -41076,7 +42961,7 @@ const CATALOG_SRC = [
       setEl.appendChild(el('div', {}, [el('label', { class: 'l', text: T('Options', 'خيارات') }), el('label', {}, [an, ' ' + T('Anonymous upward / peer', 'تقييم تصاعدي / زملاء مجهول')]), el('br'), el('label', {}, [rm, ' ' + T('Remarks required by default', 'الملاحظات مطلوبة افتراضيًا')])]));
       if (S.mode !== 'existing') setEl.appendChild(el('div', { style: { gridColumn: 'span 2' } }, [el('label', { class: 'l', text: T('Structure in Jisr', 'الهيكل في جسر') }), sel([
         ['asis', T('As in the workbook (groups → criteria)', 'كما في الملف (مجموعات ← معايير)')],
-        ['one', T('One group per template — each objective is a criterion with its own weight', 'مجموعة واحدة لكل نموذج — كل هدف معيار بوزنه')],
+        ['one', T('One group per template: each objective is a criterion with its own weight', 'مجموعة واحدة لكل نموذج: كل هدف معيار بوزنه')],
         ['each', T('Each objective is its own group, repeated inside as its criterion', 'كل هدف مجموعة مستقلة، ومكرر بداخلها كمعيار')]], d.structure, (v) => { d.structure = v; })]));
       const desc = el('input', { type: 'text', value: d.description, placeholder: T('Optional', 'اختياري'), style: { width: '100%' } });
       desc.addEventListener('change', () => { d.description = desc.value; invalidate_(); });
@@ -41096,7 +42981,7 @@ const CATALOG_SRC = [
         const first = exM ? { name: T('employee ', 'موظف ') + e1.code, info: {} } : S.sheets.find((x) => x.include) || S.sheets[0];
         const fv = exM ? empVars_(e1, d, S.jisr) : first ? varsOf_(first.name, first.info, { title: d.title, title_ar: d.titleAr, jisr: S.jisr }) : {};
         const chips = el('div', { class: 'jpt-chips' }, NAME_VARS.filter((nv) => (exM ? nv.key in fv : !nv.re || fv[nv.key] != null)).map((nv) => {
-          const b = el('button', { class: 'jpt-chip', type: 'button', draggable: 'true', title: '{{{' + nv.key + '}}}' + (fv[nv.key] ? ' = ' + fv[nv.key] : nv.jisr ? T(' — load names from Jisr', ' — حمّل الأسماء من جسر') : ''), text: T(nv.en, nv.ar) });
+          const b = el('button', { class: 'jpt-chip', type: 'button', draggable: 'true', title: '{{{' + nv.key + '}}}' + (fv[nv.key] ? ' = ' + fv[nv.key] : nv.jisr ? T('; load names from Jisr', '; حمّل الأسماء من جسر') : ''), text: T(nv.en, nv.ar) });
           b.addEventListener('mousedown', (e) => e.preventDefault()); b.addEventListener('click', () => insert('{{{' + nv.key + '}}}'));
           b.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', '{{{' + nv.key + '}}}'));
           return b;
@@ -41110,7 +42995,7 @@ const CATALOG_SRC = [
           el('div', { class: 'jpt-names-grid' }, [
             el('label', { class: 'l', text: T('Universal title (EN)', 'العنوان الموحّد (EN)') }), el('label', { class: 'l', text: T('Universal title (AR)', 'العنوان الموحّد (AR)') }), tEn, tAr,
             el('label', { class: 'l', text: T('Template name (EN)', 'اسم النموذج (EN)') }), el('label', { class: 'l', text: T('Template name (AR)', 'اسم النموذج (AR)') }), pEn, pAr]),
-          el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', margin: '6px 0 2px' }, text: T('Variables — click to insert into the last name field you clicked (or drag), like in the Letter Converter:', 'المتغيرات — انقر للإدراج في آخر حقل اسم نقرت عليه (أو اسحب)، كما في محوّل الخطابات:') }),
+          el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', margin: '6px 0 2px' }, text: T('Variables: click to insert into the last name field you clicked (or drag), like in the Letter Converter:', 'المتغيرات: انقر للإدراج في آخر حقل اسم نقرت عليه (أو اسحب)، كما في محوّل الخطابات:') }),
           chips,
           el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginTop: '6px', fontSize: '12px' } }, [jisrB, first ? el('span', { class: 'jpt-example', text: T('Example (', 'مثال (') + first.name.trim() + '): ' + (ex[0] || '—') + '  |  ' + (ex[1] || '—') }) : null]));
         setEl.appendChild(box);
@@ -41124,7 +43009,7 @@ const CATALOG_SRC = [
     function out_() {
       outEl.innerHTML = '';
       const ev = S.out === 'evaluations';
-      const sel = el('select', { class: 'jpt-out-sel' }, [['templates', T('New templates (one per sheet / row)', 'نماذج جديدة (نموذج لكل ورقة / صف)')], ['evaluations', T('Evaluations from a base template — one per employee, each with its own groups and weights', 'تقييمات من نموذج أساسي — تقييم لكل موظف بمجموعاته وأوزانه')]].map(([v, l]) => el('option', { value: v, selected: S.out === v, text: l })));
+      const sel = el('select', { class: 'jpt-out-sel' }, [['templates', T('New templates (one per sheet / row)', 'نماذج جديدة (نموذج لكل ورقة / صف)')], ['evaluations', T('Evaluations from a base template: one per employee, each with its own groups and weights', 'تقييمات من نموذج أساسي: تقييم لكل موظف بمجموعاته وأوزانه')]].map(([v, l]) => el('option', { value: v, selected: S.out === v, text: l })));
       sel.addEventListener('change', async () => {
         S.out = sel.value;
         if (S.out === 'evaluations') {
@@ -41158,15 +43043,15 @@ const CATALOG_SRC = [
           const okT = Math.abs(gSum - 100) <= 0.05, over = gSum > 100.05;
           box.appendChild(el('div', { style: { display: 'flex', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap' } }, [
             el('b', { style: { fontSize: '12.5px' }, text: T('Groups in this template', 'مجموعات هذا النموذج') + ' (' + bi.groups.length + ')' }),
-            el('span', { class: 'jpt-base-total', style: { fontSize: '12px', color: over ? '#c5221f' : okT ? '#137333' : '#1a73e8' }, text: T('Groups total: ', 'مجموع المجموعات: ') + gSum + '%' + (okT ? ' ✓' : over ? T(' ✗ more than 100%', ' ✗ أكثر من 100%') : (S.evalOpt.tpl === 'replace' ? T(' — replaced by each employee\'s groups (option below)', ' — تُستبدل بمجموعات كل موظف (الخيار أدناه)') : T(' — each employee\'s sheet adds the other ', ' — ورقة كل موظف تضيف ') + r2_(100 - gSum) + T('% (these groups are kept in every evaluation)', '% الباقية (تبقى هذه المجموعات في كل تقييم)'))) })]));
+            el('span', { class: 'jpt-base-total', style: { fontSize: '12px', color: over ? '#c5221f' : okT ? '#137333' : '#1a73e8' }, text: T('Groups total: ', 'مجموع المجموعات: ') + gSum + '%' + (okT ? ' ✓' : over ? T(' ✗ more than 100%', ' ✗ أكثر من 100%') : (S.evalOpt.tpl === 'replace' ? T('; replaced by each employee\'s groups (option below)', '; تُستبدل بمجموعات كل موظف (الخيار أدناه)') : T('; each employee\'s sheet adds the other ', '; ورقة كل موظف تضيف ') + r2_(100 - gSum) + T('% (these groups are kept in every evaluation)', '% الباقية (تبقى هذه المجموعات في كل تقييم)'))) })]));
           if (bi.got && bi.got.length) box.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px' }, text: T('Settings read from this template (shown below): ', 'الإعدادات المقروءة من هذا النموذج (أدناه): ') + bi.got.join(', ') }));
-          if (!bi.groups.length) box.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('This template has no groups in Jisr yet — each employee\'s groups come from the uploaded file.', 'هذا النموذج بلا مجموعات في جسر — مجموعات كل موظف تأتي من الملف المرفوع.') }));
+          if (!bi.groups.length) box.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('This template has no groups in Jisr yet; each employee\'s groups come from the uploaded file.', 'هذا النموذج بلا مجموعات في جسر؛ مجموعات كل موظف تأتي من الملف المرفوع.') }));
           const tree = el('ul', { class: 'jpt-tree jpt-base-tree' });
           bi.groups.forEach((g) => {
             const ck = groupCheck_(g);
-            const sub = el('ul', { style: { margin: '1px 0 4px', paddingInlineStart: '18px' } }, g.criteria.map((c) => el('li', { text: (c.en || c.ar) + (c.en && c.ar && c.ar !== c.en ? ' / ' + c.ar : '') + ' — ' + (c.weight == null ? '?' : c.weight) + '%' })));
+            const sub = el('ul', { style: { margin: '1px 0 4px', paddingInlineStart: '18px' } }, g.criteria.map((c) => el('li', { text: (c.en || c.ar) + (c.en && c.ar && c.ar !== c.en ? ' / ' + c.ar : '') + ' · ' + (c.weight == null ? '?' : c.weight) + '%' })));
             tree.appendChild(el('li', {}, [
-              el('b', { text: gLabel_(g) + (g.en && g.ar && g.ar !== g.en ? ' / ' + g.ar : '') + ' — ' + (g.weight == null ? '?' : g.weight) + '%' }),
+              el('b', { text: gLabel_(g) + (g.en && g.ar && g.ar !== g.en ? ' / ' + g.ar : '') + ' · ' + (g.weight == null ? '?' : g.weight) + '%' }),
               el('span', { class: 'jpt-gcheck', style: { marginInlineStart: '8px', color: ck.ok ? '#137333' : '#c5221f' }, text: ck.text }), sub]));
           });
           box.appendChild(tree);
@@ -41175,8 +43060,8 @@ const CATALOG_SRC = [
             'القاعدة: لكل مجموعة وزن، ويجب أن يساوي مجموع أوزان معاييرها هذا الوزن تمامًا (مثال: المجموعة أ 30% ← المعيار 1 = 15% + المعيار 2 = 15%). ومجموع مجموعات النموذج ومجموعات الموظف 100%. اختر أدناه ما تفعله كل مجموعة في ملفك. يفحص التشغيل التجريبي ذلك لكل موظف.') }));
           if (bi.groups.length) {
             // v4.51: keep the template's groups and add the sheet's (default), or replace; and what a same-name group does
-            const o1 = el('select', { class: 'jpt-eopt-tpl' }, [['keep', T('Keep them — add each employee\'s groups to them', 'أبقِها — أضف مجموعات كل موظف إليها')], ['replace', T('Replace them with each employee\'s groups', 'استبدلها بمجموعات كل موظف')]].map(([v, l]) => el('option', { value: v, selected: S.evalOpt.tpl === v, text: l })));
-            const o2 = el('select', { class: 'jpt-eopt-same' }, [['merge', T('Use that group — add the sheet\'s criteria to it (same-name criteria get the sheet\'s weight)', 'استخدم تلك المجموعة — أضف معايير الورقة إليها (المعيار بنفس الاسم يأخذ وزن الورقة)')], ['replace', T('Replace that group with the sheet\'s version', 'استبدل تلك المجموعة بنسخة الورقة')]].map(([v, l]) => el('option', { value: v, selected: S.evalOpt.same === v, text: l })));
+            const o1 = el('select', { class: 'jpt-eopt-tpl' }, [['keep', T('Keep them: add each employee\'s groups to them', 'أبقِها: أضف مجموعات كل موظف إليها')], ['replace', T('Replace them with each employee\'s groups', 'استبدلها بمجموعات كل موظف')]].map(([v, l]) => el('option', { value: v, selected: S.evalOpt.tpl === v, text: l })));
+            const o2 = el('select', { class: 'jpt-eopt-same' }, [['merge', T('Use that group: add the sheet\'s criteria to it (same-name criteria get the sheet\'s weight)', 'استخدم تلك المجموعة: أضف معايير الورقة إليها (المعيار بنفس الاسم يأخذ وزن الورقة)')], ['replace', T('Replace that group with the sheet\'s version', 'استبدل تلك المجموعة بنسخة الورقة')]].map(([v, l]) => el('option', { value: v, selected: S.evalOpt.same === v, text: l })));
             o1.addEventListener('change', () => { S.evalOpt.tpl = o1.value; out_(); invalidate_(); });
             o2.addEventListener('change', () => { S.evalOpt.same = o2.value; invalidate_(); });
             const optRow = (lab, sel) => el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '6px', fontSize: '12px' } }, [el('b', { text: lab }), sel]);
@@ -41188,15 +43073,30 @@ const CATALOG_SRC = [
               S.src = { id: S.base, en: t.en || '', ar: t.ar || '', groups: bi.groups, got: [] }; S.fill = 'criteria';
               await empExcel_();
             });
-            box.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '6px' } }, [xb, el('span', { class: 'jbo-muted', style: { fontSize: '11.5px' }, text: T('Every employee with these groups and criteria — change each employee\'s weights, then upload it with "⬆ Upload workbook".', 'كل موظف بهذه المجموعات والمعايير — عدّل أوزان كل موظف ثم ارفعه بزر "⬆ رفع ملف Excel".') })]));
+            box.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '6px' } }, [xb, el('span', { class: 'jbo-muted', style: { fontSize: '11.5px' }, text: T('Every employee with these groups and criteria; change each employee\'s weights, then upload it with "⬆ Upload workbook".', 'كل موظف بهذه المجموعات والمعايير: عدّل أوزان كل موظف ثم ارفعه بزر "⬆ رفع ملف Excel".') })]));
           }
         }
         if (bi && !bi.err && bi.groups.length && S.evalOpt.tpl === 'keep') { box.appendChild(mapEl); paintMap_(); }
         outEl.appendChild(box);
       }
+      if (ev && S.base) {
+        // v4.75: frequency of the evaluations (the base template's, or semi-annual / quarterly with one period per half / quarter)
+        const fq = el('select', { class: 'jpt-freq' }, FREQ_OPTS.map(([v, en, ar]) => el('option', { value: v, text: T(en, ar) }))); fq.value = S.evalOpt.freq;
+        const num = (cls, key, min, max, w) => { const i = el('input', { type: 'number', class: cls, min: String(min), max: String(max), value: String(S.evalOpt[key]), style: { width: w } }); i.addEventListener('change', () => { S.evalOpt[key] = Math.max(min, Math.min(max, Number(i.value) || min)); i.value = String(S.evalOpt[key]); out_(); settings_(); invalidate_(); }); return i; };
+        fq.addEventListener('change', () => { S.evalOpt.freq = fq.value; out_(); settings_(); invalidate_(); });
+        const frow = el('div', { class: 'jpt-freq-box', style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '8px', fontSize: '12px' } }, [el('b', { text: T('Frequency', 'التكرار') }), fq]);
+        if (S.evalOpt.freq) {
+          const pk = el('input', { type: 'checkbox', class: 'jpt-freq-past' }); pk.checked = !!S.evalOpt.past; pk.addEventListener('change', () => { S.evalOpt.past = pk.checked; out_(); settings_(); invalidate_(); });
+          frow.appendChild(el('span', {}, [T('Evaluation opens on day', 'يفتح التقييم في اليوم'), ' ', num('jpt-freq-day', 'day', 1, 28, '52px'), ' ', T('of the month before the period ends, for', 'من الشهر السابق لانتهاء الفترة، لمدة'), ' ', num('jpt-freq-len', 'len', 1, 60, '52px'), ' ', T('days', 'يوم')]));
+          frow.appendChild(el('label', { title: T('Jisr switches off a period whose evaluation date has already passed. Tick to switch every period on.', 'يعطّل جسر الفترة التي مضى موعد تقييمها. فعّل الخيار لتفعيل كل الفترات.') }, [pk, ' ' + T('Include periods whose date has passed', 'تضمين الفترات التي مضى موعدها')]));
+          const y = new Date().getUTCFullYear(), ex = freqPlan_({ period_start_date: y + '-01-01', period_end_date: y + '-12-31' }, S.evalOpt, '', new Date().toISOString().slice(0, 10));
+          if (ex) frow.appendChild(el('div', { class: 'jbo-muted jpt-freq-ex', style: { flex: '1 0 100%', fontSize: '11.5px', whiteSpace: 'pre-line' }, text: T('Example for the calendar year ', 'مثال للسنة الميلادية ') + y + ':\n' + ex.following_forms.map((q) => (q.is_active ? '✓ ' : '✗ ') + q.recurrence_label_i18n + ': ' + q.start_date + ' → ' + q.end_date + T(', evaluation ', '، التقييم ') + q.evaluation_start_date + ' → ' + q.evaluation_submission_date).join('\n') + '\n' + T('Each evaluation uses the period Jisr gives it; after the first one is created, open it in Jisr and check the dates before the rest are made.', 'يستخدم كل تقييم الفترة التي يحددها جسر؛ بعد إنشاء الأول افتحه في جسر وراجع التواريخ قبل إنشاء الباقي.') }));
+        }
+        outEl.appendChild(frow);
+      }
       if (ev) outEl.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', marginTop: '6px' }, text: T(
-        'Jisr keeps groups and weights on the evaluation, not on the employee — so each employee gets their own evaluation, created from the base template (its period, frequency and feedback types are used; the settings below are not). Each sheet / row must name the employee (Employee ID). Evaluations are created as DRAFTS and checked one by one; launch them afterwards with "Launch created evaluations" (or in Jisr). Nothing is sent to employees until launch.',
-        'يحفظ جسر المجموعات والأوزان على التقييم وليس على الموظف — لذلك يحصل كل موظف على تقييمه الخاص من النموذج الأساسي (تُستخدم فترته وتكراره وأنواع التقييم؛ ولا تُستخدم الإعدادات أدناه). يجب أن تحدد كل ورقة / صف الموظف (الرقم الوظيفي). تُنشأ التقييمات كمسودات وتُفحص واحدًا واحدًا؛ ثم أطلقها بزر "إطلاق التقييمات المنشأة" (أو من جسر). لا يصل شيء للموظفين قبل الإطلاق.') }));
+        'Jisr keeps groups and weights on the evaluation, not on the employee; so each employee gets their own evaluation, created from the base template (its period, frequency and feedback types are used; the settings below are not). Each sheet / row must name the employee (Employee ID). Evaluations are created as DRAFTS and checked one by one; launch them afterwards with "Launch created evaluations" (or in Jisr). Nothing is sent to employees until launch.',
+        'يحفظ جسر المجموعات والأوزان على التقييم وليس على الموظف؛ لذلك يحصل كل موظف على تقييمه الخاص من النموذج الأساسي (تُستخدم فترته وتكراره وأنواع التقييم؛ ولا تُستخدم الإعدادات أدناه). يجب أن تحدد كل ورقة / صف الموظف (الرقم الوظيفي). تُنشأ التقييمات كمسودات وتُفحص واحدًا واحدًا؛ ثم أطلقها بزر "إطلاق التقييمات المنشأة" (أو من جسر). لا يصل شيء للموظفين قبل الإطلاق.') }));
       const reg = evalReg_(); const nReg = Object.keys(reg).length;
       if (ev && nReg) {
         const launchB = el('button', { class: 'jbo-btn jpt-launch', type: 'button', text: T('🚀 Launch created evaluations (', '🚀 إطلاق التقييمات المنشأة (') + nReg + ')' });
@@ -41239,7 +43139,7 @@ const CATALOG_SRC = [
       const drafts = [];
       for (const [k, v] of ids) { const r = await request_('GET', '/v2/forms/' + encodeURIComponent(v.id), null).catch(() => null); if (r && r.status === 404) { evalRegSet_(k, null); continue; } const f = r && r.ok && r.json && (r.json.data || {}); if (f && f.status === 'draft') drafts.push({ k, v, f }); }
       S.busy = ''; paint_();
-      if (!drafts.length) { S.note = T('No drafts left to launch — they are launched already or were deleted in Jisr.', 'لا توجد مسودات للإطلاق — أُطلقت أو حُذفت في جسر.'); S.noteErr = false; out_(); paint_(); return; }
+      if (!drafts.length) { S.note = T('No drafts left to launch: they are launched already or were deleted in Jisr.', 'لا توجد مسودات للإطلاق: أُطلقت أو حُذفت في جسر.'); S.noteErr = false; out_(); paint_(); return; }
       if (!confirm(T('Launch ', 'إطلاق ') + drafts.length + T(' evaluation(s) in ', ' تقييم في ') + slug_() + '?\n\n' + T('Launching starts each evaluation for its employee and reviewer (Jisr sends its notifications). The first one is launched alone and checked.', 'الإطلاق يبدأ كل تقييم لموظفه ومقيّمه (يرسل جسر إشعاراته). يُطلق الأول وحده ويُفحص.'))) return;
       S.running = true; S.stop = false; let ok = 0;
       for (const [i, d] of drafts.entries()) {
@@ -41252,7 +43152,7 @@ const CATALOG_SRC = [
         if (!r.ok || !st || st === 'draft') {
           const why = (jisrMsg_(r.json) || 'HTTP ' + r.status) + (st ? ' · ' + T('status ', 'الحالة ') + st : '');
           if (row) { row.msg = (row.msg || '') + '\n✗ ' + T('launch: ', 'الإطلاق: ') + why; }
-          S.note = T('Launch stopped at "', 'توقف الإطلاق عند "') + d.v.name + '": ' + why + (i === 0 ? T(' — launch this one in Jisr (Evaluations → open it → Complete) and send a capture if the tool should do it.', ' — أطلقه من جسر وأرسل التقاطًا إن أردت أن تقوم الأداة بذلك.') : ''); S.noteErr = true; break;
+          S.note = T('Launch stopped at "', 'توقف الإطلاق عند "') + d.v.name + '": ' + why + (i === 0 ? T('; launch this one in Jisr (Evaluations → open it → Complete) and send a capture if the tool should do it.', '; أطلقه من جسر وأرسل التقاطًا إن أردت أن تقوم الأداة بذلك.') : ''); S.noteErr = true; break;
         }
         ok++; d.v.status = st; evalRegSet_(d.k, d.v);
         if (row) row.msg = (row.msg || '') + '\n🚀 ' + T('launched (', 'أُطلق (') + st + ')';
@@ -41313,14 +43213,14 @@ const CATALOG_SRC = [
         const g = await request_('GET', '/v2/form_templates/' + encodeURIComponent(id) + '/form_template_groups', { pagination: 'false' });
         if (!g.ok) throw new Error(T('Could not read the template\'s groups (HTTP ', 'تعذّرت قراءة مجموعات النموذج (HTTP ') + g.status + ')');
         const groups = srcGroupsOf_(g.json);
-        if (!groups.length) throw new Error(T('This template has no groups in Jisr — add its groups first, or choose another template.', 'هذا النموذج بلا مجموعات في جسر — أضف مجموعاته أولًا أو اختر نموذجًا آخر.'));
+        if (!groups.length) throw new Error(T('This template has no groups in Jisr; add its groups first, or choose another template.', 'هذا النموذج بلا مجموعات في جسر؛ أضف مجموعاته أولًا أو اختر نموذجًا آخر.'));
         const prevT = S.src ? [S.src.en, S.src.ar] : [];
         Object.assign(S.def, ss.set);
         if (!S.def.title || S.def.title === prevT[0] || S.def.title === prevT[1]) S.def.title = t.en || t.ar;
         if (!S.def.titleAr || S.def.titleAr === prevT[1] || S.def.titleAr === prevT[0]) S.def.titleAr = t.ar || t.en;
         S.src = { id: t.id, en: t.en, ar: t.ar, groups, got: ss.got };
         S.note = T('Template read: ', 'تمت قراءة النموذج: ') + groups.length + T(' groups, ', ' مجموعات، ') + groups.reduce((x, z) => x + z.criteria.length, 0) + T(' criteria. ', ' معايير. ') +
-          (ss.got.length ? T('Settings copied from it: ', 'الإعدادات المنسوخة منه: ') + ss.got.join(', ') + T(' — check them below.', ' — راجعها أدناه.') : T('Jisr did not return its settings — set access, type, scope and cycle below.', 'لم يُرجع جسر إعداداته — اضبط الصلاحية والنوع والنطاق والدورة أدناه.'));
+          (ss.got.length ? T('Settings copied from it: ', 'الإعدادات المنسوخة منه: ') + ss.got.join(', ') + T('; check them below.', '; راجعها أدناه.') : T('Jisr did not return its settings; set access, type, scope and cycle below.', 'لم يُرجع جسر إعداداته: اضبط الصلاحية والنوع والنطاق والدورة أدناه.'));
         S.noteErr = false;
       } finally { S.busy = ''; }
     }
@@ -41335,9 +43235,9 @@ const CATALOG_SRC = [
       box.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, [el('b', { style: { fontSize: '12.5px' }, text: T('Existing template', 'النموذج الموجود') }), sel, el('span', { class: 'jbo-muted', style: { fontSize: '12px' }, text: S.tpls.length + T(' templates in Jisr', ' نموذج في جسر') })]));
       if (!S.src) return;
       const tree = el('ul', { class: 'jpt-tree jpt-src-tree' });
-      S.src.groups.forEach((g) => tree.appendChild(el('li', {}, [el('b', { text: gLabel_(g) + (g.en && g.ar && g.ar !== g.en ? ' / ' + g.ar : '') + ' — ' + (g.weight == null ? '?' : g.weight) + '%' + (g.rating && g.rating !== 'percentage' ? ' · ' + g.rating : '') }), el('span', { class: 'jbo-muted', text: '  ' + g.criteria.length + T(' criteria now', ' معايير حاليًا') })])));
+      S.src.groups.forEach((g) => tree.appendChild(el('li', {}, [el('b', { text: gLabel_(g) + (g.en && g.ar && g.ar !== g.en ? ' / ' + g.ar : '') + ' · ' + (g.weight == null ? '?' : g.weight) + '%' + (g.rating && g.rating !== 'percentage' ? ' · ' + g.rating : '') }), el('span', { class: 'jbo-muted', text: '  ' + g.criteria.length + T(' criteria now', ' معايير حاليًا') })])));
       box.appendChild(tree);
-      const fill = el('select', { class: 'jpt-fill' }, [['groups', T('one row per group — you write each employee\'s criteria', 'صف لكل مجموعة — تكتب معايير كل موظف')], ['criteria', T('the template\'s current criteria for every employee — edit them', 'معايير النموذج الحالية لكل موظف — عدّلها')]].map(([v, l]) => el('option', { value: v, selected: S.fill === v, text: l })));
+      const fill = el('select', { class: 'jpt-fill' }, [['groups', T('one row per group: you write each employee\'s criteria', 'صف لكل مجموعة: تكتب معايير كل موظف')], ['criteria', T('the template\'s current criteria for every employee; edit them', 'معايير النموذج الحالية لكل موظف: عدّلها')]].map(([v, l]) => el('option', { value: v, selected: S.fill === v, text: l })));
       fill.addEventListener('change', () => { S.fill = fill.value; });
       const only = el('input', { type: 'text', class: 'jpt-only', value: S.only, placeholder: T('Only these employee IDs (optional, e.g. 1001, 1002)', 'هذه الأرقام الوظيفية فقط (اختياري، مثل 1001, 1002)'), style: { minWidth: '260px' } });
       only.addEventListener('change', () => { S.only = only.value; });
@@ -41363,11 +43263,11 @@ const CATALOG_SRC = [
           else rows.push([String(e.code), e.name || '', gLabel_(g), g.weight == null ? '' : g.weight, '', '', '', '']);
         }));
         const wb = XLSX.utils.book_new(); wb.__noRef = true;
-        const rd = XLSX.utils.aoa_to_sheet([['Performance templates from an existing template — how to fill this file'], [''],
+        const rd = XLSX.utils.aoa_to_sheet([['Performance templates from an existing template; how to fill this file'], [''],
           ['Source template id', String(src.id)], ['Source template', (src.en || '') + (src.ar ? ' / ' + src.ar : '')], [''],
           ['Employee criteria: one row per criterion. Keep the Employee ID and pick the Group from the list (the template\'s groups). Add rows for more criteria; copy the Employee ID and Group onto them.'],
-          ['A blank Employee ID or Group repeats the one above. Rows without a criterion are ignored. An employee with no criteria gets no template — delete the employees you do not need, or leave them empty.'],
-          ['Group weight %: blank = the template\'s weight. The groups an employee uses must add up to 100. Criterion weights add up to their group weight (or to 100 — the tool scales them); blank = split equally.'],
+          ['A blank Employee ID or Group repeats the one above. Rows without a criterion are ignored. An employee with no criteria gets no template; delete the employees you do not need, or leave them empty.'],
+          ['Group weight %: blank = the template\'s weight. The groups an employee uses must add up to 100. Criterion weights add up to their group weight (or to 100; the tool scales them); blank = split equally.'],
           ['Template names: built in the tool from the universal title, employee name and ID. To give one employee a different name, write it on the Template names sheet.'],
           ['Template groups: the source template\'s groups and criteria, for reference.']]);
         rd['!cols'] = [{ wch: 22 }, { wch: 100 }];
@@ -41449,8 +43349,8 @@ const CATALOG_SRC = [
           if (p && sh.include) {
             if (p.notes.length) det.appendChild(el('div', { class: 'jbo-muted', style: { padding: '0 10px', fontSize: '12px' }, text: 'ℹ ' + p.notes.join(' · ') }));
             const tree = el('ul', { class: 'jpt-tree' });
-            p.t.groups.slice(0, 15).forEach((g) => tree.appendChild(el('li', {}, [el('b', { text: g.en + (g.ar && g.ar !== g.en ? ' / ' + g.ar : '') + ' — ' + (g.weight == null ? '?' : g.weight) + '%' }),
-              el('ul', {}, g.criteria.slice(0, 20).map((c) => el('li', { text: c.en + (c.ar && c.ar !== c.en ? ' / ' + c.ar : '') + ' — ' + (c.weight == null ? '?' : c.weight) + '%' + (c.remarks ? T(' · remarks', ' · ملاحظات') : '') + (c.info ? ' · ' + c.info.slice(0, 80) : '') })))])));
+            p.t.groups.slice(0, 15).forEach((g) => tree.appendChild(el('li', {}, [el('b', { text: g.en + (g.ar && g.ar !== g.en ? ' / ' + g.ar : '') + ' · ' + (g.weight == null ? '?' : g.weight) + '%' }),
+              el('ul', {}, g.criteria.slice(0, 20).map((c) => el('li', { text: c.en + (c.ar && c.ar !== c.en ? ' / ' + c.ar : '') + ' · ' + (c.weight == null ? '?' : c.weight) + '%' + (c.remarks ? T(' · remarks', ' · ملاحظات') : '') + (c.info ? ' · ' + c.info.slice(0, 80) : '') })))])));
             det.appendChild(tree);
           }
         };
@@ -41533,8 +43433,8 @@ const CATALOG_SRC = [
       mapEl.appendChild(el('div', { style: { fontWeight: '600', fontSize: '12.5px', margin: '10px 0 2px' }, text: T('Groups in your file → groups in this template', 'مجموعات ملفك ← مجموعات هذا النموذج') }));
       if (!list.length) { mapEl.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px' }, text: T('Upload the workbook to choose, for each of its groups, whether it is a new group or goes into one of the template\'s groups.', 'ارفع الملف لتختار لكل مجموعة فيه: مجموعة جديدة أو تُضاف إلى إحدى مجموعات النموذج.') })); return; }
       mapEl.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', marginBottom: '4px' }, text: T(
-        'For each group in your file, choose: add it as a NEW group, or put its criteria INTO a group the template already has — then the template\'s group name is used (e.g. "skillsxxx" → "Skills").',
-        'لكل مجموعة في ملفك اختر: إضافتها كمجموعة جديدة، أو وضع معاييرها داخل مجموعة موجودة في النموذج — وعندها يُستخدم اسم مجموعة النموذج (مثال: "skillsxxx" ← "Skills").') }));
+        'For each group in your file, choose: add it as a NEW group, or put its criteria INTO a group the template already has; then the template\'s group name is used (e.g. "skillsxxx" → "Skills").',
+        'لكل مجموعة في ملفك اختر: إضافتها كمجموعة جديدة، أو وضع معاييرها داخل مجموعة موجودة في النموذج؛ وعندها يُستخدم اسم مجموعة النموذج (مثال: "skillsxxx" ← "Skills").') }));
       // v4.53: one choice for every group in the file at once
       if (list.length > 1) {
         const allSel = el('select', { class: 'jpt-gmap-all' }, [el('option', { value: '', text: T('➕ Every group as a new group', '➕ كل مجموعة كمجموعة جديدة') })].concat(bi.groups.map((t) =>
@@ -41548,10 +43448,10 @@ const CATALOG_SRC = [
       list.sort((a, b) => b[1].n - a[1].n).forEach(([k, e]) => {
         const cur = mapTarget_({ en: e.name, ar: e.ar }, bi);
         const sel = el('select', { 'data-group': k, style: { maxWidth: '100%' } }, [el('option', { value: '', selected: !cur, text: T('➕ Add as a new group "', '➕ إضافتها كمجموعة جديدة "') + e.name + '"' })].concat(bi.groups.map((t) =>
-          el('option', { value: tplGroupId_(t), selected: !!cur && tplGroupId_(cur) === tplGroupId_(t), text: (S.evalOpt.same === 'merge' ? T('↪ Add its criteria to the template group "', '↪ إضافة معاييرها إلى مجموعة النموذج "') : T('↪ Replace the template group "', '↪ استبدال مجموعة النموذج "')) + gLabel_(t) + '" (' + (t.weight == null ? '?' : t.weight) + '%)' + T(' — name becomes "', ' — يصبح الاسم "') + gLabel_(t) + '"' }))));
+          el('option', { value: tplGroupId_(t), selected: !!cur && tplGroupId_(cur) === tplGroupId_(t), text: (S.evalOpt.same === 'merge' ? T('↪ Add its criteria to the template group "', '↪ إضافة معاييرها إلى مجموعة النموذج "') : T('↪ Replace the template group "', '↪ استبدال مجموعة النموذج "')) + gLabel_(t) + '" (' + (t.weight == null ? '?' : t.weight) + '%)' + T('; name becomes "', '; يصبح الاسم "') + gLabel_(t) + '"' }))));
         sel.addEventListener('change', () => { S.groupMap.set(k, sel.value); invalidate_(); });
         const hintT = !cur ? lookAlike_(e.name, bi) : null;
-        const hint = hintT ? el('button', { class: 'jbo-btn', type: 'button', style: { fontSize: '11px', padding: '1px 8px', marginInlineStart: '6px' }, text: T('Looks like "', 'تشبه "') + gLabel_(hintT) + T('" — use it?', '" — استخدامها؟') }) : null;
+        const hint = hintT ? el('button', { class: 'jbo-btn', type: 'button', style: { fontSize: '11px', padding: '1px 8px', marginInlineStart: '6px' }, text: T('Looks like "', 'تشبه "') + gLabel_(hintT) + T('": use it?', '": استخدامها؟') }) : null;
         if (hint) hint.addEventListener('click', () => { S.groupMap.set(k, tplGroupId_(hintT)); invalidate_(); });
         tbl.appendChild(el('tr', { style: { borderTop: '1px solid #eef0f2' } }, [
           el('td', { style: { padding: '4px 6px', verticalAlign: 'top', width: '34%' } }, [el('b', { text: e.name }), el('div', { class: 'jbo-muted', style: { fontSize: '11px' }, text: e.n + T(' sheet(s) · ', ' ورقة · ') + e.crit + T(' criteria', ' معيار') })]),
@@ -41594,11 +43494,11 @@ const CATALOG_SRC = [
     }
 
     function render_() {
-      titleEl.textContent = T('Performance Templates — Bulk', 'نماذج تقييم الأداء — جماعي');
+      titleEl.textContent = T('Performance Templates (Bulk)', 'نماذج تقييم الأداء (جماعي)');
       body.innerHTML = ''; foot.innerHTML = '';
       body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
-        'Create performance evaluation templates in bulk — with their groups, criteria and weights — from this tool\'s Excel or from the client\'s own workbook (each sheet becomes one template; you tell the tool which column is what).',
-        'أنشئ نماذج تقييم الأداء جماعيًا — مع المجموعات والمعايير والأوزان — من ملف Excel الخاص بالأداة أو من ملف العميل (كل ورقة تصبح نموذجًا؛ وتحدد أنت ما يمثله كل عمود).') }));
+        'Create performance evaluation templates in bulk, with their groups, criteria and weights, from this tool\'s Excel or from the client\'s own workbook (each sheet becomes one template; you tell the tool which column is what).',
+        'أنشئ نماذج تقييم الأداء جماعيًا، مع المجموعات والمعايير والأوزان، من ملف Excel الخاص بالأداة أو من ملف العميل (كل ورقة تصبح نموذجًا؛ وتحدد أنت ما يمثله كل عمود).') }));
       body.appendChild(el('div', { class: 'jpt-steps' }, [
         el('div', { class: 'jpt-step' }, [el('b', { text: T('1. Settings', '1. الإعدادات') }), el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Access, evaluation type, scope and cycle below.', 'الصلاحية ونوع التقييم والنطاق والدورة أدناه.') })]),
         el('div', { class: 'jpt-step' }, [el('b', { text: T('2. Excel', '2. ملف Excel') }), tplB, upB, srcB, el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Use this tool\'s template, upload the client\'s workbook as it is, or reuse an existing template\'s groups for one template per employee.', 'استخدم قالب الأداة، أو ارفع ملف العميل كما هو، أو أعد استخدام مجموعات نموذج موجود لنموذج لكل موظف.') })]),
@@ -41622,11 +43522,11 @@ const CATALOG_SRC = [
         // v4.36: where each row goes in Jisr — a new template, or into a template that already exists
         const opts = (val) => [el('option', { value: '', selected: !val, text: T('➕ New template', '➕ نموذج جديد') })].concat((S.tpls || []).map((x) => el('option', { value: String(x.id), selected: String(val) === String(x.id), text: T('✎ Add into: ', '✎ إضافة إلى: ') + tgtName_(x.id) })));
         if (S.out === 'evaluations') { /* one evaluation per row — no target choice */ }
-        else if (!S.tpls) { const lb = el('button', { class: 'jbo-btn jpt-load-tgt', type: 'button', text: T('🎯 Send rows into existing Jisr templates…', '🎯 إرسال الصفوف إلى نماذج موجودة في جسر…') }); lb.addEventListener('click', async () => { try { await loadTpls_(); S.note = S.tpls.length + T(' templates read from Jisr — choose the target of each row in the "In Jisr" column.', ' نموذج قُرئ من جسر — اختر وجهة كل صف من عمود "في جسر".'); S.noteErr = false; } catch (e) { S.note = e.message; S.noteErr = true; } paint_(); }); tgtBar.appendChild(lb); }
+        else if (!S.tpls) { const lb = el('button', { class: 'jbo-btn jpt-load-tgt', type: 'button', text: T('🎯 Send rows into existing Jisr templates…', '🎯 إرسال الصفوف إلى نماذج موجودة في جسر…') }); lb.addEventListener('click', async () => { try { await loadTpls_(); S.note = S.tpls.length + T(' templates read from Jisr: choose the target of each row in the "In Jisr" column.', ' نموذج قُرئ من جسر: اختر وجهة كل صف من عمود "في جسر".'); S.noteErr = false; } catch (e) { S.note = e.message; S.noteErr = true; } paint_(); }); tgtBar.appendChild(lb); }
         else {
           const all = el('select', { class: 'jpt-tgt-all' }, [el('option', { value: '*', text: T('— set every row to… —', '— تعيين كل الصفوف إلى… —') })].concat(opts('__none__').map((o) => { o.selected = false; return o; })));
           all.addEventListener('change', () => { if (all.value === '*') return; S.rows.forEach((r) => { if (all.value) S.target.set(r.key, all.value); else S.target.delete(r.key); }); invalidate_(); });
-          tgtBar.append(el('b', { style: { fontSize: '12.5px' }, text: T('In Jisr:', 'في جسر:') }), all, el('span', { class: 'jbo-muted', style: { fontSize: '11.5px' }, text: T('"Add into" adds the row\'s groups and criteria to that existing template — its name, settings and current groups stay as they are. Only templates you choose are changed.', '"إضافة إلى" تضيف مجموعات الصف ومعاييره إلى ذلك النموذج الموجود — يبقى اسمه وإعداداته ومجموعاته الحالية كما هي. لا يتغير إلا ما تختاره.') }));
+          tgtBar.append(el('b', { style: { fontSize: '12.5px' }, text: T('In Jisr:', 'في جسر:') }), all, el('span', { class: 'jbo-muted', style: { fontSize: '11.5px' }, text: T('"Add into" adds the row\'s groups and criteria to that existing template; its name, settings and current groups stay as they are. Only templates you choose are changed.', '"إضافة إلى" تضيف مجموعات الصف ومعاييره إلى ذلك النموذج الموجود؛ يبقى اسمه وإعداداته ومجموعاته الحالية كما هي. لا يتغير إلا ما تختاره.') }));
         }
         const t = el('table');
         t.appendChild(el('tr', {}, [T('From', 'المصدر'), T('In Jisr', 'في جسر'), T('Template', 'النموذج'), T('Access · type · cycle', 'الصلاحية · النوع · الدورة'), T('Scope', 'النطاق'), T('Groups / criteria', 'المجموعات / المعايير'), T('Status', 'الحالة')].map((h) => el('th', { text: h }))));
@@ -41641,7 +43541,7 @@ const CATALOG_SRC = [
           else if (S.tpls && !/done|failed|check/.test(r.state)) { const ts = el('select', { class: 'jpt-tgt', 'data-key': r.key, style: { maxWidth: '220px' } }, opts(r.tgt)); ts.addEventListener('change', () => { if (ts.value) S.target.set(r.key, ts.value); else S.target.delete(r.key); invalidate_(); }); tgtCell = el('td', {}, [ts]); }
           else tgtCell = el('td', { text: r.tgt ? T('✎ into ', '✎ إلى ') + tgtName_(r.tgt) : T('➕ New', '➕ جديد') });
           const inf = r.tgt ? S.tgtInfo[r.tgt] : null;
-          t.appendChild(el('tr', { 'data-key': r.key }, [el('td', { text: x.src }), tgtCell, el('td', { text: r.tgt ? T('→ existing template ', '→ نموذج موجود ') + tgtName_(r.tgt) + (inf ? '\n' + T('has ', 'به ') + inf.groups.length + T(' groups (', ' مجموعات (') + inf.sum + T('%) — adds ', '%) — يضيف ') + x.groups.length : '') : x.en + (x.ar && x.ar !== x.en ? '\n' + x.ar : ''), style: { whiteSpace: 'pre-line' } }),
+          t.appendChild(el('tr', { 'data-key': r.key }, [el('td', { text: x.src }), tgtCell, el('td', { text: r.tgt ? T('→ existing template ', '→ نموذج موجود ') + tgtName_(r.tgt) + (inf ? '\n' + T('has ', 'به ') + inf.groups.length + T(' groups (', ' مجموعات (') + inf.sum + T('%); adds ', '%)؛ يضيف ') + x.groups.length : '') : x.en + (x.ar && x.ar !== x.en ? '\n' + x.ar : ''), style: { whiteSpace: 'pre-line' } }),
             el('td', { text: (x.access === 'employees' ? T('Authorized employees', 'موظفون مصرح لهم') : T('Admins', 'المسؤولون')) + ' · ' + (et ? T(et.en, et.ar) : '?') + (et && et.days ? '\n' + T('days ', 'الأيام ') + x.startDay + ' / ' + x.endDay : (x.frequency ? ' · ' + T((FREQS.find((f) => f.key === x.frequency) || {}).en || x.frequency, (FREQS.find((f) => f.key === x.frequency) || {}).ar || x.frequency) : '') + '\n' + (x.startDay || '?') + ' ' + (MONTHS[(x.startMonth || 1) - 1] || '?').slice(0, 3) + ' → ' + (x.endDay || '?') + ' ' + (MONTHS[(x.endMonth || 1) - 1] || '?').slice(0, 3)), style: { whiteSpace: 'pre-line' } }),
             el('td', { text: (x.scopes || []).map((k) => T(SCOPES.find((s) => s.key === k).en, SCOPES.find((s) => s.key === k).ar)).join(', ') + (x.anonymous ? T(' (anonymous)', ' (مجهول)') : '') }),
             el('td', { text: (x.groups || []).length + ' / ' + nC }),
@@ -41662,19 +43562,19 @@ const CATALOG_SRC = [
     tplB.addEventListener('click', async () => {
       try {
         const wb = XLSX.utils.book_new(); wb.__noRef = true;
-        const read = [['Performance templates — how to fill this file'], [''],
+        const read = [['Performance templates: how to fill this file'], [''],
           ['Templates sheet: one row per template. Blank cells use the settings chosen in the tool.'],
           ['Groups & criteria sheet: one row per criterion. Write the group name on its first criterion; leave it blank below to stay in the same group.'],
-          ['Weights: group weights of a template add up to 100. Criteria weights add up to their group\'s weight (or to 100 — the tool scales them). Blank = split equally.'],
+          ['Weights: group weights of a template add up to 100. Criteria weights add up to their group\'s weight (or to 100; the tool scales them). Blank = split equally.'],
           ['Access: Admins or Authorized employees. Evaluation type: Calendar year or Probation period (Contract period needs a capture first).'],
           ['Calendar year: Frequency Annually or Quarterly, with start/end day and month. Probation period: leave Frequency and the months blank; Start day / End day are the starting and ending day as in Jisr\'s probation form (e.g. 30 and 10).'],
           ['Scope columns: Yes / No. Remarks required: Yes / No. Months: 1–12 or January…December.'],
-          ['The rows starting with "Example" are ignored — replace them with your own.']];
+          ['The rows starting with "Example" are ignored; replace them with your own.']];
         const wsR = XLSX.utils.aoa_to_sheet(read); wsR['!cols'] = [{ wch: 120 }];
-        const wsT = XLSX.utils.aoa_to_sheet([TPL_H, ['Example — Annual review 2027', 'مثال — التقييم السنوي 2027', 'Admins', 'Calendar year', 'Annually', 1, 11, 15, 12, 'Yes', 'Yes', 'No', 'No', 'No']]);
+        const wsT = XLSX.utils.aoa_to_sheet([TPL_H, ['Example: Annual review 2027', 'مثال: التقييم السنوي 2027', 'Admins', 'Calendar year', 'Annually', 1, 11, 15, 12, 'Yes', 'Yes', 'No', 'No', 'No']]);
         wsT['!cols'] = TPL_H.map((h) => ({ wch: Math.max(12, h.length + 2) }));
         const wsG = XLSX.utils.aoa_to_sheet([GRP_H,
-          ['Example — Annual review 2027', 'Core competencies', 'الكفاءات الأساسية', 60, 'Teamwork', 'العمل الجماعي', 30, 'No'],
+          ['Example: Annual review 2027', 'Core competencies', 'الكفاءات الأساسية', 60, 'Teamwork', 'العمل الجماعي', 30, 'No'],
           ['', '', '', '', 'Communication', 'التواصل', 30, 'Yes'],
           ['', 'Objectives', 'الأهداف', 40, 'Achieves agreed targets', 'تحقيق الأهداف المتفق عليها', 40, 'Yes']]);
         wsG['!cols'] = GRP_H.map((h) => ({ wch: Math.max(14, h.length + 4) }));
@@ -41724,8 +43624,8 @@ const CATALOG_SRC = [
             const hasData = roles.some((r) => r === 'cen' || r === 'car') && aoa.length > hRow + 1;
             return { name: n, aoa, hRow, roles, ov: {}, include: hasData, usable: hasData, info: padFromSheet_(infoOf_(aoa, hRow), n), en: '', ar: '', nameEdited: false, parsed: null };
           });
-          S.note = S.sheets.length + T(' sheet(s) found, ', ' ورقة، ') + S.sheets.filter((x) => x.include).length + T(' with objectives. Check the columns of the first sheet below — every included sheet becomes one template.', ' بها أهداف. راجع أعمدة الورقة الأولى أدناه — كل ورقة مختارة تصبح نموذجًا.');
-          if (S.sheets.every((s) => !s.include)) S.note += T('\nNo criteria column was recognised — choose the roles yourself.', '\nلم يُتعرّف على عمود المعايير — اختر الأدوار بنفسك.');
+          S.note = S.sheets.length + T(' sheet(s) found, ', ' ورقة، ') + S.sheets.filter((x) => x.include).length + T(' with objectives. Check the columns of the first sheet below; every included sheet becomes one template.', ' بها أهداف. راجع أعمدة الورقة الأولى أدناه: كل ورقة مختارة تصبح نموذجًا.');
+          if (S.sheets.every((s) => !s.include)) S.note += T('\nNo criteria column was recognised: choose the roles yourself.', '\nلم يُتعرّف على عمود المعايير: اختر الأدوار بنفسك.');
         }
         S.noteErr = false;
         build_();
@@ -41753,8 +43653,8 @@ const CATALOG_SRC = [
           if (r.tgt) {
             const inf = S.tgtInfo[r.tgt];
             const twin = S.rows.find((o) => o !== r && o.tgt === r.tgt && !/done/.test(o.state));
-            if (twin) errs.push(T('Another row (', 'صف آخر (') + twin.p.t.src + T(') goes into the same template — send one row per existing template', ') يُرسل إلى نفس النموذج — صف واحد لكل نموذج موجود'));
-            if (inf.sum >= 99.95) errs.push(T('That template\'s groups already use 100% of the weight — nothing can be added', 'مجموعات ذلك النموذج تستخدم 100% من الوزن — لا يمكن الإضافة'));
+            if (twin) errs.push(T('Another row (', 'صف آخر (') + twin.p.t.src + T(') goes into the same template; send one row per existing template', ') يُرسل إلى نفس النموذج: صف واحد لكل نموذج موجود'));
+            if (inf.sum >= 99.95) errs.push(T('That template\'s groups already use 100% of the weight; nothing can be added', 'مجموعات ذلك النموذج تستخدم 100% من الوزن؛ لا يمكن الإضافة'));
             const have = new Set(inf.groups.flatMap((g) => [g.en, g.ar]).filter(Boolean).map((z) => z.toLowerCase()));
             const dup = x.groups.filter((g) => have.has(clean_(g.en).toLowerCase()) || (g.ar && have.has(clean_(g.ar).toLowerCase())));
             if (dup.length) errs.push(T('Already in the template: ', 'موجودة في النموذج: ') + dup.map((g) => g.en).join(', '));
@@ -41773,9 +43673,9 @@ const CATALOG_SRC = [
           if (errs.length) { r.state = 'error'; r.msg = '✗ ' + errs.join('\n✗ '); return; }
           r.state = 'ready';
         });
-        S.rows.forEach((r) => { if (r.tgt && r.state === 'ready') r.msg = T('ready — adds ', 'جاهز — يضيف ') + r.p.t.groups.length + T(' group(s) into ', ' مجموعة إلى ') + tgtName_(r.tgt) + T('; its ', '؛ مجموعاته الحالية ') + S.tgtInfo[r.tgt].groups.length + T(' current group(s) stay', ' تبقى'); });
+        S.rows.forEach((r) => { if (r.tgt && r.state === 'ready') r.msg = T('ready: adds ', 'جاهز: يضيف ') + r.p.t.groups.length + T(' group(s) into ', ' مجموعة إلى ') + tgtName_(r.tgt) + T('; its ', '؛ مجموعاته الحالية ') + S.tgtInfo[r.tgt].groups.length + T(' current group(s) stay', ' تبقى'); });
         S.dryDone = true;
-        S.note = T('Dry Run done — nothing was created. ', 'انتهى التشغيل التجريبي — لم يُنشأ شيء. ') + S.rows.filter((r) => r.state === 'ready').length + T(' template(s) ready. ', ' نموذج جاهز. ') + ex.length + T(' templates already in Jisr.', ' نموذج موجود في جسر.');
+        S.note = T('Dry Run done: nothing was created. ', 'انتهى التشغيل التجريبي: لم يُنشأ شيء. ') + S.rows.filter((r) => r.state === 'ready').length + T(' template(s) ready. ', ' نموذج جاهز. ') + ex.length + T(' templates already in Jisr.', ' نموذج موجود في جسر.');
         settings_(); sheets_();
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; paint_();
@@ -41796,7 +43696,7 @@ const CATALOG_SRC = [
           if (/done/.test(r.state)) continue;
           r.state = ''; r.msg = ''; r.emp = null;
           const x = r.p.t; const errs = r.p.errors.filter((e) => !/review types|Choose at least one scope|Access|Frequency|Start day|End day|Start month|End month|Evaluation type|Probation/i.test(e));
-          if (!x.en && !x.ar) errs.push(T('Evaluation name is empty — check the name pattern', 'اسم التقييم فارغ — راجع نمط الاسم'));
+          if (!x.en && !x.ar) errs.push(T('Evaluation name is empty: check the name pattern', 'اسم التقييم فارغ: راجع نمط الاسم'));
           const code = clean_(r.empCode);
           if (!code) errs.push(T('No Employee ID on this sheet / row', 'لا يوجد رقم وظيفي في هذه الورقة / الصف'));
           else {
@@ -41809,15 +43709,15 @@ const CATALOG_SRC = [
           if (!errs.length && reg[key]) {
             const g = await request_('GET', '/v2/forms/' + encodeURIComponent(reg[key].id), null).catch(() => null);
             if (g && g.status === 404) evalRegSet_(key, null);
-            else { r.state = 'skip'; r.evalId = reg[key].id; r.msg = T('Already created by this tool (#', 'أنشأته الأداة مسبقًا (#') + reg[key].id + ', ' + ((g && g.ok && g.json && g.json.data && g.json.data.status) || '?') + T(') — delete the draft first to create it again', ') — احذف المسودة أولًا لإعادة الإنشاء'); continue; }
+            else { r.state = 'skip'; r.evalId = reg[key].id; r.msg = T('Already created by this tool (#', 'أنشأته الأداة مسبقًا (#') + reg[key].id + ', ' + ((g && g.ok && g.json && g.json.data && g.json.data.status) || '?') + T('); delete the draft first to create it again', ')؛ احذف المسودة أولًا لإعادة الإنشاء'); continue; }
           }
           if (errs.length) { r.state = 'error'; r.msg = '✗ ' + Array.from(new Set(errs)).join('\n✗ '); continue; }
-          r.state = 'ready'; r.msg = T('ready — evaluation "', 'جاهز — تقييم "') + (x.en || x.ar) + T('" for ', '" للموظف ') + (r.emp.name || code) + ' · ' + x.groups.length + T(' group(s), ', ' مجموعة، ') + x.groups.reduce((a, g) => a + g.criteria.length, 0) + T(' criteria', ' معيار') +
+          r.state = 'ready'; r.msg = T('ready: evaluation "', 'جاهز: تقييم "') + (x.en || x.ar) + T('" for ', '" للموظف ') + (r.emp.name || code) + ' · ' + x.groups.length + T(' group(s), ', ' مجموعة، ') + x.groups.reduce((a, g) => a + g.criteria.length, 0) + T(' criteria', ' معيار') +
             x.groups.map((g) => '\n  ' + (g.en || g.ar) + ' ' + g.weight + '% = ' + g.criteria.map((c) => c.weight + '%').join(' + ') + (groupCheck_(g).ok ? ' ✓' : ' ✗') + (r.plan && r.plan.merged && [g.en, g.ar].filter(Boolean).some((n) => r.plan.merged.has(gKey_(n))) ? ' ' + T('(template group + sheet criteria)', '(مجموعة النموذج + معايير الورقة)') : '')).join('') +
             (r.plan && r.plan.mode === 'keep' ? r.plan.kept.map((g) => '\n  ' + (g.en || g.ar) + ' ' + g.weight + '% ' + T('(kept from the template)', '(من النموذج)')).join('') + '\n  ' + T('Total ', 'المجموع ') + r2_(x.groups.reduce((a, g) => a + g.weight, 0) + r.plan.kept.reduce((a, g) => a + (g.weight || 0), 0)) + '%' : '');
         }
         S.dryDone = true;
-        S.note = T('Dry Run done — nothing was created. ', 'انتهى التشغيل التجريبي — لم يُنشأ شيء. ') + S.rows.filter((r) => r.state === 'ready').length + T(' evaluation(s) ready from "', ' تقييم جاهز من "') + ((S.tpls || []).find((t) => String(t.id) === String(S.base)) || {}).en + '".';
+        S.note = T('Dry Run done: nothing was created. ', 'انتهى التشغيل التجريبي: لم يُنشأ شيء. ') + S.rows.filter((r) => r.state === 'ready').length + T(' evaluation(s) ready from "', ' تقييم جاهز من "') + ((S.tpls || []).find((t) => String(t.id) === String(S.base)) || {}).en + '".' + (S.evalOpt.freq ? T(' Frequency: ' + (S.evalOpt.freq === 'quarterly' ? 'quarterly' : 'semi-annual') + '; the periods are set from each evaluation\'s own dates when it is created.', ' التكرار: ' + (S.evalOpt.freq === 'quarterly' ? 'ربع سنوي' : 'نصف سنوي') + '؛ تُحدد الفترات من تواريخ كل تقييم عند إنشائه.') : '');
         S.noteErr = false; settings_(); sheets_();
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; paint_();
@@ -41832,7 +43732,9 @@ const CATALOG_SRC = [
       const f0 = await request_('GET', '/v2/forms/' + id, null).catch(() => null);
       const form = f0 && f0.ok && f0.json && f0.json.data;
       if (!form) return fail(T('could not read the new evaluation', 'تعذّرت قراءة التقييم الجديد'));
-      const ren = await request_('PUT', '/v2/forms/' + id, null, formPayload_(form, x.en || x.ar, x.ar)).catch(() => null);
+      const plan = S.evalOpt.freq ? freqPlan_(form, S.evalOpt, x.en || x.ar, new Date().toISOString().slice(0, 10)) : null;
+      if (S.evalOpt.freq && !plan) return fail(T('could not read the evaluation period from Jisr, so the frequency was not set', 'تعذّرت قراءة فترة التقييم من جسر، لذا لم يُضبط التكرار'));
+      const ren = await request_('PUT', '/v2/forms/' + id, null, formPayload_(form, x.en || x.ar, x.ar, plan)).catch(() => null);
       if (!ren || !ren.ok) return fail(T('rename: ', 'إعادة التسمية: ') + (ren ? jisrMsg_(ren.json) || 'HTTP ' + ren.status : T('no answer', 'لا رد')));
       const as = await request_('PUT', '/v2/forms/' + id + '/assign_employees', { is_save_changes: 'false', is_saved_as_draft: 'true' }, { employee_ids: [Number(r.emp.id)] }).catch(() => null);
       if (!as || !as.ok) return fail(T('assign employee: ', 'إسناد الموظف: ') + (as ? jisrMsg_(as.json) || 'HTTP ' + as.status : T('no answer', 'لا رد')));
@@ -41848,11 +43750,11 @@ const CATALOG_SRC = [
       const f1 = await request_('GET', '/v2/forms/' + id, null).catch(() => null);
       const g1 = await request_('GET', '/v2/forms/' + id + '/form_groups', { pagination: 'false' }).catch(() => null);
       const groups = g1 && g1.ok ? listIn_(g1.json, (z) => z.id != null && Array.isArray(z.criterions)) : null;
-      const off = evalCheck_(x, f1 && f1.ok && f1.json ? f1.json.data : null, groups, r.emp.id, r.plan && r.plan.mode === 'keep' ? r.plan.kept : []);
+      const off = evalCheck_(x, f1 && f1.ok && f1.json ? f1.json.data : null, groups, r.emp.id, r.plan && r.plan.mode === 'keep' ? r.plan.kept : [], plan);
       r.evalId = id;
       evalRegSet_(S.base + ':' + r.emp.id, { id, name: x.en || x.ar, emp: r.emp.code || r.emp.id, status: 'draft' });
       if (off) { r.state = 'check'; r.msg = T('⚠ draft #', '⚠ مسودة #') + id + T(' created, but Jisr shows: ', ' أُنشئت، لكن جسر يعرض: ') + off; return false; }
-      r.state = 'done'; r.msg = T('✓ draft evaluation #', '✓ مسودة تقييم #') + id + ' · ' + groups.length + T(' groups · employee assigned · verified', ' مجموعات · الموظف مُسند · تم التحقق');
+      r.state = 'done'; r.msg = T('✓ draft evaluation #', '✓ مسودة تقييم #') + id + ' · ' + groups.length + T(' groups · employee assigned · verified', ' مجموعات · الموظف مُسند · تم التحقق') + (plan ? T(' · ' + plan.following_forms.length + ' periods (' + plan.frequency + ')', ' · ' + plan.following_forms.length + ' فترات') : '');
       return true;
     }
     async function evalRun_(todo) {
@@ -41864,7 +43766,7 @@ const CATALOG_SRC = [
         try { await createEval_(r); } catch (e) { r.state = 'failed'; r.msg = '✗ ' + e.message; }
         done++; S.busy = T('Creating evaluations… ', 'جارٍ إنشاء التقييمات… ') + done + '/' + todo.length; paint_();
         if (done === 1 && todo.length > 1) {
-          if (r.state !== 'done') { S.stop = true; todo.slice(1).forEach((q) => { q.msg = T('not sent — the first evaluation did not complete', 'لم يُرسل — لم يكتمل التقييم الأول'); }); continue; }
+          if (r.state !== 'done') { S.stop = true; todo.slice(1).forEach((q) => { q.msg = T('not sent: the first evaluation did not complete', 'لم يُرسل: لم يكتمل التقييم الأول'); }); continue; }
           if (!confirm(T('The first evaluation (draft #', 'أُنشئ التقييم الأول (مسودة #') + r.evalId + T(') was created and checked. Open it in Jisr (Performance → Evaluations) if you want to look at it.\n\nContinue with the other ', ') وتم التحقق منه. افتحه في جسر إن أردت مراجعته.\n\nمتابعة بقية التقييمات (') + (todo.length - 1) + '?')) { S.stop = true; todo.slice(1).forEach((q) => { q.msg = T('not sent (stopped after the first)', 'لم يُرسل (توقف بعد الأول)'); }); }
         }
       }
@@ -41894,7 +43796,7 @@ const CATALOG_SRC = [
           if (res && !res.ok) { r.state = 'failed'; r.msg = '✗ ' + (jisrMsg_(res.json) || 'HTTP ' + res.status); }
           else {
             if (!id) { const ex = await existingTemplates_().catch(() => []); const hit = ex.find((e) => e.en.toLowerCase() === x.en.toLowerCase()); id = hit ? hit.id : null; }
-            if (!id) { r.state = 'check'; r.msg = T('⚠ template may have been created, but Jisr did not return its id — groups were not added. Check in Jisr.', '⚠ ربما أُنشئ النموذج لكن جسر لم يُرجع رقمه — لم تُضف المجموعات. تحقق في جسر.'); }
+            if (!id) { r.state = 'check'; r.msg = T('⚠ template may have been created, but Jisr did not return its id; groups were not added. Check in Jisr.', '⚠ ربما أُنشئ النموذج لكن جسر لم يُرجع رقمه؛ لم تُضف المجموعات. تحقق في جسر.'); }
             else {
               r.id = id;
               let g = null;
@@ -41920,13 +43822,13 @@ const CATALOG_SRC = [
         } catch (e) { r.state = 'failed'; r.msg = '✗ ' + e.message; }
         done++; S.busy = T('Creating… ', 'جارٍ الإنشاء… ') + done + '/' + todo.length; paint_();
         if (done === 1 && todo.length > 1) {
-          if (r.state !== 'done') { S.stop = true; todo.slice(1).forEach((x) => { x.msg = T('not sent — the first template did not complete', 'لم يُرسل — لم يكتمل النموذج الأول'); }); continue; }
+          if (r.state !== 'done') { S.stop = true; todo.slice(1).forEach((x) => { x.msg = T('not sent: the first template did not complete', 'لم يُرسل: لم يكتمل النموذج الأول'); }); continue; }
           if (!confirm(T('The first template "', 'أُنشئ النموذج الأول "') + x0_(r) + T('" was created and checked (id ', '" وتم التحقق منه (رقم ') + r.id + T('). Open it in Jisr if you want to look at it.\n\nContinue with the other ', '). افتحه في جسر إن أردت مراجعته.\n\nمتابعة بقية النماذج (') + (todo.length - 1) + T(' template(s)?', ')؟'))) { S.stop = true; todo.slice(1).forEach((x) => { x.msg = T('not sent (stopped after the first)', 'لم يُرسل (توقف بعد الأول)'); }); }
         }
       }
       S.running = false; S.busy = '';
       const ok = todo.filter((r) => r.state === 'done').length;
-      S.note = ok + T(' of ', ' من ') + todo.length + T(' template(s) created in ', ' نموذج أُنشئ في ') + slug_() + T('. Questions keep Jisr\'s defaults — review them in Jisr if needed.', '. الأسئلة على إعدادات جسر — راجعها في جسر عند الحاجة.'); S.noteErr = ok < todo.length;
+      S.note = ok + T(' of ', ' من ') + todo.length + T(' template(s) created in ', ' نموذج أُنشئ في ') + slug_() + T('. Questions keep Jisr\'s defaults: review them in Jisr if needed.', '. الأسئلة على إعدادات جسر: راجعها في جسر عند الحاجة.'); S.noteErr = ok < todo.length;
       paint_();
     });
     stopB.addEventListener('click', () => { S.stop = true; });
@@ -41947,8 +43849,8 @@ const CATALOG_SRC = [
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
-    g.modules[MODULE_ID] = { title: 'Performance Templates — Bulk', open: openTool_, version: SECTION_VERSION };
-    W.__jisrPerfTemplates = { formPayload_, formGroupsBody_, evalCheck_, srcGroupsOf_, srcSettingsOf_, parseEmpWorkbook_, empRaw_, empVars_, varsOf_, nameFromVars_, NAME_VARS, padFromSheet_, restructure_, infoOf_, nameFrom_, weight_, month_, day_, yes_, normalizeWeights_, templateBody_, groupsBody_, reviewTypeIds_, parseOurWorkbook_, headerRow_, guessRoles_, sheetToGroups_, finish_, newIdIn_ };
+    g.modules[MODULE_ID] = { title: 'Performance Templates (Bulk)', open: openTool_, version: SECTION_VERSION };
+    W.__jisrPerfTemplates = { freqPlan_, freqCheck_, formPayload_, formGroupsBody_, evalCheck_, srcGroupsOf_, srcSettingsOf_, parseEmpWorkbook_, empRaw_, empVars_, varsOf_, nameFromVars_, NAME_VARS, padFromSheet_, restructure_, infoOf_, nameFrom_, weight_, month_, day_, yes_, normalizeWeights_, templateBody_, groupsBody_, reviewTypeIds_, parseOurWorkbook_, headerRow_, guessRoles_, sheetToGroups_, finish_, newIdIn_ };
     if (g._rerender) g._rerender();
   }
   register_();
@@ -41956,7 +43858,7 @@ const CATALOG_SRC = [
 
 
 // ###########################################################################
-// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.62.0
+// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.75.0
 // ###########################################################################
 
 /*
@@ -42085,7 +43987,7 @@ const CATALOG_SRC = [
       return el('div', { class: 'jde-caution', role: 'alert', 'data-account': slug_() }, [
         el('div', { class: 'ic', text: '⚠' }),
         el('div', {}, [
-          el('b', { class: 't', text: T('CAUTION — PERMANENT DELETE', 'تنبيه — حذف نهائي') }),
+          el('b', { class: 't', text: T('CAUTION: PERMANENT DELETE', 'تنبيه: حذف نهائي') }),
           T('This tool deletes employees from Jisr HR in the account:', 'هذه الأداة تحذف الموظفين من جسر في الحساب:'), ' ',
           el('span', { class: 'acct', text: slug_() || '?' }),
           el('small', { text: T('Deleted employees, their documents and history cannot be restored from here. Check the account name above before every run. A backup Excel of the employees is downloaded automatically before the first delete.',
@@ -42095,7 +43997,7 @@ const CATALOG_SRC = [
     }
 
     function render_() {
-      titleEl.textContent = T('⚠ Delete Employees — ', '⚠ حذف الموظفين — ') + slug_();
+      titleEl.textContent = T('⚠ Delete Employees: ', '⚠ حذف الموظفين: ') + slug_();
       body.innerHTML = ''; foot.innerHTML = '';
       body.appendChild(caution_());
       body.appendChild(el('div', { class: 'jde-steps' }, [
@@ -42183,7 +44085,7 @@ const CATALOG_SRC = [
           r.state = ''; r.msg = ''; r.emp = null;
           const y = yes_(r.delRaw);
           if (y === undefined) { r.state = 'error'; r.msg = '✗ ' + T('Delete column: write Yes (or leave it blank)', 'عمود الحذف: اكتب Yes (أو اتركه فارغًا)'); return; }
-          if (y === false) { r.state = 'skip'; r.msg = T('not marked Yes — kept', 'غير معلَّم بـ Yes — يبقى'); return; }
+          if (y === false) { r.state = 'skip'; r.msg = T('not marked Yes: kept', 'غير معلَّم بـ Yes: يبقى'); return; }
           if (!/^\d+$/.test(r.idText)) { r.state = 'error'; r.msg = '✗ ' + T('Employee ID is required (numbers only)', 'الرقم الوظيفي مطلوب (أرقام فقط)'); return; }
           r.emp = byId.get(r.idText) || null;
           if (!r.emp) { r.state = 'error'; r.msg = '✗ ' + T('No employee with this ID in ', 'لا يوجد موظف بهذا الرقم في ') + slug_(); return; }
@@ -42196,9 +44098,9 @@ const CATALOG_SRC = [
           r.state = 'ready';
         });
         const ready = S.rows.filter((r) => r.state === 'ready');
-        if (ready.length > MAX_PER_RUN) { ready.slice(MAX_PER_RUN).forEach((r) => { r.state = 'error'; r.msg = '✗ ' + T('Over the limit of ', 'تجاوز الحد ') + MAX_PER_RUN + T(' per run — run the rest separately', ' لكل تشغيل — شغّل الباقي لاحقًا'); }); }
+        if (ready.length > MAX_PER_RUN) { ready.slice(MAX_PER_RUN).forEach((r) => { r.state = 'error'; r.msg = '✗ ' + T('Over the limit of ', 'تجاوز الحد ') + MAX_PER_RUN + T(' per run: run the rest separately', ' لكل تشغيل: شغّل الباقي لاحقًا'); }); }
         S.dryDone = true;
-        S.note = T('Dry Run done — nothing was deleted. ', 'انتهى التشغيل التجريبي — لم يُحذف شيء. ') + S.rows.filter((r) => r.state === 'ready').length + T(' employee(s) would be deleted from ', ' موظف سيُحذفون من ') + slug_() + '.';
+        S.note = T('Dry Run done: nothing was deleted. ', 'انتهى التشغيل التجريبي: لم يُحذف شيء. ') + S.rows.filter((r) => r.state === 'ready').length + T(' employee(s) would be deleted from ', ' موظف سيُحذفون من ') + slug_() + '.';
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; paint_();
     });
@@ -42215,8 +44117,8 @@ const CATALOG_SRC = [
       const todo = S.rows.filter((r) => r.state === 'ready');
       if (!todo.length || !ackIn.checked) return;
       const typed = prompt(T('PERMANENT DELETE of ', 'حذف نهائي لـ ') + todo.length + T(' employee(s) from the account "', ' موظف من الحساب "') + slug_() + T('".\nType the account name exactly to confirm:', '".\nاكتب اسم الحساب كما هو للتأكيد:'));
-      if ((typed || '').trim() !== slug_()) { S.note = T('Account name not confirmed — nothing was deleted.', 'لم يُؤكَّد اسم الحساب — لم يُحذف شيء.'); S.noteErr = true; paint_(); return; }
-      try { backup_(todo); S.backedUp = true; } catch (e) { S.note = T('Could not save the backup file — nothing was deleted: ', 'تعذّر حفظ الملف الاحتياطي — لم يُحذف شيء: ') + e.message; S.noteErr = true; paint_(); return; }
+      if ((typed || '').trim() !== slug_()) { S.note = T('Account name not confirmed: nothing was deleted.', 'لم يُؤكَّد اسم الحساب: لم يُحذف شيء.'); S.noteErr = true; paint_(); return; }
+      try { backup_(todo); S.backedUp = true; } catch (e) { S.note = T('Could not save the backup file; nothing was deleted: ', 'تعذّر حفظ الملف الاحتياطي: لم يُحذف شيء: ') + e.message; S.noteErr = true; paint_(); return; }
       S.running = true; S.stop = false; S.busy = ' '; paint_();
       let done = 0;
       for (const r of todo) {
@@ -42229,7 +44131,7 @@ const CATALOG_SRC = [
             const back = await request_('GET', '/v2/employees/' + encodeURIComponent(r.emp.id)).catch(() => null);
             if (back && back.status === 404) { r.state = 'done'; r.msg = T('✓ deleted · verified', '✓ حُذف · تم التحقق'); }
             else if (res) { r.state = 'done'; r.msg = '✓ ' + (jisrMsg_(res.json) || T('deleted', 'حُذف')); }
-            else { r.state = 'check'; r.msg = T('⚠ no answer — check in Jisr', '⚠ لا رد — تحقّق في جسر'); }
+            else { r.state = 'check'; r.msg = T('⚠ no answer: check in Jisr', '⚠ لا رد: تحقّق في جسر'); }
           }
         } catch (e) { r.state = 'failed'; r.msg = '✗ ' + e.message; }
         done++; S.busy = T('Deleting… ', 'جارٍ الحذف… ') + done + '/' + todo.length; paint_();
@@ -42254,7 +44156,7 @@ const CATALOG_SRC = [
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
-    g.modules[MODULE_ID] = { title: 'Delete Employees — Bulk (permanent)', open: openTool_, version: SECTION_VERSION };
+    g.modules[MODULE_ID] = { title: 'Delete Employees (Bulk, permanent)', open: openTool_, version: SECTION_VERSION };
     W.__jisrDeleteEmployees = { yes_ };
     if (g._rerender) g._rerender();
   }
@@ -42263,7 +44165,7 @@ const CATALOG_SRC = [
 
 
 // ###########################################################################
-// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.62.0
+// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.75.0
 // ###########################################################################
 
 /** Business trip city catalogue (v4.22): Saudi regions, cities, towns and villages (homaily/Saudi-Arabia-Regions-Cities-and-Districts) and world cities with population over ~15,000 (datasets/world-cities, GeoNames) by country (dr5hn/countries-states-cities-database). Read-only reference data. */
@@ -42271,7 +44173,7 @@ const CATALOG_SRC = [
 
 
 // ###########################################################################
-// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.62.0
+// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.75.0
 // ###########################################################################
 
 /*
@@ -42603,7 +44505,7 @@ const CATALOG_SRC = [
       box.appendChild(el('div', { class: 'jbtc-chips' }, CONT.map(([k, en, ar]) => { const b = el('button', { type: 'button', class: 'jbtc-chip' + (S.cont === k ? ' on' : ''), 'data-cont': k, text: T(en, ar) }); b.addEventListener('click', () => { S.cont = k; paint_(); }); return b; })));
       const inView = C.countries.filter((c) => inCont_(c, S.cont));
       const fullB = el('button', { class: 'jbo-btn jbtc-full', type: 'button', text: T('⤓ Full city lists for ', '⤓ قوائم المدن الكاملة لـ ') + inView.length + T(' countries', ' دولة') });
-      fullB.title = T('From countriesnow.space — every city and town it lists, not only the larger ones. Kept for 30 days.', 'من countriesnow.space — كل المدن والبلدات المدرجة، لا الكبرى فقط. تُحفظ 30 يومًا.');
+      fullB.title = T('From countriesnow.space: every city and town it lists, not only the larger ones. Kept for 30 days.', 'من countriesnow.space: كل المدن والبلدات المدرجة، لا الكبرى فقط. تُحفظ 30 يومًا.');
       fullB.disabled = inView.every((c) => c.full) || !!S.busy;
       fullB.addEventListener('click', async () => {
         let i = 0, next = 0, nf = 0; const todo = inView.filter((c) => !c.full);
@@ -42745,7 +44647,7 @@ const CATALOG_SRC = [
           catch (e) { if (!e.unknown) throw e; }
           if (res && res.ok) { const c = (res.json && res.json.data && (res.json.data.city || res.json.data.business_trip_city)) || citiesIn_(res.json)[0] || null; r.state = 'done'; r.id = c && c.id; r.msg = '✓' + (r.id ? ' #' + r.id : ''); }
           else if (res) { r.state = 'failed'; r.msg = '✗ ' + (jisrMsg_(res.json) || 'HTTP ' + res.status); }
-          else { r.state = 'check'; r.msg = T('? no answer — check after re-reading', '? لا رد — تحقّق بعد إعادة القراءة'); }
+          else { r.state = 'check'; r.msg = T('? no answer: check after re-reading', '? لا رد: تحقّق بعد إعادة القراءة'); }
         } catch (e) { r.state = 'failed'; r.msg = '✗ ' + e.message; }
       };
       await Promise.all(Array.from({ length: Math.min(3, total) }, async () => {
@@ -42772,11 +44674,11 @@ const CATALOG_SRC = [
 
     const statusEl = el('div', { class: 'jbo-muted', style: { margin: '4px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
     function paint_() {
-      titleEl.textContent = T('Business Trip Cities — Bulk', 'مدن رحلات العمل — جماعي');
+      titleEl.textContent = T('Business Trip Cities (Bulk)', 'مدن رحلات العمل (جماعي)');
       body.innerHTML = ''; foot.innerHTML = '';
       body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '8px' }, text: T(
-        'Jisr only offers a destination in a business trip policy after it was typed once. Add the cities this company travels to in one go — every Saudi region down to towns and villages, or any country — and they appear in the destination list of every policy. Cities already in Jisr are skipped.',
-        'لا يعرض جسر وجهة في سياسة رحلات العمل إلا بعد كتابتها مرة. أضف المدن التي تسافر إليها الشركة دفعة واحدة — كل مناطق السعودية حتى البلدات والقرى، أو أي دولة — لتظهر في قائمة الوجهات لكل السياسات. المدن الموجودة في جسر تُتخطّى.') }));
+        'Jisr only offers a destination in a business trip policy after it was typed once. Add the cities this company travels to in one go; every Saudi region down to towns and villages, or any country; and they appear in the destination list of every policy. Cities already in Jisr are skipped.',
+        'لا يعرض جسر وجهة في سياسة رحلات العمل إلا بعد كتابتها مرة. أضف المدن التي تسافر إليها الشركة دفعة واحدة؛ كل مناطق السعودية حتى البلدات والقرى، أو أي دولة؛ لتظهر في قائمة الوجهات لكل السياسات. المدن الموجودة في جسر تُتخطّى.') }));
       const top = el('div', { class: 'jbtc-top' }, [
         el('span', { class: 'jbtc-pill jbtc-existing', text: S.existing ? S.existing.length + T(' cities already in this company', ' مدينة موجودة في هذه الشركة') : S.loadErr ? '⚠ ' + S.loadErr : T('Reading…', 'جارٍ القراءة…') }),
         headCounts, reB, expB,
@@ -42801,7 +44703,7 @@ const CATALOG_SRC = [
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
-    g.modules[MODULE_ID] = { title: 'Business Trip Cities — Bulk', open: openTool_, version: SECTION_VERSION };
+    g.modules[MODULE_ID] = { title: 'Business Trip Cities (Bulk)', open: openTool_, version: SECTION_VERSION };
     W.__jisrBtc = { normName_, keysOf_, citiesIn_, saName_, wName_, cat_, liveCities_ };
     if (g._rerender) g._rerender();
   }
@@ -42810,7 +44712,7 @@ const CATALOG_SRC = [
 
 
 // ###########################################################################
-// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.62.0
+// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.75.0
 // ###########################################################################
 
 /*
@@ -43098,7 +45000,7 @@ const CATALOG_SRC = [
     const stamp = now.toISOString().replace('T', ' ').slice(0, 16);
     // Summary
     const sumA = [
-      ['Jisr data validation — ' + slug_()], ['Run at', stamp], [],
+      ['Jisr data validation: ' + slug_()], ['Run at', stamp], [],
       ['Check', 'Result', 'Count', 'Out of'],
       ['Employees in the initial sheet', '', sum.initial, ''],
       ['Found in GOSI', sum.gosiPct === null ? 'n/a' : sum.gosiPct + '%', sum.gosiFound, sum.initial],
@@ -43113,7 +45015,7 @@ const CATALOG_SRC = [
     const s1 = XLSX.utils.aoa_to_sheet(sumA); s1['!cols'] = [{ wch: 46 }, { wch: 12 }, { wch: 10 }, { wch: 10 }];
     XLSX.utils.book_append_sheet(wb, s1, 'Summary');
     // Employees
-    const hdr = ['ID / Iqama', 'Emp ID', 'Name (EN) — initial sheet', 'Name (AR) — initial sheet', 'Name — Muqeem', 'Name — GOSI', 'Nationality', 'In initial sheet', 'In Muqeem', 'In GOSI', 'Status', 'Name check', 'Salary check', 'Other differences'];
+    const hdr = ['ID / Iqama', 'Emp ID', 'Name (EN); initial sheet', 'Name (AR); initial sheet', 'Name: Muqeem', 'Name: GOSI', 'Nationality', 'In initial sheet', 'In Muqeem', 'In GOSI', 'Status', 'Name check', 'Salary check', 'Other differences'];
     const empA = [hdr].concat(rows.map((r) => [r.id, r.emp, r.nameEn, r.nameAr, r.mqName, r.gsName, r.nat, yes(r.inInit), r.inMq === 'na' ? 'Not needed (Saudi)' : yes(r.inMq === 'yes'), yes(r.inGs), st(r),
       r.nameNotes.map((n) => n.where + ': "' + n.mine + '" vs "' + n.theirs + '"').join(' | '), r.sal ? salText_(r.sal, 'en') : '', r.other.join(' | ')]));
     const s2 = XLSX.utils.aoa_to_sheet(empA);
@@ -43158,7 +45060,7 @@ const CATALOG_SRC = [
     const t = (en, ar) => (lang === 'en' ? en : T(en, ar));
     if (sal.state === 'match') return t('Matches GOSI', 'مطابق للتأمينات');
     const bad = sal.lines.filter((l) => !l.ok && l.k !== 'total').map((l) => (l.k === 'otherAll' ? t('other allowances', 'البدلات الأخرى') : t(SAL_LABEL[l.k][0].toLowerCase(), SAL_LABEL[l.k][1])) + ' ' + (l.diff > 0 ? '+' : '') + l.diff);
-    return (sal.state === 'split' ? t('Total matches; split differs: ', 'الإجمالي مطابق؛ التوزيع مختلف: ') : t('Total differs by ', 'الإجمالي مختلف بـ ') + (sal.lines[4].diff > 0 ? '+' : '') + sal.lines[4].diff + ' — ') + bad.join(', ');
+    return (sal.state === 'split' ? t('Total matches; split differs: ', 'الإجمالي مطابق؛ التوزيع مختلف: ') : t('Total differs by ', 'الإجمالي مختلف بـ ') + (sal.lines[4].diff > 0 ? '+' : '') + sal.lines[4].diff + ' · ') + bad.join(', ');
   }
 
   // ======================================================================= UI
@@ -43272,7 +45174,7 @@ const CATALOG_SRC = [
     function tile_(label, big, sub, pct) {
       return el('div', { class: 'jdv-tile' }, [el('small', { text: label }), el('b', { text: big }), el('span', { text: sub }), pct == null ? null : el('div', { class: 'jdv-bar' }, [el('i', { style: { width: Math.max(0, Math.min(100, pct)) + '%' } })])]);
     }
-    const yesNo_ = (v) => (v === 'na' ? el('span', { class: 'jdv-na', text: T('n/a', 'غير مطلوب'), title: T('Saudi — not in Muqeem', 'سعودي — لا يظهر في مقيم') }) : v ? el('span', { class: 'jdv-ok', text: '✓' }) : el('span', { class: 'jdv-no', text: '✗' }));
+    const yesNo_ = (v) => (v === 'na' ? el('span', { class: 'jdv-na', text: T('n/a', 'غير مطلوب'), title: T('Saudi: not in Muqeem', 'سعودي: لا يظهر في مقيم') }) : v ? el('span', { class: 'jdv-ok', text: '✓' }) : el('span', { class: 'jdv-no', text: '✗' }));
 
     function paint_() {
       titleEl.textContent = T('Data Validation', 'التحقق من البيانات');
@@ -43280,7 +45182,7 @@ const CATALOG_SRC = [
       body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '8px' }, text: T(
         'Read-only check of the client\'s files before upload: the initial data sheet against Muqeem (English and/or Arabic) and the GOSI active contributors list. Employees are matched by ID / Iqama number. The files are read in this browser only; nothing is sent to Jisr.',
         'فحص للقراءة فقط لملفات العميل قبل الرفع: ملف البيانات الأولي مقابل مقيم (إنجليزي و/أو عربي) وقائمة المشتركين النشطين في التأمينات. يُطابَق الموظفون برقم الهوية / الإقامة. تُقرأ الملفات في هذا المتصفح فقط؛ ولا يُرسل شيء إلى جسر.') }));
-      const drop = el('div', { class: 'jdv-drop', tabindex: '0' }, [el('b', { text: T('Drop the files here', 'أفلت الملفات هنا') }), ' ', T('or click to choose — each file is recognised from its headers.', 'أو اضغط للاختيار — يُتعرَّف على كل ملف من عناوين أعمدته.')]);
+      const drop = el('div', { class: 'jdv-drop', tabindex: '0' }, [el('b', { text: T('Drop the files here', 'أفلت الملفات هنا') }), ' ', T('or click to choose: each file is recognised from its headers.', 'أو اضغط للاختيار: يُتعرَّف على كل ملف من عناوين أعمدته.')]);
       drop.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
       drop.addEventListener('keydown', (e) => { if (e.key === 'Enter') { fileIn.value = ''; fileIn.click(); } });
       drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
@@ -43289,7 +45191,7 @@ const CATALOG_SRC = [
       body.appendChild(drop); body.appendChild(fileIn);
       body.appendChild(el('div', { class: 'jdv-slots' }, [
         slot_('initial', T('Jisr upload sheet (Emp Id, names, ID / Iqama, salary…)', 'ملف الرفع في جسر (الرقم الوظيفي، الأسماء، الهوية، الراتب…)')),
-        slot_('muqeem', T('Active residents — EN, AR or both', 'المقيمون النشطون — إنجليزي أو عربي أو كلاهما')),
+        slot_('muqeem', T('Active residents: EN, AR or both', 'المقيمون النشطون: إنجليزي أو عربي أو كلاهما')),
         slot_('gosi', T('Active contributors list', 'قائمة المشتركين النشطين')),
       ]));
       if (S.note) body.appendChild(el('div', { class: S.noteErr ? 'jbo-status-err' : 'jbo-muted', style: { margin: '4px 0' }, text: S.note }));
@@ -43353,7 +45255,7 @@ const CATALOG_SRC = [
       const names = el('table', {}, [el('tr', {}, [el('th', { text: T('File', 'الملف') }), el('th', { text: T('Name', 'الاسم') })])]);
       [[T('Initial (EN)', 'الأولي (EN)'), r.nameEn], [T('Initial (AR)', 'الأولي (AR)'), r.nameAr], [T('Muqeem', 'مقيم'), r.mqName], [T('GOSI', 'التأمينات'), r.gsName]].forEach(([k, v]) => { if (v) names.appendChild(el('tr', {}, [el('td', { text: k }), el('td', { dir: isArabic_(v) ? 'rtl' : 'ltr', text: v })])); });
       box.appendChild(names);
-      r.nameNotes.forEach((n) => box.appendChild(el('div', { class: 'jdv-note', text: '⚠ ' + n.where + ': ' + T('names share few words — check this is the same person.', 'الاسمان يشتركان في كلمات قليلة — تحقّق أنه نفس الشخص.') })));
+      r.nameNotes.forEach((n) => box.appendChild(el('div', { class: 'jdv-note', text: '⚠ ' + n.where + ': ' + T('names share few words: check this is the same person.', 'الاسمان يشتركان في كلمات قليلة: تحقّق أنه نفس الشخص.') })));
       r.other.forEach((o) => box.appendChild(el('div', { class: 'jdv-note', text: '• ' + o })));
       if (r.sal) {
         const st = el('table', {}, [el('tr', {}, [T('Component', 'البند'), T('Initial sheet', 'الملف الأولي'), T('GOSI', 'التأمينات'), T('Difference', 'الفرق')].map((h) => el('th', { text: h })))]);
@@ -43380,7 +45282,7 @@ const CATALOG_SRC = [
 
 
 // ###########################################################################
-// ##### SECTION 27 — Activation Checklist sidebar  v4.62.0
+// ##### SECTION 27 — Activation Checklist sidebar  v4.75.0
 // ###########################################################################
 
 /**
@@ -43541,7 +45443,7 @@ const CATALOG_SRC = [
         if (!all && done) return;
         rows.push((done ? '  ✓ ' : '  ☐ ') + (ar ? it.ar : it.en));
       }));
-      if (rows.length) lines.push('', (si + 1) + '. ' + (ar ? s.ar : s.en) + (s.blockers ? ' — ' + T('flagged', 'مُعلَّمة') : ''), ...rows);
+      if (rows.length) lines.push('', (si + 1) + '. ' + (ar ? s.ar : s.en) + (s.blockers ? ' · ' + T('flagged', 'مُعلَّمة') : ''), ...rows);
     });
     if (st.notes && st.notes.trim()) lines.push('', T('Notes', 'ملاحظات') + ':', st.notes.trim());
     return lines.join('\n');
@@ -43811,7 +45713,7 @@ const CATALOG_SRC = [
         ta.addEventListener('input', () => { st.notes = ta.value; clearTimeout(tm); tm = setTimeout(() => save_(st), 300); });
         ta.addEventListener('blur', () => save_(st));
         const cn = el('button', { class: 'jck-btn', text: T('Copy notes', 'نسخ الملاحظات') });
-        cn.addEventListener('click', async () => { save_(st); const ok = await clip_(st.notes || ''); toast_(ok ? T('Notes copied for HubSpot.', 'نُسخت الملاحظات لـ HubSpot.') : T('Could not copy — select the text and copy it.', 'تعذّر النسخ — حدّد النص وانسخه.')); });
+        cn.addEventListener('click', async () => { save_(st); const ok = await clip_(st.notes || ''); toast_(ok ? T('Notes copied for HubSpot.', 'نُسخت الملاحظات لـ HubSpot.') : T('Could not copy: select the text and copy it.', 'تعذّر النسخ: حدّد النص وانسخه.')); });
         box.appendChild(el('div', { class: 'jck-notes' }, [el('label', { text: T('NOTES FOR HUBSPOT', 'ملاحظات لـ HUBSPOT') }), ta, el('div', { class: 'jck-row' }, [saved, cn])]));
       }
       sec.append(sh, box); body.appendChild(sec);
@@ -43844,7 +45746,7 @@ const CATALOG_SRC = [
 
 
 // ###########################################################################
-// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.62.0
+// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.75.0
 // ###########################################################################
 
 /**
@@ -43902,6 +45804,655 @@ const CATALOG_SRC = [
 
 
 // ###########################################################################
+// ##### SECTION 39 — Locations Setup (onboarding): set country, region, city and manager for many locations at once  v4.75.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 39 — Locations Setup (onboarding)  v4.69
+ * ---------------------------------------------------------------------------
+ * Why: at onboarding the client's Excel list of location names is uploaded to Jisr, then each location needs a country, region,
+ *   city and manager one by one. For enterprise clients that takes hours. This tool sets them for many locations at once:
+ *   (A) the same values for all (or the ticked) locations, and/or (B) from an Excel file whose columns it recognises by itself.
+ * CONFIRMED (user capture, hikmet, 2026-11-05):
+ *   GET  /v2/locations?template=onboarding&slug=
+ *   PUT  /v2/locations/{id}/onboarding_update?slug=
+ *        { location: { address_ar, address_en, city_id, area_attributes: { name, name_ar, country_id } } }
+ *        (the region is sent as "area_attributes" by NAME; the screen's region_id only filters the city list)
+ *   GET  /v2/hr/cities/get_all?template=public&per_page=50&region_id=&search=&page=     city = { id, name_en, name_ar, name_i18n, region_id }
+ * NOT captured (so the tool checks instead of assuming):
+ *   - the manager: set with a second, ordinary save  PUT /v2/locations/{id}/  { location: { manager_id } }  (same as the Locations Manager)
+ *   - the list of regions: tried from a few likely addresses, then the client's existing regions, then the Saudi catalogue.
+ * Safety: nothing is written until "Check" has shown every row; rows with a problem are never written; each save is read back.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.69.0';
+  const MODULE_ID = 'locations-onboarding';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c != null && c !== false && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+
+  // ----------------------------------------------------------------------- requests
+  /** GET / PUT with retries. A PUT of the same values can safely be repeated, so it is retried too. */
+  async function request_(method, path, query, body) {
+    const q = new URLSearchParams(Object.assign({}, query || {}, { slug: slug_() }));
+    for (let a = 0; a < 3; a++) {
+      let res;
+      try { res = await fetch(apiBase_() + path + '?' + q.toString(), { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: slug_(), locale: 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined }); }
+      catch (e) { if (a === 2) throw new Error(T('No answer from Jisr.', 'لا رد من جسر.')); await sleep_(800 * (a + 1)); continue; }
+      if (res.status === 401) throw new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول.'));
+      if ((res.status === 429 || res.status >= 500) && a < 2) { await sleep_((a + 1) * 1200); continue; }
+      const json = await res.json().catch(() => null);
+      const m = json && (json.message || json.error || (json.errors && (Array.isArray(json.errors) ? json.errors.join('; ') : JSON.stringify(json.errors))));
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json, msg: m ? String(m).slice(0, 300) : '' };
+    }
+    throw new Error('Request failed after retries');
+  }
+  /** The biggest list of records (objects with an id) anywhere in an answer. */
+  function listIn_(json, test) {
+    let out = [];
+    (function walk(v, d) {
+      if (!v || typeof v !== 'object' || d > 6) return;
+      if (Array.isArray(v)) { const l = v.filter((x) => x && typeof x === 'object' && x.id != null && (!test || test(x))); if (l.length > out.length) out = l; v.forEach((x) => walk(x, d + 1)); return; }
+      Object.values(v).forEach((x) => walk(x, d + 1));
+    })(json, 0);
+    return out;
+  }
+  const txt_ = (v, lang) => { if (v == null) return ''; if (typeof v === 'object') return String(v[lang] || v.en || v.ar || v.name || ''); return String(v); };
+
+  // ----------------------------------------------------------------------- names
+  /** spelling-tolerant key: case, accents, Arabic letter forms, "Al"/"ال", punctuation */
+  function nk_(s) {
+    return String(s == null ? '' : s).toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[ً-ٰٟـ]/g, '')
+      .replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/ؤ/g, 'و').replace(/ئ/g, 'ي')
+      .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632)).replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
+  }
+  function cityKey_(s) {
+    let t = nk_(s);
+    t = t.split(' ').filter((w) => w && !/^(al|el|ar|as|ad|an|ash|at|az|city|madinat|مدينه)$/.test(w)).map((w) => (/^ال/.test(w) && w.length > 3 ? w.slice(2) : w)).join(' ');
+    return t.replace(/([a-z؀-ۿ])\1+/g, '$1');
+  }
+  const CITY_ALIASES = [
+    ['Riyadh', 'Riyad', 'Ar Riyadh', 'الرياض'], ['Makkah', 'Mecca', 'Makka', 'Makkah Al Mukarramah', 'Mecca Al Mukarramah', 'مكة', 'مكة المكرمة'],
+    ['Madinah', 'Medina', 'Madina', 'Medinah', 'Al Madinah Al Munawwarah', 'Madinah Al Munawwarah', 'المدينة', 'المدينة المنورة'],
+    ['Jeddah', 'Jiddah', 'Jedda', 'Jidda', 'جدة'], ['Dammam', 'Damam', 'الدمام'], ['Khobar', 'Al Khobar', 'Khubar', 'الخبر'], ['Dhahran', 'Zahran', 'الظهران'],
+    ['Taif', "Ta'if", 'At Taif', 'الطائف'], ['Tabuk', 'Tabouk', 'تبوك'], ['Abha', 'أبها'], ['Qassim', 'Al Qassim', 'القصيم'], ['Buraidah', 'Buraydah', 'Buraida', 'بريدة'],
+    ['Unaizah', 'Unayzah', 'Onaizah', 'عنيزة'], ['Hail', "Ha'il", 'Hayil', 'حائل'], ['Jazan', 'Jizan', 'Gizan', 'جازان'], ['Najran', 'نجران'],
+    ['Al Ahsa', 'Al Hasa', 'Ahsa', 'Hofuf', 'Al Hofuf', 'Hufuf', 'Al Hufuf', 'الأحساء', 'الهفوف'], ['Jubail', 'Al Jubail', 'الجبيل'], ['Yanbu', 'ينبع'],
+    ['Khamis Mushait', 'Khamis Mushayt', 'خميس مشيط'], ['Kharj', 'Al Kharj', 'الخرج'], ['Qatif', 'Al Qatif', 'القطيف'], ['Al Ula', 'AlUla', 'Ula', 'العلا'],
+    ['Abu Dhabi', 'أبوظبي', 'أبو ظبي'], ['Dubai', 'دبي'], ['Sharjah', 'الشارقة'], ['Cairo', 'القاهرة'], ['Kuwait City', 'Kuwait', 'الكويت'], ['Doha', 'الدوحة'], ['Manama', 'المنامة'], ['Muscat', 'مسقط'],
+  ].map((g) => ({ names: g, keys: g.map(cityKey_) }));
+  const aliasGroup_ = (key) => CITY_ALIASES.find((g) => g.keys.indexOf(key) >= 0) || null;
+  function lev_(a, b, max) {
+    if (Math.abs(a.length - b.length) > max) return max + 1;
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i]; let best = i;
+      for (let j = 1; j <= b.length; j++) { cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); best = Math.min(best, cur[j]); }
+      if (best > max) return max + 1; prev = cur;
+    }
+    return prev[b.length];
+  }
+  const cityNames_ = (c) => [c.name_en, c.name_ar, c.name_i18n, c.name].filter(Boolean);
+  /** best city of `list` for `text` (exact > alias > starts-with > contains > 1–2 typos), or null */
+  function matchCity_(list, text) {
+    const k = cityKey_(text); if (!k) return null;
+    const keyed = list.map((c) => ({ c, ks: cityNames_(c).map(cityKey_) }));
+    const shortest = (arr) => arr.sort((a, b) => String(a.c.name_en || '').length - String(b.c.name_en || '').length)[0].c;
+    let hits = keyed.filter((x) => x.ks.indexOf(k) >= 0); if (hits.length) return hits[0].c;
+    const g = aliasGroup_(k);
+    if (g) { for (const gk of g.keys) { hits = keyed.filter((x) => x.ks.indexOf(gk) >= 0); if (hits.length) return hits[0].c; } }
+    const kc = k.replace(/ /g, '');
+    hits = keyed.filter((x) => x.ks.some((y) => y.replace(/ /g, '') === kc)); if (hits.length) return hits[0].c;
+    if (kc.length >= 3) {
+      hits = keyed.filter((x) => x.ks.some((y) => y.indexOf(k) === 0)); if (hits.length) return shortest(hits);
+      hits = keyed.filter((x) => x.ks.some((y) => (' ' + y + ' ').indexOf(' ' + k + ' ') >= 0)); if (hits.length) return shortest(hits);
+    }
+    if (kc.length >= 4) {
+      const max = kc.length >= 7 ? 2 : 1;
+      let best = null, bestD = max + 1, tie = false;
+      keyed.forEach((x) => x.ks.forEach((y) => { const d = lev_(kc, y.replace(/ /g, ''), max); if (d < bestD) { best = x.c; bestD = d; tie = false; } else if (d === bestD && best && best !== x.c) tie = true; }));
+      if (best && bestD <= max && !tie) return best;
+    }
+    return null;
+  }
+  function citiesFrom_(json) {
+    return listIn_(json, (x) => x.name_en != null || x.name_ar != null || x.name_i18n != null || x.name != null).map((c) => {
+      const en = txt_(c.name_en, 'en') || txt_(c.name, 'en') || txt_(c.name_i18n, 'en'); const ar = txt_(c.name_ar, 'ar') || (c.name && typeof c.name === 'object' ? txt_(c.name, 'ar') : '');
+      return { id: c.id, name_en: en || ar, name_ar: ar, name_i18n: txt_(c.name_i18n, 'en') || en || ar, region_id: c.region_id != null ? c.region_id : (c.region && c.region.id != null ? c.region.id : null) };
+    });
+  }
+  // regions: "Riyadh Region", "منطقة الرياض", "Riyadh" all mean the same one
+  function regionKey_(s) {
+    return nk_(s).split(' ').filter((w) => w && !/^(region|province|area|emirate|governorate|state|منطقه|اقليم|محافظه|امارة|اماره)$/.test(w)).map((w) => (/^ال/.test(w) && w.length > 3 ? w.slice(2) : w)).join(' ').replace(/\b(eastern|east)\b/, 'eastern');
+  }
+  const COUNTRY_ALIASES = { ksa: 'saudi arabia', saudi: 'saudi arabia', 'kingdom of saudi arabia': 'saudi arabia', 'saudi arabia kingdom': 'saudi arabia', 'السعوديه': 'saudi arabia', 'المملكه العربيه السعوديه': 'saudi arabia', 'السعودية': 'saudi arabia', uae: 'united arab emirates', emirates: 'united arab emirates', 'الامارات': 'united arab emirates', 'الإمارات': 'united arab emirates', 'مصر': 'egypt', 'الكويت': 'kuwait', 'قطر': 'qatar', 'البحرين': 'bahrain', 'عمان': 'oman', 'الاردن': 'jordan' };
+
+  // ----------------------------------------------------------------------- Excel columns
+  const SYN = {
+    name: ['location name', 'location', 'branch name', 'branch', 'site name', 'site', 'office', 'store', 'name', 'اسم الموقع', 'الموقع', 'اسم الفرع', 'الفرع', 'الاسم'],
+    country: ['country', 'nation', 'الدولة', 'البلد', 'دولة'],
+    region: ['region', 'area', 'province', 'state', 'zone', 'المنطقة', 'منطقة', 'الاقليم', 'الإقليم'],
+    city: ['city', 'town', 'المدينة', 'مدينة'],
+    manager: ['manager', 'supervisor', 'head of', 'in charge', 'incharge', 'المدير', 'مدير', 'المسؤول', 'مسؤول', 'مشرف'],
+  };
+  Object.keys(SYN).forEach((k) => { SYN[k] = SYN[k].map(nk_); });
+  const FIELDS = [['name', 'Location name', 'اسم الموقع'], ['name2', 'Location name (2nd language)', 'اسم الموقع (لغة ثانية)'], ['country', 'Country', 'الدولة'], ['region', 'Region', 'المنطقة'], ['city', 'City', 'المدينة'], ['manager', 'Manager', 'المدير']];
+  function headerScore_(h, field) {
+    const t = nk_(h); if (!t) return 0; let best = 0;
+    SYN[field].forEach((s) => {
+      let sc = 0;
+      if (t === s) sc = 3; else if (new RegExp('(^| )' + s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '( |$)').test(t)) sc = field === 'name' && s === 'name' ? 0.6 : (s.length >= 4 ? 2 : 1);
+      if (sc > best) best = sc;
+    });
+    return best;
+  }
+  /** header row = the first of the top 15 rows with the most recognised headings; columns -> fields */
+  function detectColumns_(aoa) {
+    let hr = 0, hBest = -1;
+    for (let r = 0; r < Math.min(aoa.length, 15); r++) {
+      const row = aoa[r] || []; const filled = row.filter((c) => String(c == null ? '' : c).trim() !== '').length; if (filled < 2) continue;
+      const hits = row.filter((c) => Object.keys(SYN).some((f) => headerScore_(c, f) >= 1)).length;
+      if (hits > hBest) { hBest = hits; hr = r; }
+    }
+    const heads = (aoa[hr] || []).map((c) => String(c == null ? '' : c).trim());
+    const map = { name: -1, name2: -1, country: -1, region: -1, city: -1, manager: -1 }; const used = new Set();
+    const cand = [];
+    heads.forEach((h, c) => { Object.keys(SYN).forEach((f) => { const s = headerScore_(h, f); if (s > 0) cand.push({ c, f, s }); }); });
+    cand.sort((a, b) => b.s - a.s || a.c - b.c);
+    cand.forEach((x) => { if (x.f === 'name') return; if (map[x.f] < 0 && !used.has(x.c) && x.s >= 1) { map[x.f] = x.c; used.add(x.c); } });
+    const names = cand.filter((x) => x.f === 'name' && !used.has(x.c)).sort((a, b) => a.c - b.c);
+    if (names[0]) { map.name = names[0].c; used.add(names[0].c); } if (names[1] && names[1].s >= 1) { map.name2 = names[1].c; used.add(names[1].c); }
+    return { headerRow: hr, heads, map, used };
+  }
+
+  // ----------------------------------------------------------------------- the tool
+  function openTool_() {
+    injectCss_();
+    const S = {
+      locs: [], loaded: false, countries: [], orgAreas: [], regionProbe: {}, cityCache: {}, cityKeyCache: {}, emps: null,
+      sel: new Set(), excel: null, excelRows: new Map(), plan: null, planStale: true, busy: false, report: [], filter: '',
+    };
+    const body = el('div', { class: 'jbo-modal-body' });
+    const foot = el('div', { class: 'jbo-modal-foot' });
+    const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕' });
+    const modal = el('div', { class: 'jbo-modal' }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('Locations Setup (onboarding)', 'إعداد المواقع (التهيئة)') }), closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root jlo' }, [modal]);
+    const close = () => { if (S.busy && !confirm(T('Saving is still running. Close anyway?', 'الحفظ مستمر. إغلاق على أي حال؟'))) return; backdrop.remove(); };
+    closeBtn.addEventListener('click', close);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+    const msgEl = el('div', { class: 'jlo-msg' });
+    const say = (t, bad) => { msgEl.textContent = t || ''; msgEl.style.color = bad ? '#c5221f' : t && /^✓/.test(t) ? '#137333' : '#5f6368'; };
+
+    // ---------------------------------------------------------------- loading
+    async function loadLocations_() {
+      const seen = new Set(); const out = [];
+      for (let page = 1; page <= 100; page++) {
+        const r = await request_('GET', '/v2/locations', { template: 'onboarding', page, per_page: 50, rpp: 50 });
+        if (!r.ok) throw new Error(T('Could not read the locations (HTTP ', 'تعذّرت قراءة المواقع (HTTP ') + r.status + ')' + (r.msg ? ': ' + r.msg : ''));
+        const arr = listIn_(r.json, (x) => 'address_en' in x || 'address_ar' in x || 'name' in x || 'localized_address' in x);
+        let added = 0; arr.forEach((d) => { if (!seen.has(String(d.id))) { seen.add(String(d.id)); out.push(d); added++; } });
+        if (!added || arr.length < 50) break;
+      }
+      return out.map(locFrom_);
+    }
+    function locFrom_(d) {
+      const area = d.area || null, city = d.city || null, mgr = d.manager || null;
+      const en = String(d.address_en || d.name_en || d.name || d.localized_address || '').trim(), ar = String(d.address_ar || d.name_ar || '').trim();
+      const country = (area && area.country) || (city && city.country) || d.country || null;
+      return {
+        id: d.id, en, ar,
+        cur: {
+          countryId: (area && area.country_id) != null ? area.country_id : (country && country.id != null ? country.id : (d.country_id != null ? d.country_id : null)),
+          country: country ? txt_(country.name_en || country.name_i18n || country.name, 'en') : '',
+          areaId: area ? area.id : null, area: area ? txt_(area.name || area.name_en || area.name_i18n, 'en') : '', areaAr: area ? txt_(area.name_ar, 'ar') : '',
+          cityId: city ? city.id : (d.city_id != null ? d.city_id : null), city: city ? txt_(city.name_en || city.name_i18n || city.name, 'en') : '',
+          managerId: mgr ? mgr.id : (d.manager_id != null ? d.manager_id : null), manager: mgr ? txt_(mgr.name || mgr.full_name || mgr.name_en || mgr.name_i18n, 'en') : '',
+        },
+      };
+    }
+    async function loadRefs_() {
+      const c = await request_('GET', '/v2/hr/countries');
+      S.countries = listIn_(c.json, (x) => x.name_en != null || x.name_i18n != null || x.name_ar != null).map((x) => ({ id: x.id, en: txt_(x.name_en || x.name_i18n, 'en'), ar: txt_(x.name_ar, 'ar'), a2: x.alpha_2_code || '' }));
+      try {
+        const o = await request_('GET', '/v2/organizations/countries');
+        const cs = (o.json && o.json.data && o.json.data.countries) || [];
+        S.orgAreas = []; cs.forEach((ct) => (ct.areas || []).forEach((a) => S.orgAreas.push({ id: a.id, countryId: ct.id, name: String(a.name || a.name_i18n || ''), name_ar: String(a.name_ar || '') })));
+      } catch (e) { S.orgAreas = []; }
+    }
+    const findCountry_ = (text) => {
+      const k0 = nk_(text); if (!k0) return null; const k = COUNTRY_ALIASES[k0] || COUNTRY_ALIASES[String(text).trim().toLowerCase()] || k0;
+      return S.countries.find((c) => nk_(c.en) === k || nk_(c.ar) === k0 || nk_(c.ar) === k || (c.a2 && nk_(c.a2) === k0)) || S.countries.find((c) => nk_(c.en).indexOf(k) === 0 && k.length >= 4) || null;
+    };
+
+    // ---------------------------------------------------------------- cities (asked from Jisr like its own city picker)
+    async function searchCities_(countryId, text) {
+      const list = S.cityCache[countryId] || (S.cityCache[countryId] = []);
+      const k = cityKey_(text), g = aliasGroup_(k);
+      const terms = Array.from(new Set([String(text).trim()].concat(g ? g.names.slice(0, 3) : []).concat(k.replace(/ /g, '').length >= 4 && /^[a-z]/.test(k) ? [k.slice(0, 3)] : []))).filter(Boolean);
+      for (const term of terms) {
+        const key = countryId + '|' + term.toLowerCase(); if (S.cityKeyCache[key]) continue; S.cityKeyCache[key] = true;
+        for (let page = 1; page <= 6; page++) {
+          let rr = null; try { rr = await request_('GET', '/v2/hr/cities/get_all', { template: 'public', per_page: 50, country_id: countryId, search: term, page }); } catch (e) { break; }
+          const got = citiesFrom_(rr && rr.json); const seen = new Set(list.map((c) => String(c.id))); let added = 0;
+          got.forEach((c) => { if (!seen.has(String(c.id))) { seen.add(String(c.id)); list.push(c); added++; } });
+          if (!got.length || !added || got.length < 50) break;
+        }
+        if (matchCity_(list, text)) break;
+      }
+      return list;
+    }
+    async function resolveCity_(countryId, text) {
+      let c = matchCity_(S.cityCache[countryId] || [], text);
+      if (!c) { await searchCities_(countryId, text); c = matchCity_(S.cityCache[countryId] || [], text); }
+      return c;
+    }
+
+    // ---------------------------------------------------------------- regions
+    /** Jisr's own list of regions (tried from a few likely addresses; harmless if they do not exist) */
+    async function regionsOf_(country) {
+      if (S.regionProbe[country.id]) return S.regionProbe[country.id];
+      let found = [];
+      const tries = [['/v2/hr/regions', { template: 'public', per_page: 100, country_id: country.id }], ['/v2/hr/countries/' + country.id + '/regions', { per_page: 100 }], ['/v2/hr/areas', { template: 'public', per_page: 100, country_id: country.id }]];
+      for (const [p, q] of tries) {
+        try {
+          const r = await request_('GET', p, q); if (!r.ok) continue;
+          const l = listIn_(r.json, (x) => x.name_en != null || x.name != null || x.name_i18n != null || x.name_ar != null).map((x) => ({ id: x.id, name: txt_(x.name_en || x.name_i18n || x.name, 'en'), name_ar: txt_(x.name_ar, 'ar') }));
+          if (l.length) { found = l; break; }
+        } catch (e) { /* try the next one */ }
+      }
+      const seen = new Set(found.map((x) => regionKey_(x.name))); // the client's existing regions count too
+      S.orgAreas.filter((a) => String(a.countryId) === String(country.id)).forEach((a) => { const k = regionKey_(a.name || a.name_ar); if (k && !seen.has(k)) { seen.add(k); found.push({ id: a.id, name: a.name, name_ar: a.name_ar, existing: true }); } });
+      return (S.regionProbe[country.id] = found);
+    }
+    /** a region for typed text / for a city: an existing Jisr region when one matches, else a new one (named like Jisr's own) */
+    async function resolveRegion_(country, text, city) {
+      const list = await regionsOf_(country);
+      if (text) {
+        const k = regionKey_(text);
+        const hit = list.find((x) => regionKey_(x.name) === k || regionKey_(x.name_ar) === k);
+        if (hit) return { name: hit.name || text, name_ar: hit.name_ar || '', how: 'existing' };
+        return { name: String(text).trim(), name_ar: /[؀-ۿ]/.test(text) ? String(text).trim() : '', how: 'new' };
+      }
+      // area ids are not region ids: only Jisr's own region list (not the client's existing areas) can be matched by id
+      if (city && city.region_id != null) { const hit = list.find((x) => !x.existing && String(x.id) === String(city.region_id)); if (hit) return { name: hit.name, name_ar: hit.name_ar || '', how: 'from the city' }; }
+      const D = W.__jisrBtcData; // Saudi catalogue: city -> region
+      if (city && D && D.sa && /saudi/i.test(country.en)) {
+        const ck = cityKey_(city.name_en || '') ; const ck2 = cityKey_(city.name_ar || '');
+        const row = D.sa.find((r) => { const ks = [cityKey_(r[0]), cityKey_(r[1]), cityKey_(r[4] || '')]; return (ck && ks.indexOf(ck) >= 0) || (ck2 && ks.indexOf(ck2) >= 0); });
+        const reg = row && D.regions.find((x) => x.id === row[2]);
+        if (reg) {
+          const k = regionKey_(reg.en); const hit = list.find((x) => regionKey_(x.name) === k || regionKey_(x.name_ar) === regionKey_(reg.ar));
+          if (hit) return { name: hit.name || reg.en, name_ar: hit.name_ar || reg.ar, how: 'existing' };
+          return { name: /region|province/i.test(reg.en) ? reg.en : reg.en + ' Region', name_ar: reg.ar, how: 'new' };
+        }
+      }
+      return null;
+    }
+
+    // ---------------------------------------------------------------- managers (the shared employee list)
+    async function employees_() {
+      if (S.emps) return S.emps;
+      const E = W.__jisrBulkOpsEmployees; let l = [];
+      try { l = E ? await E.get(false) : []; } catch (e) { l = (E && E.peek && E.peek()) || []; }
+      return (S.emps = (l || []).map((e) => ({ id: e.id, code: String(e.code || ''), email: String(e.email || '').toLowerCase(), name: e.name || '', k: nk_(e.name) })));
+    }
+    async function resolveManager_(text) {
+      const t = String(text).trim(); const es = await employees_();
+      if (!es.length) return { error: T('the employee list could not be read, so "', 'تعذّرت قراءة قائمة الموظفين، فلا يمكن إيجاد "') + t + T('" cannot be found', '"') };
+      const byCode = es.filter((e) => e.code && e.code.toLowerCase() === t.toLowerCase()); if (byCode.length === 1) return byCode[0];
+      const byMail = es.filter((e) => e.email && e.email === t.toLowerCase()); if (byMail.length === 1) return byMail[0];
+      const k = nk_(t); let hits = es.filter((e) => e.k === k);
+      if (!hits.length && k.length >= 4) hits = es.filter((e) => e.k.indexOf(k) >= 0 || (k.split(' ').length > 1 && k.split(' ').every((w) => e.k.split(' ').indexOf(w) >= 0)));
+      if (hits.length === 1) return hits[0];
+      if (hits.length > 1) return { error: T('several employees match "', 'عدة موظفين يطابقون "') + t + T('": use the Employee ID', '": استخدم الرقم الوظيفي') };
+      return { error: T('manager not found: "', 'المدير غير موجود: "') + t + '"' };
+    }
+
+    // ---------------------------------------------------------------- Excel
+    function matchKey_(s) { return nk_(s).replace(/ /g, ''); }
+    function locIndex_() {
+      const m = new Map(); S.locs.forEach((l) => { [l.en, l.ar].forEach((n) => { const k = matchKey_(n); if (k) { if (!m.has(k)) m.set(k, []); m.get(k).push(l); } }); }); return m;
+    }
+    function findLoc_(idx, text) {
+      const k = matchKey_(text); if (!k) return null;
+      const exact = idx.get(k); if (exact && exact.length === 1) return exact[0]; if (exact && exact.length > 1) return { ambiguous: true };
+      if (k.length >= 5) { const hits = []; idx.forEach((v, key) => { if (key.indexOf(k) === 0 || (key.length >= 5 && k.indexOf(key) === 0)) v.forEach((l) => { if (hits.indexOf(l) < 0) hits.push(l); }); }); if (hits.length === 1) return hits[0]; if (hits.length > 1) return { ambiguous: true }; }
+      return null;
+    }
+    function applyExcel_() {
+      const E = S.excel; if (!E) return;
+      S.excelRows = new Map(); E.unmatched = []; E.ambiguous = [];
+      const idx = locIndex_(); const m = E.map; const cell = (row, c) => (c >= 0 && row[c] != null ? String(row[c]).trim() : '');
+      for (let r = E.headerRow + 1; r < E.aoa.length; r++) {
+        const row = E.aoa[r] || []; if (!row.some((c) => String(c == null ? '' : c).trim() !== '')) continue;
+        const n1 = cell(row, m.name), n2 = cell(row, m.name2); if (!n1 && !n2) continue;
+        let l = n1 ? findLoc_(idx, n1) : null; if ((!l || l.ambiguous) && n2) { const l2 = findLoc_(idx, n2); if (l2 && !l2.ambiguous) l = l2; }
+        if (!l) { E.unmatched.push((n1 || n2) + '  (' + T('row ', 'صف ') + (r + 1) + ')'); continue; }
+        if (l.ambiguous) { E.ambiguous.push((n1 || n2) + '  (' + T('row ', 'صف ') + (r + 1) + ')'); continue; }
+        S.excelRows.set(l.id, { row: r + 1, country: cell(row, m.country), region: cell(row, m.region), city: cell(row, m.city), manager: cell(row, m.manager) });
+      }
+      S.sel = new Set(S.excelRows.keys()); S.planStale = true;
+    }
+    function sniffColumns_(E) {
+      // headings missing? recognise a column by what is in it
+      const m = E.map; const used = new Set(Object.values(m).filter((c) => c >= 0)); const rows = E.aoa.slice(E.headerRow + 1, E.headerRow + 60);
+      const cols = E.heads.length; const share = (c, fn) => { const v = rows.map((r) => String((r || [])[c] == null ? '' : r[c]).trim()).filter(Boolean); return v.length ? v.filter(fn).length / v.length : 0; };
+      const idx = locIndex_();
+      for (let c = 0; c < cols; c++) {
+        if (used.has(c)) continue;
+        if (m.name < 0 && share(c, (v) => { const l = findLoc_(idx, v); return l && !l.ambiguous; }) >= 0.3) { m.name = c; used.add(c); continue; }
+        if (m.country < 0 && S.countries.length && share(c, (v) => !!findCountry_(v)) >= 0.7) { m.country = c; used.add(c); continue; }
+        if (m.city < 0 && share(c, (v) => !!aliasGroup_(cityKey_(v))) >= 0.5) { m.city = c; used.add(c); continue; }
+      }
+    }
+    function readFile_(file) {
+      return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => { try { const wb = XLSX.read(new Uint8Array(fr.result), { type: 'array' }); resolve(wb); } catch (e) { reject(e); } };
+        fr.onerror = () => reject(new Error(T('Could not read the file.', 'تعذّرت قراءة الملف.')));
+        fr.readAsArrayBuffer(file);
+      });
+    }
+    function loadSheet_(wb, name) {
+      const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' });
+      const d = detectColumns_(aoa);
+      S.excel = { wb, sheet: name, aoa, headerRow: d.headerRow, heads: d.heads, map: d.map, unmatched: [], ambiguous: [], file: S.excel ? S.excel.file : '' };
+      sniffColumns_(S.excel);
+    }
+
+    // ---------------------------------------------------------------- plan (nothing is written here)
+    function defaults_() {
+      return { country: dCountry.value, region: dRegion.value.trim(), city: dCity.value.trim(), manager: dManager.value.trim(), onlyEmpty: dEmpty.checked };
+    }
+    async function buildPlan_() {
+      const D = defaults_(); const ticked = S.locs.filter((l) => S.sel.has(l.id)); const plan = [];
+      let n = 0;
+      for (const loc of ticked) {
+        n++; if (n % 5 === 0) say(T('Checking ', 'جارٍ الفحص ') + n + ' / ' + ticked.length + '…');
+        const ex = S.excelRows.get(loc.id) || {}; const r = { loc, ex, problems: [], notes: [], country: null, city: null, region: null, mgr: null, changed: [], status: 'same' };
+        // country
+        const cT = ex.country || (D.country && !(D.onlyEmpty && loc.cur.countryId != null) ? D.country : '');
+        let country = null;
+        if (cT) { country = /^\d+$/.test(cT) ? findCountryById_(cT) : findCountry_(cT); if (!country) r.problems.push(T('country not found: "', 'الدولة غير موجودة: "') + cT + '"'); }
+        else if (loc.cur.countryId != null) country = S.countries.find((c) => String(c.id) === String(loc.cur.countryId)) || { id: loc.cur.countryId, en: loc.cur.country, ar: '' };
+        else if (D.country) country = findCountryById_(D.country);
+        if (!country && !r.problems.length) r.problems.push(T('no country: choose one in A or add a Country column', 'لا توجد دولة: اختر واحدة في A أو أضف عمود الدولة'));
+        r.country = country;
+        // city
+        const ciT = ex.city || (D.city && !(D.onlyEmpty && loc.cur.cityId != null) ? D.city : '');
+        if (country && ciT) {
+          const c = await resolveCity_(country.id, ciT);
+          if (c) r.city = c; else r.problems.push(T('city not found in ', 'المدينة غير موجودة في ') + country.en + ': "' + ciT + '"');
+        } else if (loc.cur.cityId != null) r.city = { id: loc.cur.cityId, name_en: loc.cur.city, name_ar: '', keep: true };
+        else if (!r.problems.length) r.problems.push(T('no city: set one in A or add a City column', 'لا توجد مدينة: حدّد واحدة في A أو أضف عمود المدينة'));
+        // region
+        const rT = ex.region || (D.region && !(D.onlyEmpty && loc.cur.area) ? D.region : '');
+        if (country && !r.problems.length) {
+          if (rT) r.region = await resolveRegion_(country, rT, r.city);
+          else if (r.city && !r.city.keep) r.region = await resolveRegion_(country, '', r.city);
+          if (!r.region && loc.cur.area) r.region = { name: loc.cur.area, name_ar: loc.cur.areaAr || '', how: 'kept', keep: true };
+          if (!r.region) r.problems.push(T('no region: type one in A or add a Region column', 'لا توجد منطقة: اكتب واحدة في A أو أضف عمود المنطقة'));
+        }
+        // manager
+        const mT = ex.manager || (D.manager && !(D.onlyEmpty && loc.cur.managerId != null) ? D.manager : '');
+        if (mT) { const m = await resolveManager_(mT); if (m.error) r.problems.push(m.error); else r.mgr = m; }
+        // what changes
+        if (!r.problems.length) {
+          if (r.country && String(r.country.id) !== String(loc.cur.countryId)) r.changed.push('country');
+          if (r.city && String(r.city.id) !== String(loc.cur.cityId)) r.changed.push('city');
+          if (r.region && (nk_(r.region.name) !== nk_(loc.cur.area))) r.changed.push('region');
+          if (r.mgr && String(r.mgr.id) !== String(loc.cur.managerId)) r.changed.push('manager');
+          r.status = r.changed.length ? 'ok' : 'same';
+          if (r.region && r.region.how === 'new') r.notes.push(T('new region "', 'منطقة جديدة "') + r.region.name + T('" will be created by Jisr', '" ستنشئها جسر'));
+        } else r.status = 'bad';
+        plan.push(r);
+      }
+      return plan;
+    }
+    function findCountryById_(id) { return S.countries.find((c) => String(c.id) === String(id)) || null; }
+
+    // ---------------------------------------------------------------- apply
+    function locOf_(json, id) {
+      let out = null;
+      (function walk(v, d) { if (out || !v || typeof v !== 'object' || d > 6) return; if (!Array.isArray(v) && String(v.id) === String(id) && ('city' in v || 'area' in v || 'address_en' in v)) { out = v; return; } (Array.isArray(v) ? v : Object.values(v)).forEach((x) => walk(x, d + 1)); })(json, 0);
+      return out;
+    }
+    async function applyOne_(r) {
+      const loc = r.loc; const res = { id: loc.id, name: loc.en || loc.ar, status: 'saved', detail: '' };
+      const needsMain = r.changed.some((c) => c === 'country' || c === 'city' || c === 'region');
+      try {
+        if (needsMain) {
+          const area = { name: r.region.name, name_ar: r.region.name_ar || r.region.name, country_id: r.country.id };
+          const put = await request_('PUT', '/v2/locations/' + encodeURIComponent(loc.id) + '/onboarding_update', null, { location: { address_ar: loc.ar, address_en: loc.en, city_id: r.city.id, area_attributes: area } });
+          if (!put.ok) { res.status = 'failed'; res.detail = T('Jisr refused (HTTP ', 'رفضت جسر (HTTP ') + put.status + ')' + (put.msg ? ': ' + put.msg : ''); return res; }
+          const back = locOf_(put.json, loc.id);
+          if (back) {
+            const cid = back.city ? back.city.id : back.city_id; const an = back.area ? txt_(back.area.name || back.area.name_en || back.area.name_i18n, 'en') : '';
+            const bad = []; if (cid != null && String(cid) !== String(r.city.id)) bad.push(T('city', 'المدينة')); if (an && nk_(an) !== nk_(r.region.name) && regionKey_(an) !== regionKey_(r.region.name)) bad.push(T('region', 'المنطقة'));
+            if (bad.length) { res.status = 'check'; res.detail = T('Jisr shows a different ', 'تعرض جسر قيمة مختلفة في ') + bad.join(', ') + (an ? ' (' + an + ')' : ''); }
+          }
+        }
+        if (r.changed.indexOf('manager') >= 0 && r.mgr) {
+          const m = await request_('PUT', '/v2/locations/' + encodeURIComponent(loc.id) + '/', null, { location: { manager_id: r.mgr.id } });
+          if (!m.ok) { res.status = res.status === 'saved' ? 'check' : res.status; res.detail += (res.detail ? ' · ' : '') + T('manager not saved (HTTP ', 'لم يُحفظ المدير (HTTP ') + m.status + ')' + (m.msg ? ': ' + m.msg : ''); }
+          else { const back = locOf_(m.json, loc.id); const mid = back && (back.manager ? back.manager.id : back.manager_id); if (back && mid != null && String(mid) !== String(r.mgr.id)) { res.status = 'check'; res.detail += (res.detail ? ' · ' : '') + T('Jisr shows a different manager', 'تعرض جسر مديرًا مختلفًا'); } }
+        }
+      } catch (e) { res.status = 'failed'; res.detail = e.message; }
+      return res;
+    }
+    async function applyAll_() {
+      const todo = (S.plan || []).filter((r) => r.status === 'ok'); if (!todo.length) return;
+      S.busy = true; paintFoot_(); S.report = []; let done = 0, i = 0;
+      const worker = async () => { while (i < todo.length) { const r = todo[i++]; const res = await applyOne_(r); S.report.push(Object.assign(res, { r })); done++; say(T('Saving ', 'جارٍ الحفظ ') + done + ' / ' + todo.length + '…'); paintRowStatus_(r, res); } };
+      await Promise.all([worker(), worker(), worker()]);
+      S.busy = false; S.planStale = true;
+      const ok = S.report.filter((x) => x.status === 'saved').length, chk = S.report.filter((x) => x.status === 'check').length, bad = S.report.filter((x) => x.status === 'failed').length;
+      say((bad || chk ? '⚠ ' : '✓ ') + T('Done: ', 'تم: ') + ok + T(' saved', ' محفوظ') + (chk ? ' · ' + chk + T(' to check', ' للتحقق') : '') + (bad ? ' · ' + bad + T(' failed', ' فشل') : '') + T('; download the report, then refresh the location list to see them in Jisr.', '; نزّل التقرير ثم حدّث قائمة المواقع.'), !!(bad || chk));
+      paintFoot_();
+    }
+    function csv_(rows) { return '﻿' + rows.map((r) => r.map((v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"').join(',')).join('\r\n'); }
+    function download_(name, text) { const a = el('a', { href: URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' })), download: name }); document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); }
+    const stamp_ = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+
+    // ---------------------------------------------------------------- screen
+    const sec = (title, ch) => el('div', { class: 'jlo-card' }, [el('div', { class: 'jlo-h', text: title })].concat(ch));
+    const lbl = (en, ar, input) => el('label', { class: 'jlo-f' }, [el('span', { text: T(en, ar) }), input]);
+    const loadB = el('button', { class: 'jbo-btn jlo-load', text: T('1 · Load locations from Jisr', '1 · تحميل المواقع من جسر') });
+    const loadInfo = el('span', { class: 'jlo-info' });
+    const dCountry = el('select', { class: 'jlo-in jlo-d-country' }); const dRegion = el('input', { class: 'jlo-in jlo-d-region', placeholder: T('auto from the city', 'تلقائي من المدينة') });
+    const dCity = el('input', { class: 'jlo-in jlo-d-city', placeholder: T('e.g. Riyadh', 'مثال: الرياض') }); const dManager = el('input', { class: 'jlo-in jlo-d-manager', placeholder: T('name, Employee ID or email', 'الاسم أو الرقم الوظيفي أو البريد') });
+    const dEmpty = el('input', { type: 'checkbox', class: 'jlo-d-empty' }); dEmpty.checked = true;
+    const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', class: 'jlo-file' }); const sheetSel = el('select', { class: 'jlo-in jlo-sheet', style: { display: 'none' } });
+    const mapBox = el('div', { class: 'jlo-map' }); const excelInfo = el('div', { class: 'jlo-info' });
+    const tableBox = el('div', { class: 'jlo-tablebox' }); const sumEl = el('div', { class: 'jlo-sum' });
+    const qIn = el('input', { class: 'jlo-in jlo-q', placeholder: T('Search locations…', 'بحث في المواقع…') });
+    const checkB = el('button', { class: 'jbo-btn jlo-check', text: T('2 · Check (nothing is saved)', '2 · فحص (لا يُحفظ شيء)') });
+    const applyB = el('button', { class: 'jbo-btn jbo-btn-primary jlo-apply', text: T('3 · Save to Jisr', '3 · حفظ في جسر') });
+    const repB = el('button', { class: 'jbo-btn jlo-rep', text: T('Download report', 'تنزيل التقرير') }); const bakB = el('button', { class: 'jbo-btn jlo-bak', text: T('Download current values (backup)', 'تنزيل القيم الحالية (نسخة احتياطية)') });
+    const allB = el('button', { class: 'jbo-btn jlo-all', text: T('Tick all', 'تحديد الكل') }); const noCityB = el('button', { class: 'jbo-btn jlo-nocity', text: T('Tick those without a city', 'تحديد من بلا مدينة') }); const noneB = el('button', { class: 'jbo-btn jlo-none', text: T('Untick all', 'إلغاء التحديد') });
+
+    body.appendChild(el('div', { class: 'jlo-top' }, [loadB, loadInfo]));
+    body.appendChild(el('div', { class: 'jlo-cols' }, [
+      sec(T('A · The same for all ticked locations', 'A · نفس القيم لكل المواقع المحددة'), [
+        lbl('Country', 'الدولة', dCountry), lbl('City', 'المدينة', dCity), lbl('Region', 'المنطقة', dRegion), lbl('Manager', 'المدير', dManager),
+        el('label', { class: 'jlo-chk' }, [dEmpty, el('span', { text: T('Only fill what is still empty (keep what a location already has)', 'املأ الفارغ فقط (أبقِ ما لدى الموقع)') })]),
+      ]),
+      sec(T('B · From an Excel file (its columns are recognised for you)', 'B · من ملف Excel (يتم التعرف على الأعمدة تلقائيًا)'), [
+        el('div', { class: 'jlo-row' }, [fileIn, sheetSel]), mapBox, excelInfo,
+        el('div', { class: 'jlo-hint', text: T('Values in the Excel win over A. Locations are matched by name (English or Arabic).', 'قيم Excel لها الأولوية على A. تُطابق المواقع بالاسم (عربي أو إنجليزي).') }),
+      ]),
+    ]));
+    body.appendChild(el('div', { class: 'jlo-bar' }, [qIn, allB, noCityB, noneB, sumEl]));
+    body.appendChild(tableBox);
+    foot.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flex: '1' } }, [msgEl]));
+    foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [bakB, repB, checkB, applyB]));
+
+    function paintFoot_() {
+      const okN = (S.plan || []).filter((r) => r.status === 'ok').length;
+      checkB.disabled = S.busy || !S.loaded || !S.sel.size; applyB.disabled = S.busy || S.planStale || !okN; repB.disabled = !S.report.length; bakB.disabled = !S.loaded;
+      applyB.textContent = T('3 · Save to Jisr', '3 · حفظ في جسر') + (okN && !S.planStale ? ' (' + okN + ')' : '');
+    }
+    function paintMap_() {
+      mapBox.innerHTML = ''; const E = S.excel; if (!E) return;
+      FIELDS.forEach(([f, en, ar]) => {
+        const sel = el('select', { class: 'jlo-in jlo-map-' + f }); sel.appendChild(el('option', { value: '-1', text: T('— none —', '— لا شيء —') }));
+        E.heads.forEach((h, c) => sel.appendChild(el('option', { value: String(c), text: (h || T('(column ', '(عمود ') + (c + 1) + ')') })));
+        sel.value = String(E.map[f]); sel.addEventListener('change', () => { E.map[f] = Number(sel.value); applyExcel_(); paintExcelInfo_(); paintTable_(); paintFoot_(); });
+        mapBox.appendChild(lbl(en, ar, sel));
+      });
+    }
+    function paintExcelInfo_() {
+      const E = S.excel; if (!E) { excelInfo.textContent = ''; return; }
+      excelInfo.textContent = T('Matched ', 'تمت مطابقة ') + S.excelRows.size + T(' rows with locations in Jisr', ' صفًا مع مواقع في جسر') + (E.unmatched.length ? ' · ' + E.unmatched.length + T(' not found in Jisr', ' غير موجودة في جسر') : '') + (E.ambiguous.length ? ' · ' + E.ambiguous.length + T(' ambiguous', ' ملتبسة') : '');
+      excelInfo.title = E.unmatched.concat(E.ambiguous).slice(0, 40).join('\n');
+      excelInfo.style.color = E.unmatched.length || E.ambiguous.length ? '#b06000' : '#137333';
+    }
+    const cellTxt_ = (r, f) => { const c = r.loc.cur; return f === 'country' ? (r.country ? r.country.en : c.country) : f === 'region' ? (r.region ? r.region.name : c.area) : f === 'city' ? (r.city ? (r.city.name_en || r.city.name_i18n) : c.city) : (r.mgr ? r.mgr.name : c.manager); };
+    function paintRowStatus_(r, res) {
+      const tr = tableBox.querySelector('tr[data-id="' + String(r.loc.id).replace(/"/g, '') + '"]'); if (!tr) return;
+      const td = tr.querySelector('.jlo-st'); td.className = 'jlo-st ' + (res.status === 'saved' ? 'ok' : res.status === 'check' ? 'warn' : 'bad'); td.textContent = (res.status === 'saved' ? '✓ ' + T('saved', 'تم') : res.status === 'check' ? '⚠ ' + res.detail : '✗ ' + res.detail);
+    }
+    function paintTable_() {
+      tableBox.innerHTML = '';
+      if (!S.loaded) { tableBox.appendChild(el('div', { class: 'jlo-empty', text: T('Load the locations first.', 'حمّل المواقع أولًا.') })); sumEl.textContent = ''; return; }
+      const planBy = new Map((S.plan || []).map((r) => [r.loc.id, r])); const q = nk_(qIn.value);
+      const list = S.locs.filter((l) => !q || nk_(l.en + ' ' + l.ar).indexOf(q) >= 0);
+      const tbl = el('table', { class: 'jlo-t' }); const head = el('tr', {}, [el('th', {}, []), el('th', { text: T('Location', 'الموقع') })]);
+      [['Country', 'الدولة'], ['Region', 'المنطقة'], ['City', 'المدينة'], ['Manager', 'المدير']].forEach(([en, ar]) => head.appendChild(el('th', { text: T(en, ar) }))); head.appendChild(el('th', { text: T('Result', 'النتيجة') }));
+      tbl.appendChild(el('thead', {}, [head])); const tb = el('tbody');
+      list.slice(0, 1500).forEach((l) => {
+        const r = planBy.get(l.id);
+        const cb = el('input', { type: 'checkbox', class: 'jlo-cb' }); cb.checked = S.sel.has(l.id);
+        cb.addEventListener('change', () => { if (cb.checked) S.sel.add(l.id); else S.sel.delete(l.id); S.planStale = true; paintFoot_(); sumEl.textContent = S.sel.size + T(' ticked', ' محدد'); });
+        const tr = el('tr', { 'data-id': String(l.id), class: r ? 'jlo-' + r.status : '' }, [el('td', {}, [cb]), el('td', { class: 'jlo-nm' }, [el('div', { text: l.en || l.ar }), l.en && l.ar ? el('small', { text: l.ar }) : null])]);
+        [['country'], ['region'], ['city'], ['manager']].forEach(([f]) => {
+          const cur = l.cur[f === 'region' ? 'area' : f]; const nw = r && r.status !== 'bad' ? cellTxt_(r, f) : '';
+          const changed = r && r.changed.indexOf(f) >= 0;
+          tr.appendChild(el('td', { class: changed ? 'jlo-chg' : '' }, [changed ? el('div', { class: 'jlo-new', text: nw }) : el('div', { text: cur || nw || '—', class: cur || nw ? '' : 'jlo-none' }), changed && cur ? el('small', { text: '← ' + cur }) : null]));
+        });
+        const st = el('td', { class: 'jlo-st ' + (r ? (r.status === 'bad' ? 'bad' : r.status === 'ok' ? 'ok' : '') : '') });
+        if (r) st.textContent = r.status === 'bad' ? '✗ ' + r.problems.join('; ') : r.status === 'ok' ? '✓ ' + T('will change: ', 'سيتغير: ') + r.changed.join(', ') + (r.notes.length ? ' · ' + r.notes.join('; ') : '') : T('no change', 'لا تغيير');
+        tr.appendChild(st); tb.appendChild(tr);
+      });
+      tbl.appendChild(tb); tableBox.appendChild(tbl);
+      if (list.length > 1500) tableBox.appendChild(el('div', { class: 'jlo-empty', text: T('Showing the first 1500: use the search box. All ticked locations are still processed.', 'عرض أول 1500: استخدم البحث. تتم معالجة كل المحدد.') }));
+      sumEl.textContent = S.sel.size + T(' ticked of ', ' محدد من ') + S.locs.length;
+    }
+
+    // ---------------------------------------------------------------- events
+    loadB.addEventListener('click', async () => {
+      loadB.disabled = true; say(T('Loading locations…', 'جارٍ تحميل المواقع…'));
+      try {
+        await loadRefs_(); S.locs = await loadLocations_(); S.loaded = true; S.plan = null; S.planStale = true; S.report = [];
+        dCountry.innerHTML = ''; dCountry.appendChild(el('option', { value: '', text: T('— keep as it is —', '— بدون تغيير —') }));
+        S.countries.slice().sort((a, b) => a.en.localeCompare(b.en)).forEach((c) => dCountry.appendChild(el('option', { value: String(c.id), text: c.en + (c.ar ? ' · ' + c.ar : '') })));
+        const sa = S.countries.find((c) => /^saudi/i.test(c.en)); if (sa) dCountry.value = String(sa.id);
+        S.sel = new Set(S.locs.filter((l) => l.cur.cityId == null).map((l) => l.id)); if (!S.sel.size) S.sel = new Set(S.locs.map((l) => l.id));
+        loadInfo.textContent = S.locs.length + T(' locations · ', ' موقع · ') + S.locs.filter((l) => l.cur.cityId == null).length + T(' without a city', ' بلا مدينة');
+        if (S.excel) { sniffColumns_(S.excel); applyExcel_(); paintMap_(); paintExcelInfo_(); }
+        say(S.locs.length ? '✓ ' + T('Loaded. The ones without a city are ticked.', 'تم التحميل. تم تحديد المواقع بلا مدينة.') : T('Jisr has no locations for this company yet; upload the location list in Jisr first.', 'لا توجد مواقع لهذه الشركة بعد؛ ارفع قائمة المواقع في جسر أولًا.'), !S.locs.length);
+      } catch (e) { say(e.message, true); } finally { loadB.disabled = false; paintTable_(); paintFoot_(); }
+    });
+    fileIn.addEventListener('change', async () => {
+      const f = fileIn.files && fileIn.files[0]; if (!f) return;
+      try {
+        const wb = await readFile_(f); S.excel = { file: f.name }; sheetSel.innerHTML = ''; wb.SheetNames.forEach((n) => sheetSel.appendChild(el('option', { value: n, text: n })));
+        sheetSel.style.display = wb.SheetNames.length > 1 ? '' : 'none'; S.wb = wb;
+        const useSheet = (n) => { const file = S.excel.file; loadSheet_(wb, n); S.excel.file = file; if (S.loaded) applyExcel_(); paintMap_(); paintExcelInfo_(); paintTable_(); paintFoot_(); };
+        sheetSel.onchange = () => useSheet(sheetSel.value); useSheet(wb.SheetNames[0]);
+        say(S.loaded ? '' : T('Now load the locations (step 1) so the Excel rows can be matched.', 'حمّل المواقع (الخطوة 1) لمطابقة صفوف Excel.'));
+      } catch (e) { say(e.message, true); }
+    });
+    [dCountry, dRegion, dCity, dManager, dEmpty].forEach((x) => x.addEventListener('input', () => { S.planStale = true; paintFoot_(); }));
+    qIn.addEventListener('input', paintTable_);
+    allB.addEventListener('click', () => { S.sel = new Set(S.locs.map((l) => l.id)); S.planStale = true; paintTable_(); paintFoot_(); });
+    noneB.addEventListener('click', () => { S.sel = new Set(); S.planStale = true; paintTable_(); paintFoot_(); });
+    noCityB.addEventListener('click', () => { S.sel = new Set(S.locs.filter((l) => l.cur.cityId == null).map((l) => l.id)); S.planStale = true; paintTable_(); paintFoot_(); });
+    checkB.addEventListener('click', async () => {
+      S.busy = true; paintFoot_(); say(T('Checking…', 'جارٍ الفحص…'));
+      try {
+        S.plan = await buildPlan_(); S.planStale = false; S.report = [];
+        const ok = S.plan.filter((r) => r.status === 'ok').length, bad = S.plan.filter((r) => r.status === 'bad').length, same = S.plan.filter((r) => r.status === 'same').length;
+        say((bad ? '⚠ ' : '✓ ') + ok + T(' ready to save', ' جاهز للحفظ') + (bad ? ' · ' + bad + T(' with a problem (they will NOT be saved)', ' بها مشكلة (لن تُحفظ)') : '') + (same ? ' · ' + same + T(' already right', ' صحيح بالفعل') : ''), !!bad);
+      } catch (e) { say(e.message, true); } finally { S.busy = false; paintTable_(); paintFoot_(); }
+    });
+    applyB.addEventListener('click', async () => {
+      const okN = (S.plan || []).filter((r) => r.status === 'ok').length; if (!okN || S.planStale) return;
+      if (!confirm(T('Save country / region / city / manager for ', 'حفظ الدولة / المنطقة / المدينة / المدير لعدد ') + okN + T(' locations in Jisr?', ' من المواقع في جسر؟'))) return;
+      await applyAll_();
+    });
+    bakB.addEventListener('click', () => download_('locations-before-' + slug_() + '-' + stamp_() + '.csv', csv_([['id', 'address_en', 'address_ar', 'country', 'region', 'city', 'manager']].concat(S.locs.map((l) => [l.id, l.en, l.ar, l.cur.country, l.cur.area, l.cur.city, l.cur.manager])))));
+    repB.addEventListener('click', () => download_('locations-setup-report-' + slug_() + '-' + stamp_() + '.csv', csv_([['id', 'location', 'result', 'detail', 'country', 'region', 'city', 'manager']].concat(S.report.map((x) => [x.id, x.name, x.status, x.detail, cellTxt_(x.r, 'country'), cellTxt_(x.r, 'region'), cellTxt_(x.r, 'city'), cellTxt_(x.r, 'manager')])))));
+    paintTable_(); paintFoot_(); say(T('Step 1: load the locations the client uploaded. Then fill A and/or add the Excel (B), check, and save.', 'الخطوة 1: حمّل المواقع التي رفعها العميل. ثم املأ A و/أو أضف ملف Excel (B)، افحص ثم احفظ.'));
+  }
+
+  function injectCss_() {
+    if (document.getElementById('jlo-css')) return;
+    document.head.appendChild(el('style', { id: 'jlo-css', text: `
+      .jlo .jbo-modal { width: min(1280px, 98vw) !important; height: 92vh; max-height: 92vh; }
+      .jlo .jbo-modal-body { display: flex; flex-direction: column; min-height: 0; gap: 10px; overflow: auto; }
+      .jlo-top { display: flex; align-items: center; gap: 12px; }
+      .jlo-info { font-size: 12.5px; color: #5f6368; }
+      .jlo-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .jlo-card { border: 1px solid #dadce0; border-radius: 10px; padding: 10px 12px; background: #fff; display: flex; flex-direction: column; gap: 6px; }
+      .jlo-h { font-weight: 700; font-size: 13px; }
+      .jlo-f { display: grid; grid-template-columns: 90px 1fr; align-items: center; gap: 8px; font-size: 12.5px; }
+      .jlo-in { padding: 6px 8px; border: 1px solid #dadce0; border-radius: 8px; font-size: 13px; min-width: 0; }
+      .jlo-chk { display: flex; gap: 6px; align-items: center; font-size: 12.5px; }
+      .jlo-row { display: flex; gap: 8px; align-items: center; }
+      .jlo-map { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; }
+      .jlo-hint { font-size: 11.5px; color: #5f6368; }
+      .jlo-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .jlo-q { width: 220px; } .jlo-sum { margin-inline-start: auto; font-size: 12.5px; color: #5f6368; }
+      .jlo-tablebox { flex: 1; min-height: 160px; overflow: auto; border: 1px solid #dadce0; border-radius: 10px; background: #fff; }
+      .jlo-t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jlo-t th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; border-bottom: 1px solid #dadce0; z-index: 1; }
+      .jlo-t td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jlo-t small { display: block; color: #5f6368; direction: rtl; text-align: start; }
+      .jlo-chg .jlo-new { color: #137333; font-weight: 600; } .jlo-none { color: #9aa0a6; }
+      .jlo-st.ok { color: #137333; } .jlo-st.bad { color: #c5221f; } .jlo-st.warn { color: #b06000; }
+      tr.jlo-bad { background: #fce8e6; } tr.jlo-ok { background: #f3faf5; }
+      .jlo-empty { padding: 16px; color: #5f6368; text-align: center; }
+      .jlo-msg { min-height: 18px; font-size: 12.5px; white-space: pre-line; }
+      @media (max-width: 900px) { .jlo-cols { grid-template-columns: 1fr; } }
+    ` }));
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Locations Setup (onboarding)', open: openTool_, version: SECTION_VERSION };
+    W.__jisrLocSetup = { detectColumns_, nk_, cityKey_, matchCity_, regionKey_ };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
 // ##### HIDDEN TOOLS (v4.3, v4.14.2) — Bulk Offboarding and Final Settlement are hidden (Flight Ticket reworked in v4.23) until they are reworked; their code stays in place
 // ###########################################################################
 
@@ -43913,10 +46464,22 @@ const CATALOG_SRC = [
 // ###########################################################################
 
 (function () { try { if (unsafeWindow.__jisrBulkOpsAuth) unsafeWindow.__jisrBulkOpsAuth.wrapModules(); } catch (e) { /* ignore */ } })();
+// v4.72: the tool that is open is the one its writes are credited to on the Ops dashboard
+(function () {
+  const W = unsafeWindow;
+  try {
+    const mods = (W.__jisrBulkOps && W.__jisrBulkOps.modules) || {};
+    Object.keys(mods).forEach((id) => {
+      const m = mods[id]; if (!m || typeof m.open !== 'function' || m.__act) return;
+      const o = m.open; m.__act = true;
+      m.open = function () { try { jboActOpen_(id); } catch (e) { /* ignore */ } return o.apply(this, arguments); };
+    });
+  } catch (e) { /* ignore */ }
+})();
 // v4.37: opening any employee tool starts loading the shared employee list (with Iqama numbers) in the background,
 // so an uploaded file can use Employee ID, Iqama or name as the reference.
 (function () {
-  const W = unsafeWindow, SKIP = /^(activation-checklist|letter-converter|letter-templates|attendance-log-converter|performance-templates|approval-cycles|job-titles-bulk|departments-bulk|locations-bulk)$/;
+  const W = unsafeWindow, SKIP = /^(activation-checklist|letter-converter|letter-templates|attendance-log-converter|performance-templates|approval-cycles|job-titles-bulk|departments-bulk|locations-bulk|locations-onboarding)$/;
   try {
     const mods = (W.__jisrBulkOps && W.__jisrBulkOps.modules) || {};
     Object.keys(mods).forEach((id) => {
