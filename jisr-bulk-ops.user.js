@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.78.1
+// @version      4.83.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -40,8 +40,26 @@ if (/^jisr\.jisr\.net$/i.test(location.hostname)) { throw new Error('Jisr Bulk O
 // the Jisr page's) notes each write (PUT / POST / PATCH / DELETE to the Jisr API) made while one of those tools is the open tool and sends
 // it in the same form the older tools use (/api/log: one row per write: status, short redacted message, delay). It never changes a request,
 // never reads a request body, and fails open: no backend set, or any error, means nothing happens.
-const JBO_TRACKED_TOOLS = ['payroll-transactions-bulk', 'leave-cancel-bulk', 'shifts-bulk', 'fixed-hours-bulk', 'flight-tickets-bulk', 'shifts-clear', 'family-details-bulk', 'letter-templates', 'approval-cycles', 'performance-templates', 'delete-employees', 'business-trip-cities', 'final-settlement-bulk', 'locations-onboarding', 'probation-bulk', 'employee-photos'];
+const JBO_TRACKED_TOOLS = ['payroll-transactions-bulk', 'leave-cancel-bulk', 'leave-edit-bulk', 'shifts-bulk', 'fixed-hours-bulk', 'flight-tickets-bulk', 'shifts-clear', 'family-details-bulk', 'letter-templates', 'approval-cycles', 'performance-templates', 'delete-employees', 'business-trip-cities', 'final-settlement-bulk', 'locations-onboarding', 'probation-bulk', 'employee-photos'];
 const JBO_OPEN_ONLY_TOOLS = ['payroll-reconciliation', 'data-validation', 'activation-checklist', 'letter-converter']; // read-only: the dashboard shows that they were used
+// v4.83: tools that check the result themselves (read it back from Jisr) report ONE row per employee / leave with its real outcome stage, so the
+// wrapper below leaves them alone: "HTTP 200" is not the outcome for them (Jisr can answer OK and not apply the change).
+const JBO_SELF_REPORT_TOOLS = ['employee-photos', 'leave-edit-bulk'];
+// Outcome stages the dashboard understands (keep in step with STAGES in the Worker). cls: ok | warn | err | skip. A stage the dashboard does not know is ignored.
+const JBO_STAGE_CLASS = { ok: 'ok', ok_retry: 'ok', pending: 'warn', unverified: 'warn', skipped: 'skip', no_match: 'skip', rejected: 'err', denied: 'err', not_found: 'err', rate_limited: 'err', server_error: 'err', network: 'err', not_reflected: 'err', mismatch: 'err', rolled_back: 'err', restore_failed: 'err', failed: 'err' };
+/** HTTP status -> stage (0 / no status = no answer) */
+function jboStageOfHttp_(status) {
+  status = Number(status) || 0;
+  if (!status) return 'network';
+  if (status === 401 || status === 403) return 'denied';
+  if (status === 404) return 'not_found';
+  if (status === 429) return 'rate_limited';
+  if (status >= 500) return 'server_error';
+  if (status >= 400) return 'rejected';
+  return 'failed';
+}
+/** a Jisr answer {status, ok} that is not ok: a 2xx with success:false is Jisr refusing (rejected), anything else by its HTTP status */
+function jboStageOfRes_(res) { const st = Number(res && res.status) || 0; return st >= 200 && st < 400 ? 'rejected' : jboStageOfHttp_(st); }
 const jboAct_ = { tool: '', at: 0, buf: [], timer: null, sent: 0, failed: 0, lastError: '', lastOk: 0, warned: false };
 function jboActCfg_() { let u = null, k = null; try { u = jboSecureGet_('backendUrl'); k = jboSecureGet_('backendWriteKey'); } catch (e) { /* ignore */ } return { url: u, key: k }; }
 function jboActSlug_() { try { const o = GM_getValue('jisrBulkOps_slugOverride', ''); return o || location.hostname.split('.')[0]; } catch (e) { return ''; } }
@@ -61,10 +79,19 @@ function jboActFlush_() {
   } catch (e) { jboAct_.failed += batch.length; }
   if (jboAct_.buf.length) jboAct_.timer = setTimeout(jboActFlush_, 2000);
 }
-function jboActPush_(tool, rowKey, status, message, ms) {
+function jboActPush_(tool, rowKey, status, message, ms, stage) {
   const cfg = jboActCfg_(); if (!cfg.url) return;
-  jboAct_.buf.push({ module: tool, rowKey: String(rowKey), status, message: jboRedact_(String(message || '').slice(0, 300)), latency_ms: ms == null ? undefined : Math.round(ms), at: new Date().toISOString() });
+  const e = { module: tool, rowKey: String(rowKey), status, message: jboRedact_(String(message || '').slice(0, 300)), latency_ms: ms == null ? undefined : Math.round(ms), at: new Date().toISOString() };
+  if (stage && JBO_STAGE_CLASS[stage]) e.stage = stage;
+  jboAct_.buf.push(e);
   if (jboAct_.buf.length >= 400) jboActFlush_(); else if (!jboAct_.timer) jboAct_.timer = setTimeout(jboActFlush_, 2000);
+}
+/** A tool reports the outcome of one row by stage (see JBO_STAGE_CLASS). `status` is the coarse ok / err / skip an older dashboard understands (warn stages go as skip there). */
+function jboActReport_(tool, rowKey, stage, message, ms) {
+  try {
+    const cls = JBO_STAGE_CLASS[stage]; if (!cls) return;
+    jboActPush_(tool, rowKey, cls === 'ok' ? 'ok' : cls === 'err' ? 'err' : 'skip', message, ms, stage);
+  } catch (e) { /* never let reporting disturb a tool */ }
 }
 /** called whenever a tool is opened: it becomes the tool the writes are credited to */
 function jboActOpen_(id) {
@@ -110,7 +137,7 @@ const fetch = function jboFetch_(input, init) {
     if (jboAct_.tool && /^https:\/\/(apis\.jisr\.net|api\.jisr\.net\.sa)\/api\//.test(u0)) jboRunTrack_(jboAct_.tool, p, String((init && init.method) || (input && typeof input === 'object' && input.method) || 'GET').toUpperCase(), u0);
   } catch (e) { /* never let tracking touch a real request */ }
   try {
-    const tool = jboAct_.tool; if (!tool || !JBO_TRACKED_TOOLS.includes(tool) || Date.now() - jboAct_.at > 6 * 3600 * 1000) return p;
+    const tool = jboAct_.tool; if (!tool || !JBO_TRACKED_TOOLS.includes(tool) || JBO_SELF_REPORT_TOOLS.includes(tool) || Date.now() - jboAct_.at > 6 * 3600 * 1000) return p;
     const method = String((init && init.method) || (input && typeof input === 'object' && input.method) || 'GET').toUpperCase();
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return p;
     const url = typeof input === 'string' ? input : (input && (input.url || String(input))) || '';
@@ -122,14 +149,14 @@ const fetch = function jboFetch_(input, init) {
     const t0 = Date.now();
     p.then((res) => {
       let bad = !res.ok; const ms = Date.now() - t0;
-      if (res.ok) { res.clone().json().then((j) => { bad = !!(j && j.success === false); jboActPush_(tool, key, bad ? 'err' : 'ok', shown + ' → ' + (bad ? 'refused: ' + String(j && (j.message || j.error) || '') : res.status), ms); }, () => jboActPush_(tool, key, 'ok', shown + ' → ' + res.status, ms)); }
-      else res.clone().json().then((j) => jboActPush_(tool, key, 'err', shown + ' → HTTP ' + res.status + ': ' + String(j && (j.message || j.error || (j.errors && JSON.stringify(j.errors))) || ''), ms), () => jboActPush_(tool, key, 'err', shown + ' → HTTP ' + res.status, ms));
-    }, (e) => jboActPush_(tool, key, 'err', shown + ' → no answer (' + String(e && e.message || e).slice(0, 80) + ')', Date.now() - t0));
+      if (res.ok) { res.clone().json().then((j) => { bad = !!(j && j.success === false); jboActPush_(tool, key, bad ? 'err' : 'ok', shown + ' → ' + (bad ? 'refused: ' + String(j && (j.message || j.error) || '') : res.status), ms, bad ? 'rejected' : 'ok'); }, () => jboActPush_(tool, key, 'ok', shown + ' → ' + res.status, ms, 'ok')); }
+      else res.clone().json().then((j) => jboActPush_(tool, key, 'err', shown + ' → HTTP ' + res.status + ': ' + String(j && (j.message || j.error || (j.errors && JSON.stringify(j.errors))) || ''), ms, jboStageOfHttp_(res.status)), () => jboActPush_(tool, key, 'err', shown + ' → HTTP ' + res.status, ms, jboStageOfHttp_(res.status)));
+    }, (e) => jboActPush_(tool, key, 'err', shown + ' → no answer (' + String(e && e.message || e).slice(0, 80) + ')', Date.now() - t0, 'network'));
   } catch (e) { /* never let tracking touch a real request */ }
   return p;
 };
 try {
-  unsafeWindow.__jisrBulkOpsActivity = { open: jboActOpen_, flush: jboActFlush_, state: () => ({ tool: jboAct_.tool, queued: jboAct_.buf.length, sent: jboAct_.sent, failed: jboAct_.failed, lastError: jboAct_.lastError, lastOk: jboAct_.lastOk, configured: !!(jboActCfg_().url && jboActCfg_().key) }) };
+  unsafeWindow.__jisrBulkOpsActivity = { open: jboActOpen_, flush: jboActFlush_, report: jboActReport_, state: () => ({ tool: jboAct_.tool, queued: jboAct_.buf.length, sent: jboAct_.sent, failed: jboAct_.failed, lastError: jboAct_.lastError, lastOk: jboAct_.lastOk, configured: !!(jboActCfg_().url && jboActCfg_().key) }) };
   if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('🔎 Check Ops dashboard connection', () => {
     const cfg = jboActCfg_(); if (!cfg.url || !cfg.key) { alert('This browser is NOT connected to the Ops dashboard (no address / write key). Use "Configure Shared Backend" first. Every browser profile needs it once.'); return; }
     GM_xmlhttpRequest({ method: 'POST', url: cfg.url + '/api/register', timeout: 8000, headers: { 'Content-Type': 'application/json', 'X-Write-Key': cfg.key }, data: JSON.stringify({ email: (() => { try { return GM_getValue('jisrBulkOps_userEmail', ''); } catch (e) { return ''; } })(), tenant: jboActSlug_() }),
@@ -249,7 +276,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.78.1
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.83.0
 // ###########################################################################
 
 /*
@@ -1059,6 +1086,7 @@ function jboRedact_(msg) {
 "Bulk Final Settlement": "التسوية النهائية الجماعية",
 "Jisr Letter Converter": "محوّل خطابات جسر",
 "Bulk Cancel Leave Requests": "إلغاء طلبات الإجازة الجماعي",
+"Edit Imported Leaves (Bulk)": "تعديل الإجازات المستوردة (جماعي)",
 "Bulk Payroll Transactions": "حركات الرواتب الجماعية",
 "Fixed Working Hours (Bulk)": "ساعات العمل الثابتة (جماعي)",
 "New Area": "المنطقة الجديدة",
@@ -1274,7 +1302,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0c — Google sign-in (company accounts only)  v4.78.1
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.83.0
 // ###########################################################################
 
 /*
@@ -1620,7 +1648,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.78.1
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.83.0
 // ###########################################################################
 
 /*
@@ -2245,7 +2273,7 @@ function jboRedact_(msg) {
     ['employees', 'Employees', 'الموظفون', ['data-validation', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'delete-employees']],
     ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'gosi-compliance', 'payroll-reconciliation', 'flight-tickets-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk']],
     ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units']],
-    ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear', 'attendance-log-converter']],
+    ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear', 'attendance-log-converter']],
     ['performance', 'Performance', 'الأداء', ['performance-templates']],
     ['requests', 'Requests & approvals', 'الطلبات والموافقات', ['approval-cycles']],
     ['utilities', 'Utilities', 'أدوات مساعدة', ['activation-checklist', 'export-everything', 'letter-templates', 'letter-converter']],
@@ -2259,7 +2287,7 @@ function jboRedact_(msg) {
       ['performance', 'Performance', 'الأداء', ['performance-templates']],
       ['requests', 'Requests & approvals', 'الطلبات والموافقات', ['approval-cycles']],
       ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units']],
-      ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear']],
+      ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear']],
     ] },
     { key: 'check', en: 'Validate, convert & reconcile', ar: 'التحقق والتحويل والمطابقة', icon: 'scale', color: '#5FD0B0', groups: [
       ['validate', 'Validate & reconcile', 'التحقق والمطابقة', ['data-validation', 'payroll-reconciliation', 'gosi-compliance']],
@@ -2333,6 +2361,7 @@ function jboRedact_(msg) {
     'locations-onboarding': ['Onboarding: set country, region, city and manager for all locations at once (or from Excel)', 'التهيئة: تحديد الدولة والمنطقة والمدينة والمدير لكل المواقع دفعة واحدة (أو من Excel)'],
     'org-groups-business-units': ['Employee groups and business units', 'مجموعات الموظفين ووحدات الأعمال'],
     'leave-cancel-bulk': ['Clean up imported leaves', 'تنظيف الإجازات المستوردة'],
+    'leave-edit-bulk': ['Change dates, leave type or resumption of leaves that were imported in bulk', 'تغيير التواريخ أو نوع الإجازة أو تاريخ العودة للإجازات المستوردة جماعيًا'],
     'fixed-hours-bulk': ['Weekly schedules and assignments', 'الجداول الأسبوعية والتعيينات'],
     'shifts-bulk': ['Create, edit, duplicate and delete shifts; form or Excel', 'إنشاء الورديات وتعديلها ونسخها وحذفها: نموذج أو Excel'],
     'family-details-bulk': ['Add family members: passport numbers with letters, nationalities by name', 'إضافة أفراد العائلة: أرقام الجواز بالحروف والجنسيات بالاسم'],
@@ -2343,7 +2372,7 @@ function jboRedact_(msg) {
     'letter-templates': ['Open, edit and save Jisr\'s letter templates (variables, header, body, footer)', 'فتح قوالب خطابات جسر وتعديلها وحفظها (المتغيرات، الترويسة، النص، التذييل)'],
     'letter-converter': ['Word letters to Jisr templates', 'تحويل خطابات Word إلى قوالب جسر'],
   };
-  const NEW_IDS = ['employee-photos', 'probation-bulk', 'locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
+  const NEW_IDS = ['leave-edit-bulk', 'employee-photos', 'probation-bulk', 'locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
   const svg_ = (k, size) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('width', size || 16); s.setAttribute('height', size || 16); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.8'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round'); s.innerHTML = ICONS[k] || ICONS.other; return s; };
   const normQ_ = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[ً-ٰٟـ]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
   function highlight_(text, q) {
@@ -2510,16 +2539,26 @@ function jboRedact_(msg) {
   const ckOn_ = () => gmGet_('checklistOn', true) !== false;
   // v4.40: light / dark / follow the computer — one switch for every window of the tool (J panel, every tool, checklist)
   // classic = as before (dark J panel, light tools); light = everything light; dark = everything dark; auto = light or dark like the computer
-  const THEMES = [['classic', '◐', 'Classic', 'كلاسيكي'], ['light', '☀', 'Light', 'فاتح'], ['dark', '☾', 'Night', 'ليلي'], ['auto', 'A', 'Auto (like the computer)', 'تلقائي (مثل الجهاز)']];
-  const theme_ = () => { const t = gmGet_('uiTheme', 'classic'); return THEMES.some(([k]) => k === t) ? t : 'classic'; };
+  const THEMES = [['light', '☀', 'Light', 'فاتح'], ['dark', '☾', 'Dark', 'داكن'], ['auto', 'A', 'Auto (like the computer)', 'تلقائي (مثل الجهاز)']];
+  const theme_ = () => { const t = gmGet_('uiTheme', 'auto'); return THEMES.some(([k]) => k === t) ? t : 'auto'; };   // v4.80: an older "classic" choice becomes Auto
   const sysDark_ = () => !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  const mode_ = () => { if (glassOn_() && auroraOn_()) return 'dark'; /* v4.77: Aurora is always matte black */ const t = theme_(); return t === 'auto' ? (sysDark_() ? 'dark' : 'light') : t; };
+  const LOOKS = ['standard', 'aurora', 'glass', 'classic'];
+  const look_ = () => { const v = gmGet_('uiStyle', 'standard'); return LOOKS.includes(v) ? v : 'standard'; };   // v4.81: Standard (brand) | Aurora (brand + colour choice) | Glass (white glass / matte black) | Classic (the original Jisr look)
+  const mode_ = () => { if (look_() === 'classic') return 'classic'; const t = theme_(); return t === 'auto' ? (sysDark_() ? 'dark' : 'light') : t; };
   const darkNow_ = () => mode_() === 'dark';
-
-  // v4.55: "Glass" look (iOS style) — frosted translucent windows, rounded corners, pill buttons, system blue, soft motion.
-  // On by default; "Flat" in ⚙ brings back the earlier look. Pure CSS on html.jbo-glass, so every tool gets it without changes.
-  const glassOn_ = () => gmGet_('uiGlass', true) !== false;
-  const auroraOn_ = () => gmGet_('uiAurora', true) !== false;
+  // v4.55: "Glass" look (iOS style) — frosted translucent windows, rounded corners, pill buttons, system blue, soft motion. Pure CSS on html.jbo-glass.
+  const glassOn_ = () => look_() !== 'classic';        // Classic = the original flat look: no glass layer, no brand layer, no dark/light classes
+  const auroraOn_ = () => look_() === 'aurora';        // the Aurora hub cards
+  const brandOn_ = () => look_() === 'standard' || look_() === 'aurora';
+  // Aurora colour (v4.81): replaces ONLY the mint of Aurora Dark. Burgundy, shiny violet, hot orange and winter green are the other four.
+  const ACCENTS = [
+    { k: 'mint',     en: 'Mint',          ar: 'نعناعي',       acc: '#39FF88', hov: '#6BFFA6', on: '#04120A', rgb: '57,255,136',  grad: 'rgba(16,185,129,.36)', inA: '#007533', inH: '#00A04A' },
+    { k: 'burgundy', en: 'Burgundy',      ar: 'عنابي',        acc: '#E0476A', hov: '#EE6B89', on: '#12040A', rgb: '224,71,106',  grad: 'rgba(150,18,56,.50)',  inA: null, inH: null },
+    { k: 'violet',   en: 'Shiny violet',  ar: 'بنفسجي لامع',  acc: '#B57BFF', hov: '#C79CFF', on: '#0C0518', rgb: '181,123,255', grad: 'rgba(124,58,237,.46)', inA: null, inH: null },
+    { k: 'orange',   en: 'Hot orange',    ar: 'برتقالي ناري', acc: '#FF7A1A', hov: '#FF9447', on: '#160800', rgb: '255,122,26',  grad: 'rgba(234,88,12,.42)',  inA: null, inH: null },
+    { k: 'winter',   en: 'Winter green',  ar: 'أخضر شتوي',    acc: '#3FC4A0', hov: '#63D6B7', on: '#03120D', rgb: '63,196,160',  grad: 'rgba(14,110,84,.50)',  inA: null, inH: null },
+  ];
+  const accent_ = () => { const v = gmGet_('uiAccent', 'mint'); return ACCENTS.some((a) => a.k === v) ? v : 'mint'; };
   const GLASS_CSS = `
     html.jbo-glass { --g-blue: #007AFF; --g-red: #FF3B30; --g-green: #34C759; --g-sep: rgba(60,60,67,.14); --g-fill: rgba(118,118,128,.12);
       --g-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", "Noto Sans Arabic", Tahoma, system-ui, sans-serif; }
@@ -2790,8 +2829,7 @@ function jboRedact_(msg) {
     html.jbo-glass.jbo-aurora .jbo-modal table { border-collapse: separate; border-spacing: 0; }
     html.jbo-glass.jbo-aurora .jbo-modal table th { background: #F0F1FB !important; color: var(--au-ink2) !important; font-size: 11px !important; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 10px 12px !important; border-bottom: 1px solid var(--au-line) !important; }
     html.jbo-glass.jbo-aurora .jbo-modal table th:first-child { border-top-left-radius: 12px; } html.jbo-glass.jbo-aurora .jbo-modal table th:last-child { border-top-right-radius: 12px; }
-    html.jbo-glass.jbo-aurora .jbo-modal table td { padding: 8px 12px !important; border-bottom: 1px solid #EDEEF8 !important; background: #fff; }
-    html.jbo-glass.jbo-aurora .jbo-modal table tbody tr:hover td { background: #F7F7FF; }
+    html.jbo-glass.jbo-aurora .jbo-modal table td { padding: 8px 12px !important; border-bottom: 1px solid #EDEEF8 !important; }
     html.jbo-glass.jbo-aurora .jbo-status-ok { color: var(--au-ok) !important; } html.jbo-glass.jbo-aurora .jbo-status-err { color: var(--au-bad) !important; }
 
     html.jbo-glass.jbo-aurora .jbo-us-tabs { padding: 4px; gap: 2px; border: 0 !important; border-radius: 15px !important; background: #E9EBF9; }
@@ -2919,85 +2957,246 @@ function jboRedact_(msg) {
     @media (forced-colors: active) { html.jbo-glass .jbo-modal .jbo-btn, html.jbo-glass .jbo-modal :is(input, select, textarea) { border: 1px solid ButtonText !important; } html.jbo-glass .jbo-modal .jbo-btn-primary { forced-color-adjust: none; background: Highlight !important; color: HighlightText !important; } }
 
     /* ============================================================================================
-       MATTE (v4.77) — Aurora look, matte black. Surfaces are near-black with a faint velvet-violet undertone; text is white; the Aurora violet
+       MATTE (v4.77, restored v4.81 as the dark side of the Glass look) — matte black. Surfaces are near-black with a faint velvet-violet undertone; text is white; the Aurora violet
        stays as the secondary colour (avatar, selected tab, focus, links); tangerine is reserved for the main button of each view.
        No ring or halo on the J button. Aurora is always the dark appearance (mode_ returns dark), so the tool windows are drawn light and
        inverted: colours below marked "source" are written as the light-side value that the inversion turns into the colour in the comment;
        buttons that must keep a real colour undo the inversion on themselves (the same filter applied twice is the identity).
        ============================================================================================ */
-    html.jbo-glass.jbo-aurora { --mt-bg: #0E0D12; --mt-panel: #141319; --mt-line: rgba(255,255,255,.09); --mt-violet: #6A4FD8; --mt-violet-soft: #B8A6FF; --mt-velvet: #2A2350; --mt-tang: #FF8A1F; --mt-tang-hover: #FF9B40; --mt-on-tang: #1A0F00; }
+    html.jbo-glass.jbo-aurora.jbo-matte { --mt-bg: #0E0D12; --mt-panel: #141319; --mt-line: rgba(255,255,255,.09); --mt-violet: #6A4FD8; --mt-violet-soft: #B8A6FF; --mt-velvet: #2A2350; --mt-tang: #FF8A1F; --mt-tang-hover: #FF9B40; --mt-on-tang: #1A0F00; }
 
     /* the J button: a plain matte disc, no ring, no halo */
-    html.jbo-glass.jbo-aurora .jbo-fab { background: var(--mt-bg) !important; color: #fff !important; box-shadow: 0 4px 14px rgba(0,0,0,.45) !important; border: 0 !important; outline: none; }
-    html.jbo-glass.jbo-aurora .jbo-fab:hover { background: #1B1A22 !important; box-shadow: 0 4px 14px rgba(0,0,0,.45) !important; }
-    html.jbo-glass.jbo-aurora .jbo-fab::before, html.jbo-glass.jbo-aurora .jbo-fab::after { content: none !important; animation: none !important; }
-    html.jbo-glass.jbo-aurora .jbo-fab416 .jbo-ring { display: none !important; }
-    html.jbo-glass.jbo-aurora .jbo-fab416 .jbo-fdot { border: 2px solid var(--mt-bg); box-shadow: none; }
-    html.jbo-glass.jbo-aurora .jbo-fab.jbo-busy::after { content: "" !important; position: absolute; right: 3px; bottom: 3px; width: 9px; height: 9px; inset: auto 3px 3px auto; border-radius: 50%; border: 2px solid var(--mt-bg); background: var(--mt-tang); animation: none !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-fab { background: var(--mt-bg) !important; color: #fff !important; box-shadow: 0 4px 14px rgba(0,0,0,.45) !important; border: 0 !important; outline: none; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-fab:hover { background: #1B1A22 !important; box-shadow: 0 4px 14px rgba(0,0,0,.45) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-fab::before, html.jbo-glass.jbo-aurora.jbo-matte .jbo-fab::after { content: none !important; animation: none !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-fab416 .jbo-ring { display: none !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-fab416 .jbo-fdot { border: 2px solid var(--mt-bg); box-shadow: none; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-fab.jbo-busy::after { content: "" !important; position: absolute; right: 3px; bottom: 3px; width: 9px; height: 9px; inset: auto 3px 3px auto; border-radius: 50%; border: 2px solid var(--mt-bg); background: var(--mt-tang); animation: none !important; }
 
     /* the J panel */
-    html.jbo-glass.jbo-aurora .jbo-hub-panel.jbo-ast, html.jbo-glass.jbo-aurora.jbo-light .jbo-hub-panel.jbo-ast { background: radial-gradient(80% 42% at 0% 0%, rgba(124,92,246,.13), transparent 70%), var(--mt-bg) !important; border: 1px solid var(--mt-line) !important; box-shadow: 0 18px 48px rgba(0,0,0,.5) !important; }
-    html.jbo-glass.jbo-aurora .jbo-ast-av { background: var(--mt-violet); }
-    html.jbo-glass.jbo-aurora .jbo-ast-hd h2 { color: #fff; }
-    html.jbo-glass.jbo-aurora .jbo-ast-sub, html.jbo-glass.jbo-aurora .jbo-ast-lbl, html.jbo-glass.jbo-aurora .jbo-ast-grp, html.jbo-glass.jbo-aurora .jbo-ast-tool .x small, html.jbo-glass.jbo-aurora .jbo-ast-tile .tt small,
-    html.jbo-glass.jbo-aurora .jbo-ast .jbo-hub-emp, html.jbo-glass.jbo-aurora .jbo-au-tip, html.jbo-glass.jbo-aurora .jbo-ast-ib, html.jbo-glass.jbo-aurora .jbo-ast-tab { color: #A9A8B4; }
-    html.jbo-glass.jbo-aurora .jbo-ast-tab:hover, html.jbo-glass.jbo-aurora .jbo-ast-ib:hover { color: #fff; }
-    html.jbo-glass.jbo-aurora .jbo-ast-lbl button, html.jbo-glass.jbo-aurora .jbo-ast-anslbl, html.jbo-glass.jbo-aurora .jbo-ast-anssrc, html.jbo-glass.jbo-aurora .jbo-au-tip kbd, html.jbo-glass.jbo-aurora .jbo-ast-sr kbd { color: var(--mt-violet-soft); }
-    html.jbo-glass.jbo-aurora .jbo-ast-tabs { background: rgba(255,255,255,.04) !important; border-color: var(--mt-line) !important; }
-    html.jbo-glass.jbo-aurora .jbo-ast-tab.on, html.jbo-glass.jbo-aurora .jbo-ast-chip.on, html.jbo-glass.jbo-aurora .jbo-ast-seg button.on { background: var(--mt-velvet) !important; color: #fff !important; box-shadow: none; }
-    html.jbo-glass.jbo-aurora .jbo-ast .jbo-hub-search { background: rgba(255,255,255,.05) !important; border-color: var(--mt-line) !important; }
-    html.jbo-glass.jbo-aurora .jbo-ast .jbo-hub-search:focus { border-color: #A78BFA !important; box-shadow: 0 0 0 3px rgba(167,139,250,.35) !important; }
-    html.jbo-glass.jbo-aurora .jbo-ast-tile, html.jbo-glass.jbo-aurora .jbo-au-card { background: rgba(255,255,255,.04) !important; border-color: var(--mt-line) !important; }
-    html.jbo-glass.jbo-aurora .jbo-ast-tile:hover, html.jbo-glass.jbo-aurora .jbo-ast-tile:focus-visible, html.jbo-glass.jbo-aurora .jbo-au-card:hover, html.jbo-glass.jbo-aurora .jbo-au-card:focus-visible { background: rgba(255,255,255,.08) !important; border-color: rgba(167,139,250,.45) !important; }
-    html.jbo-glass.jbo-aurora .jbo-ast-tile .ti, html.jbo-glass.jbo-aurora .jbo-au-card .ic, html.jbo-glass.jbo-aurora .jbo-ast-tool .jbo-ast-ic { background: rgba(255,255,255,.07) !important; }
-    html.jbo-glass.jbo-aurora .jbo-ast-tool:hover, html.jbo-glass.jbo-aurora .jbo-ast-tool.sel, html.jbo-glass.jbo-aurora .jbo-ast-tool:focus-visible { background: rgba(255,255,255,.07); }
-    html.jbo-glass.jbo-aurora .jbo-ast-new { background: var(--mt-violet); color: #fff; }
-    html.jbo-glass.jbo-aurora .jbo-ast-answer { background: rgba(124,92,246,.16) !important; border-color: rgba(167,139,250,.45) !important; }
-    html.jbo-glass.jbo-aurora .jbo-ast-bar i { background: var(--mt-tang) !important; }
-    html.jbo-glass.jbo-aurora .jbo-ast .jbo-hub-emp { background: transparent; border-top-color: var(--mt-line); }
-    html.jbo-glass.jbo-aurora .jbo-ast .jbo-hub-emp button, html.jbo-glass.jbo-aurora .jbo-ast .jbo-hub-emp button:hover { background: var(--mt-tang) !important; border-color: var(--mt-tang) !important; color: var(--mt-on-tang) !important; font-weight: 600; }
-    html.jbo-glass.jbo-aurora .jbo-ast .jbo-hub-emp button:hover { background: var(--mt-tang-hover) !important; border-color: var(--mt-tang-hover) !important; }
-    html.jbo-glass.jbo-aurora .jbo-ast-settings .row:has(.jbo-ast-theme) { display: none; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-hub-panel.jbo-ast, html.jbo-glass.jbo-aurora.jbo-matte.jbo-light .jbo-hub-panel.jbo-ast { background: radial-gradient(80% 42% at 0% 0%, rgba(124,92,246,.13), transparent 70%), var(--mt-bg) !important; border: 1px solid var(--mt-line) !important; box-shadow: 0 18px 48px rgba(0,0,0,.5) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-av { background: var(--mt-violet); }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-hd h2 { color: #fff; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-sub, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-lbl, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-grp, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tool .x small, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tile .tt small,
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast .jbo-hub-emp, html.jbo-glass.jbo-aurora.jbo-matte .jbo-au-tip, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-ib, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tab { color: #A9A8B4; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tab:hover, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-ib:hover { color: #fff; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-lbl button, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-anslbl, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-anssrc, html.jbo-glass.jbo-aurora.jbo-matte .jbo-au-tip kbd, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-sr kbd { color: var(--mt-violet-soft); }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tabs { background: rgba(255,255,255,.04) !important; border-color: var(--mt-line) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tab.on, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-chip.on, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-seg button.on { background: var(--mt-velvet) !important; color: #fff !important; box-shadow: none; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast .jbo-hub-search { background: rgba(255,255,255,.05) !important; border-color: var(--mt-line) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast .jbo-hub-search:focus { border-color: #A78BFA !important; box-shadow: 0 0 0 3px rgba(167,139,250,.35) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tile, html.jbo-glass.jbo-aurora.jbo-matte .jbo-au-card { background: rgba(255,255,255,.04) !important; border-color: var(--mt-line) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tile:hover, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tile:focus-visible, html.jbo-glass.jbo-aurora.jbo-matte .jbo-au-card:hover, html.jbo-glass.jbo-aurora.jbo-matte .jbo-au-card:focus-visible { background: rgba(255,255,255,.08) !important; border-color: rgba(167,139,250,.45) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tile .ti, html.jbo-glass.jbo-aurora.jbo-matte .jbo-au-card .ic, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tool .jbo-ast-ic { background: rgba(255,255,255,.07) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tool:hover, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tool.sel, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-tool:focus-visible { background: rgba(255,255,255,.07); }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-new { background: var(--mt-violet); color: #fff; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-answer { background: rgba(124,92,246,.16) !important; border-color: rgba(167,139,250,.45) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast-bar i { background: var(--mt-tang) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast .jbo-hub-emp { background: transparent; border-top-color: var(--mt-line); }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast .jbo-hub-emp button, html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast .jbo-hub-emp button:hover { background: var(--mt-tang) !important; border-color: var(--mt-tang) !important; color: var(--mt-on-tang) !important; font-weight: 600; }
+    html.jbo-glass.jbo-aurora.jbo-matte .jbo-ast .jbo-hub-emp button:hover { background: var(--mt-tang-hover) !important; border-color: var(--mt-tang-hover) !important; }
 
     /* tool windows: matte black, white text */
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal, html.jbo-glass.jbo-aurora.jbo-dark #jck-panel, html.jbo-glass.jbo-aurora.jbo-dark #jck-tab, html.jbo-glass.jbo-aurora.jbo-dark #jck-notes, html.jbo-glass.jbo-aurora.jbo-dark #jck-toast { filter: invert(1) hue-rotate(180deg); }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal { background: #EDEDED !important; border-color: #D1D1D1 !important; box-shadow: 0 24px 60px rgba(255,255,255,.45) !important; } /* source: #121212 / #2E2E2E; the shadow is written light because the inversion makes it dark */
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-backdrop { background: rgba(0,0,0,.6) !important; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal-head, html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal-body { background: transparent !important; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal-foot { background: #E8E8E8 !important; border-top-color: #D1D1D1 !important; } /* source: #171717 */
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal :is(.jpt-sheet, .jpt-step, .jsc-box, .jde-step, .jpb-step, [class$="-wrap"]:not(.jbo-autocomplete-wrap), [class$="-card"], [class$="-step"]) { background: #E3E3E3 !important; border-color: #D1D1D1 !important; } /* source: #1C1C1C */
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal table th { background: #E3E3E3 !important; } /* source: #1C1C1C */
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal table td { border-bottom-color: #DBDBDB !important; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal table tbody tr:hover td { background: #E8E8E8; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal [style*="position: sticky"], html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal [class$="-stats"] span { background: #E8E8E8 !important; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-icon-btn { background: #E3E3E3 !important; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-icon-btn:hover { background: #D8D8D8 !important; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-btn { background: #E3E3E3 !important; border-color: #C5C5C5 !important; } /* source: #1C1C1C / #3A3A3A */
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-btn:hover { background: #D8D8D8 !important; border-color: #AFAFAF !important; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal :is(input[type=text], input[type=number], input[type=date], input[type=search], input[type=email], input[type=password], input:not([type]), select, textarea) { background: #F2F2F2 !important; border-color: #959595 !important; } /* source: #0D0D0D / #6A6A6A */
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal input[type=file] { background: #E8E8E8; border-color: #959595 !important; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-tabs, html.jbo-glass.jbo-aurora.jbo-dark .jbo-us-tabs { background: #E8E8E8 !important; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-tab-active, html.jbo-glass.jbo-aurora.jbo-dark .jbo-us-tab[aria-selected="true"] { background: #D2C8FF !important; color: #000 !important; box-shadow: none; } /* source: velvet #352B62 with white text */
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal :focus-visible, html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-btn:focus-visible, html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-tab:focus-visible { outline: 2px solid #7458C7; } /* source: #A78BFA */
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal :is(input, select, textarea):focus { border-color: #7458C7 !important; box-shadow: 0 0 0 3px rgba(116,88,199,.35) !important; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-run { background: #E8E8E8; border-color: #D1D1D1; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal, html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark #jck-panel, html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark #jck-tab, html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark #jck-notes, html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark #jck-toast { filter: invert(1) hue-rotate(180deg); }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal { background: #EDEDED !important; border-color: #D1D1D1 !important; box-shadow: 0 24px 60px rgba(255,255,255,.45) !important; } /* source: #121212 / #2E2E2E; the shadow is written light because the inversion makes it dark */
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-backdrop { background: rgba(0,0,0,.6) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal-head, html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal-body { background: transparent !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal-foot { background: #E8E8E8 !important; border-top-color: #D1D1D1 !important; } /* source: #171717 */
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal :is(.jpt-sheet, .jpt-step, .jsc-box, .jde-step, .jpb-step, [class$="-wrap"]:not(.jbo-autocomplete-wrap), [class$="-card"], [class$="-step"]) { background: #E3E3E3 !important; border-color: #D1D1D1 !important; } /* source: #1C1C1C */
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal table th { background: #E3E3E3 !important; } /* source: #1C1C1C */
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal table td { border-bottom-color: #DBDBDB !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal table tbody tr:hover td { background: #E8E8E8; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal [style*="position: sticky"], html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal [class$="-stats"] span { background: #E8E8E8 !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-icon-btn { background: #E3E3E3 !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-icon-btn:hover { background: #D8D8D8 !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-btn { background: #E3E3E3 !important; border-color: #C5C5C5 !important; } /* source: #1C1C1C / #3A3A3A */
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-btn:hover { background: #D8D8D8 !important; border-color: #AFAFAF !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal :is(input[type=text], input[type=number], input[type=date], input[type=search], input[type=email], input[type=password], input:not([type]), select, textarea) { background: #F2F2F2 !important; border-color: #959595 !important; } /* source: #0D0D0D / #6A6A6A */
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal input[type=file] { background: #E8E8E8; border-color: #959595 !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-tabs, html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-us-tabs { background: #E8E8E8 !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-tab-active, html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-us-tab[aria-selected="true"] { background: #D2C8FF !important; color: #000 !important; box-shadow: none; } /* source: velvet #352B62 with white text */
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal :focus-visible, html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-btn:focus-visible, html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-tab:focus-visible { outline: 2px solid #7458C7; } /* source: #A78BFA */
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal :is(input, select, textarea):focus { border-color: #7458C7 !important; box-shadow: 0 0 0 3px rgba(116,88,199,.35) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-run { background: #E8E8E8; border-color: #D1D1D1; }
     /* the main button of a view: tangerine, label near-black; it undoes the window's inversion on itself so it shows the colour as written */
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-btn-primary, html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-btn-primary:hover { filter: invert(1) hue-rotate(180deg); background: var(--mt-tang) !important; border-color: var(--mt-tang) !important; color: var(--mt-on-tang) !important; font-weight: 600; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-btn-primary:hover { background: var(--mt-tang-hover) !important; border-color: var(--mt-tang-hover) !important; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-btn-danger, html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jbo-btn-danger:hover { filter: invert(1) hue-rotate(180deg); background: #FF6B6B !important; border-color: #FF6B6B !important; color: #2A0505 !important; font-weight: 600; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal input[type=file]::file-selector-button { filter: invert(1) hue-rotate(180deg); background: var(--mt-tang); color: var(--mt-on-tang); font-weight: 600; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-toast { background: #1C1B22 !important; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jst-sub button { background: #E3E3E3; border-color: #C5C5C5; color: #1D1D1F; }
-    html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal .jst-sub button.jst-on, html.jbo-glass.jbo-aurora.jbo-dark .jbo-modal :is(.jpb-tab.on, .jpt-tab.on, .jsc-tab.on, .jde-tab.on, [class$="-tab"].on, [class$="-tab"].active, [class$="-seg"] button.on) { background: #D2C8FF !important; border-color: #D2C8FF !important; color: #000 !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-btn-primary, html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-btn-primary:hover { filter: invert(1) hue-rotate(180deg); background: var(--mt-tang) !important; border-color: var(--mt-tang) !important; color: var(--mt-on-tang) !important; font-weight: 600; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-btn-primary:hover { background: var(--mt-tang-hover) !important; border-color: var(--mt-tang-hover) !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-btn-danger, html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jbo-btn-danger:hover { filter: invert(1) hue-rotate(180deg); background: #FF6B6B !important; border-color: #FF6B6B !important; color: #2A0505 !important; font-weight: 600; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal input[type=file]::file-selector-button { filter: invert(1) hue-rotate(180deg); background: var(--mt-tang); color: var(--mt-on-tang); font-weight: 600; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-toast { background: #1C1B22 !important; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jst-sub button { background: #E3E3E3; border-color: #C5C5C5; color: #1D1D1F; }
+    html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal .jst-sub button.jst-on, html.jbo-glass.jbo-aurora.jbo-matte.jbo-dark .jbo-modal :is(.jpb-tab.on, .jpt-tab.on, .jsc-tab.on, .jde-tab.on, [class$="-tab"].on, [class$="-tab"].active, [class$="-seg"] button.on) { background: #D2C8FF !important; border-color: #D2C8FF !important; color: #000 !important; }
   `;
+  // ===========================================================================================================
+  // BRAND (v4.80) — the Jisr palette in four looks: Light, Dark, Aurora Light, Aurora Dark.
+  //   Style (Standard | Aurora) x Appearance (Light | Dark | Auto). Replaces Glass / Flat / matte Aurora.
+  //   Light:  canvas Pale Cream #F9F8F6, containers Pure White #FFFFFF, text Stark Black #000000, details Muted Blue-Gray #6B7A8A, accent Tech Blue #0057FF.
+  //   Dark:   canvas Deep Slate #0F1115, containers Soft Graphite #1B1E24, text #FFFFFF, details #6B7A8A, accent Tech Mint #39FF88.
+  //   Aurora: the same colours over soft blurred gradients (Light: cream + washed blue + icy cyan; Dark: slate + Tech Blue + mint).
+  // The J button, the J panel and the frame of every tool window (title bar, footer and their buttons) are written in these exact colours.
+  // Inside a dark tool window only the content area is inverted (the tools draw their own light tables and cards); colours written for that
+  // area are the "source" of the colour wanted: srcOf_(c) = 1 - M*c with M the CSS hue-rotate(180deg) matrix, so invert(1) hue-rotate(180deg)
+  // turns them into c (exact for greys and soft colours; the vivid mint can only be approximated there, see MINT_IN).
+  // ===========================================================================================================
+  const BR_M = [[-0.574, 1.430, 0.144], [0.426, 0.430, 0.144], [0.426, 1.430, -0.856]];
+  function brParse_(c) {
+    let m = /^#([0-9a-f]{6})$/i.exec(c);
+    if (m) return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16), 1];
+    m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/i.exec(c);
+    return m ? [+m[1], +m[2], +m[3], m[4] === undefined ? 1 : +m[4]] : [0, 0, 0, 1];
+  }
+  /** The light-side colour that invert(1) hue-rotate(180deg) turns into c. */
+  function srcOf_(c) {
+    const [r, g, b, a] = brParse_(c), v = [r / 255, g / 255, b / 255];
+    const o = BR_M.map((row) => Math.round(255 * Math.max(0, Math.min(1, 1 - (row[0] * v[0] + row[1] * v[1] + row[2] * v[2])))));
+    return a === 1 ? '#' + o.map((x) => x.toString(16).padStart(2, '0')).join('') : 'rgba(' + o.join(',') + ',' + a + ')';
+  }
+  const MINT_IN = '#007533'; // written in a dark window's content: renders as #50C583 (the closest the inversion can get to #39FF88)
+  const BRAND_PAL = {
+    'std-l': { aur: false, dark: false, bg: '#F9F8F6', card: '#FFFFFF', hov: '#F1EFEA', ink: '#000000', sub: '#566574', mute: '#6B7A8A', line: 'rgba(107,122,138,.30)', acc: '#0057FF', accHov: '#0046CC', on: '#FFFFFF', soft: 'rgba(0,87,255,.10)', field: '#FFFFFF', danger: '#C5221F', onDanger: '#FFFFFF', fab: '#0057FF', fabInk: '#FFFFFF', fabLine: 'rgba(0,87,255,0)', shadow: '0 24px 60px rgba(15,17,21,.20)' },
+    'std-d': { aur: false, dark: true, bg: '#0F1115', card: '#1B1E24', hov: '#252A32', ink: '#FFFFFF', sub: '#9AA7B5', mute: '#6B7A8A', line: 'rgba(107,122,138,.38)', acc: '#39FF88', accHov: '#6BFFA6', on: '#04120A', soft: 'rgba(57,255,136,.14)', field: '#14171C', danger: '#FF6B6B', onDanger: '#2A0505', fab: '#1B1E24', fabInk: '#39FF88', fabLine: 'rgba(57,255,136,.45)', shadow: '0 24px 70px rgba(0,0,0,.6)' },
+    'au-l': { aur: true, dark: false, bg: '#F9F8F6', card: 'rgba(255,255,255,.74)', hov: 'rgba(255,255,255,.95)', ink: '#000000', sub: '#566574', mute: '#6B7A8A', line: 'rgba(107,122,138,.26)', acc: '#0057FF', accHov: '#0046CC', on: '#FFFFFF', soft: 'rgba(0,87,255,.10)', field: 'rgba(255,255,255,.88)', danger: '#C5221F', onDanger: '#FFFFFF', fab: '#FFFFFF', fabInk: '#0057FF', fabLine: 'rgba(0,87,255,.40)', shadow: '0 24px 70px rgba(0,87,255,.20)' },
+    'au-d': { aur: true, dark: true, grad: 'rgba(16,185,129,.36)', bg: '#0A0D14', card: 'rgba(255,255,255,.07)', hov: 'rgba(255,255,255,.12)', ink: '#FFFFFF', sub: '#A6B2C0', mute: '#6B7A8A', line: 'rgba(160,178,200,.22)', acc: '#39FF88', accHov: '#6BFFA6', on: '#04120A', soft: 'rgba(57,255,136,.14)', field: 'rgba(255,255,255,.08)', danger: '#FF6B6B', onDanger: '#2A0505', fab: '#0A0D14', fabInk: '#39FF88', fabLine: 'rgba(57,255,136,.55)', shadow: '0 24px 80px rgba(0,0,0,.65)' },
+  };
+  function brandBg_(p, n) {
+    if (!p.aur) return n(p.bg);
+    return p.dark
+      ? 'radial-gradient(70% 55% at 0% 0%, ' + n('rgba(0,87,255,.55)') + ', transparent 62%), radial-gradient(60% 55% at 100% 100%, ' + n(p.grad) + ', transparent 60%), radial-gradient(45% 40% at 90% 4%, ' + n('rgba(0,87,255,.22)') + ', transparent 65%), ' + n('#0A0D14')
+      : 'radial-gradient(70% 55% at 0% 0%, ' + n('rgba(0,87,255,.14)') + ', transparent 62%), radial-gradient(60% 50% at 100% 6%, ' + n('rgba(103,232,249,.40)') + ', transparent 62%), radial-gradient(80% 60% at 50% 120%, ' + n('rgba(0,87,255,.10)') + ', transparent 60%), ' + n('#F9F8F6');
+  }
+  function brandCss_() {
+    const id = (x) => x;
+    let css = '';
+    Object.keys(BRAND_PAL).forEach((k) => {
+      let p = BRAND_PAL[k]; const D = p.dark;
+      let accIn = D ? MINT_IN : p.acc, accHovIn = D ? '#00A04A' : p.accHov, focusIn = 'rgba(0,117,51,.35)', glow = 'rgba(57,255,136,.28)';
+      if (k === 'au-d') {   // Aurora Dark: the chosen colour replaces the mint (the blue stays)
+        const A = ACCENTS.find((x) => x.k === accent_()) || ACCENTS[0];
+        p = Object.assign({}, p, { acc: A.acc, accHov: A.hov, on: A.on, soft: 'rgba(' + A.rgb + ',.14)', fabInk: A.acc, fabLine: 'rgba(' + A.rgb + ',.55)', grad: A.grad });
+        accIn = A.inA || srcOf_(A.acc); accHovIn = A.inH || srcOf_(A.hov); glow = 'rgba(' + A.rgb + ',.28)'; focusIn = A.inA ? 'rgba(0,117,51,.35)' : 'rgba(' + srcOf_(A.acc).replace('#', '').match(/../g).map((h) => parseInt(h, 16)).join(',') + ',.35)';
+      }
+      const sc = 'html.jbo-glass.jbo-brand' + (p.aur ? '.jbo-aurora' : ':not(.jbo-aurora)') + '.jbo-' + (D ? 'dark' : 'light');
+      const nb = D ? srcOf_ : id;                                   // colours written inside the (inverted) content area of a tool window
+      const onIn = D ? srcOf_(p.on) : p.on;
+      const dangerIn = D ? srcOf_(p.danger) : p.danger, onDangerIn = D ? srcOf_(p.onDanger) : p.onDanger;
+      const MW = sc + ' .jbo-modal', PN = sc + ' .jbo-hub-panel.jbo-ast', blur = p.aur && !D ? 'blur(26px) saturate(150%)' : 'none';
+      css += `
+    /* ---------- ${k}: J button ---------- */
+    ${sc} .jbo-fab { background: ${p.fab} !important; color: ${p.fabInk} !important; border: 1px solid ${p.fabLine} !important; box-shadow: ${p.aur ? '0 8px 26px ' + (D ? glow : 'rgba(0,87,255,.30)') : '0 6px 18px rgba(15,17,21,' + (D ? '.55' : '.28') + ')'} !important; outline: none; }
+    ${sc} .jbo-fab:hover { background: ${p.fab} !important; filter: brightness(${D ? 1.18 : 1.06}); }
+    ${sc} .jbo-fab::before, ${sc} .jbo-fab::after { content: none !important; animation: none !important; }
+    ${sc} .jbo-fab416 .jbo-ring { display: none !important; }
+    ${sc} .jbo-fab416 .jbo-fdot { border: 2px solid ${p.fab}; box-shadow: none; }
+    ${sc} .jbo-fab.jbo-busy::after { content: "" !important; position: absolute; inset: auto 3px 3px auto; width: 9px; height: 9px; border-radius: 50%; border: 2px solid ${p.fab}; background: ${D ? p.acc : (p.fab === '#FFFFFF' ? p.acc : '#FFFFFF')}; animation: none !important; }
+
+    /* ---------- ${k}: J panel ---------- */
+    ${PN} { background: ${brandBg_(p, id)} !important; border: 1px solid ${p.line} !important; box-shadow: ${p.shadow} !important; color: ${p.ink};
+      -webkit-backdrop-filter: ${p.aur ? 'blur(30px) saturate(150%)' : 'none'}; backdrop-filter: ${p.aur ? 'blur(30px) saturate(150%)' : 'none'}; filter: none; }
+    ${PN} :where(*) { color: inherit; border-color: ${p.line}; }
+    ${PN} .jbo-ast-hd h2, ${PN} .jbo-ast-tile .tt b, ${PN} .jbo-au-card b, ${PN} .jbo-ast-sec b, ${PN} .jbo-ast-tool b, ${PN} .jbo-ast-act, ${PN} .jbo-ast-chip, ${PN} .jbo-ast-res { color: ${p.ink}; }
+    ${PN} .jbo-ast-sub, ${PN} .jbo-ast-lbl, ${PN} .jbo-ast-grp, ${PN} .jbo-ast-tool .x small, ${PN} .jbo-ast-tile .tt small, ${PN} .jbo-ast .jbo-hub-emp, ${PN} .jbo-hub-emp, ${PN} .jbo-au-tip, ${PN} .jbo-ast-ib, ${PN} .jbo-ast-tab, ${PN} .jbo-ast-settings .hint, ${PN} .jbo-ast-ch { color: ${p.sub}; opacity: 1; }
+    ${PN} .jbo-ast-tab:hover, ${PN} .jbo-ast-ib:hover { color: ${p.ink}; background: ${p.hov}; }
+    ${PN} .jbo-ast-lbl button, ${PN} .jbo-ast-anslbl, ${PN} .jbo-ast-anssrc, ${PN} .jbo-au-tip kbd, ${PN} .jbo-ast-sr kbd { color: ${D ? p.acc : p.acc}; }
+    ${PN} .jbo-ast-tile .ti, ${PN} .jbo-au-card .ic, ${PN} .jbo-ast-tool .jbo-ast-ic { color: var(--c, ${p.acc}); background: ${p.soft} !important; border: 0 !important; }
+    ${PN} .jbo-ast-tabs { background: ${p.hov} !important; border: 1px solid ${p.line} !important; }
+    ${PN} .jbo-ast-tab.on, ${PN} .jbo-ast-chip.on, ${PN} .jbo-ast-seg button.on { background: ${p.acc} !important; color: ${p.on} !important; box-shadow: none; font-weight: 600; }
+    ${PN} .jbo-ast-seg { border-color: ${p.line}; } ${PN} .jbo-ast-seg button { color: ${p.sub}; }
+    ${PN} .jbo-ast .jbo-hub-search, ${PN} .jbo-hub-search { background: ${p.field} !important; border: 1px solid ${p.line} !important; color: ${p.ink} !important; }
+    ${PN} .jbo-hub-search::placeholder { color: ${p.sub} !important; opacity: 1; }
+    ${PN} .jbo-hub-search:focus { border-color: ${p.acc} !important; box-shadow: 0 0 0 3px ${p.soft} !important; }
+    ${PN} .jbo-ast-sr > svg { color: ${p.sub}; }
+    ${PN} .jbo-ast-act { background: transparent !important; border: 0 !important; box-shadow: none !important; }
+    ${PN} .jbo-ast-tile, ${PN} .jbo-au-card, ${PN} .jbo-ast-res, ${PN} .jbo-ast-settings { background: ${p.card} !important; border: 1px solid ${p.line} !important; box-shadow: none !important; ${p.aur && !D ? '-webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);' : ''} }
+    ${PN} .jbo-ast-tile:hover, ${PN} .jbo-ast-tile:focus-visible, ${PN} .jbo-au-card:hover, ${PN} .jbo-au-card:focus-visible { background: ${p.hov} !important; border-color: ${p.acc} !important; }
+    ${PN} .jbo-ast-tool:hover, ${PN} .jbo-ast-tool.sel, ${PN} .jbo-ast-tool:focus-visible { background: ${p.hov}; }
+    ${PN} .jbo-ast-ic { background: ${p.soft} !important; }
+    ${PN} .jbo-ast-av { background: ${p.acc} !important; color: ${p.on} !important; box-shadow: none !important; }
+    ${PN} .jbo-ast-new { background: ${p.acc} !important; color: ${p.on} !important; font-weight: 700; }
+    ${PN} .jbo-ast-answer { background: ${p.soft} !important; border: 1px solid ${p.line} !important; color: ${p.ink}; }
+    ${PN} .jbo-ast-bar { background: ${p.line}; } ${PN} .jbo-ast-bar i { background: ${p.acc} !important; box-shadow: none !important; }
+    ${PN} .jbo-hub-emp { background: transparent; border-top: 1px solid ${p.line}; }
+    ${PN} .jbo-hub-emp button, ${PN} .jbo-hub-emp button:hover { background: ${p.acc} !important; border: 1px solid ${p.acc} !important; color: ${p.on} !important; font-weight: 600; }
+    ${PN} .jbo-hub-emp button:hover { background: ${p.accHov} !important; border-color: ${p.accHov} !important; }
+    ${PN} input[type=checkbox] { accent-color: ${p.acc}; }
+    ${PN} .jbo-ast-gear.on { background: ${p.soft}; color: ${p.acc}; }
+    ${PN} :focus-visible { outline: 2px solid ${p.acc}; outline-offset: 1px; }
+
+    /* ---------- ${k}: tool windows (frame in exact colours; content ${D ? 'inverted, so written as the source of each colour' : 'drawn directly'}) ---------- */
+    ${sc} .jbo-backdrop { background: ${D ? 'rgba(4,6,10,.64)' : 'rgba(15,17,21,.30)'} !important; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+    ${MW} { background: ${brandBg_(p, id)} !important; border: 1px solid ${p.line} !important; border-radius: 20px !important; box-shadow: ${p.shadow} !important; color: ${p.ink}; -webkit-backdrop-filter: ${blur}; backdrop-filter: ${blur}; }
+    ${MW} .jbo-modal-head { background: transparent !important; border-bottom: 1px solid ${p.line} !important; }
+    ${MW} .jbo-modal-title { color: ${p.ink} !important; }
+    ${MW} .jbo-modal-foot { background: ${p.aur ? p.card : p.card} !important; border-top: 1px solid ${p.line} !important; }
+    ${MW} :is(.jbo-modal-head, .jbo-modal-foot) :is(.jbo-icon-btn, .jbo-btn) { background: ${p.hov} !important; border: 1px solid ${p.line} !important; color: ${p.ink} !important; }
+    ${MW} .jbo-modal-head .jbo-icon-btn { border-radius: 999px !important; }
+    ${MW} .jbo-modal-foot .jbo-btn { border-radius: 999px !important; font-weight: 550; }
+    ${MW} :is(.jbo-modal-head, .jbo-modal-foot) .jbo-btn:hover { background: ${D ? '#2F3640' : '#E9E6DF'} !important; }
+    ${MW} :is(.jbo-modal-head, .jbo-modal-foot) .jbo-btn-primary, ${MW} :is(.jbo-modal-head, .jbo-modal-foot) .jbo-btn-primary:hover { background: ${p.acc} !important; border-color: ${p.acc} !important; color: ${p.on} !important; font-weight: 650; }
+    ${MW} :is(.jbo-modal-head, .jbo-modal-foot) .jbo-btn-primary:hover { background: ${p.accHov} !important; border-color: ${p.accHov} !important; }
+    ${MW} :is(.jbo-modal-head, .jbo-modal-foot) .jbo-btn-danger, ${MW} :is(.jbo-modal-head, .jbo-modal-foot) .jbo-btn-danger:hover { background: ${p.danger} !important; border-color: ${p.danger} !important; color: ${p.onDanger} !important; font-weight: 650; }
+    ${MW} :is(.jbo-modal-head, .jbo-modal-foot) :is(.jbo-btn)[disabled] { opacity: .45; }
+    ${MW} .jbo-modal-body { background: transparent !important; color: ${nb(p.ink)}; }
+    ${MW} .jbo-run { background: ${p.card} !important; border-bottom: 1px solid ${p.line} !important; color: ${p.sub}; }
+    ${MW} .jbo-run .bar { background: ${p.line}; } ${MW} .jbo-run .bar i { background: ${p.acc}; }
+    ${MW} .jbo-run .sp { border-color: ${p.line}; border-top-color: ${p.acc}; }
+    ${MW} .jbo-run .st { color: ${p.ink}; } ${MW} .jbo-run .dot { background: ${D ? '#4ADE80' : '#137333'}; } ${MW} .jbo-run.bad .dot { background: ${D ? '#FF8A8A' : '#C5221F'}; }
+    ${MW} .jbo-run .ok b { color: ${D ? '#4ADE80' : '#137333'}; } ${MW} .jbo-run .no b { color: ${D ? '#FF8A8A' : '#C5221F'}; } ${MW} .jbo-run .wt b, ${MW} .jbo-run .rq { color: ${p.sub}; }
+    ${MW} .jbo-run button { background: ${p.hov}; border: 1px solid ${p.line}; color: ${p.ink}; }
+    ${MW} .jbo-run-list { background: ${D ? '#2A1517' : '#FFF8F7'}; border-bottom: 1px solid ${p.line}; color: ${p.ink}; } ${MW} .jbo-run-list b { color: ${D ? '#FF8A8A' : '#C5221F'}; } ${MW} .jbo-run-list small { color: ${p.sub}; } ${MW} .jbo-run-list div { border-bottom-color: ${p.line}; }
+    /* content area */
+    ${MW} .jbo-modal-body :is(.jpt-sheet, .jpt-step, .jsc-box, .jde-step, .jpb-step, [class$="-wrap"]:not(.jbo-autocomplete-wrap), [class$="-card"], [class$="-step"]) { background: ${nb(p.card)} !important; border: 1px solid ${nb(p.line)} !important; border-radius: 14px !important; box-shadow: none !important; -webkit-backdrop-filter: none; backdrop-filter: none; }
+    ${MW} .jbo-modal-body table th { background: ${nb(p.hov)} !important; color: ${nb(p.sub)} !important; border-bottom: 1px solid ${nb(p.line)} !important; -webkit-backdrop-filter: none; backdrop-filter: none; }
+    ${MW} .jbo-modal-body table td { border-bottom: 1px solid ${nb(p.line)} !important; }
+    ${MW} .jbo-modal-body table tbody tr:hover td { background: ${nb(p.soft)}; }
+    ${MW} .jbo-modal-body [class$="-stats"] span, ${MW} .jbo-modal-body [style*="position: sticky"] { background: ${nb(p.card)} !important; border: 1px solid ${nb(p.line)}; }
+    ${MW} .jbo-modal-body .jbo-muted { color: ${nb(p.sub)} !important; }
+    ${MW} .jbo-modal-body .jbo-btn { background: ${nb(p.hov)} !important; border: 1px solid ${nb(p.line)} !important; color: ${nb(p.ink)} !important; border-radius: 999px !important; }
+    ${MW} .jbo-modal-body .jbo-btn:hover { background: ${nb(D ? '#2F3640' : '#E9E6DF')} !important; }
+    ${MW} .jbo-modal-body .jbo-btn-primary, ${MW} .jbo-modal-body .jbo-btn-primary:hover { background: ${accIn} !important; border-color: ${accIn} !important; color: ${onIn} !important; font-weight: 650; }
+    ${MW} .jbo-modal-body .jbo-btn-primary:hover { background: ${accHovIn} !important; border-color: ${accHovIn} !important; }
+    ${MW} .jbo-modal-body .jbo-btn-danger, ${MW} .jbo-modal-body .jbo-btn-danger:hover { background: ${dangerIn} !important; border-color: ${dangerIn} !important; color: ${onDangerIn} !important; font-weight: 650; }
+    ${MW} .jbo-modal-body .jbo-btn[disabled] { opacity: .45; }
+    ${MW} .jbo-modal-body :is(input[type=text], input[type=number], input[type=date], input[type=search], input[type=email], input[type=password], input:not([type]), select, textarea) { background: ${nb(p.field)} !important; border: 1px solid ${nb(p.line)} !important; color: ${nb(p.ink)} !important; border-radius: 10px !important; }
+    ${MW} .jbo-modal-body :is(input, select, textarea):focus { border-color: ${accIn} !important; box-shadow: 0 0 0 3px ${D ? focusIn : p.soft} !important; outline: none !important; }
+    ${MW} .jbo-modal-body ::placeholder { color: ${nb(p.sub)}; opacity: 1; }
+    ${MW} .jbo-modal-body input[type=file] { background: ${nb(p.card)}; border-color: ${nb(p.line)} !important; color: ${nb(p.ink)}; }
+    ${MW} .jbo-modal-body input[type=file]::file-selector-button { background: ${accIn}; color: ${onIn}; border: 0; border-radius: 999px; padding: 7px 14px; font-weight: 650; }
+    ${MW} .jbo-modal-body :is(input[type=checkbox], input[type=radio]) { accent-color: ${accIn}; }
+    ${MW} .jbo-modal-body .jbo-tabs, ${MW} .jbo-modal-body .jbo-us-tabs { background: ${nb(p.hov)} !important; border: 1px solid ${nb(p.line)} !important; border-radius: 12px; }
+    ${MW} .jbo-modal-body .jbo-tab, ${MW} .jbo-modal-body .jbo-us-tab { color: ${nb(p.sub)} !important; }
+    ${MW} .jbo-modal-body .jbo-tab-active, ${MW} .jbo-modal-body .jbo-us-tab[aria-selected="true"] { background: ${accIn} !important; color: ${onIn} !important; box-shadow: none; font-weight: 650; }
+    ${MW} .jbo-modal-body :is(.jpb-tab.on, .jpt-tab.on, .jsc-tab.on, .jde-tab.on, [class$="-tab"].on, [class$="-tab"].active, [class$="-seg"] button.on, .jst-sub button.jst-on) { background: ${accIn} !important; border-color: ${accIn} !important; color: ${onIn} !important; }
+    ${MW} .jbo-modal-body .jst-sub button { background: ${nb(p.hov)}; border-color: ${nb(p.line)}; color: ${nb(p.ink)}; }
+    ${MW} .jbo-modal-body ::-webkit-scrollbar-thumb { background: ${nb('rgba(107,122,138,.45)')}; border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+    ${MW} :focus-visible { outline: 2px solid ${D ? p.acc : p.acc}; outline-offset: 1px; }
+    ${sc} .jbo-toast { background: ${D ? '#1B1E24' : '#0F1115'} !important; color: #FFFFFF !important; border: 1px solid ${D ? p.line : 'transparent'}; }
+`;
+    });
+    return css;
+  }
+
   function applyTheme_() {
-    if (!document.getElementById('jbo-glass-css')) { const g = document.createElement('style'); g.id = 'jbo-glass-css'; g.textContent = GLASS_CSS; (document.head || document.documentElement).appendChild(g); }
-    document.documentElement.classList.toggle('jbo-glass', glassOn_());
-    document.documentElement.classList.toggle('jbo-aurora', glassOn_() && auroraOn_());
-    if (!document.getElementById('jbo-theme-css')) {
-      const st = document.createElement('style'); st.id = 'jbo-theme-css';
+    if (!document.getElementById('jbo-glass-css')) { const g = document.createElement('style'); g.id = 'jbo-glass-css'; g.textContent = GLASS_CSS + brandCss_(); g.dataset.acc = accent_(); (document.head || document.documentElement).appendChild(g); }
+    { const g = document.getElementById('jbo-glass-css'); if (g && g.dataset.acc !== accent_()) { g.textContent = GLASS_CSS + brandCss_(); g.dataset.acc = accent_(); } }
+    const LK = look_(), MD = mode_(), root = document.documentElement;
+    root.classList.toggle('jbo-glass', glassOn_());
+    root.classList.toggle('jbo-brand', brandOn_());
+    root.classList.toggle('jbo-aurora', LK === 'aurora' || (LK === 'glass' && MD === 'dark'));   // Glass in the dark reuses the Aurora layout rules, then turns them matte black
+    root.classList.toggle('jbo-matte', LK === 'glass' && MD === 'dark');
+    {
+      let st = document.getElementById('jbo-theme-css'); const first = !st;
+      if (!st) { st = document.createElement('style'); st.id = 'jbo-theme-css'; document.head.appendChild(st); }
       // the tool's windows are drawn light; dark = the same windows inverted (hues kept), with pictures and data colours turned back
-      st.textContent = `
+      // brand looks (Standard, Aurora): only the content area is inverted, the frame and the J panel are drawn directly in the brand colours
+      // Glass: the v4.55 rules (the J panel turns light by inversion in Light; in Dark the matte-black rules above take over)
+      const want = brandOn_() ? 'brand' : 'glass';
+      if (st.dataset.k !== want) {
+        st.dataset.k = want;
+        st.textContent = want === 'brand' ? `
+        html.jbo-dark .jbo-modal-body, html.jbo-dark .jbo-modal:not(:has(.jbo-modal-body)), html.jbo-dark #jck-panel, html.jbo-dark #jck-tab, html.jbo-dark #jck-notes, html.jbo-dark #jck-toast { filter: invert(1) hue-rotate(180deg); }
+        html.jbo-dark .jbo-modal-body :is(img, video, canvas, picture, .jsh-dot, .jsh-swatch, .jac-sig, [data-keep-color]),
+        html.jbo-dark .jbo-modal:not(:has(.jbo-modal-body)) :is(img, video, canvas, picture, .jsh-dot, .jsh-swatch, .jac-sig, [data-keep-color]),
+        html.jbo-dark #jck-panel :is(img, video, canvas, picture) { filter: invert(1) hue-rotate(180deg); }` : `
         html.jbo-dark .jbo-modal, html.jbo-dark #jck-panel, html.jbo-dark #jck-tab, html.jbo-dark #jck-notes, html.jbo-dark #jck-toast, html.jbo-light .jbo-hub-panel.jbo-ast { filter: invert(0.9) hue-rotate(180deg); }
         html.jbo-light .jbo-hub-panel.jbo-ast :is(img, video, canvas, picture, [data-keep-color]),
         html.jbo-dark .jbo-modal :is(img, video, canvas, picture, .jsh-dot, .jsh-swatch, .jac-sig, [data-keep-color]),
@@ -3005,11 +3204,13 @@ function jboRedact_(msg) {
         html.jbo-dark .jbo-backdrop { background: rgba(0,0,0,.55); }
         html.jbo-dark .jbo-modal { box-shadow: 0 10px 40px rgba(0,0,0,.25); }
         html.jbo-light .jbo-hub-panel.jbo-ast { box-shadow: 0 18px 50px rgba(255,255,255,.2) !important; }`;
-      document.head.appendChild(st);
+      }
+      if (first) {
       try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (theme_() === 'auto') applyTheme_(); }); } catch (e) { /* old browser */ }
       // some browsers don't report the change event reliably: also re-check every few seconds while Auto is on, and on focus
-      setInterval(() => { if (theme_() === 'auto' && document.documentElement.classList.contains('jbo-dark') !== sysDark_()) applyTheme_(); }, 3000);
+      setInterval(() => { if (look_() !== 'classic' && theme_() === 'auto' && document.documentElement.classList.contains('jbo-dark') !== sysDark_()) applyTheme_(); }, 3000);
       window.addEventListener('focus', () => { if (theme_() === 'auto') applyTheme_(); });
+      }
     }
     { const g = document.getElementById('jbo-glass-css'); if (g && g.parentNode && g !== g.parentNode.lastElementChild) g.parentNode.appendChild(g); }
     const m = mode_();
@@ -3017,7 +3218,7 @@ function jboRedact_(msg) {
     document.documentElement.classList.toggle('jbo-light', m === 'light');
   }
   try { applyTheme_(); } catch (e) { /* ignore */ }
-  unsafeWindow.__jisrBulkOpsTheme = { apply: applyTheme_, get: theme_, set: (t) => { gmSet_('uiTheme', t); applyTheme_(); }, dark: darkNow_, mode: mode_, glass: glassOn_, setGlass: (v) => { gmSet_('uiGlass', !!v); applyTheme_(); } };
+  unsafeWindow.__jisrBulkOpsTheme = { apply: applyTheme_, get: theme_, set: (t) => { gmSet_('uiTheme', t); applyTheme_(); }, dark: darkNow_, mode: mode_, glass: glassOn_, setGlass: (v) => { gmSet_('uiStyle', v ? 'glass' : 'classic'); applyTheme_(); }, look: look_, setLook: (v) => { gmSet_('uiStyle', v); applyTheme_(); }, accent: accent_, setAccent: (v) => { gmSet_('uiAccent', v); applyTheme_(); } };
   // v4.55: tools add their own style sheets when they open — move the glass sheet back to the end so it still wins
   try { new MutationObserver((ms) => { if (!glassOn_()) return; if (ms.some((m) => Array.from(m.addedNodes).some((n) => n.nodeName === 'STYLE' && n.id !== 'jbo-glass-css'))) { const g = document.getElementById('jbo-glass-css'); if (g && g.parentNode && g !== g.parentNode.lastElementChild) g.parentNode.appendChild(g); } }).observe(document.head || document.documentElement, { childList: true }); } catch (e) { /* ignore */ }
   function applyScale_() {
@@ -3302,10 +3503,17 @@ function jboRedact_(msg) {
         b.addEventListener('click', (e) => { e.stopPropagation(); gmSet_('uiTheme', k); applyTheme_(); rerender_(); });
         return b;
       }));
-      const curLook = !glassOn_() ? 'flat' : auroraOn_() ? 'aurora' : 'glass';
-      const looks = el('div', { class: 'jbo-ast-seg jbo-ast-look' }, [['aurora', '✦', 'Aurora', 'أورورا'], ['glass', '◍', 'Glass', 'زجاجي'], ['flat', '▭', 'Flat', 'مسطّح']].map(([k, ic, en, ar]) => {
+      const curLook = look_();
+      const looks = el('div', { class: 'jbo-ast-seg jbo-ast-look' }, [['standard', '◍', 'Standard', 'قياسي'], ['aurora', '✦', 'Aurora', 'أورورا'], ['glass', '◇', 'Glass', 'زجاجي'], ['classic', '◐', 'Classic', 'كلاسيكي']].map(([k, ic, en, ar]) => {
         const b = el('button', { type: 'button', class: k === curLook ? 'on' : '', 'data-look': k, text: ic + ' ' + T(en, ar) });
-        b.addEventListener('click', (e) => { e.stopPropagation(); gmSet_('uiGlass', k !== 'flat'); gmSet_('uiAurora', k === 'aurora'); applyTheme_(); rerender_(); });
+        b.addEventListener('click', (e) => { e.stopPropagation(); gmSet_('uiStyle', k); applyTheme_(); rerender_(); });
+        return b;
+      }));
+      const curAcc = accent_();
+      const accents = el('div', { class: 'jbo-ast-accent', style: 'display:flex;gap:9px;align-items:center;padding:3px 4px;' }, ACCENTS.map((A) => {
+        const b = el('button', { type: 'button', class: A.k === curAcc ? 'on' : '', 'data-accent': A.k, title: T(A.en, A.ar), 'aria-label': T(A.en, A.ar), text: '' });
+        b.style.cssText = 'padding:0;width:24px;height:24px;border-radius:50%;cursor:pointer;background:' + A.acc + ' !important;border:0 !important;min-width:0;flex:0 0 auto;color:inherit;outline:' + (A.k === curAcc ? '2px solid currentColor' : '0') + ';outline-offset:2px;box-shadow:none;';
+        b.addEventListener('click', (e) => { e.stopPropagation(); gmSet_('uiAccent', A.k); applyTheme_(); rerender_(); });
         return b;
       }));
       const ck = el('input', { type: 'checkbox', class: 'jbo-ast-cktoggle' }); ck.checked = ckOn_();
@@ -3317,10 +3525,11 @@ function jboRedact_(msg) {
       });
       menuEl.appendChild(el('div', { class: 'jbo-ast-settings' }, [
         el('div', { class: 'row' }, [el('span', { text: T('Size of the J button and panel', 'حجم زر J واللوحة') }), sizes]),
-        el('div', { class: 'row' }, [el('span', { text: T('Light or night mode', 'الوضع الفاتح أو الليلي') }), themes]),
-        el('div', { class: 'row' }, [el('span', { text: T('Look', 'المظهر') }), looks]),
+        el('div', { class: 'row' }, [el('span', { text: T('Style', 'النمط') }), looks]),
+        curLook === 'classic' ? null : el('div', { class: 'row' }, [el('span', { text: T('Appearance', 'المظهر') }), themes]),
+        curLook === 'aurora' ? el('div', { class: 'row' }, [el('span', { text: T('Aurora colour (dark)', 'لون أورورا (الداكن)') }), accents]) : null,
         el('label', { class: 'row' }, [el('span', { text: T('Show the Activation Checklist', 'إظهار قائمة التفعيل') + (g.modules['activation-checklist'] ? '' : T(' (not loaded)', ' (غير محمّلة)')) }), ck]),
-        el('div', { class: 'hint', text: T('Night makes the J panel, every tool and the checklist dark; Light makes them all light; Classic is the original look; Auto follows the computer. ', 'الليلي يجعل لوحة J وكل الأدوات والقائمة داكنة؛ الفاتح يجعلها فاتحة؛ الكلاسيكي هو الشكل الأصلي؛ التلقائي يتبع الجهاز. ') + T('Saved in this browser. Hiding the checklist removes its card, tab, edge tab and the ring on the J button; your ticks are kept.', 'تُحفظ في هذا المتصفح. إخفاء القائمة يزيل بطاقتها وتبويبها واللسان الجانبي والحلقة حول زر J؛ وتبقى علاماتك محفوظة.') }),
+        el('div', { class: 'hint', text: T('Style: Standard is the Jisr brand (cream and white, or slate and graphite); Aurora adds soft blurred colour, and in the dark you can swap the mint for burgundy, violet, orange or winter green; Glass is sleek white glass, or matte black with white text in the dark; Classic is the original Jisr look. Appearance: Light, Dark or Auto (follows the computer). ', 'النمط: القياسي بهوية جسر (كريمي وأبيض أو رمادي داكن)؛ أورورا يضيف ألوانًا ناعمة، وفي الوضع الداكن يمكنك استبدال النعناعي بالعنابي أو البنفسجي أو البرتقالي أو الأخضر الشتوي؛ الزجاجي أبيض لامع أو أسود مطفي بنص أبيض في الداكن؛ الكلاسيكي هو شكل جسر الأصلي. المظهر: فاتح أو داكن أو تلقائي (يتبع الجهاز). ') + T('Saved in this browser. Hiding the checklist removes its card, tab, edge tab and the ring on the J button; your ticks are kept.', 'تُحفظ في هذا المتصفح. إخفاء القائمة يزيل بطاقتها وتبويبها واللسان الجانبي والحلقة حول زر J؛ وتبقى علاماتك محفوظة.') }),
       ]));
     }
 
@@ -28335,7 +28544,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.78.1
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.83.0
 // ###########################################################################
 
 /*
@@ -29910,7 +30119,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.78.1
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.83.0
 // ###########################################################################
 
 /*
@@ -30559,7 +30768,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v4.78.1
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.83.0
 // ###########################################################################
 
 /*
@@ -31427,7 +31636,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.78.1
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.83.0
 // ###########################################################################
 
 /*
@@ -33049,7 +33258,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.78.1
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.83.0
 // ###########################################################################
 
 /*
@@ -33519,7 +33728,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 20 — Employee Documents bulk upload  v4.78.1
+// ##### SECTION 20 — Employee Documents bulk upload  v4.83.0
 // ###########################################################################
 
 /*
@@ -34351,7 +34560,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 21 — Bulk Offboarding  v4.78.1
+// ##### SECTION 21 — Bulk Offboarding  v4.83.0
 // ###########################################################################
 
 /**
@@ -34999,7 +35208,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 22 — Bulk Final Settlement  v4.78.1
+// ##### SECTION 22 — Bulk Final Settlement  v4.83.0
 // ###########################################################################
 
 /**
@@ -35484,7 +35693,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 24 — Bulk Payroll Transactions  v4.78.1
+// ##### SECTION 24 — Bulk Payroll Transactions  v4.83.0
 // ###########################################################################
 
 /**
@@ -36156,7 +36365,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.78.1
+// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.83.0
 // ###########################################################################
 
 /**
@@ -36233,12 +36442,13 @@ function jboRedact_(msg) {
     const id = pick_(o, ['leave_request_id', 'request_id']) != null ? pick_(o, ['leave_request_id', 'request_id']) : lr && lr.id != null ? lr.id : o.id;
     const start = date_(pick_(o, ['from', 'start_date', 'from_date', 'starting_date', 'leave_from', 'date_from', 'start']) || (lr && pick_(lr, ['from', 'start_date'])));
     const end = date_(pick_(o, ['to', 'end_date', 'to_date', 'ending_date', 'leave_to', 'date_to', 'end']) || (lr && pick_(lr, ['to', 'end_date'])));
-    const type = String(nameOf_(o.leave_type) || o.leave_type_i18n || o.leave_type_name || nameOf_(o.leave_type_info) || nameOf_(lr && lr.leave_type) || '').trim();
+    const type = String(nameOf_(o.leave_type) || o.leave_type_i18n || o.leave_type_name || nameOf_(o.leave_type_info) || nameOf_(lr && lr.leave_type) || o.name || o.name_en || '').trim();
+    const typeEn = String(o.name_en || '').trim();   // Jisr's history item (confirmed 2026-11-09) has name (page language) and name_en, no leave_type object
     const lt = o.leave_type && typeof o.leave_type === 'object' ? o.leave_type : (lr && lr.leave_type && typeof lr.leave_type === 'object' ? lr.leave_type : null);
     const typeId = lt && lt.id != null ? lt.id : pick_(o, ['leave_type_id']) != null ? pick_(o, ['leave_type_id']) : lr ? pick_(lr, ['leave_type_id']) : undefined;
     const status = String(pick_(o, ['status', 'leave_status', 'request_status']) || (lr && lr.status) || '');
     const imp = pick_(o, ['is_imported', 'imported', 'imported_leave']);
-    return { id, start: start || '', end: end || start || '', type, typeId: typeId != null ? String(typeId) : null, status, statusLabel: String(o.status_i18n || status || ''), days: pick_(o, ['applied_days', 'days', 'number_of_days', 'duration', 'total_days']), imported: imp === undefined ? (/import/i.test(String(o.source || o.source_type || '')) ? true : null) : !!imp };
+    return { id, start: start || '', end: end || start || '', type, typeEn, reason: pick_(o, ['reason']), returnDate: date_(pick_(o, ['return_date'])) || '', typeId: typeId != null ? String(typeId) : null, status, statusLabel: String(o.status_i18n || status || ''), days: pick_(o, ['applied_days', 'days', 'number_of_days', 'duration', 'total_days']), imported: imp === undefined ? (/import/i.test(String(o.source || o.source_type || '')) ? true : null) : !!imp };
   }
   const isGone_ = (status) => /cancel|reject|declin|delet/i.test(String(status || ''));
   /** Which history leaves a row means. Returns { matches, why } */
@@ -36254,7 +36464,7 @@ function jboRedact_(msg) {
     if (row.end) c = c.filter((l) => !l.end || l.end === row.end);
     if (row.type) {
       const ids = resolveType_(row.type, types); const t = normT_(row.type);
-      const same = (l) => (ids.length && l.typeId != null && ids.includes(l.typeId)) || (ids.length && l.type && resolveType_(l.type, types).some((x) => ids.includes(x))) || (l.type && (normT_(l.type) === t || normT_(l.type).includes(t) || t.includes(normT_(l.type))));
+      const same = (l) => (ids.length && l.typeId != null && ids.includes(l.typeId)) || (ids.length && l.type && resolveType_(l.type, types).some((x) => ids.includes(x))) || (ids.length && l.typeEn && resolveType_(l.typeEn, types).some((x) => ids.includes(x))) || (l.typeEn && normT_(l.typeEn) === t) || (l.type && (normT_(l.type) === t || normT_(l.type).includes(t) || t.includes(normT_(l.type))));
       const byType = c.filter(same);
       if (byType.length || c.every((l) => l.type || l.typeId != null)) c = byType;
     }
@@ -36587,7 +36797,7 @@ function jboRedact_(msg) {
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'Bulk Cancel Leave Requests', open: openTool_, version: SECTION_VERSION };
-    W.__jisrLeaveCancel = { date_, leaveItem_, matchLeaves_, typesFrom_, resolveType_ };
+    W.__jisrLeaveCancel = { date_, leaveItem_, matchLeaves_, typesFrom_, resolveType_, history_, leaveTypes_, cancel_, request_, jisrMsg_, pool_, isGone_, pick_, normT_ };
     if (g._rerender) g._rerender();
   }
   register_();
@@ -36595,7 +36805,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.78.1
+// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.83.0
 // ###########################################################################
 
 /*
@@ -37215,7 +37425,7 @@ function jboRedact_(msg) {
 })();
 
 // ###########################################################################
-// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.78.1
+// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.83.0
 // ###########################################################################
 
 /**
@@ -37811,7 +38021,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.78.1
+// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.83.0
 // ###########################################################################
 
 /**
@@ -37885,7 +38095,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.78.1
+// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.83.0
 // ###########################################################################
 
 /**
@@ -37898,7 +38108,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.78.1
+// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.83.0
 // ###########################################################################
 
 /*
@@ -38634,7 +38844,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 36 — Shifts & Day Offs: assign day offs / a shift, or clear — any range up to one year, week by week  v4.78.1
+// ##### SECTION 36 — Shifts & Day Offs: assign day offs / a shift, or clear — any range up to one year, week by week  v4.83.0
 // ###########################################################################
 
 /*
@@ -39069,7 +39279,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 37 — Family Members (bulk add; passport numbers with letters; nationalities by name)  v4.78.1
+// ##### SECTION 37 — Family Members (bulk add; passport numbers with letters; nationalities by name)  v4.83.0
 // ###########################################################################
 
 /*
@@ -39542,7 +39752,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 38 — Letter Templates: open, edit and save Jisr's letters directly (simple editor + variables)  v4.78.1
+// ##### SECTION 38 — Letter Templates: open, edit and save Jisr's letters directly (simple editor + variables)  v4.83.0
 // ###########################################################################
 
 /*
@@ -39565,7 +39775,7 @@ function jboRedact_(msg) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.78.1';
+  const SECTION_VERSION = '4.83.0';
   const MODULE_ID = 'letter-templates';
   function gmSet_(k, v) { try { GM_setValue('jisrBulkOps_' + k, v); } catch (e) { /* ignore */ } }
   const W = unsafeWindow;
@@ -41867,7 +42077,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.78.1
+// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.83.0
 // ###########################################################################
 
 /*
@@ -42365,7 +42575,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.78.1
+// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.83.0
 // ###########################################################################
 
 /*
@@ -44093,7 +44303,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.78.1
+// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.83.0
 // ###########################################################################
 
 /*
@@ -44401,7 +44611,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 40 — Probation Periods (bulk create / adjust / delete)  v4.78.1
+// ##### SECTION 40 — Probation Periods (bulk create / adjust / delete)  v4.83.0
 // ###########################################################################
 
 /*
@@ -44424,7 +44634,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.78.1';
+  const SECTION_VERSION = '4.83.0';
   const MODULE_ID = 'probation-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -44798,7 +45008,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 41 — Bulk Employee Photos (profile picture for many employees in one run)  v4.78.1
+// ##### SECTION 41 — Bulk Employee Photos (profile picture for many employees in one run)  v4.83.0
 // ###########################################################################
 
 /*
@@ -44810,6 +45020,13 @@ async function shrinkPic_(data) {
  *   -> 200 application/json {"success":true,"data":{"employee":{"id":…,"code":…,"header_avatar":"<signed S3 link>",…}}}
  * One request, the picture goes inside it as a base64 data URL: there is no separate upload step. Success = header_avatar is filled.
  * The id in the path is Jisr's internal number (not the employee code, e.g. UV49): the employee list gives both, the code is matched here.
+ * v4.82 (user test 2026-11-10): Jisr can answer 200 with the picture under data.employee.pending_changes.avatar (+ avatar_file_name, changeset {})
+ * and NO live header_avatar: the photo is then waiting for approval in Jisr. The tool reports that as "Waiting for approval" (never as Uploaded).
+ * v4.82.1 (user test): Jisr can fill pending_changes AND apply the picture a moment later, so the answer to the PUT is not the verdict: the tool
+ * looks at the profile again (header_avatar) and only calls a row "Waiting for approval" when the live photo has not changed after the checks.
+ * Matching (v4.82): code, then name, then Iqama / national ID; anything unmatched can be picked by hand from a searchable list.
+ * v4.83: each photo reports ONE outcome stage to the Ops dashboard after the read-back (ok, waiting for approval, OK but not applied, no permission, no answer,
+ * skipped, no match …); the generic request log skips this tool because HTTP 200 is not the outcome here.
  * NOT captured: the answer of GET /employees/{id}?profile_tab=profile_header_info (assumed to carry header_avatar). The tool looks for
  * "header_avatar" wherever it sits in the answer; when it is not there the row says so and is skipped unless Overwrite is on.
  * Safety: Dry run is on by default and only reads. A live run asks first (count + account). One request at a time (delay below, default
@@ -44819,7 +45036,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.78.1';
+  const SECTION_VERSION = '4.83.0';
   const MODULE_ID = 'employee-photos';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -44828,7 +45045,7 @@ async function shrinkPic_(data) {
   const MAX_FILES = 500;
   const BIG_BYTES = 5 * 1024 * 1024;
   const OK_EXT = ['jpg', 'jpeg', 'png'];
-  const cfg = { backoffMs: 1000, retries: 3 };
+  const cfg = { backoffMs: 1000, retries: 3, verifyWaits: [700, 1500, 3000] };   // verifyWaits: after a send, look at the profile again up to this many times (ms between looks)
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
   function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
@@ -44886,6 +45103,22 @@ async function shrinkPic_(data) {
     return true;
   }
 
+  /** The picture Jisr is holding for approval (data.employee.pending_changes.avatar), or '' when there is none. */
+  function pendingPhotoOf_(json) {
+    const f = deepFind_(json, 'pending_changes');
+    if (!f.found || !f.value || typeof f.value !== 'object') return '';
+    const a = f.value.avatar;
+    return a ? (typeof a === 'string' ? a : 'pending') : '';
+  }
+  /** Names compared without case, punctuation, Arabic diacritics / alef and ya variants, or extra spaces. */
+  function normName_(s) {
+    return String(s == null ? '' : s).normalize('NFKD').replace(/[\u064B-\u065F\u0670\u0640\u0300-\u036f]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه')
+      .toLowerCase().replace(/[^a-z0-9\u0600-\u06FF]+/g, ' ').trim().replace(/\s+/g, ' ');
+  }
+  const tokKey_ = (s) => { const t = normName_(s).split(' ').filter(Boolean); return t.length >= 2 ? t.sort().join(' ') : ''; };
+  const nidKey_ = (s) => String(s == null ? '' : s).replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+  const BY_LABEL = () => ({ code: T('code', 'الرمز'), name: T('name', 'الاسم'), iqama: T('Iqama', 'الإقامة'), manual: T('picked by hand', 'اختيار يدوي') });
+
   /** CSV text -> array of rows (quotes, doubled quotes, BOM, comma / semicolon / tab). Plain strings only: "00123" stays "00123". */
   function parseCsv_(text) {
     const s = String(text == null ? '' : text).replace(/^﻿/, '');
@@ -44904,14 +45137,17 @@ async function shrinkPic_(data) {
     return rows.filter((r) => r.some((x) => String(x).trim() !== ''));
   }
   const normH_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
-  /** CSV rows -> { pairs: [{ code, file, line }] } or { error } */
+  /** CSV rows -> { pairs: [{ code, name, iqama, file, line }] } or { error }. Needs a file column and at least one of code / name / Iqama. */
   function csvPairs_(rows) {
     const h = (rows[0] || []).map(normH_);
     const ci = h.findIndex((x) => /^(employee code|code|employee id|emp code|employee number|الرقم الوظيفي|رمز الموظف|كود الموظف)$/.test(x));
+    const ni = h.findIndex((x) => /^(employee name|name|full name|employee full name|الاسم|اسم الموظف)$/.test(x));
+    const qi = h.findIndex((x) => /^(iqama|iqama number|iqama national id|national id|national id number|id iqama number|id number|iqama id|رقم الإقامة|رقم الهوية|الهوية|الإقامة)$/.test(x));
     const fi = h.findIndex((x) => /^(filename|file name|file|image|image name|photo|photo name|اسم الملف|الملف)$/.test(x));
-    if (ci < 0 || fi < 0) return { error: T('The CSV needs two columns: employee_code and filename (first row = the column names).', 'ملف CSV يحتاج عمودين: employee_code و filename (الصف الأول = أسماء الأعمدة).') };
+    if (fi < 0 || (ci < 0 && ni < 0 && qi < 0)) return { error: T('The CSV needs a filename column and at least one of employee_code, employee_name or iqama (first row = the column names).', 'ملف CSV يحتاج عمود filename وواحدًا على الأقل من employee_code أو employee_name أو iqama (الصف الأول = أسماء الأعمدة).') };
+    const cell = (r, i) => (i < 0 ? '' : String(r[i] == null ? '' : r[i]).trim());
     const pairs = [];
-    rows.slice(1).forEach((r, k) => { const code = String(r[ci] == null ? '' : r[ci]).trim(), file = String(r[fi] == null ? '' : r[fi]).trim(); if (code || file) pairs.push({ code, file, line: k + 2 }); });
+    rows.slice(1).forEach((r, k) => { const code = cell(r, ci), name = cell(r, ni), iqama = cell(r, qi), file = cell(r, fi); if (code || name || iqama || file) pairs.push({ code, name, iqama, file, line: k + 2 }); });
     return { pairs };
   }
 
@@ -44923,8 +45159,10 @@ async function shrinkPic_(data) {
    * A row is 'matched' only when the code is one employee's code and no other file points at the same employee. Nothing is guessed.
    */
   function plan_(files, pairs, emps) {
-    const byCode = new Map();
-    (emps || []).forEach((e) => { const k = codeKey_(e.code); if (!k) return; byCode.set(k, byCode.has(k) ? null : e); });
+    const idx = (keyFn) => { const m = new Map(); (emps || []).forEach((e) => { const k = keyFn(e); if (!k) return; if (!m.has(k)) m.set(k, []); m.get(k).push(e); }); return m; };
+    const byCode = idx((e) => codeKey_(e.code)), byNameK = idx((e) => normName_(e.name)), byTok = idx((e) => tokKey_(e.name)), byNid = idx((e) => nidKey_(e.nid));
+    // undefined = nobody, null = more than one, otherwise the employee
+    const one = (m, k) => { if (!k) return undefined; const v = m.get(k); return !v ? undefined : v.length === 1 ? v[0] : null; };
     const byName = new Map();
     files.forEach((f, i) => { const k = baseName_(f.name).toLowerCase(); if (!byName.has(k)) byName.set(k, []); byName.get(k).push(i); });
     const over = new Map(); const csvDup = new Set(); const missing = [];
@@ -44934,24 +45172,44 @@ async function shrinkPic_(data) {
       if (!idxs.length) { missing.push({ pair: p, why: T('No file with this name was uploaded', 'لم يُرفع ملف بهذا الاسم') }); return; }
       idxs.forEach((i) => { if (over.has(i)) csvDup.add(i); else over.set(i, p); });
     });
+    /** code first, then name, then Iqama / national ID; the first that points at exactly one employee wins. Nothing is guessed. */
+    function resolve_(vals) {
+      const amb = [];
+      const steps = [
+        ['code', vals.code, (v) => one(byCode, codeKey_(v))],
+        ['name', vals.name, (v) => { const a = one(byNameK, normName_(v)); return a !== undefined ? a : one(byTok, tokKey_(v)); }],
+        ['iqama', vals.iqama, (v) => (nidKey_(v).length >= 6 ? one(byNid, nidKey_(v)) : undefined)],
+      ];
+      for (const [by, v, fn] of steps) {
+        const t = String(v == null ? '' : v).trim(); if (!t) continue;
+        const e = fn(t);
+        if (e) return { emp: e, by };
+        if (e === null) amb.push([by, t]);
+      }
+      return { emp: null, amb };
+    }
     const items = files.map((f, i) => {
-      const r = { no: i + 1, file: baseName_(f.name), size: f.size || 0, idx: i, ext: extOf_(f.name), kind: f.kind || '', source: 'name', codeRaw: '', code: '', emp: null, status: 'matched', msg: '', big: (f.size || 0) > BIG_BYTES };
+      const r = { no: i + 1, file: baseName_(f.name), size: f.size || 0, idx: i, ext: extOf_(f.name), kind: f.kind || '', source: 'name', codeRaw: '', code: '', emp: null, by: '', status: 'matched', msg: '', big: (f.size || 0) > BIG_BYTES };
       const ov = over.get(i);
-      if (ov) { r.source = 'csv'; r.codeRaw = ov.code; } else r.codeRaw = stem_(f.name);
+      const stem = stem_(f.name);
+      let vals;
+      if (ov && (ov.code || ov.name || ov.iqama)) { r.source = 'csv'; vals = { code: ov.code, name: ov.name, iqama: ov.iqama }; r.codeRaw = ov.code || ov.name || ov.iqama; }
+      else { if (ov) r.source = 'csv'; vals = { code: stem, name: stem, iqama: stem }; r.codeRaw = stem; }
       r.code = String(r.codeRaw).trim();
       if (!OK_EXT.includes(r.ext)) { r.status = 'bad'; r.msg = T('.', '.') + (r.ext || '?') + T(' is not allowed (JPG, JPEG or PNG only)', ' غير مسموح (JPG أو JPEG أو PNG فقط)'); return r; }
       if (r.kind !== 'image/jpeg' && r.kind !== 'image/png') { r.status = 'bad'; r.msg = T('the content is not a JPEG or PNG picture', 'محتوى الملف ليس صورة JPEG أو PNG'); return r; }
       if (csvDup.has(i)) { r.status = 'dup'; r.msg = T('listed more than once in the CSV', 'مذكور أكثر من مرة في ملف CSV'); return r; }
-      if (!r.code) { r.status = 'notfound'; r.msg = T('no employee code for this file', 'لا يوجد رمز موظف لهذا الملف'); return r; }
-      const e = byCode.get(codeKey_(r.code));
-      if (e === undefined) { r.status = 'notfound'; r.msg = T('no employee with code "', 'لا يوجد موظف برمز "') + r.code + '"'; return r; }
-      if (e === null) { r.status = 'dup'; r.msg = T('more than one employee has the code "', 'أكثر من موظف لهم الرمز "') + r.code + '"'; return r; }
-      r.emp = e; return r;
+      if (!r.code) { r.status = 'notfound'; r.msg = T('no employee code, name or Iqama for this file: pick an employee from the list', 'لا يوجد رمز أو اسم أو إقامة لهذا الملف: اختر موظفًا من القائمة'); return r; }
+      const res = resolve_(vals);
+      if (res.emp) { r.emp = res.emp; r.by = res.by; return r; }
+      if (res.amb.length) { const [by, t] = res.amb[0]; r.status = 'dup'; r.msg = T('more than one employee has the ', 'أكثر من موظف لهم ال') + (by === 'code' ? T('code "', 'رمز "') : by === 'name' ? T('name "', 'اسم "') : T('Iqama "', 'إقامة "')) + t + '"' + T(': pick the right one from the list', ': اختر الموظف الصحيح من القائمة'); return r; }
+      r.status = 'notfound'; r.msg = T('no employee with code "', 'لا يوجد موظف برمز "') + r.code + T('" (also tried the name and the Iqama number): pick an employee from the list', '" (جُرّب الاسم ورقم الإقامة أيضًا): اختر موظفًا من القائمة');
+      return r;
     });
     const seen = new Map();
     items.forEach((r) => { if (r.status === 'matched') { const k = String(r.emp.id); if (!seen.has(k)) seen.set(k, []); seen.get(k).push(r); } });
-    seen.forEach((rows) => { if (rows.length > 1) rows.forEach((r) => { r.status = 'dup'; r.msg = T('more than one file for ', 'أكثر من ملف للموظف ') + r.code + ' (' + rows.map((x) => x.file).join(', ') + ')'; r.emp = null; }); });
-    missing.forEach((m) => items.push({ no: items.length + 1, file: m.pair.file || '—', size: 0, idx: -1, ext: '', kind: '', source: 'csv', codeRaw: m.pair.code, code: m.pair.code, emp: null, status: 'nofile', msg: m.why, big: false }));
+    seen.forEach((rows) => { if (rows.length > 1) rows.forEach((r) => { r.status = 'dup'; r.msg = T('more than one file for ', 'أكثر من ملف للموظف ') + r.code + ' (' + rows.map((x) => x.file).join(', ') + ')' + T(': pick the right employee for each file', ': اختر الموظف الصحيح لكل ملف'); r.emp = null; r.by = ''; }); });
+    missing.forEach((m) => items.push({ no: items.length + 1, file: m.pair.file || '—', size: 0, idx: -1, ext: '', kind: '', source: 'csv', codeRaw: m.pair.code, code: m.pair.code || m.pair.name || m.pair.iqama || '', emp: null, by: '', status: 'nofile', msg: m.why, big: false }));
     return items;
   }
 
@@ -44959,17 +45217,18 @@ async function shrinkPic_(data) {
   function resultOf_(r) {
     if (r.status !== 'matched') return 'Skipped';
     if (r.state === 'success') return 'Success';
+    if (r.state === 'pending') return 'Waiting for approval';
     if (r.state === 'failed') return 'Failed';
     if (r.state === 'skip') return 'Skipped';
     if (r.state === 'ready') return 'Ready (dry run)';
     return 'Pending';
   }
-  function errorOf_(r) { return redact_(r.status !== 'matched' ? (STATUS_LABEL()[r.status] || '') + ': ' + r.msg : r.state === 'failed' || r.state === 'skip' ? r.msg : ''); }
+  function errorOf_(r) { return redact_(r.status !== 'matched' ? (STATUS_LABEL()[r.status] || '') + ': ' + r.msg : r.state === 'failed' || r.state === 'skip' || r.state === 'pending' ? r.msg : ''); }
   /** One row per file: code, id, name, file, HTTP status, result, error. */
   function logCsv_(items) {
-    const head = ['Employee code', 'Employee ID', 'Employee name', 'File', 'HTTP status', 'Result', 'Error'];
+    const head = ['Employee code', 'Employee ID', 'Employee name', 'File', 'HTTP status', 'Result', 'Error', 'Matched by'];
     const lines = [head.map(csvCell_).join(',')];
-    items.forEach((r) => lines.push([r.code, r.emp ? r.emp.id : '', r.emp ? r.emp.name || '' : '', r.file, r.http || '', resultOf_(r), errorOf_(r)].map(csvCell_).join(',')));
+    items.forEach((r) => lines.push([r.code, r.emp ? r.emp.id : '', r.emp ? r.emp.name || '' : '', r.file, r.http || '', resultOf_(r), errorOf_(r), r.emp ? r.by || '' : ''].map(csvCell_).join(',')));
     return lines.join('\r\n');
   }
 
@@ -45010,7 +45269,7 @@ async function shrinkPic_(data) {
       if (res.status === 401) { const err = new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول.')); err.auth = true; throw err; }
       if ((res.status === 429 || res.status >= 500) && a < cfg.retries) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_(isNaN(ra) ? cfg.backoffMs * Math.pow(2, a) : ra * 1000); continue; }
       const json = await res.json().catch(() => null);
-      return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json, tries: a + 1 };
     }
     throw new Error('Request failed after retries');
   }
@@ -45054,7 +45313,7 @@ async function shrinkPic_(data) {
 
   function openTool_() {
     injectCss_();
-    const S = { files: [], pairs: null, csvName: '', items: [], emps: null, dry: true, overwrite: false, delay: Math.min(5000, Math.max(100, Number(gmGet_('photosDelayMs', 300)) || 300)), busy: '', note: '', noteErr: false, ran: false, running: false, stop: false };
+    const S = { files: [], pairs: null, csvName: '', items: [], emps: null, dry: true, overwrite: false, delay: Math.min(5000, Math.max(100, Number(gmGet_('photosDelayMs', 300)) || 300)), busy: '', note: '', noteErr: false, ran: false, running: false, stop: false, pickRow: 0, pickQ: '' };
     const body = el('div', { class: 'jbo-modal-body' });
     const foot = el('div', { class: 'jbo-modal-foot' });
     const titleEl = el('div', { class: 'jbo-modal-title' });
@@ -45088,27 +45347,72 @@ async function shrinkPic_(data) {
       titleEl.textContent = T('Employee photos: ', 'صور الموظفين: ') + slug_();
       body.innerHTML = ''; foot.innerHTML = '';
       body.appendChild(el('div', { class: 'jph-steps' }, [
-        el('div', { class: 'jph-step' }, [el('b', { text: T('1. Photos', '1. الصور') }), picB, el('div', { class: 'jbo-muted jph-hint', text: T('A ZIP, or several pictures at once. Name each file with the employee code (UV49.jpg, 1230.png). JPG, JPEG or PNG only; a file over 5 MB gets a warning.', 'ملف ZIP أو عدة صور معًا. سمِّ كل ملف برمز الموظف (UV49.jpg ،1230.png). صيغ JPG أو JPEG أو PNG فقط؛ الملف فوق 5 ميغابايت يظهر بتحذير.') }), picInfo, picIn]),
-        el('div', { class: 'jph-step' }, [el('b', { text: T('2. Names file (optional)', '2. ملف الأسماء (اختياري)') }), csvB, el('div', { class: 'jbo-muted jph-hint', text: T('Only for files not named by code. Two columns: employee_code,filename. The CSV wins over the file name.', 'فقط للملفات غير المسمّاة برمز الموظف. عمودان: employee_code,filename. ملف CSV له الأولوية على اسم الملف.') }), csvInfo, csvIn]),
+        el('div', { class: 'jph-step' }, [el('b', { text: T('1. Photos', '1. الصور') }), picB, el('div', { class: 'jbo-muted jph-hint', text: T('A ZIP, or several pictures at once. Name each file with the employee code (UV49.jpg, 1230.png), or the full name, or the Iqama / ID number. JPG, JPEG or PNG only; a file over 5 MB gets a warning.', 'ملف ZIP أو عدة صور معًا. سمِّ كل ملف برمز الموظف (UV49.jpg ،1230.png) أو الاسم الكامل أو رقم الإقامة/الهوية. صيغ JPG أو JPEG أو PNG فقط؛ الملف فوق 5 ميغابايت يظهر بتحذير.') }), picInfo, picIn]),
+        el('div', { class: 'jph-step' }, [el('b', { text: T('2. Names file (optional)', '2. ملف الأسماء (اختياري)') }), csvB, el('div', { class: 'jbo-muted jph-hint', text: T('Only for files not named by code. Columns: filename plus employee_code and/or employee_name and/or iqama. The CSV wins over the file name.', 'فقط للملفات غير المسمّاة برمز الموظف. الأعمدة: filename مع employee_code و/أو employee_name و/أو iqama. ملف CSV له الأولوية على اسم الملف.') }), csvInfo, csvIn]),
         el('div', { class: 'jph-step' }, [el('b', { text: T('3. Check, then upload', '3. الفحص ثم الرفع') }),
           el('label', {}, [dryCb, T('Dry run (matching only, nothing uploaded)', 'تشغيل تجريبي (مطابقة فقط، بلا رفع)')]),
           el('label', {}, [owCb, T('Overwrite existing photos', 'استبدال الصور الموجودة')]),
           el('label', {}, [T('Delay between requests (ms)', 'التأخير بين الطلبات (مللي ثانية)'), delayIn])]),
       ]));
-      body.appendChild(el('p', { class: 'jph-rule', text: T('Files are matched to employees by employee code (capital letters do not matter). A file with no match, a duplicate or a wrong type is skipped and listed; nothing is guessed. Photos already in Jisr stay unless Overwrite is on.', 'تتم مطابقة الملفات مع الموظفين برمز الموظف (حالة الأحرف لا تهم). الملف بلا مطابقة أو المكرر أو ذو النوع الخاطئ يُتخطّى ويُذكر؛ لا يتم التخمين. الصور الموجودة في جسر تبقى ما لم يُفعَّل الاستبدال.') }));
+      body.appendChild(el('p', { class: 'jph-rule', text: T('Each file is matched to an employee by employee code first, then by full name, then by Iqama / ID number (capital letters and punctuation do not matter; the first one that points at exactly one employee wins). A file with no match is flagged: choose the employee yourself with Select / Change on its row (search by code, name or Iqama). You can also change a match you do not agree with. Nothing is guessed. A photo that Jisr keeps for approval is shown as Waiting for approval. Photos already in Jisr stay unless Overwrite is on.', 'تتم مطابقة كل ملف مع موظف أولًا برمز الموظف، ثم بالاسم الكامل، ثم برقم الإقامة/الهوية (حالة الأحرف وعلامات الترقيم لا تهم؛ يُعتمد أول مطابقة تشير إلى موظف واحد فقط). الملف بلا مطابقة يُعلَّم: اختر الموظف بنفسك بزر اختيار/تغيير في صفه (ابحث بالرمز أو الاسم أو الإقامة). ويمكنك أيضًا تغيير مطابقة لا توافق عليها. لا يتم التخمين. الصورة التي يحتفظ بها جسر للموافقة تظهر كـ بانتظار الموافقة. الصور الموجودة في جسر تبقى ما لم يُفعَّل الاستبدال.') }));
       body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap);
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, [logB, clearB]));
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [stopB, retryB, runB]));
       paint_();
     }
-    const pending_ = (r) => r.status === 'matched' && r.state !== 'success';
+    const todo_ = (r) => r.status === 'matched' && r.state !== 'success' && r.state !== 'pending';
     function resultText_(r) {
       if (r.status !== 'matched') return { cls: 'jbo-status-pending', txt: T('Skipped', 'تم التخطي') + ': ' + r.msg };
       if (r.state === 'success') return { cls: 'jbo-status-ok', txt: '✓ ' + T('Uploaded', 'تم الرفع') + (r.http ? ' (HTTP ' + r.http + ')' : '') };
+      if (r.state === 'pending') return { cls: 'jbo-status-pending', txt: '⏳ ' + T('Waiting for approval in Jisr', 'بانتظار الموافقة في جسر') + (r.http ? ' (HTTP ' + r.http + ')' : '') + '\n' + r.msg };
       if (r.state === 'failed') return { cls: 'jbo-status-err', txt: '✗ ' + r.msg + (r.http ? ' (HTTP ' + r.http + ')' : '') };
       if (r.state === 'skip') return { cls: 'jbo-status-pending', txt: T('Skipped', 'تم التخطي') + ': ' + r.msg };
       if (r.state === 'ready') return { cls: 'jbo-status-pending', txt: T('would upload', 'سيتم رفعها') + (r.msg ? ' · ' + r.msg : '') };
-      return { cls: 'jbo-status-pending', txt: r.msg || (r.big ? '⚠ ' + T('over 5 MB', 'أكبر من 5 ميغابايت') : '—') };
+      return { cls: 'jbo-status-pending', txt: [r.warn ? '⚠ ' + r.warn : '', r.msg || (r.big ? '⚠ ' + T('over 5 MB', 'أكبر من 5 ميغابايت') : '')].filter(Boolean).join('\n') || '—' };
+    }
+    // ---- v4.82: choose the employee by hand (search by code, name or Iqama); works on any row except a wrong file type
+    const canPick_ = (r) => (r.status === 'matched' || r.status === 'notfound' || r.status === 'dup') && r.idx >= 0 && r.state !== 'success' && r.state !== 'pending';
+    function pickBtn_(r) {
+      const b = el('button', { type: 'button', class: 'jbo-btn jph-selbtn', 'data-pick': String(r.no), text: r.status === 'matched' ? T('Change', 'تغيير') : T('Select…', 'اختيار…') });
+      b.disabled = !!S.busy || S.running;
+      b.addEventListener('click', () => { S.pickRow = S.pickRow === r.no ? 0 : r.no; S.pickQ = ''; paint_(); });
+      return b;
+    }
+    function setEmp_(r, e) {
+      r.emp = e; r.by = 'manual'; r.status = 'matched'; r.msg = ''; r.state = ''; r.http = ''; r.warn = '';
+      const other = S.items.filter((x) => x !== r && x.status === 'matched' && x.emp && String(x.emp.id) === String(e.id));
+      if (other.length) r.warn = T('also used by ', 'مستخدم أيضًا في ') + other.map((x) => x.file).join(', ') + T(' (the last one sent wins)', ' (يُعتمد الأخير)');
+      S.pickRow = 0; S.ran = false;
+      S.note = T('Employee chosen for ', 'تم اختيار الموظف للملف ') + r.file + ': ' + (e.code || '') + ' · ' + (e.name || '') + '.'; S.noteErr = false;
+      paint_();
+    }
+    function skipFile_(r) { r.emp = null; r.by = ''; r.status = 'notfound'; r.msg = T('skipped by you', 'تم تخطيه بواسطتك'); r.state = ''; r.warn = ''; S.pickRow = 0; paint_(); }
+    function pickerBox_(r) {
+      const q = el('input', { type: 'text', class: 'jbo-input jph-search', placeholder: T('Search by code, name or Iqama…', 'ابحث بالرمز أو الاسم أو الإقامة…'), value: S.pickQ, style: { width: '100%', maxWidth: '420px' } });
+      const list = el('div', { class: 'jph-plist', style: { maxHeight: '190px', overflow: 'auto', marginTop: '6px', border: '1px solid #e8eaed', borderRadius: '8px' } });
+      const fill = () => {
+        S.pickQ = q.value; list.innerHTML = '';
+        const toks = normName_(q.value).split(' ').filter(Boolean), raw = nidKey_(q.value), rc = codeKey_(q.value);
+        const hit = (S.emps || []).filter((e) => {
+          if (!toks.length && !raw) return true;
+          const nm = normName_(e.name);
+          return (toks.length && toks.every((t) => nm.includes(t))) || (rc && codeKey_(e.code).includes(rc)) || (raw.length >= 3 && nidKey_(e.nid).includes(raw));
+        });
+        hit.slice(0, 40).forEach((e) => {
+          const b = el('button', { type: 'button', class: 'jph-opt', 'data-emp': String(e.id), style: { display: 'flex', gap: '10px', width: '100%', textAlign: 'start', padding: '5px 10px', border: '0', borderBottom: '1px solid #f1f3f4', background: 'transparent', cursor: 'pointer', font: 'inherit', color: 'inherit' } },
+            [el('b', { text: e.code || '—', style: { minWidth: '70px' } }), el('span', { text: e.name || '', style: { flex: '1' } }), el('span', { class: 'jbo-muted', text: e.nid || '' })]);
+          b.addEventListener('click', () => setEmp_(r, e));
+          list.appendChild(b);
+        });
+        if (!hit.length) list.appendChild(el('div', { class: 'jbo-muted', style: { padding: '8px 10px' }, text: T('Nobody matches. Try part of the name or the Iqama number.', 'لا أحد يطابق. جرّب جزءًا من الاسم أو رقم الإقامة.') }));
+        else if (hit.length > 40) list.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px 10px' }, text: T('Showing 40 of ', 'عرض 40 من ') + hit.length + T(': type more to narrow it down.', ': اكتب المزيد لتضييق النتائج.') }));
+      };
+      q.addEventListener('input', fill);
+      const skipB = el('button', { type: 'button', class: 'jbo-btn jph-skipfile', text: T('Skip this file', 'تخطي هذا الملف') }); skipB.addEventListener('click', () => skipFile_(r));
+      const closeB = el('button', { type: 'button', class: 'jbo-btn', text: T('Close', 'إغلاق') }); closeB.addEventListener('click', () => { S.pickRow = 0; paint_(); });
+      const box = el('div', { class: 'jph-picker', style: { padding: '6px 2px 10px' } }, [el('div', { class: 'jbo-muted', style: { marginBottom: '4px' }, text: T('Which employee is ', 'من هو الموظف الخاص بالملف ') + r.file + '?' }), el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } }, [q, skipB, closeB]), list]);
+      fill(); setTimeout(() => { try { q.focus(); } catch (e) { /* ignore */ } }, 0);
+      return box;
     }
     function paint_() {
       statusEl.textContent = S.busy || S.note;
@@ -45120,25 +45424,27 @@ async function shrinkPic_(data) {
       if (S.items.length) {
         const m = cnt((r) => r.status === 'matched');
         const chips = [[S.items.length, T('files', 'ملف')], [m, T('matched', 'مطابق')], [cnt((r) => r.status === 'notfound' || r.status === 'nofile'), T('not found', 'غير موجود')], [cnt((r) => r.status === 'dup'), T('duplicate', 'مكرر')], [cnt((r) => r.status === 'bad'), T('bad type', 'نوع خاطئ')], [cnt((r) => r.big), T('over 5 MB', 'أكبر من 5 ميغابايت')]];
-        if (S.ran) chips.push([cnt((r) => r.state === 'success'), T('done', 'تم')], [cnt((r) => r.state === 'failed'), T('failed', 'فشل')], [cnt((r) => r.status !== 'matched' || r.state === 'skip'), T('skipped', 'تم التخطي')], [cnt((r) => r.status === 'matched' && (r.state === '' || r.state === 'ready')), T('remaining', 'متبقي')]);
+        if (S.ran) chips.push([cnt((r) => r.state === 'success'), T('done', 'تم')], [cnt((r) => r.state === 'pending'), T('waiting approval', 'بانتظار الموافقة')], [cnt((r) => r.state === 'failed'), T('failed', 'فشل')], [cnt((r) => r.status !== 'matched' || r.state === 'skip'), T('skipped', 'تم التخطي')], [cnt((r) => r.status === 'matched' && (r.state === '' || r.state === 'ready')), T('remaining', 'متبقي')]);
         chips.filter(([v], i) => i < 2 || v || (S.ran && i >= 6)).forEach(([v, l]) => statsEl.appendChild(el('span', { 'data-chip': l }, [el('b', { text: String(v) }), ' ' + l])));
       }
       wrap.innerHTML = '';
       if (S.items.length) {
         const t = el('table');
-        t.appendChild(el('tr', {}, ['#', T('File', 'الملف'), T('Code', 'الرمز'), T('Employee ID', 'رقم الموظف'), T('Name in Jisr', 'الاسم في جسر'), T('Status', 'الحالة'), T('Result', 'النتيجة')].map((h) => el('th', { text: h }))));
+        t.appendChild(el('tr', {}, ['#', T('File', 'الملف'), T('Code', 'الرمز'), T('Employee ID', 'رقم الموظف'), T('Name in Jisr', 'الاسم في جسر'), T('Employee', 'الموظف'), T('Status', 'الحالة'), T('Result', 'النتيجة')].map((h) => el('th', { text: h }))));
         const lab = STATUS_LABEL();
         S.items.forEach((r) => {
           const rt = resultText_(r);
           t.appendChild(el('tr', { 'data-row': String(r.no) }, [el('td', { text: String(r.no) }),
             el('td', { text: r.file + (r.size ? ' (' + (r.size >= 1048576 ? (r.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(r.size / 1024)) + ' KB') + ')' : '') }),
             el('td', { text: r.code || '—' }), el('td', { text: r.emp ? String(r.emp.id) : '—' }), el('td', { text: r.emp ? r.emp.name || '' : '—' }),
-            el('td', { class: r.status === 'matched' ? 'jbo-status-ok' : 'jbo-status-err', 'data-st': r.status, text: lab[r.status] }),
+            el('td', {}, [canPick_(r) ? pickBtn_(r) : '']),
+            el('td', { class: r.status === 'matched' ? 'jbo-status-ok' : 'jbo-status-err', 'data-st': r.status, text: lab[r.status] + (r.status === 'matched' && r.by ? ' · ' + T('by ', 'بـ') + BY_LABEL()[r.by] : '') }),
             el('td', { class: rt.cls, style: { whiteSpace: 'pre-line' }, text: rt.txt })]));
+          if (S.pickRow === r.no && canPick_(r)) t.appendChild(el('tr', { class: 'jph-pickrow' }, [el('td', { colspan: '8' }, [pickerBox_(r)])]));
         });
         wrap.appendChild(t);
       }
-      const n = cnt(pending_);
+      const n = cnt(todo_);
       runB.textContent = S.dry ? T('Dry run: check ', 'تشغيل تجريبي: فحص ') + n + T(' photo(s)', ' صورة') : T('Upload ', 'رفع ') + n + T(' photo(s) to ', ' صورة إلى ') + slug_();
       runB.disabled = !n || !!S.busy || S.running;
       retryB.style.display = S.items.some((r) => r.state === 'failed') && !S.running ? '' : 'none';
@@ -45151,15 +45457,15 @@ async function shrinkPic_(data) {
     async function loadEmps_() {
       if (S.emps) return S.emps;
       S.busy = T('Loading employees…', 'جارٍ تحميل الموظفين…'); paint_();
-      S.emps = (await W.__jisrBulkOpsEmployees.get(false, (n) => { statusEl.textContent = T('Loading employees… ', 'جارٍ تحميل الموظفين… ') + n; })).map((e) => ({ id: e.id, code: e.code, name: e.name }));
+      S.emps = (await W.__jisrBulkOpsEmployees.get(false, (n) => { statusEl.textContent = T('Loading employees… ', 'جارٍ تحميل الموظفين… ') + n; })).map((e) => ({ id: e.id, code: e.code, name: e.name, nid: e.nid || '' }));
       return S.emps;
     }
     async function rematch_() {
-      S.ran = false;
+      S.ran = false; S.pickRow = 0;
       if (!S.files.length) { S.items = []; paint_(); return; }
       try {
         const emps = await loadEmps_();
-        S.items = plan_(S.files, S.pairs || [], emps).map((r) => Object.assign(r, { state: '', http: '' }));
+        S.items = plan_(S.files, S.pairs || [], emps).map((r) => Object.assign(r, { state: '', http: '', stage: '', why: '', reported: false }));
         const c = (st) => S.items.filter((r) => r.status === st).length;
         S.note = T('Preview ready: ', 'المعاينة جاهزة: ') + c('matched') + T(' matched, ', ' مطابق، ') + (S.items.length - c('matched')) + T(' will be skipped. Nothing was sent to Jisr.', ' سيتم تخطيها. لم يُرسل شيء إلى جسر.');
         S.noteErr = false;
@@ -45193,11 +45499,24 @@ async function shrinkPic_(data) {
         if (S.files.length) await rematch_(); else { S.note = r.pairs.length + T(' CSV line(s) read. Now choose the photos.', ' سطر CSV قُرئ. اختر الصور الآن.'); S.noteErr = false; paint_(); }
       } catch (e) { S.note = e.message; S.noteErr = true; paint_(); }
     });
-    clearB.addEventListener('click', () => { S.files = []; S.pairs = null; S.csvName = ''; S.items = []; S.ran = false; S.note = ''; S.noteErr = false; paint_(); });
+    clearB.addEventListener('click', () => { S.pickRow = 0; S.files = []; S.pairs = null; S.csvName = ''; S.items = []; S.ran = false; S.note = ''; S.noteErr = false; paint_(); });
     dryCb.addEventListener('change', () => { S.dry = dryCb.checked; paint_(); });
     owCb.addEventListener('change', () => { S.overwrite = owCb.checked; paint_(); });
     delayIn.addEventListener('change', () => { S.delay = Math.min(5000, Math.max(100, Number(delayIn.value) || 300)); delayIn.value = String(S.delay); gmSet_('photosDelayMs', S.delay); });
 
+    /** After a send: read the profile again (a few times, a little apart). 'live' = a new live photo, 'notlive' = the profile answers but shows none / the old one, 'unknown' = no header_avatar in the answers. */
+    async function verifyLive_(r, beforeKey) {
+      let known = false;
+      for (let i = 0; i <= cfg.verifyWaits.length; i++) {
+        if (i > 0) await sleep_(cfg.verifyWaits[i - 1]);
+        let res; try { res = await req_('GET', '/v2/employees/' + encodeURIComponent(r.emp.id), undefined, { profile_tab: 'profile_header_info' }, S.delay); } catch (e) { if (e.auth) throw e; continue; }
+        if (!res.ok) continue;
+        const h = deepFind_(res.json, 'header_avatar');
+        if (h.found) known = true;
+        if (h.found && h.value) { if (typeof h.value !== 'string') return 'live'; const k = h.value.split('?')[0]; if (!PLACEHOLDER_RE.test(k) && k !== beforeKey) return 'live'; }
+      }
+      return known ? 'notlive' : 'unknown';
+    }
     /** One employee: (optional) look for an existing photo, then send the picture (or, in a dry run, only say what would happen). */
     async function doRow_(r, live) {
       r.msg = ''; r.http = '';
@@ -45205,11 +45524,12 @@ async function shrinkPic_(data) {
         let has;
         try {
           const res = await req_('GET', '/v2/employees/' + encodeURIComponent(r.emp.id), undefined, { profile_tab: 'profile_header_info' }, S.delay);
-          if (!res.ok) { r.state = 'failed'; r.http = res.status; r.msg = T('Could not check the current photo: ', 'تعذّر فحص الصورة الحالية: ') + (jisrMsg_(res.json) || 'HTTP ' + res.status); return; }
+          if (!res.ok) { r.state = 'failed'; r.http = res.status; r.stage = jboStageOfRes_(res); r.why = 'could not check the current photo (HTTP ' + res.status + ')'; r.msg = T('Could not check the current photo: ', 'تعذّر فحص الصورة الحالية: ') + (jisrMsg_(res.json) || 'HTTP ' + res.status); return; }
           has = hasPhotoOf_(res.json);
-        } catch (e) { if (e.auth) throw e; r.state = 'failed'; r.msg = T('Could not check the current photo: ', 'تعذّر فحص الصورة الحالية: ') + redact_(e.message); return; }
-        if (has === true) { r.state = 'skip'; r.msg = T('already has a photo (turn on Overwrite to replace it)', 'لديه صورة بالفعل (فعّل الاستبدال لتغييرها)'); return; }
-        if (has === null) { r.state = 'skip'; r.msg = T('could not tell whether a photo exists (Jisr\'s answer has no header_avatar); turn on Overwrite to upload anyway', 'تعذّر معرفة وجود صورة (إجابة جسر بلا header_avatar)؛ فعّل الاستبدال للرفع على أي حال'); return; }
+          if (pendingPhotoOf_(res.json)) { r.state = 'skip'; r.why = 'a photo is already waiting for approval in Jisr'; r.msg = T('a photo is already waiting for approval in Jisr (turn on Overwrite to send this one anyway)', 'توجد صورة بانتظار الموافقة في جسر بالفعل (فعّل الاستبدال لإرسال هذه على أي حال)'); return; }
+        } catch (e) { if (e.auth) throw e; r.state = 'failed'; r.stage = 'network'; r.why = 'could not check the current photo: no answer from Jisr'; r.msg = T('Could not check the current photo: ', 'تعذّر فحص الصورة الحالية: ') + redact_(e.message); return; }
+        if (has === true) { r.state = 'skip'; r.why = 'already has a photo (Overwrite is off)'; r.msg = T('already has a photo (turn on Overwrite to replace it)', 'لديه صورة بالفعل (فعّل الاستبدال لتغييرها)'); return; }
+        if (has === null) { r.state = 'skip'; r.why = 'could not tell whether a photo exists'; r.msg = T('could not tell whether a photo exists (Jisr\'s answer has no header_avatar); turn on Overwrite to upload anyway', 'تعذّر معرفة وجود صورة (إجابة جسر بلا header_avatar)؛ فعّل الاستبدال للرفع على أي حال'); return; }
       }
       if (!live) { r.state = 'ready'; r.msg = S.overwrite ? T('replaces any existing photo', 'تستبدل أي صورة موجودة') : T('no photo yet', 'لا توجد صورة بعد'); return; }
       let url;
@@ -45217,48 +45537,81 @@ async function shrinkPic_(data) {
         const f = S.files[r.idx];
         const bytes = f.bytes || new Uint8Array(await f.blob.arrayBuffer());
         url = dataUrl_(bytes, sniff_(bytes) || f.kind);
-      } catch (e) { r.state = 'failed'; r.msg = T('Could not read the file: ', 'تعذّرت قراءة الملف: ') + redact_(e.message); return; }
+      } catch (e) { r.state = 'failed'; r.stage = 'failed'; r.why = 'could not read the picture file'; r.msg = T('Could not read the file: ', 'تعذّرت قراءة الملف: ') + redact_(e.message); return; }
       try {
         const res = await req_('PUT', '/v2/employees/' + encodeURIComponent(r.emp.id), { employee: { avatar: url, avatar_file_name: r.file } }, undefined, S.delay);
-        r.http = res.status;
+        r.http = res.status; r.tries = res.tries || 1;
         const f = res.ok ? deepFind_(res.json, 'header_avatar') : { found: false };
-        if (res.ok && f.found && f.value) { r.state = 'success'; r.msg = ''; }
-        else if (res.ok) { r.state = 'failed'; r.msg = T('Jisr answered OK but the photo is not set (header_avatar is empty)', 'أجاب جسر بنجاح لكن الصورة لم تُحفظ (header_avatar فارغ)'); }
-        else { r.state = 'failed'; r.msg = jisrMsg_(res.json) || 'HTTP ' + res.status; }
-      } catch (e) { if (e.auth) throw e; r.state = 'failed'; r.msg = redact_(e.message); }
+        // v4.82.1: the answer to the PUT is not the verdict. Jisr can fill pending_changes.avatar and apply the picture a moment later, so the
+        // profile is read again: a live header_avatar that is new (not the stock picture, not the old link) = Uploaded. Only when it still is not
+        // live after the checks does a returned pending change mean "Waiting for approval".
+        const pend = res.ok ? pendingPhotoOf_(res.json) : '';
+        const liveNow = res.ok && f.found && f.value && !pend;
+        if (liveNow) { r.state = 'success'; r.msg = ''; r.why = 'photo set (read back from the profile)'; }
+        else if (res.ok) {
+          const before = f.found && typeof f.value === 'string' && !PLACEHOLDER_RE.test(f.value.split('?')[0]) ? f.value.split('?')[0] : '';
+          const v = await verifyLive_(r, before);
+          if (v === 'live') { r.state = 'success'; r.msg = ''; r.why = 'photo set (confirmed on a second read of the profile)'; }
+          else if (pend) { r.state = 'pending'; r.why = v === 'unknown' ? 'Jisr returned a pending change; the profile check could not confirm a new photo' : 'Jisr kept the picture as a pending change (waiting for approval)'; r.msg = v === 'unknown' ? T('Jisr returned a pending change and the profile check could not confirm a new photo; open the profile to see.', 'أرجع جسر تغييرًا معلّقًا ولم يؤكد فحص الملف الشخصي صورة جديدة؛ افتح الملف الشخصي للتحقق.') : T('Jisr kept the picture as a pending change; it shows on the profile once it is approved in Jisr.', 'احتفظ جسر بالصورة كتغيير معلّق؛ تظهر في الملف الشخصي بعد الموافقة عليها في جسر.'); }
+          else { r.state = 'failed'; r.stage = v === 'unknown' ? 'unverified' : 'not_reflected'; r.why = v === 'unknown' ? 'Jisr answered OK but the profile does not expose the photo, so it could not be confirmed' : 'Jisr answered OK (HTTP ' + res.status + ') but the photo is not set: the profile shows no new photo and no pending change'; r.msg = T('Jisr answered OK but the photo is not set (header_avatar is empty and no pending change was returned)', 'أجاب جسر بنجاح لكن الصورة لم تُحفظ (header_avatar فارغ ولم يُرجع تغيير معلّق)'); }
+        }
+        else { r.state = 'failed'; r.stage = jboStageOfRes_(res); r.why = 'Jisr refused the photo (HTTP ' + res.status + ')'; r.msg = jisrMsg_(res.json) || 'HTTP ' + res.status; }
+      } catch (e) { if (e.auth) throw e; r.state = 'failed'; r.stage = 'network'; r.why = 'no answer from Jisr when sending the photo'; r.msg = redact_(e.message); }
     }
 
+    // ---- v4.83: one outcome row per photo for the Ops dashboard (stage decided here, after the read-back; the generic request log skips this tool)
+    function stageOf_(r) {
+      if (r.state === 'success') return (r.tries || 1) > 1 ? 'ok_retry' : 'ok';
+      if (r.state === 'pending') return 'pending';
+      if (r.state === 'skip') return 'skipped';
+      if (r.state === 'failed') return r.stage || 'failed';
+      return '';
+    }
+    function report_(r) {
+      const st = stageOf_(r); if (!st) return;
+      try { jboActReport_(MODULE_ID, r.emp ? r.emp.id : 'f' + r.no, st, (r.why || st) + (r.by === 'manual' ? ' (employee chosen by hand)' : r.by && r.by !== 'code' ? ' (matched by ' + r.by + ')' : '')); } catch (e) { /* ignore */ }
+    }
+    /** files that never went to Jisr because nobody matched them (or the type was wrong): reported once, after a live run, so "8 photos had no match" is visible */
+    function reportUnmatched_() {
+      S.items.filter((r) => r.status !== 'matched' && !r.reported).forEach((r) => {
+        r.reported = true;
+        try { jboActReport_(MODULE_ID, 'f' + r.no, r.status === 'bad' ? 'skipped' : 'no_match', r.status === 'bad' ? 'file skipped: not a JPG or PNG picture' : r.status === 'dup' ? 'file skipped: its name points at more than one employee' : 'no employee matched this file'); } catch (e) { /* ignore */ }
+      });
+    }
     async function run_(rows, live) {
       S.running = true; S.stop = false; S.ran = true; S.busy = ' '; S.note = ''; S.noteErr = false;
-      rows.forEach((r) => { if (r.state !== 'success') { r.state = ''; r.msg = ''; r.http = ''; } });
+      rows.forEach((r) => { if (r.state !== 'success') { r.state = ''; r.msg = ''; r.http = ''; r.stage = ''; r.why = ''; r.tries = 0; } });
       paint_();
       let authErr = '';
       for (const r of rows) {
         if (S.stop) break;
         try { await doRow_(r, live); }
-        catch (e) { r.state = 'failed'; r.msg = redact_(e.message); authErr = e.message; S.stop = true; }
+        catch (e) { r.state = 'failed'; r.stage = 'denied'; r.why = 'Jisr sign-in problem: the run was stopped'; r.msg = redact_(e.message); authErr = e.message; S.stop = true; }
+        if (live) report_(r);
         S.busy = (live ? T('Uploading… ', 'جارٍ الرفع… ') : T('Checking… ', 'جارٍ الفحص… ')) + rows.filter((x) => x.state).length + '/' + rows.length; paint_();
       }
-      rows.forEach((r) => { if (!r.state) r.msg = T('not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); });
+      rows.forEach((r) => { if (!r.state) { r.msg = T('not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); if (live) { try { jboActReport_(MODULE_ID, r.emp ? r.emp.id : 'f' + r.no, 'skipped', 'not sent: the run was stopped'); } catch (e) { /* ignore */ } } } });
       S.running = false; S.busy = '';
       const c = (st) => rows.filter((r) => r.state === st).length;
       S.note = live
-        ? c('success') + T(' of ', ' من ') + rows.length + T(' photo(s) uploaded, ', ' صورة رُفعت، ') + c('failed') + T(' failed, ', ' فشلت، ') + c('skip') + T(' skipped.', ' تم تخطيها.')
+        ? c('success') + T(' of ', ' من ') + rows.length + T(' photo(s) uploaded, ', ' صورة رُفعت، ') + (c('pending') ? c('pending') + T(' waiting for approval in Jisr, ', ' بانتظار الموافقة في جسر، ') : '') + c('failed') + T(' failed, ', ' فشلت، ') + c('skip') + T(' skipped.', ' تم تخطيها.')
         : T('Dry run done: nothing was changed. ', 'انتهى التشغيل التجريبي: لم يتغيّر شيء. ') + c('ready') + T(' ready to upload, ', ' جاهزة للرفع، ') + c('skip') + T(' would be skipped, ', ' ستُتخطّى، ') + c('failed') + T(' could not be checked.', ' تعذّر فحصها.');
       if (S.stop && rows.some((r) => !r.state)) S.note += '\n' + (authErr || T('Stopped: the rest were not sent.', 'تم الإيقاف: لم يُرسل الباقي.'));
-      S.noteErr = !!authErr || (live && c('failed') > 0);
+      S.noteErr = !!authErr || (live && (c('failed') > 0 || c('pending') > 0));
       paint_();
     }
-    function confirmLive_(n, big) {
+    function confirmLive_(n, big, loose) {
       return confirm(T('Upload photos for ', 'رفع صور لـ ') + n + T(' employees in ', ' موظف في ') + slug_() + '?'
+        + (loose ? '\n⚠ ' + loose + T(' file(s) were matched by name or Iqama, or chosen by hand: check their rows first.', ' ملف طُوبق بالاسم أو الإقامة أو اختير يدويًا: راجع صفوفها أولًا.') : '')
         + (S.overwrite ? '\n' + T('Overwrite is ON: existing photos will be replaced.', 'الاستبدال مفعّل: ستُستبدل الصور الموجودة.') : '\n' + T('Employees who already have a photo are skipped.', 'الموظفون الذين لديهم صورة يتم تخطيهم.'))
         + (big ? '\n⚠ ' + big + T(' file(s) are over 5 MB.', ' ملف أكبر من 5 ميغابايت.') : ''));
     }
     runB.addEventListener('click', async () => {
-      const rows = S.items.filter(pending_); if (!rows.length) return;
+      const rows = S.items.filter(todo_); if (!rows.length) return;
       if (S.dry) { await run_(rows, false); return; }
-      if (!confirmLive_(rows.length, rows.filter((r) => r.big).length)) return;
+      if (!confirmLive_(rows.length, rows.filter((r) => r.big).length, rows.filter((r) => r.by && r.by !== 'code').length)) return;
       await run_(rows, true);
+      reportUnmatched_();
     });
     retryB.addEventListener('click', async () => {
       const rows = S.items.filter((r) => r.state === 'failed'); if (!rows.length) return;
@@ -45274,7 +45627,7 @@ async function shrinkPic_(data) {
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'Employee Photos (Bulk)', open: openTool_, version: SECTION_VERSION };
-    W.__jisrPhotos = { parseCsv_, csvPairs_, plan_, sniff_, redact_, logCsv_, readZip_, hasPhotoOf_, resultOf_, cfg };
+    W.__jisrPhotos = { parseCsv_, csvPairs_, plan_, sniff_, redact_, logCsv_, readZip_, hasPhotoOf_, pendingPhotoOf_, normName_, resultOf_, cfg };
     if (g._rerender) g._rerender();
   }
   register_();
@@ -45282,7 +45635,517 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.78.1
+// ##### SECTION 42 — Edit imported leaves (cancel + re-import with new dates / type / resumption)  v4.83.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 42 — Edit Imported Leaves (Bulk)  v4.79
+ * ---------------------------------------------------------------------------
+ * Why: Jisr lets you cancel a leave that came in through the leave import, but not edit it (the row menu has only "Cancel").
+ * What this tool does for every row: cancel the old imported leave, import the corrected one through Jisr's own leave import (so it is
+ * applied directly, no approval, and old dates are fine), read the employee's leaves back to check it, and keep the old values in the
+ * results file (an undo list). If the new leave does not appear, the original is imported again.
+ *
+ * CONFIRMED (user captures + live tenant onboardingteam, 2026-11-09), host https://apis.jisr.net, ?slug=:
+ *   Imported leaves: GET /api/v2/employees/{id}/leaves/history?all_years=true&rpp=25&page=1&imported_leaves=true
+ *      -> data.leave_history[] { id, name_en, name, from, to, applied_days, return_date, reason, ... } (imported_leaves=true lists ONLY imported ones)
+ *   Cancel:          POST /api/v2/employees/{id}/leave_requests/bulk_cancel  { leave_request_ids:[…], reason }
+ *   Leave import:    POST /assetmanager/api/v1/bulk_upload?slug=   multipart form: file (the xlsx) + type=leave_requests
+ *      template columns: Employee ID | Name | Leave Type | From | To | Comment | Resumption Date | seha id (dates dd-mm-yyyy; the template's
+ *      leave-type list is in Arabic).
+ * NOT captured: the answer of bulk_upload, whether the import is instant, which leave-type spelling it accepts. The tool therefore never
+ * trusts the answer: it reads the leaves back (a few tries, 1.5 s apart) and only then calls a row done. The type spelling (Arabic or
+ * English) is a setting. The run stops at the first row that fails, after trying to put the original leave back.
+ * v4.83: each leave reports ONE outcome stage to the Ops dashboard: ok, OK but not applied (Jisr accepted the import and the new leave did not appear), rolled back
+ * (failed, original put back), mismatch (different leave type), and the CRITICAL restore_failed (the old leave was cancelled and could not be put back: it must be restored
+ * from the results file). The generic request log skips this tool because HTTP 200 is not the outcome here.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.83.0';
+  const MODULE_ID = 'leave-edit-bulk';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
+  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const LC = () => W.__jisrLeaveCancel || {};
+  const cfg = { paceMs: 300, verifyTries: 5, verifyWaitMs: 1500 };
+
+  // ======================================================================= pure helpers
+  const pad_ = (n) => String(n).padStart(2, '0');
+  const dateOk_ = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(s + 'T00:00:00Z'));
+  /** "YYYY-MM-DD" -> Excel serial day number (no time zone involved). */
+  function serial_(iso) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000 + 25569 : ''; }
+  const hasArabic_ = (s) => /[؀-ۿ]/.test(String(s || ''));
+  /** Leave types out of GET /v2/leaves/leave_types/, with the raw names kept (the import needs the exact spelling). */
+  function rawTypes_(json) {
+    let list = null;
+    (function walk(v, d) { if (list || !v || typeof v !== 'object' || d > 5) return; if (Array.isArray(v)) { if (v.length && v.every((x) => x && typeof x === 'object' && x.id != null && ['name', 'name_i18n', 'name_en', 'name_ar', 'title'].some((k) => x[k]))) { list = v; return; } v.forEach((x) => walk(x, d + 1)); return; } Object.values(v).forEach((x) => walk(x, d + 1)); })(json, 0);
+    const s = (v) => (typeof v === 'string' ? v.trim() : '');
+    return (list || []).map((t) => {
+      const cand = [t.name_ar, t.title_ar, t.name_i18n, t.name, t.name_en, t.title].map(s).filter(Boolean);
+      return { id: String(t.id), en: s(t.name_en) || cand.find((x) => !hasArabic_(x)) || '', ar: s(t.name_ar) || s(t.title_ar) || cand.find(hasArabic_) || '', name: s(t.name_i18n) || s(t.name) || s(t.name_en) || s(t.title) || s(t.name_ar) };
+    });
+  }
+  /** The spelling the import should get: the chosen language when Jisr gave it, else whatever name exists. */
+  function importName_(t, lang) { return (lang === 'en' ? t.en || t.ar : t.ar || t.en) || t.name; }
+  const overlap_ = (a, b) => a.start <= b.end && b.start <= a.end;
+
+  /** One row of the edit file: which leave (current values) and what changes (new values). */
+  function planRow_(row, leave, types, raw, lang) {
+    // returns { errs[], plan{type{id,name,imp}, start,end,resumption,comment}, changes[] }
+    const errs = []; const changes = [];
+    let t = { id: null, name: leave.type || leave.typeEn || '', imp: '' };
+    const cur = (raw || []).find((x) => (leave.typeId != null && x.id === String(leave.typeId)) || (LC().resolveType_ && LC().resolveType_(leave.type || leave.typeEn, types).includes(x.id)));
+    if (cur) t = { id: cur.id, name: cur.name, imp: importName_(cur, lang) };
+    if (row.newType) {
+      const ids = LC().resolveType_ ? LC().resolveType_(row.newType, types) : [];
+      if (!ids.length) errs.push(T('New leave type "', 'نوع الإجازة الجديد "') + row.newType + T('" not found in Jisr', '" غير موجود في جسر'));
+      else if (ids.length > 1) errs.push(T('New leave type "', 'نوع الإجازة الجديد "') + row.newType + T('" matches several types: write it in full', '" يطابق عدة أنواع: اكتبه كاملًا'));
+      else { const n = (raw || []).find((x) => x.id === ids[0]); t = { id: ids[0], name: n ? n.name : row.newType, imp: n ? importName_(n, lang) : row.newType }; }
+    }
+    if (!t.imp && t.name) t.imp = t.name;
+    if (!t.imp) errs.push(T('The leave type of this leave could not be read', 'تعذّرت قراءة نوع هذه الإجازة'));
+    const start = row.newStart || leave.start, end = row.newEnd || leave.end;
+    if (row.newStart === null || row.newEnd === null || row.newResumption === null) errs.push(T('A new date was not understood (use YYYY-MM-DD or DD/MM/YYYY)', 'لم يُفهم تاريخ جديد (استخدم YYYY-MM-DD أو DD/MM/YYYY)'));
+    if (!dateOk_(start) || !dateOk_(end)) { if (!errs.length) errs.push(T('Start or end date is missing', 'تاريخ البداية أو النهاية مفقود')); }
+    else if (end < start) errs.push(T('End date is before the start date', 'تاريخ النهاية قبل تاريخ البداية'));
+    const datesSame = start === leave.start && end === leave.end;
+    let resumption = row.newResumption || (datesSame ? leave.returnDate || '' : '');
+    if (resumption && dateOk_(end) && resumption <= end) errs.push(T('Resumption date must be after the end date', 'يجب أن يكون تاريخ العودة بعد تاريخ النهاية'));
+    const comment = row.newComment !== '' && row.newComment != null ? row.newComment : (leave.reason ? String(leave.reason) : '');
+    if (t.id !== null && cur && t.id !== cur.id) changes.push(T('type ', 'النوع ') + (cur.name || leave.type) + ' → ' + t.name);
+    else if (t.id !== null && !cur && row.newType) changes.push(T('type → ', 'النوع ← ') + t.name);
+    if (start !== leave.start) changes.push(T('start ', 'البداية ') + leave.start + ' → ' + start);
+    if (end !== leave.end) changes.push(T('end ', 'النهاية ') + leave.end + ' → ' + end);
+    if (row.newResumption && row.newResumption !== (leave.returnDate || '')) changes.push(T('resumption ', 'العودة ') + (leave.returnDate || '—') + ' → ' + row.newResumption);
+    else if (!row.newResumption && !datesSame) changes.push(T('resumption: Jisr works it out', 'العودة: يحسبها جسر'));
+    if (row.newComment !== '' && row.newComment != null && row.newComment !== (leave.reason || '')) changes.push(T('comment changed', 'تغيّر التعليق'));
+    return { errs, changes, plan: { type: t, start, end, resumption, comment } };
+  }
+
+  /** The leave import file Jisr expects (columns and date format of its own template). */
+  function importXlsx_(rows) {
+    const head = ['Employee ID', 'Name', 'Leave Type', 'From', 'To', 'Comment', 'Resumption Date', 'seha id'];
+    const ws = {};
+    head.forEach((h, c) => { ws[XLSX.utils.encode_cell({ r: 0, c })] = { t: 's', v: h }; });
+    rows.forEach((r, i) => {
+      const put = (c, cell) => { ws[XLSX.utils.encode_cell({ r: i + 1, c })] = cell; };
+      put(0, { t: 's', v: String(r.code) }); put(1, { t: 's', v: r.name || '' }); put(2, { t: 's', v: r.typeName });
+      put(3, { t: 'n', v: serial_(r.start), z: 'dd-mm-yyyy' }); put(4, { t: 'n', v: serial_(r.end), z: 'dd-mm-yyyy' });
+      if (r.comment) put(5, { t: 's', v: String(r.comment) });
+      if (r.resumption) put(6, { t: 'n', v: serial_(r.resumption), z: 'dd-mm-yyyy' });
+    });
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length, c: 7 } });
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    return XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  }
+  /** Leave type spelled by Jisr's history item (page language / English) -> does it mean the wanted type id? */
+  function sameType_(l, wantedId, types) {
+    if (wantedId == null) return true;
+    const ids = []; [l.type, l.typeEn].forEach((x) => { if (x && LC().resolveType_) ids.push(...LC().resolveType_(x, types)); });
+    if (l.typeId != null) ids.push(String(l.typeId));
+    return !ids.length || ids.includes(String(wantedId));
+  }
+  const redact_ = (s) => String(s == null ? '' : s).replace(/https?:\/\/\S+/gi, '(link removed)').replace(/Bearer\s+\S+/gi, '').replace(/\s+/g, ' ').slice(0, 240);
+
+  // ======================================================================= network
+  function importUrl_() {
+    const h = location.hostname;
+    const base = /(^|\.)jisr\.net\.sa$/i.test(h) ? 'https://api.jisr.net.sa' : 'https://apis.jisr.net';
+    return base + '/assetmanager/api/v1/bulk_upload?slug=' + encodeURIComponent(slug_());
+  }
+  /** POST the import. Never retried after Jisr may have processed it; 429 (refused before processing) waits and tries again. */
+  async function importCall_(rows) {
+    const bytes = importXlsx_(rows);
+    for (let a = 0; a < 3; a++) {
+      const fd = new FormData();
+      fd.append('file', new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'leave_requests.xlsx');
+      fd.append('type', 'leave_requests');
+      let res;
+      try { res = await fetch(importUrl_(), { method: 'POST', credentials: 'include', headers: { accept: 'application/json', slug: slug_(), locale: I.isAr() ? 'ar' : 'en' }, body: fd }); }
+      catch (e) { const err = new Error(T('No answer from Jisr for the import: check in Jisr before retrying', 'لا رد من جسر على الاستيراد: تحقّق في جسر قبل إعادة المحاولة')); err.unknown = true; throw err; }
+      if (res.status === 401) { const err = new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول.')); err.auth = true; throw err; }
+      if (res.status === 429) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? 2 * (a + 1) : ra) * 1000); continue; }
+      const json = await res.json().catch(() => null);
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+    }
+    throw new Error(T('Jisr is busy (HTTP 429). Try again in a minute.', 'جسر مشغول (HTTP 429). حاول بعد دقيقة.'));
+  }
+  function importMsg_(r) {
+    const j = r && r.json;
+    const m = (LC().jisrMsg_ && LC().jisrMsg_(j)) || (j ? JSON.stringify(j) : '');
+    return redact_(m) || 'HTTP ' + (r && r.status);
+  }
+  /** Read the employee's imported leaves until the wanted one shows (the import may take a moment). */
+  async function waitFor_(empId, start, end, skipIds, wantedType, types) {
+    let list = [];
+    for (let i = 0; i < cfg.verifyTries; i++) {
+      if (i) await sleep_(cfg.verifyWaitMs);
+      list = await LC().history_(empId);
+      const hit = list.find((l) => l.start === start && l.end === end && !skipIds.has(String(l.id)) && !LC().isGone_(l.status));
+      if (hit) return { hit, list };
+    }
+    return { hit: null, list };
+  }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-le-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-le-css', text: `
+      .jle-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+      .jle-bar label { font-size: 12.5px; display: flex; gap: 6px; align-items: center; }
+      .jle-bar input[type=text], .jle-bar input[type=date], .jle-bar select { border: 1px solid #dadce0; border-radius: 6px; padding: 5px 7px; font: inherit; }
+      .jle-wrap { max-height: 44vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jle-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jle-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jle-wrap td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jle-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jle-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      .jle-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
+    ` }));
+  }
+  const HEADERS = ['Leave request ID', 'Employee ID', 'Employee Name', 'Current leave type', 'Current start', 'Current end', 'Current resumption', 'Current comment', 'New leave type', 'New start', 'New end', 'New resumption', 'New comment'];
+  const norm_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
+
+  /** Reads the edit file (this tool's own export or a hand-made file) into rows. */
+  function parseEditAoa_(aoa) {
+    const D = LC().date_;
+    let hi = aoa.findIndex((r) => r.some((x) => /employee|موظف|code/i.test(String(x))));
+    if (hi < 0) hi = 0;
+    const h = (aoa[hi] || []).map(norm_);
+    const col = (re) => h.findIndex((x) => re.test(x));
+    const c = {
+      lid: col(/leave request id|request id|^leave id$/), emp: h.findIndex((x) => /^employee id$|employee code|employee number|^code$|رقم الموظف|الرقم الوظيفي/.test(x)),
+      curType: col(/^(current )?(leave )?type$|^current leave type$/), curStart: col(/^(current )?(start|from)( date)?$/), curEnd: col(/^(current )?(end|to)( date)?$/),
+      newType: col(/^new (leave )?type/), newStart: col(/^new (start|from)/), newEnd: col(/^new (end|to)/), newRes: col(/^new (resumption|return)/), newComment: col(/^new (comment|reason|note)/),
+    };
+    if (c.emp < 0) return { error: T('No Employee ID column found.', 'لم يُعثر على عمود Employee ID.') };
+    if (c.lid < 0 && c.curStart < 0) return { error: T('The file needs the leave request ID, or the current start date, to know which leave to change.', 'يحتاج الملف رقم طلب الإجازة أو تاريخ البداية الحالي لمعرفة الإجازة المراد تغييرها.') };
+    if ([c.newType, c.newStart, c.newEnd, c.newRes, c.newComment].every((i) => i < 0)) return { error: T('No "New …" columns found (New leave type, New start, New end, New resumption, New comment).', 'لا توجد أعمدة «New …» (New leave type وNew start وNew end وNew resumption وNew comment).') };
+    const get = (r, i) => (i >= 0 ? r[i] : '');
+    const txt = (v) => String(v == null ? '' : v).trim();
+    const rows = []; let ignored = 0;
+    aoa.slice(hi + 1).forEach((r, k) => {
+      const empText = txt(get(r, c.emp)).replace(/\.0+$/, '');
+      if (!empText) return;
+      const nd = (i) => { const v = get(r, i); return v === '' || v == null ? '' : D(v); };   // '' none, null not understood
+      const row = { no: hi + k + 2, empText, leaveId: txt(get(r, c.lid)).replace(/\.0+$/, ''), curType: txt(get(r, c.curType)), start: D(get(r, c.curStart)) || '', end: D(get(r, c.curEnd)) || '',
+        newType: txt(get(r, c.newType)), newStart: nd(c.newStart), newEnd: nd(c.newEnd), newResumption: nd(c.newRes), newComment: txt(get(r, c.newComment)), state: '', msg: '' };
+      if (!(row.newType || row.newStart || row.newEnd || row.newResumption || row.newComment || row.newStart === null || row.newEnd === null || row.newResumption === null)) { ignored++; return; }
+      rows.push(row);
+    });
+    return { rows, ignored };
+  }
+
+  function openTool_() {
+    injectCss_();
+    const X = W.__jisrBulkOpsXlsx;
+    const S = { rows: [], types: null, raw: null, hist: new Map(), busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false, lang: gmGet_('leaveEditNameLang', 'ar') === 'en' ? 'en' : 'ar', ignored: 0 };
+    const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': 'Close' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1300px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => { if (S.phase === 'running' && !confirm(T('Still editing leaves. Close anyway?', 'لا يزال تعديل الإجازات جاريًا. هل تريد الإغلاق؟'))) return; S.stop = true; backdrop.remove(); };
+    closeBtn.addEventListener('click', close);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    const fromIn = el('input', { type: 'date' }); const toIn = el('input', { type: 'date' });
+    const typeSel = el('select', {}, [el('option', { value: '', text: T('All leave types', 'كل أنواع الإجازات') })]);
+    const langSel = el('select', {}, [el('option', { value: 'ar', text: 'العربية' }), el('option', { value: 'en', text: 'English' })]); langSel.value = S.lang;
+    langSel.addEventListener('change', () => { S.lang = langSel.value; gmSet_('leaveEditNameLang', S.lang); S.dryDone = false; paint_(); });
+    const reasonIn = el('input', { type: 'text', value: 'Edited with Bulk Ops', style: { minWidth: '240px' } });
+    const expB = el('button', { class: 'jbo-btn', text: T('Imported leaves (.xlsx)', 'الإجازات المستوردة (‎.xlsx)') });
+    const upB = el('button', { class: 'jbo-btn', text: T('Upload edited file', 'رفع الملف بعد التعديل') });
+    const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
+    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const statsEl = el('div', { class: 'jle-stats' }); const wrap = el('div', { class: 'jle-wrap' });
+    const dryB = el('button', { class: 'jbo-btn', text: T('Dry Run', 'تشغيل تجريبي') });
+    const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
+    const resB = el('button', { class: 'jbo-btn', text: T('Results + undo list (.xlsx)', 'النتائج وقائمة التراجع (‎.xlsx)') });
+    const cancelTabB = el('button', { class: 'jbo-btn', text: T('Cancel leaves →', 'إلغاء الإجازات ←') });
+    cancelTabB.addEventListener('click', () => { close(); const m = W.__jisrBulkOps && W.__jisrBulkOps.modules['leave-cancel-bulk']; if (m) m.open(); });
+
+    function render_() {
+      titleEl.textContent = T('Edit Imported Leaves (Bulk)', 'تعديل الإجازات المستوردة (جماعي)');
+      body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(el('div', { class: 'jle-bar' }, [el('b', { text: T('Edit', 'تعديل') }), cancelTabB]));
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
+        'Jisr cannot edit a leave that was imported in bulk, only cancel it. This tool changes the dates, leave type, resumption date or comment by cancelling the old leave and importing the corrected one (applied directly, no approval). 1) Download the imported leaves, 2) fill the “New …” columns only for the leaves you want to change (an empty cell keeps the current value), 3) upload it, 4) Dry Run, 5) run.',
+        'لا يستطيع جسر تعديل إجازة مستوردة جماعيًا، بل إلغاءها فقط. تغيّر هذه الأداة التواريخ ونوع الإجازة وتاريخ العودة والتعليق بإلغاء الإجازة القديمة واستيراد الصحيحة (تُطبَّق مباشرة دون موافقة). 1) نزّل الإجازات المستوردة، 2) املأ أعمدة «New …» للإجازات المراد تغييرها فقط (الخلية الفارغة تُبقي القيمة الحالية)، 3) ارفع الملف، 4) تشغيل تجريبي، 5) نفّذ.')}));
+      body.appendChild(el('div', { class: 'jle-warn', text: T(
+        'The old leave is cancelled first. If the corrected leave does not show up in Jisr afterwards, the tool imports the original again and stops. The old values are kept in the results file. Always run the Dry Run first, and try one or two rows before the whole file.',
+        'تُلغى الإجازة القديمة أولًا. إن لم تظهر الإجازة الصحيحة في جسر بعد ذلك فتعيد الأداة استيراد الأصلية وتتوقف. تُحفظ القيم القديمة في ملف النتائج. شغّل التجريبي أولًا وجرّب صفًا أو اثنين قبل الملف كله.')}));
+      body.appendChild(el('div', { class: 'jle-bar' }, [el('label', {}, [T('Cancellation reason', 'سبب الإلغاء'), reasonIn]), el('label', {}, [T('Leave type spelling in the import', 'كتابة نوع الإجازة في الاستيراد'), langSel])]));
+      body.appendChild(el('div', { class: 'jle-bar' }, [expB, typeSel, el('label', {}, [T('starting from', 'تبدأ من'), fromIn]), el('label', {}, [T('to', 'إلى'), toIn]), el('span', { class: 'jbo-muted', text: '·' }), upB]));
+      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
+      paint_();
+    }
+    function paint_() {
+      statusEl.textContent = S.busy || S.note;
+      statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      statsEl.innerHTML = '';
+      const cnt = (st) => S.rows.filter((r) => r.state === st).length;
+      if (S.rows.length) [[S.rows.length, T('rows', 'صف')], [cnt('ready'), T('ready', 'جاهز')], [cnt('error'), T('blocked', 'محجوب')], [cnt('skip'), T('skipped', 'تم تخطيه')], [cnt('done'), T('edited ✓', 'عُدّلت ✓')], [cnt('failed'), T('failed', 'فشل')]]
+        .filter(([v], i) => i < 2 || v).forEach(([v, l]) => statsEl.appendChild(el('span', {}, [el('b', { text: String(v) }), ' ' + l])));
+      wrap.innerHTML = '';
+      if (S.rows.length) {
+        const t = el('table');
+        t.appendChild(el('tr', {}, ['#', T('Employee', 'الموظف'), T('Current leave', 'الإجازة الحالية'), T('Change', 'التغيير'), T('Result', 'النتيجة')].map((h) => el('th', { text: h }))));
+        S.rows.slice(0, 3000).forEach((r) => {
+          const col = r.state === 'done' ? '#137333' : (r.state === 'error' || r.state === 'failed') ? '#c5221f' : r.state === 'skip' ? '#b06000' : '#5f6368';
+          const l = r.leave;
+          t.appendChild(el('tr', {}, [
+            el('td', { text: String(r.no) }),
+            el('td', { text: r.emp ? (r.emp.name || '') + (r.emp.code ? ' · ' + r.emp.code : '') : r.empText }),
+            el('td', { text: l ? (l.type || l.typeEn || '—') + ' · ' + l.start + (l.end && l.end !== l.start ? ' → ' + l.end : '') + (l.returnDate ? T(' (back ', ' (عودة ') + l.returnDate + ')' : '') : (r.start ? r.start + (r.end ? ' → ' + r.end : '') : (r.leaveId ? '#' + r.leaveId : '—')) }),
+            el('td', { text: r.changes && r.changes.length ? r.changes.join('\n') : '—', style: { whiteSpace: 'pre-line' } }),
+            el('td', { text: r.msg || (r.state === 'ready' ? T('ready', 'جاهز') : '—'), style: { color: col, whiteSpace: 'pre-line' } }),
+          ]));
+        });
+        wrap.appendChild(t);
+      }
+      const ready = S.rows.filter((r) => r.state === 'ready').length;
+      runB.textContent = T('Edit ', 'تعديل ') + ready + T(' leave(s)', ' إجازة');
+      runB.disabled = !S.dryDone || !ready || !!S.busy;
+      dryB.disabled = !S.rows.length || !!S.busy;
+      stopB.style.display = S.phase === 'running' ? '' : 'none';
+      [expB, upB].forEach((b) => { b.disabled = !!S.busy; });
+      resB.style.display = S.rows.some((r) => ['done', 'failed'].includes(r.state)) ? '' : 'none';
+    }
+    async function types_() {
+      if (!S.types) {
+        try {
+          const r = await LC().request_('GET', '/v2/leaves/leave_types/', null);
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          S.types = LC().typesFrom_(r.json); S.raw = rawTypes_(r.json);
+        } catch (e) { S.types = null; S.raw = null; S.typesErr = e.message; }
+      }
+      return S.types;
+    }
+    types_().then(() => { (S.raw || []).forEach((t) => typeSel.appendChild(el('option', { value: t.id, text: t.name }))); });
+    async function hist_(empId, force) {
+      const k = String(empId);
+      if (force || !S.hist.has(k)) S.hist.set(k, await LC().history_(empId));
+      return S.hist.get(k);
+    }
+
+    // ---------------- download: every imported leave, with empty "New …" columns
+    expB.addEventListener('click', async () => {
+      S.busy = T('Loading employees…', 'جارٍ تحميل الموظفين…'); paint_();
+      try {
+        const emps = await W.__jisrBulkOpsEmployees.get(false, (n) => { statusEl.textContent = T('Loading employees… ', 'جارٍ تحميل الموظفين… ') + n; });
+        await types_();
+        const from = fromIn.value, to = toIn.value, onlyType = typeSel.value; const rows = []; let done = 0, failed = 0;
+        await LC().pool_(emps, 4, async (e) => {
+          try {
+            (await hist_(e.id, true)).forEach((l) => {
+              if (LC().isGone_(l.status)) return;
+              if (from && l.start && l.start < from) return; if (to && l.start && l.start > to) return;
+              if (onlyType && !(l.typeId === onlyType || [l.type, l.typeEn].some((x) => x && LC().resolveType_(x, S.types || []).includes(onlyType)))) return;
+              rows.push([l.id, e.code || e.id, e.name || '', l.type || l.typeEn, l.start, l.end, l.returnDate || '', l.reason || '', '', '', '', '', '']);
+            });
+          } catch (err) { failed++; }
+          done++; S.busy = T('Reading leaves… ', 'جارٍ قراءة الإجازات… ') + done + '/' + emps.length + ' · ' + rows.length + T(' leave(s)', ' إجازة'); statusEl.textContent = S.busy;
+        });
+        rows.sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[4]).localeCompare(String(b[4])));
+        X.setNextLists({ 'New leave type': { values: (S.raw || []).map((t) => t.name).filter(Boolean), strict: false } });
+        await X.downloadAoa('jisr-imported-leaves-' + slug_() + '.xlsx', HEADERS, rows, 'Imported leaves');
+        S.note = rows.length + T(' imported leave(s) exported', ' إجازة مستوردة صُدّرت') + (failed ? ' (' + failed + T(' employee(s) could not be read)', ' موظف تعذّرت قراءته)') : '') + T('. Fill the “New …” columns for the ones to change (dates as YYYY-MM-DD or DD/MM/YYYY), then upload the file.', '. املأ أعمدة «New …» لما يجب تغييره (التواريخ بصيغة YYYY-MM-DD أو DD/MM/YYYY) ثم ارفع الملف.');
+        S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+
+    // ---------------- upload
+    upB.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
+    fileIn.addEventListener('change', async () => {
+      const f = fileIn.files && fileIn.files[0]; if (!f) return;
+      try {
+        const isCsv = /\.csv$/i.test(f.name);
+        const wb = isCsv ? XLSX.read(await f.text(), { type: 'string', raw: true }) : XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array', cellDates: false });
+        const ws = wb.Sheets[wb.SheetNames.find((n) => !/^(lists|_?pick|instructions?|dropdown_list_items)$/i.test(n)) || wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+        const p = parseEditAoa_(aoa);
+        if (p.error) throw new Error(p.error);
+        S.rows = p.rows; S.ignored = p.ignored; S.dryDone = false;
+        S.note = S.rows.length + T(' leave(s) to edit read from the file', ' إجازة للتعديل قُرئت من الملف') + (p.ignored ? ' · ' + p.ignored + T(' row(s) without any “New …” value were ignored', ' صف بلا أي قيمة «New …» تم تجاهله') : '') + T('. Run the Dry Run next.', '. شغّل التجريبي الآن.');
+        S.noteErr = !S.rows.length;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      paint_();
+    });
+
+    // ---------------- dry run (reads only)
+    async function dryRun_() {
+      S.busy = T('Checking…', 'جارٍ الفحص…'); S.note = ''; S.noteErr = false; paint_();
+      try {
+        const emps = await W.__jisrBulkOpsEmployees.get(false);
+        const types = await types_();
+        const byCode = new Map(emps.filter((e) => e.code != null).map((e) => [String(e.code).trim().toLowerCase(), e]));
+        const todo = S.rows.filter((r) => r.state !== 'done');
+        todo.forEach((r) => { r.state = ''; r.msg = ''; r.leave = null; r.plan = null; r.changes = []; r.emp = byCode.get(r.empText.toLowerCase()) || null; if (!r.emp) { r.state = 'error'; r.msg = '✗ ' + T('Employee not found', 'الموظف غير موجود'); } });
+        if (!types) todo.filter((r) => !r.state).forEach((r) => { r.state = 'error'; r.msg = '✗ ' + T('Leave types could not be read from Jisr', 'تعذّرت قراءة أنواع الإجازات من جسر') + (S.typesErr ? ' (' + S.typesErr + ')' : ''); });
+        const empIds = Array.from(new Set(todo.filter((r) => r.emp && !r.state).map((r) => String(r.emp.id))));
+        let done = 0;
+        await LC().pool_(empIds, 4, async (id) => {
+          try { await hist_(id, true); } catch (e) { todo.filter((r) => r.emp && String(r.emp.id) === id).forEach((r) => { r.state = 'error'; r.msg = '✗ ' + e.message; }); }
+          done++; statusEl.textContent = T('Reading leaves… ', 'جارٍ قراءة الإجازات… ') + done + '/' + empIds.length;
+        });
+        const taken = new Map();
+        todo.filter((r) => !r.state).forEach((r) => {
+          const list = S.hist.get(String(r.emp.id)) || [];
+          let m = LC().matchLeaves_({ leaveId: r.leaveId, start: r.start, end: r.end, type: r.curType }, list, types);
+          // a leave that was put back after a failed run has a new id: fall back to the current dates and type from the same file
+          if (!m.matches.length && r.leaveId && r.start) { const m2 = LC().matchLeaves_({ start: r.start, end: r.end, type: r.curType }, list, types); if (m2.matches.length) m = m2; }
+          if (!m.matches.length) {
+            const done2 = r.newStart && r.newEnd && list.find((l) => l.start === r.newStart && l.end === r.newEnd && !LC().isGone_(l.status));
+            if (done2) { r.state = 'skip'; r.msg = T('Already has a leave with the new dates', 'لديه بالفعل إجازة بالتواريخ الجديدة'); return; }
+            r.state = /Already|بالفعل/.test(m.why) ? 'skip' : 'error'; r.msg = (r.state === 'skip' ? '' : '✗ ') + m.why; return;
+          }
+          const l = m.matches[0]; const k = r.emp.id + ':' + l.id;
+          if (taken.has(k)) { r.state = 'skip'; r.msg = T('Same leave as row ', 'نفس الإجازة في الصف ') + taken.get(k); return; }
+          taken.set(k, r.no); r.leave = l;
+          const pr = planRow_(r, l, types, S.raw, S.lang);
+          r.plan = pr.plan; r.changes = pr.changes;
+          if (pr.errs.length) { r.state = 'error'; r.msg = '✗ ' + pr.errs.join('\n✗ '); return; }
+          if (!pr.changes.length) { r.state = 'skip'; r.msg = T('Nothing to change (the new values equal the current ones)', 'لا شيء للتغيير (القيم الجديدة تساوي الحالية)'); return; }
+          r.state = 'ready'; r.msg = T('import name: ', 'الاسم في الاستيراد: ') + r.plan.type.imp;
+        });
+        // overlaps: the new range must not touch another leave the employee keeps, or another new range of the same employee in this file
+        const byEmp = new Map(); todo.filter((r) => r.state === 'ready').forEach((r) => { const k = String(r.emp.id); if (!byEmp.has(k)) byEmp.set(k, []); byEmp.get(k).push(r); });
+        byEmp.forEach((rows, id) => {
+          const replaced = new Set(rows.map((r) => String(r.leave.id)));
+          const keep = (S.hist.get(id) || []).filter((l) => !replaced.has(String(l.id)) && !LC().isGone_(l.status) && l.start && l.end);
+          rows.forEach((r, i) => {
+            const hit = keep.find((l) => overlap_(r.plan, l)) || null;
+            if (hit) { r.state = 'error'; r.msg = '✗ ' + T('The new dates overlap another leave: ', 'التواريخ الجديدة تتداخل مع إجازة أخرى: ') + (hit.type || hit.typeEn || '') + ' ' + hit.start + ' → ' + hit.end; return; }
+            const other = rows.find((o, j) => j !== i && o.state === 'ready' && overlap_(r.plan, o.plan));
+            if (other) { r.state = 'error'; r.msg = '✗ ' + T('The new dates overlap the new dates of row ', 'التواريخ الجديدة تتداخل مع تواريخ الصف ') + other.no; }
+          });
+        });
+        S.dryDone = true;
+        const rd = S.rows.filter((r) => r.state === 'ready').length;
+        S.note = T('Dry Run done: nothing was changed. ', 'انتهى التشغيل التجريبي: لم يتغيّر شيء. ') + rd + T(' leave(s) ready to edit for ', ' إجازة جاهزة للتعديل لـ ') + new Set(S.rows.filter((r) => r.state === 'ready').map((r) => r.emp.id)).size + T(' employee(s).', ' موظف.');
+        S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    }
+    dryB.addEventListener('click', dryRun_);
+
+    // ---------------- live, one row at a time: cancel -> import -> read back -> (restore on failure)
+    const impRow_ = (r, v) => ({ code: r.emp.code != null ? r.emp.code : r.emp.id, name: r.emp.name || '', typeName: v.typeName, start: v.start, end: v.end, comment: v.comment, resumption: v.resumption });
+    async function editOne_(r, reason) {
+      const l = r.leave, p = r.plan;
+      const orig = { typeName: (function () { const c = (S.raw || []).find((x) => (l.typeId != null && x.id === String(l.typeId)) || (S.types && LC().resolveType_(l.type || l.typeEn, S.types).includes(x.id))); return c ? importName_(c, S.lang) : (l.type || l.typeEn); })(), start: l.start, end: l.end, comment: l.reason ? String(l.reason) : '', resumption: l.returnDate || '' };
+      // 1) cancel the old one
+      const c = await LC().cancel_(r.emp.id, [l.id], reason);
+      if (!c.ok) { r.state = 'failed'; r.stage = jboStageOfRes_(c); r.why = 'cancelling the old leave failed: nothing was changed'; r.msg = '✗ ' + T('Cancelling the old leave failed (nothing changed): ', 'فشل إلغاء الإجازة القديمة (لم يتغيّر شيء): ') + importMsg_(c); return false; }
+      const skip = new Set([String(l.id)]);
+      // `why` is what went wrong (shown to the operator), `whyEn` the same in English for the dashboard, `stage` how that is classed when the original DID come back.
+      // When the original could not be put back the stage is always restore_failed (critical): the old leave is gone from Jisr until someone restores it from the undo list.
+      const restore_ = async (why, whyEn, stage) => {
+        let ok = false, extra = '';
+        try {
+          const ri = await importCall_([impRow_(r, orig)]);
+          if (ri.ok) { const w = await waitFor_(r.emp.id, orig.start, orig.end, skip, null, S.types); ok = !!w.hit; }
+          else extra = ' ' + importMsg_(ri);
+        } catch (e) { extra = ' ' + e.message; }
+        r.state = 'failed'; r.stage = ok ? stage : 'restore_failed';
+        r.why = whyEn + '. ' + (ok ? 'The original leave was imported again.' : 'The original leave could NOT be put back: it must be restored from the results file (undo list).');
+        r.msg = '✗ ' + why + '\n' + (ok ? T('The original leave was imported again.', 'أُعيد استيراد الإجازة الأصلية.') : T('The original leave could NOT be put back: import it again from the undo list (results file).', 'تعذّر إرجاع الإجازة الأصلية: استوردها من قائمة التراجع (ملف النتائج).') + extra);
+      };
+      // 2) import the corrected one
+      let imp;
+      try { imp = await importCall_([impRow_(r, { typeName: p.type.imp, start: p.start, end: p.end, comment: p.comment, resumption: p.resumption })]); }
+      catch (e) { if (e.auth) { r.state = 'failed'; r.stage = 'restore_failed'; r.why = 'the Jisr sign-in ended after the old leave was cancelled: the original leave was NOT put back and must be restored from the results file (undo list)'; r.msg = '✗ ' + e.message + T(' The old leave was cancelled: import it again from the undo list.', ' أُلغيت الإجازة القديمة: استوردها من قائمة التراجع.'); throw e; } await restore_(e.message, e.unknown ? 'no answer from Jisr for the import' : 'the import failed', 'rolled_back'); return false; }
+      if (!imp.ok) { await restore_(T('Jisr refused the import: ', 'رفض جسر الاستيراد: ') + importMsg_(imp), 'Jisr refused the import (HTTP ' + imp.status + ')', 'rolled_back'); return false; }
+      // 3) read back
+      let w;
+      try { w = await waitFor_(r.emp.id, p.start, p.end, skip, p.type.id, S.types); }
+      catch (e) { await restore_(T('Could not read the leaves back: ', 'تعذّرت إعادة قراءة الإجازات: ') + e.message, 'the leaves could not be read back after the import', 'rolled_back'); return false; }
+      if (!w.hit) { await restore_(T('Jisr accepted the import but the new leave did not appear', 'قبل جسر الاستيراد لكن الإجازة الجديدة لم تظهر'), 'Jisr accepted the import (OK) but the new leave did not appear', 'not_reflected'); return false; }
+      if (!sameType_(w.hit, p.type.id, S.types)) { r.state = 'failed'; r.stage = 'mismatch'; r.why = 'the leave was imported with a different leave type than asked; the old leave was cancelled and needs checking in Jisr'; r.newId = w.hit.id; r.msg = '✗ ' + T('The leave was imported as “', 'استُوردت الإجازة بنوع «') + (w.hit.type || w.hit.typeEn) + T('” instead of “', '» بدل «') + p.type.name + T('”. Check it in Jisr (the old leave was cancelled).', '». تحقق منها في جسر (أُلغيت الإجازة القديمة).'); return false; }
+      r.newId = w.hit.id; S.hist.set(String(r.emp.id), w.list);
+      const notes = [];
+      if (p.resumption && w.hit.returnDate && w.hit.returnDate !== p.resumption) notes.push(T('resumption date in Jisr is ', 'تاريخ العودة في جسر ') + w.hit.returnDate + T(' (asked ', ' (المطلوب ') + p.resumption + ')');
+      r.state = 'done'; r.stage = 'ok'; r.why = 'edited and confirmed by reading the leave back from Jisr'; r.msg = '✓ ' + T('edited', 'عُدّلت') + ' (#' + l.id + ' → #' + w.hit.id + ')' + (notes.length ? '\n' + notes.join('\n') : '');
+      return true;
+    }
+    async function runLive_() {
+      const reason = reasonIn.value.trim() || 'Edited with Bulk Ops';
+      const todo = S.rows.filter((r) => r.state === 'ready');
+      if (!todo.length) return;
+      const nEmp = new Set(todo.map((r) => r.emp.id)).size;
+      if (!confirm(T('Edit ', 'تعديل ') + todo.length + T(' imported leave(s) of ', ' إجازة مستوردة لـ ') + nEmp + T(' employee(s) in ', ' موظف في ') + slug_() + '?\n\n' + T('Each old leave is cancelled, then the corrected one is imported. If a row fails the tool tries to put the original back and stops.\nThe old values go into the results file.', 'تُلغى كل إجازة قديمة ثم تُستورد الصحيحة. إن فشل صف تحاول الأداة إرجاع الأصلية وتتوقف.\nتُحفظ القيم القديمة في ملف النتائج.'))) return;
+      S.phase = 'running'; S.stop = false; S.busy = ' '; paint_();
+      let done = 0;
+      // v4.83: one outcome row per leave for the Ops dashboard (the generic request log skips this tool: an HTTP 200 is not the outcome here)
+      const report_ = (r) => {
+        if (r.reported) return; r.reported = true;
+        const st = r.state === 'done' ? 'ok' : r.state === 'failed' ? (r.stage || 'failed') : 'skipped';
+        try { jboActReport_(MODULE_ID, r.emp ? r.emp.id : 'row' + r.no, st, r.state === 'done' || r.state === 'failed' ? (r.why || st) : 'not sent: the run stopped before this row'); } catch (e) { /* ignore */ }
+      };
+      todo.forEach((r) => { r.reported = false; r.stage = ''; r.why = ''; });
+      for (const r of todo) {
+        if (S.stop) { r.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); report_(r); continue; }
+        let ok = false;
+        try { ok = await editOne_(r, reason); } catch (e) { S.stop = true; if (r.state !== 'failed') { r.state = 'failed'; r.stage = e.auth ? 'denied' : 'failed'; r.why = e.auth ? 'Jisr sign-in problem: the run was stopped' : 'the row failed with an error: check it in Jisr'; r.msg = '✗ ' + e.message; } }
+        report_(r);
+        done++; S.busy = T('Editing… ', 'جارٍ التعديل… ') + done + '/' + todo.length; paint_();
+        if (!ok) { S.stop = true; todo.filter((x) => x.state === 'ready').forEach((x) => { x.msg = T('Not sent: the run stopped after a failure', 'لم يُرسل: توقّف التشغيل بعد فشل'); }); break; }
+        if (cfg.paceMs) await sleep_(cfg.paceMs);
+      }
+      S.phase = 'done'; S.busy = '';
+      todo.forEach(report_);   // rows never reached (the run stopped before them)
+      const okN = todo.filter((r) => r.state === 'done').length;
+      S.note = okN + T(' of ', ' من ') + todo.length + T(' leave(s) edited.', ' إجازة عُدّلت.') + (okN < todo.length ? T(' The run stopped: read the Result column, fix the cause, then run the Dry Run again (rows already edited are skipped).', ' توقّف التشغيل: اقرأ عمود النتيجة وأصلح السبب ثم شغّل التجريبي مجددًا (الصفوف المعدّلة تُتخطى).') : '');
+      S.noteErr = okN < todo.length; paint_();
+    }
+    runB.addEventListener('click', runLive_);
+    stopB.addEventListener('click', () => { S.stop = true; });
+    resB.addEventListener('click', () => {
+      const H = ['Row', 'Employee ID', 'Employee Name', 'Old leave ID', 'Old leave type', 'Old start', 'Old end', 'Old resumption', 'Old comment', 'New leave type', 'New start', 'New end', 'New resumption', 'New comment', 'New leave ID', 'Result'];
+      const aoa = [H].concat(S.rows.filter((r) => r.leave).map((r) => { const l = r.leave, p = r.plan || {};
+        return [r.no, r.emp ? r.emp.code || r.emp.id : r.empText, r.emp ? r.emp.name : '', l.id, l.type || l.typeEn, l.start, l.end, l.returnDate || '', l.reason || '', p.type ? p.type.name : '', p.start || '', p.end || '', p.resumption || '', p.comment || '', r.newId || '', String(r.msg || '').replace(/\n/g, ' | ')]; }));
+      const wb = XLSX.utils.book_new(); const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = H.map((h) => ({ wch: Math.max(12, h.length + 2) }));
+      XLSX.utils.book_append_sheet(wb, ws, 'Leave edit results');
+      XLSX.writeFile(wb, 'jisr-leave-edit-results-' + slug_() + '.xlsx');
+    });
+    render_();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Edit Imported Leaves (Bulk)', open: openTool_, version: SECTION_VERSION };
+    W.__jisrLeaveEdit = { planRow_, rawTypes_, importName_, importXlsx_, parseEditAoa_, serial_, sameType_, overlap_, cfg };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+// ###########################################################################
+// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.83.0
 // ###########################################################################
 
 /** Business trip city catalogue (v4.22): Saudi regions, cities, towns and villages (homaily/Saudi-Arabia-Regions-Cities-and-Districts) and world cities with population over ~15,000 (datasets/world-cities, GeoNames) by country (dr5hn/countries-states-cities-database). Read-only reference data. */
@@ -45290,7 +46153,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.78.1
+// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.83.0
 // ###########################################################################
 
 /*
@@ -45829,7 +46692,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.78.1
+// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.83.0
 // ###########################################################################
 
 /*
@@ -46399,7 +47262,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 27 — Activation Checklist sidebar  v4.78.1
+// ##### SECTION 27 — Activation Checklist sidebar  v4.83.0
 // ###########################################################################
 
 /**
@@ -46863,7 +47726,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.78.1
+// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.83.0
 // ###########################################################################
 
 /**
@@ -46921,7 +47784,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 39 — Locations Setup (onboarding): set country, region, city and manager for many locations at once  v4.78.1
+// ##### SECTION 39 — Locations Setup (onboarding): set country, region, city and manager for many locations at once  v4.83.0
 // ###########################################################################
 
 /*
