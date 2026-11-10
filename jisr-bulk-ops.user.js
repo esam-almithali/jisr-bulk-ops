@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.83.0
+// @version      4.83.1
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -276,7 +276,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.83.0
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.83.1
 // ###########################################################################
 
 /*
@@ -1302,7 +1302,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0c — Google sign-in (company accounts only)  v4.83.0
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.83.1
 // ###########################################################################
 
 /*
@@ -1648,7 +1648,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.83.0
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.83.1
 // ###########################################################################
 
 /*
@@ -28544,7 +28544,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.83.0
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.83.1
 // ###########################################################################
 
 /*
@@ -30119,7 +30119,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.83.0
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.83.1
 // ###########################################################################
 
 /*
@@ -30768,7 +30768,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v4.83.0
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.83.1
 // ###########################################################################
 
 /*
@@ -31636,7 +31636,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.83.0
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.83.1
 // ###########################################################################
 
 /*
@@ -33258,7 +33258,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.83.0
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.83.1
 // ###########################################################################
 
 /*
@@ -33728,7 +33728,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 20 — Employee Documents bulk upload  v4.83.0
+// ##### SECTION 20 — Employee Documents bulk upload  v4.83.1
 // ###########################################################################
 
 /*
@@ -34560,7 +34560,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 21 — Bulk Offboarding  v4.83.0
+// ##### SECTION 21 — Bulk Offboarding  v4.83.1
 // ###########################################################################
 
 /**
@@ -35208,7 +35208,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 22 — Bulk Final Settlement  v4.83.0
+// ##### SECTION 22 — Bulk Final Settlement  v4.83.1
 // ###########################################################################
 
 /**
@@ -35693,7 +35693,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 24 — Bulk Payroll Transactions  v4.83.0
+// ##### SECTION 24 — Bulk Payroll Transactions  v4.83.1
 // ###########################################################################
 
 /**
@@ -36365,7 +36365,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.83.0
+// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.83.1
 // ###########################################################################
 
 /**
@@ -36805,7 +36805,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.83.0
+// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.83.1
 // ###########################################################################
 
 /*
@@ -37425,7 +37425,7 @@ function jboRedact_(msg) {
 })();
 
 // ###########################################################################
-// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.83.0
+// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.83.1
 // ###########################################################################
 
 /**
@@ -38021,7 +38021,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.83.0
+// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.83.1
 // ###########################################################################
 
 /**
@@ -38095,7 +38095,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.83.0
+// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.83.1
 // ###########################################################################
 
 /**
@@ -38108,7 +38108,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.83.0
+// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.83.1
 // ###########################################################################
 
 /*
@@ -38844,7 +38844,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 36 — Shifts & Day Offs: assign day offs / a shift, or clear — any range up to one year, week by week  v4.83.0
+// ##### SECTION 36 — Shifts & Day Offs: assign day offs / a shift, or clear — any range up to one year, week by week  v4.83.1
 // ###########################################################################
 
 /*
@@ -39279,7 +39279,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 37 — Family Members (bulk add; passport numbers with letters; nationalities by name)  v4.83.0
+// ##### SECTION 37 — Family Members (bulk add; passport numbers with letters; nationalities by name)  v4.83.1
 // ###########################################################################
 
 /*
@@ -39752,7 +39752,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 38 — Letter Templates: open, edit and save Jisr's letters directly (simple editor + variables)  v4.83.0
+// ##### SECTION 38 — Letter Templates: open, edit and save Jisr's letters directly (simple editor + variables)  v4.83.1
 // ###########################################################################
 
 /*
@@ -39775,7 +39775,7 @@ function jboRedact_(msg) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.83.0';
+  const SECTION_VERSION = '4.83.1';
   const MODULE_ID = 'letter-templates';
   function gmSet_(k, v) { try { GM_setValue('jisrBulkOps_' + k, v); } catch (e) { /* ignore */ } }
   const W = unsafeWindow;
@@ -42077,7 +42077,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.83.0
+// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.83.1
 // ###########################################################################
 
 /*
@@ -42575,7 +42575,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.83.0
+// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.83.1
 // ###########################################################################
 
 /*
@@ -44303,7 +44303,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.83.0
+// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.83.1
 // ###########################################################################
 
 /*
@@ -44611,7 +44611,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 40 — Probation Periods (bulk create / adjust / delete)  v4.83.0
+// ##### SECTION 40 — Probation Periods (bulk create / adjust / delete)  v4.83.1
 // ###########################################################################
 
 /*
@@ -44634,7 +44634,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.83.0';
+  const SECTION_VERSION = '4.83.1';
   const MODULE_ID = 'probation-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -45008,7 +45008,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 41 — Bulk Employee Photos (profile picture for many employees in one run)  v4.83.0
+// ##### SECTION 41 — Bulk Employee Photos (profile picture for many employees in one run)  v4.83.1
 // ###########################################################################
 
 /*
@@ -45022,6 +45022,7 @@ async function shrinkPic_(data) {
  * The id in the path is Jisr's internal number (not the employee code, e.g. UV49): the employee list gives both, the code is matched here.
  * v4.82 (user test 2026-11-10): Jisr can answer 200 with the picture under data.employee.pending_changes.avatar (+ avatar_file_name, changeset {})
  * and NO live header_avatar: the photo is then waiting for approval in Jisr. The tool reports that as "Waiting for approval" (never as Uploaded).
+ * v4.83.1 (user test): a ZIP of 755 pictures was cut at 500 (a built-in limit). The limit is now 2000 pictures per run; above that the tool says how many were read.
  * v4.82.1 (user test): Jisr can fill pending_changes AND apply the picture a moment later, so the answer to the PUT is not the verdict: the tool
  * looks at the profile again (header_avatar) and only calls a row "Waiting for approval" when the live photo has not changed after the checks.
  * Matching (v4.82): code, then name, then Iqama / national ID; anything unmatched can be picked by hand from a searchable list.
@@ -45036,13 +45037,13 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.83.0';
+  const SECTION_VERSION = '4.83.1';
   const MODULE_ID = 'employee-photos';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
-  const MAX_FILES = 500;
+  const MAX_FILES = 2000;   // pictures read per run (was 500 until v4.83.1)
   const BIG_BYTES = 5 * 1024 * 1024;
   const OK_EXT = ['jpg', 'jpeg', 'png'];
   const cfg = { backoffMs: 1000, retries: 3, verifyWaits: [700, 1500, 3000] };   // verifyWaits: after a send, look at the profile again up to this many times (ms between looks)
@@ -45635,7 +45636,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 42 — Edit imported leaves (cancel + re-import with new dates / type / resumption)  v4.83.0
+// ##### SECTION 42 — Edit imported leaves (cancel + re-import with new dates / type / resumption)  v4.83.1
 // ###########################################################################
 
 /*
@@ -45664,7 +45665,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.83.0';
+  const SECTION_VERSION = '4.83.1';
   const MODULE_ID = 'leave-edit-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -46145,7 +46146,7 @@ async function shrinkPic_(data) {
 })();
 
 // ###########################################################################
-// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.83.0
+// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.83.1
 // ###########################################################################
 
 /** Business trip city catalogue (v4.22): Saudi regions, cities, towns and villages (homaily/Saudi-Arabia-Regions-Cities-and-Districts) and world cities with population over ~15,000 (datasets/world-cities, GeoNames) by country (dr5hn/countries-states-cities-database). Read-only reference data. */
@@ -46153,7 +46154,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.83.0
+// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.83.1
 // ###########################################################################
 
 /*
@@ -46692,7 +46693,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.83.0
+// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.83.1
 // ###########################################################################
 
 /*
@@ -47262,7 +47263,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 27 — Activation Checklist sidebar  v4.83.0
+// ##### SECTION 27 — Activation Checklist sidebar  v4.83.1
 // ###########################################################################
 
 /**
@@ -47726,7 +47727,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.83.0
+// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.83.1
 // ###########################################################################
 
 /**
@@ -47784,7 +47785,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 39 — Locations Setup (onboarding): set country, region, city and manager for many locations at once  v4.83.0
+// ##### SECTION 39 — Locations Setup (onboarding): set country, region, city and manager for many locations at once  v4.83.1
 // ###########################################################################
 
 /*
