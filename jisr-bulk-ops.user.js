@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.83.1
+// @version      4.86.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -40,11 +40,11 @@ if (/^jisr\.jisr\.net$/i.test(location.hostname)) { throw new Error('Jisr Bulk O
 // the Jisr page's) notes each write (PUT / POST / PATCH / DELETE to the Jisr API) made while one of those tools is the open tool and sends
 // it in the same form the older tools use (/api/log: one row per write: status, short redacted message, delay). It never changes a request,
 // never reads a request body, and fails open: no backend set, or any error, means nothing happens.
-const JBO_TRACKED_TOOLS = ['payroll-transactions-bulk', 'leave-cancel-bulk', 'leave-edit-bulk', 'shifts-bulk', 'fixed-hours-bulk', 'flight-tickets-bulk', 'shifts-clear', 'family-details-bulk', 'letter-templates', 'approval-cycles', 'performance-templates', 'delete-employees', 'business-trip-cities', 'final-settlement-bulk', 'locations-onboarding', 'probation-bulk', 'employee-photos'];
+const JBO_TRACKED_TOOLS = ['payroll-transactions-bulk', 'leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'shifts-bulk', 'fixed-hours-bulk', 'flight-tickets-bulk', 'shifts-clear', 'family-details-bulk', 'letter-templates', 'approval-cycles', 'performance-templates', 'delete-employees', 'business-trip-cities', 'final-settlement-bulk', 'locations-onboarding', 'probation-bulk', 'employee-photos', 'company-documents'];
 const JBO_OPEN_ONLY_TOOLS = ['payroll-reconciliation', 'data-validation', 'activation-checklist', 'letter-converter']; // read-only: the dashboard shows that they were used
 // v4.83: tools that check the result themselves (read it back from Jisr) report ONE row per employee / leave with its real outcome stage, so the
 // wrapper below leaves them alone: "HTTP 200" is not the outcome for them (Jisr can answer OK and not apply the change).
-const JBO_SELF_REPORT_TOOLS = ['employee-photos', 'leave-edit-bulk'];
+const JBO_SELF_REPORT_TOOLS = ['employee-photos', 'leave-edit-bulk', 'leave-create-bulk', 'company-documents'];
 // Outcome stages the dashboard understands (keep in step with STAGES in the Worker). cls: ok | warn | err | skip. A stage the dashboard does not know is ignored.
 const JBO_STAGE_CLASS = { ok: 'ok', ok_retry: 'ok', pending: 'warn', unverified: 'warn', skipped: 'skip', no_match: 'skip', rejected: 'err', denied: 'err', not_found: 'err', rate_limited: 'err', server_error: 'err', network: 'err', not_reflected: 'err', mismatch: 'err', rolled_back: 'err', restore_failed: 'err', failed: 'err' };
 /** HTTP status -> stage (0 / no status = no answer) */
@@ -69,15 +69,35 @@ function jboActToast_(text) {
 function jboActFlush_() {
   if (jboAct_.timer) { clearTimeout(jboAct_.timer); jboAct_.timer = null; }
   if (!jboAct_.buf.length) return;
-  const cfg = jboActCfg_(); const batch = jboAct_.buf.splice(0, 500);
+  if (jboAct_.sending) { jboAct_.timer = setTimeout(jboActFlush_, 500); return; } // one batch at a time: order is kept and a slow answer is not doubled up
+  const cfg = jboActCfg_();
   if (!cfg.url || typeof GM_xmlhttpRequest !== 'function') return;
+  const batch = jboAct_.buf.splice(0, 200); jboAct_.sending = true;
   let actor = ''; try { actor = GM_getValue('jisrBulkOps_ownerLabel', '') || ''; } catch (e) { /* ignore */ }
+  let settled = false;
+  // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
+  // v4.86.0: new tool "Create Leave Requests (Bulk)": a sheet in Jisr import format plus a "File name Attachment" column (typed or drop-down of the uploaded attachments); each row becomes a normal leave request with its attachment, approved at once and read back. The Edit tool uses the same column name.
+  const settle = (retry, err, fatal) => {
+    if (settled) return; settled = true; jboAct_.sending = false;
+    if (retry && (jboAct_.tries || 0) < 4) { jboAct_.tries = (jboAct_.tries || 0) + 1; jboAct_.buf.unshift(...batch); jboAct_.lastError = err + ' (trying again)'; jboAct_.timer = setTimeout(jboActFlush_, 3000 * jboAct_.tries); return; }
+    jboAct_.tries = 0;
+    if (err) {
+      jboAct_.failed += batch.length; jboAct_.lost = (jboAct_.lost || 0) + batch.length; jboAct_.lastError = err;
+      if (fatal ? !jboAct_.warned : Date.now() - (jboAct_.warnAt || 0) > 60000) { jboAct_.warned = jboAct_.warned || !!fatal; jboAct_.warnAt = Date.now(); jboActToast_(fatal || ('Jisr Ops dashboard: ' + batch.length + ' result row(s) could NOT be sent (' + err + '). The work in Jisr is done; these rows are missing from the dashboard.')); }
+    } else { jboAct_.sent += batch.length; jboAct_.lastOk = Date.now(); jboAct_.lastError = ''; }
+    if (jboAct_.buf.length) jboAct_.timer = setTimeout(jboActFlush_, 50);
+  };
   try {
-    GM_xmlhttpRequest({ method: 'POST', url: cfg.url + '/api/log', timeout: 8000, headers: { 'Content-Type': 'application/json', 'X-Write-Key': cfg.key || '' }, data: JSON.stringify({ actor: actor || 'unknown', slug: jboActSlug_(), entries: batch }),
-      onload: (r) => { if (r.status >= 200 && r.status < 300) { jboAct_.sent += batch.length; jboAct_.lastOk = Date.now(); jboAct_.lastError = ''; } else { jboAct_.failed += batch.length; jboAct_.lastError = 'HTTP ' + r.status + (r.status === 401 ? ' (the dashboard does not accept this write key)' : r.status === 429 ? ' (too many requests)' : ''); if (!jboAct_.warned && (r.status === 401 || r.status === 403)) { jboAct_.warned = true; jboActToast_('Jisr Ops dashboard: the write key on this browser was rejected; activity is NOT being recorded. Tampermonkey menu → Configure Shared Backend.'); } } },
-      onerror: () => { jboAct_.failed += batch.length; jboAct_.lastError = 'no answer from the dashboard'; }, ontimeout: () => { jboAct_.failed += batch.length; jboAct_.lastError = 'the dashboard timed out'; } });
-  } catch (e) { jboAct_.failed += batch.length; }
-  if (jboAct_.buf.length) jboAct_.timer = setTimeout(jboActFlush_, 2000);
+    GM_xmlhttpRequest({ method: 'POST', url: cfg.url + '/api/log', timeout: 20000, headers: { 'Content-Type': 'application/json', 'X-Write-Key': cfg.key || '' }, data: JSON.stringify({ actor: actor || 'unknown', slug: jboActSlug_(), entries: batch }),
+      onload: (r) => {
+        if (r.status >= 200 && r.status < 300) return settle(false, '');
+        const why = 'HTTP ' + r.status + (r.status === 401 ? ' (the dashboard does not accept this write key)' : r.status === 429 ? ' (too many requests)' : '');
+        if (r.status === 401 || r.status === 403) return settle(false, why, 'Jisr Ops dashboard: the write key on this browser was rejected; activity is NOT being recorded. Tampermonkey menu → Configure Shared Backend.');
+        settle(r.status === 429 || r.status >= 500, why);
+      },
+      onerror: () => settle(true, 'no answer from the dashboard'),
+      ontimeout: () => settle(false, 'the dashboard timed out (the rows may or may not have been stored)') });
+  } catch (e) { settle(false, 'could not send: ' + (e && e.message || e)); }
 }
 function jboActPush_(tool, rowKey, status, message, ms, stage) {
   const cfg = jboActCfg_(); if (!cfg.url) return;
@@ -155,8 +175,9 @@ const fetch = function jboFetch_(input, init) {
   } catch (e) { /* never let tracking touch a real request */ }
   return p;
 };
+try { const fl = () => { try { if (jboAct_.buf.length) jboActFlush_(); } catch (e) { /* ignore */ } }; window.addEventListener('pagehide', fl); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') fl(); }); } catch (e) { /* ignore */ }
 try {
-  unsafeWindow.__jisrBulkOpsActivity = { open: jboActOpen_, flush: jboActFlush_, report: jboActReport_, state: () => ({ tool: jboAct_.tool, queued: jboAct_.buf.length, sent: jboAct_.sent, failed: jboAct_.failed, lastError: jboAct_.lastError, lastOk: jboAct_.lastOk, configured: !!(jboActCfg_().url && jboActCfg_().key) }) };
+  unsafeWindow.__jisrBulkOpsActivity = { open: jboActOpen_, flush: jboActFlush_, report: jboActReport_, state: () => ({ tool: jboAct_.tool, queued: jboAct_.buf.length, sent: jboAct_.sent, failed: jboAct_.failed, lost: jboAct_.lost || 0, lastError: jboAct_.lastError, lastOk: jboAct_.lastOk, configured: !!(jboActCfg_().url && jboActCfg_().key) }) };
   if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('🔎 Check Ops dashboard connection', () => {
     const cfg = jboActCfg_(); if (!cfg.url || !cfg.key) { alert('This browser is NOT connected to the Ops dashboard (no address / write key). Use "Configure Shared Backend" first. Every browser profile needs it once.'); return; }
     GM_xmlhttpRequest({ method: 'POST', url: cfg.url + '/api/register', timeout: 8000, headers: { 'Content-Type': 'application/json', 'X-Write-Key': cfg.key }, data: JSON.stringify({ email: (() => { try { return GM_getValue('jisrBulkOps_userEmail', ''); } catch (e) { return ''; } })(), tenant: jboActSlug_() }),
@@ -276,7 +297,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.83.1
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.86.0
 // ###########################################################################
 
 /*
@@ -1087,6 +1108,7 @@ function jboRedact_(msg) {
 "Jisr Letter Converter": "محوّل خطابات جسر",
 "Bulk Cancel Leave Requests": "إلغاء طلبات الإجازة الجماعي",
 "Edit Imported Leaves (Bulk)": "تعديل الإجازات المستوردة (جماعي)",
+"Create Leave Requests (Bulk)": "إنشاء طلبات إجازة (جماعي)",
 "Bulk Payroll Transactions": "حركات الرواتب الجماعية",
 "Fixed Working Hours (Bulk)": "ساعات العمل الثابتة (جماعي)",
 "New Area": "المنطقة الجديدة",
@@ -1302,7 +1324,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0c — Google sign-in (company accounts only)  v4.83.1
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.86.0
 // ###########################################################################
 
 /*
@@ -1648,7 +1670,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.83.1
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.86.0
 // ###########################################################################
 
 /*
@@ -2272,8 +2294,8 @@ function jboRedact_(msg) {
   const CATEGORIES = [
     ['employees', 'Employees', 'الموظفون', ['data-validation', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'delete-employees']],
     ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'gosi-compliance', 'payroll-reconciliation', 'flight-tickets-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk']],
-    ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units']],
-    ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear', 'attendance-log-converter']],
+    ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units', 'company-documents']],
+    ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear', 'attendance-log-converter']],
     ['performance', 'Performance', 'الأداء', ['performance-templates']],
     ['requests', 'Requests & approvals', 'الطلبات والموافقات', ['approval-cycles']],
     ['utilities', 'Utilities', 'أدوات مساعدة', ['activation-checklist', 'export-everything', 'letter-templates', 'letter-converter']],
@@ -2286,8 +2308,8 @@ function jboRedact_(msg) {
       ['policies', 'Policies & benefits', 'السياسات والمزايا', ['business-trip-cities', 'flight-tickets-bulk']],
       ['performance', 'Performance', 'الأداء', ['performance-templates']],
       ['requests', 'Requests & approvals', 'الطلبات والموافقات', ['approval-cycles']],
-      ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units']],
-      ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear']],
+      ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units', 'company-documents']],
+      ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear']],
     ] },
     { key: 'check', en: 'Validate, convert & reconcile', ar: 'التحقق والتحويل والمطابقة', icon: 'scale', color: '#5FD0B0', groups: [
       ['validate', 'Validate & reconcile', 'التحقق والمطابقة', ['data-validation', 'payroll-reconciliation', 'gosi-compliance']],
@@ -2343,6 +2365,7 @@ function jboRedact_(msg) {
     'approval-cycles': ['See, duplicate and bulk edit request approval steps', 'عرض خطوات موافقات الطلبات ونسخها وتعديلها جماعيًا'],
     'performance-templates': ['Evaluation templates with groups, criteria and weights; from Excel or the client\'s workbook, as new templates or added into existing ones; or one per employee from an existing template\'s groups', 'نماذج التقييم مع المجموعات والمعايير والأوزان؛ من Excel أو ملف العميل، كنماذج جديدة أو إضافة إلى نماذج موجودة؛ أو نموذج لكل موظف من مجموعات نموذج موجود'],
     'employee-photos': ['Set profile photos for many employees from a ZIP or pictures named by employee code', 'تعيين صور الملفات الشخصية لعدة موظفين من ملف ZIP أو صور مسمّاة برمز الموظف'],
+    'company-documents': ['Add, edit or delete company documents in bulk from a ZIP, with a universal name and serial document numbers', 'إضافة مستندات الشركة أو تعديلها أو حذفها جماعيًا من ملف ZIP مع اسم عام وأرقام مستندات تسلسلية'],
     'probation-bulk': ['Create, adjust or delete probation periods', 'إنشاء فترات التجربة أو تعديلها أو حذفها'],
     'delete-employees': ['⚠ Permanently delete employees from this account', '⚠ حذف الموظفين نهائيًا من هذا الحساب'],
     'salary-increment-bulk': ['New salaries from a file', 'رواتب جديدة من ملف'],
@@ -2361,7 +2384,8 @@ function jboRedact_(msg) {
     'locations-onboarding': ['Onboarding: set country, region, city and manager for all locations at once (or from Excel)', 'التهيئة: تحديد الدولة والمنطقة والمدينة والمدير لكل المواقع دفعة واحدة (أو من Excel)'],
     'org-groups-business-units': ['Employee groups and business units', 'مجموعات الموظفين ووحدات الأعمال'],
     'leave-cancel-bulk': ['Clean up imported leaves', 'تنظيف الإجازات المستوردة'],
-    'leave-edit-bulk': ['Change dates, leave type or resumption of leaves that were imported in bulk', 'تغيير التواريخ أو نوع الإجازة أو تاريخ العودة للإجازات المستوردة جماعيًا'],
+    'leave-edit-bulk': ['Change dates, leave type or comment of leaves that were imported in bulk: a new approved leave request (with an attachment) replaces each one', 'تغيير التواريخ أو نوع الإجازة أو التعليق للإجازات المستوردة جماعيًا: طلب إجازة جديد معتمد (مع مرفق) يحل محل كل واحدة'],
+    'leave-create-bulk': ['Create leave requests from a sheet in Jisr\'s import format, with an attachment per employee (File name Attachment), approved at once', 'إنشاء طلبات إجازة من ملف بصيغة استيراد جسر، مع مرفق لكل موظف (File name Attachment) واعتماد فوري'],
     'fixed-hours-bulk': ['Weekly schedules and assignments', 'الجداول الأسبوعية والتعيينات'],
     'shifts-bulk': ['Create, edit, duplicate and delete shifts; form or Excel', 'إنشاء الورديات وتعديلها ونسخها وحذفها: نموذج أو Excel'],
     'family-details-bulk': ['Add family members: passport numbers with letters, nationalities by name', 'إضافة أفراد العائلة: أرقام الجواز بالحروف والجنسيات بالاسم'],
@@ -2372,7 +2396,7 @@ function jboRedact_(msg) {
     'letter-templates': ['Open, edit and save Jisr\'s letter templates (variables, header, body, footer)', 'فتح قوالب خطابات جسر وتعديلها وحفظها (المتغيرات، الترويسة، النص، التذييل)'],
     'letter-converter': ['Word letters to Jisr templates', 'تحويل خطابات Word إلى قوالب جسر'],
   };
-  const NEW_IDS = ['leave-edit-bulk', 'employee-photos', 'probation-bulk', 'locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
+  const NEW_IDS = ['leave-create-bulk', 'company-documents', 'leave-edit-bulk', 'employee-photos', 'probation-bulk', 'locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
   const svg_ = (k, size) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('width', size || 16); s.setAttribute('height', size || 16); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.8'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round'); s.innerHTML = ICONS[k] || ICONS.other; return s; };
   const normQ_ = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[ً-ٰٟـ]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
   function highlight_(text, q) {
@@ -28544,7 +28568,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.83.1
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.86.0
 // ###########################################################################
 
 /*
@@ -30119,7 +30143,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.83.1
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.86.0
 // ###########################################################################
 
 /*
@@ -30768,7 +30792,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v4.83.1
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.86.0
 // ###########################################################################
 
 /*
@@ -31636,7 +31660,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.83.1
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.86.0
 // ###########################################################################
 
 /*
@@ -33258,7 +33282,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.83.1
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.86.0
 // ###########################################################################
 
 /*
@@ -33728,7 +33752,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 20 — Employee Documents bulk upload  v4.83.1
+// ##### SECTION 20 — Employee Documents bulk upload  v4.86.0
 // ###########################################################################
 
 /*
@@ -34560,7 +34584,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 21 — Bulk Offboarding  v4.83.1
+// ##### SECTION 21 — Bulk Offboarding  v4.86.0
 // ###########################################################################
 
 /**
@@ -35208,7 +35232,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 22 — Bulk Final Settlement  v4.83.1
+// ##### SECTION 22 — Bulk Final Settlement  v4.86.0
 // ###########################################################################
 
 /**
@@ -35693,7 +35717,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 24 — Bulk Payroll Transactions  v4.83.1
+// ##### SECTION 24 — Bulk Payroll Transactions  v4.86.0
 // ###########################################################################
 
 /**
@@ -36365,7 +36389,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.83.1
+// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.86.0
 // ###########################################################################
 
 /**
@@ -36805,7 +36829,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.83.1
+// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.86.0
 // ###########################################################################
 
 /*
@@ -37425,7 +37449,7 @@ function jboRedact_(msg) {
 })();
 
 // ###########################################################################
-// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.83.1
+// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.86.0
 // ###########################################################################
 
 /**
@@ -38021,7 +38045,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.83.1
+// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.86.0
 // ###########################################################################
 
 /**
@@ -38095,7 +38119,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.83.1
+// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.86.0
 // ###########################################################################
 
 /**
@@ -38108,7 +38132,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.83.1
+// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.86.0
 // ###########################################################################
 
 /*
@@ -38844,7 +38868,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 36 — Shifts & Day Offs: assign day offs / a shift, or clear — any range up to one year, week by week  v4.83.1
+// ##### SECTION 36 — Shifts & Day Offs: assign day offs / a shift, or clear — any range up to one year, week by week  v4.86.0
 // ###########################################################################
 
 /*
@@ -39279,7 +39303,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 37 — Family Members (bulk add; passport numbers with letters; nationalities by name)  v4.83.1
+// ##### SECTION 37 — Family Members (bulk add; passport numbers with letters; nationalities by name)  v4.86.0
 // ###########################################################################
 
 /*
@@ -39752,7 +39776,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 38 — Letter Templates: open, edit and save Jisr's letters directly (simple editor + variables)  v4.83.1
+// ##### SECTION 38 — Letter Templates: open, edit and save Jisr's letters directly (simple editor + variables)  v4.86.0
 // ###########################################################################
 
 /*
@@ -39775,7 +39799,7 @@ function jboRedact_(msg) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.83.1';
+  const SECTION_VERSION = '4.86.0';
   const MODULE_ID = 'letter-templates';
   function gmSet_(k, v) { try { GM_setValue('jisrBulkOps_' + k, v); } catch (e) { /* ignore */ } }
   const W = unsafeWindow;
@@ -42077,7 +42101,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.83.1
+// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.86.0
 // ###########################################################################
 
 /*
@@ -42575,7 +42599,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.83.1
+// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.86.0
 // ###########################################################################
 
 /*
@@ -44303,7 +44327,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.83.1
+// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.86.0
 // ###########################################################################
 
 /*
@@ -44611,7 +44635,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 40 — Probation Periods (bulk create / adjust / delete)  v4.83.1
+// ##### SECTION 40 — Probation Periods (bulk create / adjust / delete)  v4.86.0
 // ###########################################################################
 
 /*
@@ -44634,7 +44658,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.83.1';
+  const SECTION_VERSION = '4.86.0';
   const MODULE_ID = 'probation-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -45008,7 +45032,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 41 — Bulk Employee Photos (profile picture for many employees in one run)  v4.83.1
+// ##### SECTION 41 — Bulk Employee Photos (profile picture for many employees in one run)  v4.86.0
 // ###########################################################################
 
 /*
@@ -45022,7 +45046,7 @@ async function shrinkPic_(data) {
  * The id in the path is Jisr's internal number (not the employee code, e.g. UV49): the employee list gives both, the code is matched here.
  * v4.82 (user test 2026-11-10): Jisr can answer 200 with the picture under data.employee.pending_changes.avatar (+ avatar_file_name, changeset {})
  * and NO live header_avatar: the photo is then waiting for approval in Jisr. The tool reports that as "Waiting for approval" (never as Uploaded).
- * v4.83.1 (user test): a ZIP of 755 pictures was cut at 500 (a built-in limit). The limit is now 2000 pictures per run; above that the tool says how many were read.
+ * v4.86.0 (user test): a ZIP of 755 pictures was cut at 500 (a built-in limit). The limit is now 2000 pictures per run; above that the tool says how many were read.
  * v4.82.1 (user test): Jisr can fill pending_changes AND apply the picture a moment later, so the answer to the PUT is not the verdict: the tool
  * looks at the profile again (header_avatar) and only calls a row "Waiting for approval" when the live photo has not changed after the checks.
  * Matching (v4.82): code, then name, then Iqama / national ID; anything unmatched can be picked by hand from a searchable list.
@@ -45037,13 +45061,13 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.83.1';
+  const SECTION_VERSION = '4.86.0';
   const MODULE_ID = 'employee-photos';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
-  const MAX_FILES = 2000;   // pictures read per run (was 500 until v4.83.1)
+  const MAX_FILES = 2000;   // pictures read per run (was 500 until v4.86.0)
   const BIG_BYTES = 5 * 1024 * 1024;
   const OK_EXT = ['jpg', 'jpeg', 'png'];
   const cfg = { backoffMs: 1000, retries: 3, verifyWaits: [700, 1500, 3000] };   // verifyWaits: after a send, look at the profile again up to this many times (ms between looks)
@@ -45636,7 +45660,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 42 — Edit imported leaves (cancel + re-import with new dates / type / resumption)  v4.83.1
+// ##### SECTION 42 — Edit imported leaves (cancel + new approved leave request, or re-import)  v4.86.0
 // ###########################################################################
 
 /*
@@ -45661,11 +45685,17 @@ async function shrinkPic_(data) {
  * v4.83: each leave reports ONE outcome stage to the Ops dashboard: ok, OK but not applied (Jisr accepted the import and the new leave did not appear), rolled back
  * (failed, original put back), mismatch (different leave type), and the CRITICAL restore_failed (the old leave was cancelled and could not be put back: it must be restored
  * from the results file). The generic request log skips this tool because HTTP 200 is not the outcome here.
+ * v4.85: Jisr's import cannot attach a document and its leaves cannot be edited afterwards, so the DEFAULT way to make the corrected leave is now a normal leave
+ * request: cancel the old imported leave, POST /v2/employees/{id}/leave_requests (same body as the Jisr screen, attachment as a base64 data URL inside
+ * leave_request.attachments[{data, filename}]), then approve it at once through the approvals list (POST /v2/requests/approvals/{approval_id}/approve), so it does
+ * not wait in the approval cycle. The result is read back from the employee's leave history (all leaves, not only imported ones). If the new request is refused the
+ * original is imported again (the import stays as the restore path and as an option "Jisr import: no attachment"). A request that was created but could not be approved
+ * (the signed-in user is not an approver for it) is reported as "pending", never as done.
  * ===========================================================================
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.83.1';
+  const SECTION_VERSION = '4.86.0';
   const MODULE_ID = 'leave-edit-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -45676,7 +45706,7 @@ async function shrinkPic_(data) {
   function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
   const LC = () => W.__jisrLeaveCancel || {};
-  const cfg = { paceMs: 300, verifyTries: 5, verifyWaitMs: 1500 };
+  const cfg = { paceMs: 300, verifyTries: 5, verifyWaitMs: 1500, approvalPages: 5, approveSteps: 5, maxAttachBytes: 10 * 1024 * 1024 };
 
   // ======================================================================= pure helpers
   const pad_ = (n) => String(n).padStart(2, '0');
@@ -45699,7 +45729,7 @@ async function shrinkPic_(data) {
   const overlap_ = (a, b) => a.start <= b.end && b.start <= a.end;
 
   /** One row of the edit file: which leave (current values) and what changes (new values). */
-  function planRow_(row, leave, types, raw, lang) {
+  function planRow_(row, leave, types, raw, lang, opts) {
     // returns { errs[], plan{type{id,name,imp}, start,end,resumption,comment}, changes[] }
     const errs = []; const changes = [];
     let t = { id: null, name: leave.type || leave.typeEn || '', imp: '' };
@@ -45713,6 +45743,7 @@ async function shrinkPic_(data) {
     }
     if (!t.imp && t.name) t.imp = t.name;
     if (!t.imp) errs.push(T('The leave type of this leave could not be read', 'تعذّرت قراءة نوع هذه الإجازة'));
+    else if (t.id == null && !(opts && opts.method === 'import')) errs.push(T('The leave type id could not be found (needed to create the request)', 'تعذّر إيجاد معرّف نوع الإجازة (مطلوب لإنشاء الطلب)'));
     const start = row.newStart || leave.start, end = row.newEnd || leave.end;
     if (row.newStart === null || row.newEnd === null || row.newResumption === null) errs.push(T('A new date was not understood (use YYYY-MM-DD or DD/MM/YYYY)', 'لم يُفهم تاريخ جديد (استخدم YYYY-MM-DD أو DD/MM/YYYY)'));
     if (!dateOk_(start) || !dateOk_(end)) { if (!errs.length) errs.push(T('Start or end date is missing', 'تاريخ البداية أو النهاية مفقود')); }
@@ -45727,6 +45758,9 @@ async function shrinkPic_(data) {
     if (end !== leave.end) changes.push(T('end ', 'النهاية ') + leave.end + ' → ' + end);
     if (row.newResumption && row.newResumption !== (leave.returnDate || '')) changes.push(T('resumption ', 'العودة ') + (leave.returnDate || '—') + ' → ' + row.newResumption);
     else if (!row.newResumption && !datesSame) changes.push(T('resumption: Jisr works it out', 'العودة: يحسبها جسر'));
+    if (row.newResumption && opts && opts.method !== 'import') changes.push(T('(a new request has no resumption field: Jisr calculates it)', '(الطلب الجديد بلا حقل للعودة: يحسبها جسر)'));
+    if (row.attachName) changes.push(T('attachment: ', 'مرفق: ') + row.attachName);
+    if (row.seha) changes.push('seha id ' + row.seha);
     if (row.newComment !== '' && row.newComment != null && row.newComment !== (leave.reason || '')) changes.push(T('comment changed', 'تغيّر التعليق'));
     return { errs, changes, plan: { type: t, start, end, resumption, comment } };
   }
@@ -45784,6 +45818,98 @@ async function shrinkPic_(data) {
     const m = (LC().jisrMsg_ && LC().jisrMsg_(j)) || (j ? JSON.stringify(j) : '');
     return redact_(m) || 'HTTP ' + (r && r.status);
   }
+
+  // ======================================================================= v4.85: the corrected leave as a normal request (attachment, approved at once)
+  const MIME_ = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', txt: 'text/plain', csv: 'text/csv' };
+  const extOf_ = (n) => { const m = /\.([A-Za-z0-9]+)$/.exec(String(n || '')); return m ? m[1].toLowerCase() : ''; };
+  const baseOf_ = (n) => String(n || '').split(/[\\/]/).pop();
+  const stem_ = (n) => baseOf_(n).replace(/\.[A-Za-z0-9]+$/, '').trim().toLowerCase();
+  function dataUrl_(u8, mime) { let b = ''; for (let i = 0; i < u8.length; i += 0x8000) b += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return 'data:' + mime + ';base64,' + btoa(b); }
+  /** the first value stored under `key` anywhere in a JSON answer */
+  function deepFind_(v, key, d) { d = d || 0; if (v == null || typeof v !== 'object' || d > 7) return undefined; if (!Array.isArray(v) && key in v) return v[key]; for (const x of (Array.isArray(v) ? v : Object.values(v))) { const f = deepFind_(x, key, d + 1); if (f !== undefined) return f; } return undefined; }
+  /** body of POST /v2/employees/{id}/leave_requests (the Jisr screen's own shape, captured 2026-11-10) */
+  function createBody_(p, url, r) {
+    const lr = { toil_balance_deduction_enabled: false, leave_type_id: /^\d+$/.test(String(p.type.id)) ? Number(p.type.id) : p.type.id, from: p.start, to: p.end, reason: p.comment || 'Leave edited with Bulk Ops', seha_id: (r && r.seha) || null,
+      is_pregnancy_leave: false, is_re_entry_exit: false, is_require_vacation_salary: false, exit_reentry_info_attributes: { entry_type: 'Single', period: 3 } };
+    if (url) lr.attachments = [{ data: url, filename: baseOf_(r.att.name) }];
+    return { leave_request: lr };
+  }
+  async function attUrl_(att) {
+    const u8 = att.bytes || new Uint8Array(await att.blob.arrayBuffer());
+    return dataUrl_(u8, MIME_[extOf_(att.name)] || 'application/octet-stream');
+  }
+  /** Attachment for a row: the file named in the sheet (found among the files / ZIP picked in the tool), else the one attachment for every row. */
+  function findAtt_(name, files, common) {
+    const n = String(name || '').trim();
+    if (!n) return common ? { att: common } : { att: null };
+    const lo = baseOf_(n).toLowerCase(); let hit = files.find((f) => f.name.toLowerCase() === lo);
+    if (!hit) { const st = stem_(n); const m = files.filter((f) => stem_(f.name) === st); if (m.length === 1) hit = m[0]; else if (m.length > 1) return { err: 'several files are named "' + n + '"' }; }
+    return hit ? { att: hit } : { err: 'attachment "' + n + '" was not found in the files / ZIP you added' };
+  }
+  const leaveItems_ = (json) => { const d = (json && json.data) || json || {}; let list = null; (function walk(v, k) { if (list || !v || typeof v !== 'object' || k > 5) return; if (Array.isArray(v)) { if (v.length && v.every((x) => x && typeof x === 'object' && x.request && typeof x.request === 'object')) { list = v; return; } v.forEach((x) => walk(x, k + 1)); return; } Object.values(v).forEach((x) => walk(x, k + 1)); })(d, 0); return list || []; };
+  /** The approvals the signed-in user may act on: the pending one that belongs to this leave request, if any. */
+  async function findApproval_(leaveId) {
+    for (const filtered of [true, false]) {
+      let stopped = false;
+      for (let page = 1; page <= cfg.approvalPages; page++) {
+        const q = { type: 'permitted_requests', page, rpp: 50, search: '' }; if (filtered) q['filter[status][]'] = 'Pending';
+        const r = await LC().request_('GET', '/v2/requests/approvals', q, null);
+        if (!r.ok) { if (filtered) { stopped = true; break; } return null; }
+        const items = leaveItems_(r.json);
+        const hit = items.find((it) => String(it.request && it.request.id != null ? it.request.id : it.request_id) === String(leaveId) && (!it.request_type || /leave/i.test(it.request_type)) && !/approved|rejected|cancel/i.test(String(it.status || '')));
+        if (hit) return { id: hit.id, status: hit.status };
+        if (items.length < 50) break;
+      }
+      if (!stopped) return null;
+    }
+    return null;
+  }
+  /** Approve the request as many times as its approval cycle needs (each step shows up as a new pending approval). */
+  async function approveLeave_(leaveId, comment) {
+    let steps = 0;
+    for (let k = 0; k < cfg.approveSteps; k++) {
+      let ap = null;
+      for (let i = 0; i < cfg.verifyTries && !ap; i++) { if (i) await sleep_(cfg.verifyWaitMs); ap = await findApproval_(leaveId); if (!ap && k > 0) break; }
+      if (!ap) return { steps, why: steps ? '' : 'no pending approval for this request is in your approvals list' };
+      const r = await LC().request_('POST', '/v2/requests/approvals/' + encodeURIComponent(ap.id) + '/approve', null, { request: { comments: comment || 'Approved' } });
+      if (!r.ok) return { steps, error: importMsg_(r), status: r.status };
+      steps++; await sleep_(cfg.paceMs);
+    }
+    return { steps };
+  }
+  /** all of the employee's leaves (not only imported ones): approved requests show here, pending ones do not */
+  async function histAll_(empId) {
+    const out = [];
+    for (let page = 1; page <= 40; page++) {
+      const r = await LC().request_('GET', '/v2/employees/' + encodeURIComponent(empId) + '/leaves/history', { all_years: 'true', rpp: 25, page });
+      if (!r.ok) throw new Error(T('Could not read the leaves (HTTP ', 'تعذّرت قراءة الإجازات (HTTP ') + r.status + ')');
+      const d = (r.json && r.json.data) || {}; const list = Array.isArray(d.leave_history) ? d.leave_history : [];
+      list.forEach((o) => out.push(LC().leaveItem_(o)));
+      const pg = d.pagination || {};
+      if (!list.length || !pg.next_page || (pg.total_pages && page >= pg.total_pages)) break;
+    }
+    return out;
+  }
+  async function waitApproved_(empId, id, start, end, skipIds) {
+    let list = [];
+    for (let i = 0; i < cfg.verifyTries; i++) {
+      if (i) await sleep_(cfg.verifyWaitMs);
+      list = await histAll_(empId);
+      const hit = list.find((l) => (id != null && String(l.id) === String(id)) || (l.start === start && l.end === end && !skipIds.has(String(l.id))));
+      if (hit && !LC().isGone_(hit.status)) return { hit, list };
+    }
+    return { hit: null, list };
+  }
+  /** Jisr's own preview of the new request (reads only): days, a warning, and whether this leave type needs an attachment */
+  async function previewOne_(r) {
+    const p = r.plan;
+    const q = { 'leave_request[leave_type_id]': p.type.id, 'leave_request[toil_balance_deduction_enabled]': 'false', 'leave_request[is_require_vacation_salary]': 'false', 'leave_request[from]': p.start, 'leave_request[to]': p.end };
+    const res = await LC().request_('GET', '/v2/employees/' + encodeURIComponent(r.emp.id) + '/leave_requests/new', q, null);
+    if (!res.ok) return null;
+    const w = deepFind_(res.json, 'warning'), days = deepFind_(res.json, 'applied_days'), req = deepFind_(res.json, 'is_attachment_required');
+    return { days: days == null ? '' : days, warn: typeof w === 'string' ? w : '', attachReq: req === true };
+  }
+
   /** Read the employee's imported leaves until the wanted one shows (the import may take a moment). */
   async function waitFor_(empId, start, end, skipIds, wantedType, types) {
     let list = [];
@@ -45822,7 +45948,7 @@ async function shrinkPic_(data) {
       .jle-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
     ` }));
   }
-  const HEADERS = ['Leave request ID', 'Employee ID', 'Employee Name', 'Current leave type', 'Current start', 'Current end', 'Current resumption', 'Current comment', 'New leave type', 'New start', 'New end', 'New resumption', 'New comment'];
+  const HEADERS = ['Leave request ID', 'Employee ID', 'Employee Name', 'Current leave type', 'Current start', 'Current end', 'Current resumption', 'Current comment', 'New leave type', 'New start', 'New end', 'New resumption', 'New comment', 'File name Attachment', 'Seha ID'];
   const norm_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
 
   /** Reads the edit file (this tool's own export or a hand-made file) into rows. */
@@ -45835,11 +45961,11 @@ async function shrinkPic_(data) {
     const c = {
       lid: col(/leave request id|request id|^leave id$/), emp: h.findIndex((x) => /^employee id$|employee code|employee number|^code$|رقم الموظف|الرقم الوظيفي/.test(x)),
       curType: col(/^(current )?(leave )?type$|^current leave type$/), curStart: col(/^(current )?(start|from)( date)?$/), curEnd: col(/^(current )?(end|to)( date)?$/),
-      newType: col(/^new (leave )?type/), newStart: col(/^new (start|from)/), newEnd: col(/^new (end|to)/), newRes: col(/^new (resumption|return)/), newComment: col(/^new (comment|reason|note)/),
+      attach: col(/^(new )?(attachment|attached|document|file)( file)?( name)?( attachment)?$|^file name attachment$|file name|^attachment/), seha: col(/^(new )?seha( id)?$/), newType: col(/^new (leave )?type/), newStart: col(/^new (start|from)/), newEnd: col(/^new (end|to)/), newRes: col(/^new (resumption|return)/), newComment: col(/^new (comment|reason|note)/),
     };
     if (c.emp < 0) return { error: T('No Employee ID column found.', 'لم يُعثر على عمود Employee ID.') };
     if (c.lid < 0 && c.curStart < 0) return { error: T('The file needs the leave request ID, or the current start date, to know which leave to change.', 'يحتاج الملف رقم طلب الإجازة أو تاريخ البداية الحالي لمعرفة الإجازة المراد تغييرها.') };
-    if ([c.newType, c.newStart, c.newEnd, c.newRes, c.newComment].every((i) => i < 0)) return { error: T('No "New …" columns found (New leave type, New start, New end, New resumption, New comment).', 'لا توجد أعمدة «New …» (New leave type وNew start وNew end وNew resumption وNew comment).') };
+    if ([c.newType, c.newStart, c.newEnd, c.newRes, c.newComment, c.attach].every((i) => i < 0)) return { error: T('No "New …" columns found (New leave type, New start, New end, New resumption, New comment).', 'لا توجد أعمدة «New …» (New leave type وNew start وNew end وNew resumption وNew comment).') };
     const get = (r, i) => (i >= 0 ? r[i] : '');
     const txt = (v) => String(v == null ? '' : v).trim();
     const rows = []; let ignored = 0;
@@ -45848,8 +45974,8 @@ async function shrinkPic_(data) {
       if (!empText) return;
       const nd = (i) => { const v = get(r, i); return v === '' || v == null ? '' : D(v); };   // '' none, null not understood
       const row = { no: hi + k + 2, empText, leaveId: txt(get(r, c.lid)).replace(/\.0+$/, ''), curType: txt(get(r, c.curType)), start: D(get(r, c.curStart)) || '', end: D(get(r, c.curEnd)) || '',
-        newType: txt(get(r, c.newType)), newStart: nd(c.newStart), newEnd: nd(c.newEnd), newResumption: nd(c.newRes), newComment: txt(get(r, c.newComment)), state: '', msg: '' };
-      if (!(row.newType || row.newStart || row.newEnd || row.newResumption || row.newComment || row.newStart === null || row.newEnd === null || row.newResumption === null)) { ignored++; return; }
+        newType: txt(get(r, c.newType)), newStart: nd(c.newStart), newEnd: nd(c.newEnd), newResumption: nd(c.newRes), newComment: txt(get(r, c.newComment)), attachName: txt(get(r, c.attach)), seha: txt(get(r, c.seha)).replace(/\.0+$/, ''), state: '', msg: '' };
+      if (!(row.newType || row.newStart || row.newEnd || row.newResumption || row.newComment || row.attachName || row.newStart === null || row.newEnd === null || row.newResumption === null)) { ignored++; return; }
       rows.push(row);
     });
     return { rows, ignored };
@@ -45858,7 +45984,7 @@ async function shrinkPic_(data) {
   function openTool_() {
     injectCss_();
     const X = W.__jisrBulkOpsXlsx;
-    const S = { rows: [], types: null, raw: null, hist: new Map(), busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false, lang: gmGet_('leaveEditNameLang', 'ar') === 'en' ? 'en' : 'ar', ignored: 0 };
+    const S = { rows: [], types: null, raw: null, hist: new Map(), busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false, lang: gmGet_('leaveEditNameLang', 'ar') === 'en' ? 'en' : 'ar', ignored: 0, method: gmGet_('leaveEditMethod', 'request') === 'import' ? 'import' : 'request', files: [], common: null, histAll: new Map() };
     const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
     const titleEl = el('div', { class: 'jbo-modal-title' }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': 'Close' });
     const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1300px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
@@ -45873,6 +45999,15 @@ async function shrinkPic_(data) {
     const langSel = el('select', {}, [el('option', { value: 'ar', text: 'العربية' }), el('option', { value: 'en', text: 'English' })]); langSel.value = S.lang;
     langSel.addEventListener('change', () => { S.lang = langSel.value; gmSet_('leaveEditNameLang', S.lang); S.dryDone = false; paint_(); });
     const reasonIn = el('input', { type: 'text', value: 'Edited with Bulk Ops', style: { minWidth: '240px' } });
+    const ATT_ACCEPT = '.zip,.pdf,.png,.jpg,.jpeg,.gif,.doc,.docx,.xls,.xlsx,.txt';
+    const methodSel = el('select', {}, [el('option', { value: 'request', text: T('New leave request, approved at once (can carry an attachment)', 'طلب إجازة جديد يُعتمد فورًا (يمكن إرفاق ملف)') }), el('option', { value: 'import', text: T('Jisr import (applied directly, no attachment)', 'استيراد جسر (يُطبَّق مباشرة، بلا مرفق)') })]); methodSel.value = S.method;
+    methodSel.addEventListener('change', () => { S.method = methodSel.value; gmSet_('leaveEditMethod', S.method); S.dryDone = false; S.rows.forEach((r) => { if (r.state !== 'done') { r.state = ''; r.msg = ''; } }); render_(); });
+    const attIn = el('input', { type: 'file', multiple: true, accept: ATT_ACCEPT, style: { display: 'none' } });
+    const attB = el('button', { class: 'jbo-btn', text: T('Attachments: ZIP or files…', 'المرفقات: ZIP أو ملفات…') });
+    const commonIn = el('input', { type: 'file', accept: ATT_ACCEPT.replace('.zip,', ''), style: { display: 'none' } });
+    const commonB = el('button', { class: 'jbo-btn', text: T('One attachment for every row…', 'مرفق واحد لكل الصفوف…') });
+    const clearAttB = el('button', { class: 'jbo-btn', text: T('Clear attachments', 'مسح المرفقات') });
+    const attInfo = el('span', { class: 'jbo-muted' });
     const expB = el('button', { class: 'jbo-btn', text: T('Imported leaves (.xlsx)', 'الإجازات المستوردة (‎.xlsx)') });
     const upB = el('button', { class: 'jbo-btn', text: T('Upload edited file', 'رفع الملف بعد التعديل') });
     const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
@@ -45889,7 +46024,11 @@ async function shrinkPic_(data) {
       titleEl.textContent = T('Edit Imported Leaves (Bulk)', 'تعديل الإجازات المستوردة (جماعي)');
       body.innerHTML = ''; foot.innerHTML = '';
       body.appendChild(el('div', { class: 'jle-bar' }, [el('b', { text: T('Edit', 'تعديل') }), cancelTabB]));
-      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
+      body.appendChild(el('div', { class: 'jle-bar' }, [el('label', {}, [T('Create the corrected leave as', 'إنشاء الإجازة الصحيحة كـ'), methodSel])].concat(S.method === 'request' ? [attB, commonB, clearAttB, attInfo] : [])));
+      if (S.method === 'request') body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
+        'Jisr cannot edit an imported leave, and an import cannot carry an attachment. For every row this tool cancels the old imported leave, creates a normal leave request for the employee (with the attachment, if there is one) and approves it at once, so it does not wait in the approval cycle. 1) Download the imported leaves, 2) fill the “New …” columns for the leaves to change, and the “File name Attachment” column with the file name (add the files or a ZIP with “Attachments”, or use one attachment for every row), 3) upload, 4) Dry Run, 5) run. You must be an approver for these requests in Jisr, otherwise the new request stays pending and the row is reported as pending.',
+        'لا يستطيع جسر تعديل إجازة مستوردة، ولا يمكن إرفاق ملف في الاستيراد. لكل صف تلغي الأداة الإجازة المستوردة القديمة وتنشئ طلب إجازة عاديًا للموظف (مع المرفق إن وُجد) وتعتمده فورًا فلا ينتظر دورة الاعتماد. 1) نزّل الإجازات المستوردة، 2) املأ أعمدة «New …» للإجازات المراد تغييرها وعمود «File name Attachment» باسم الملف (أضف الملفات أو ZIP من «المرفقات»، أو استخدم مرفقًا واحدًا لكل الصفوف)، 3) ارفع الملف، 4) تشغيل تجريبي، 5) نفّذ. يجب أن تكون معتمِدًا لهذه الطلبات في جسر وإلا بقي الطلب الجديد معلّقًا ويُسجَّل الصف كمعلّق.')}));
+      else body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
         'Jisr cannot edit a leave that was imported in bulk, only cancel it. This tool changes the dates, leave type, resumption date or comment by cancelling the old leave and importing the corrected one (applied directly, no approval). 1) Download the imported leaves, 2) fill the “New …” columns only for the leaves you want to change (an empty cell keeps the current value), 3) upload it, 4) Dry Run, 5) run.',
         'لا يستطيع جسر تعديل إجازة مستوردة جماعيًا، بل إلغاءها فقط. تغيّر هذه الأداة التواريخ ونوع الإجازة وتاريخ العودة والتعليق بإلغاء الإجازة القديمة واستيراد الصحيحة (تُطبَّق مباشرة دون موافقة). 1) نزّل الإجازات المستوردة، 2) املأ أعمدة «New …» للإجازات المراد تغييرها فقط (الخلية الفارغة تُبقي القيمة الحالية)، 3) ارفع الملف، 4) تشغيل تجريبي، 5) نفّذ.')}));
       body.appendChild(el('div', { class: 'jle-warn', text: T(
@@ -45897,12 +46036,13 @@ async function shrinkPic_(data) {
         'تُلغى الإجازة القديمة أولًا. إن لم تظهر الإجازة الصحيحة في جسر بعد ذلك فتعيد الأداة استيراد الأصلية وتتوقف. تُحفظ القيم القديمة في ملف النتائج. شغّل التجريبي أولًا وجرّب صفًا أو اثنين قبل الملف كله.')}));
       body.appendChild(el('div', { class: 'jle-bar' }, [el('label', {}, [T('Cancellation reason', 'سبب الإلغاء'), reasonIn]), el('label', {}, [T('Leave type spelling in the import', 'كتابة نوع الإجازة في الاستيراد'), langSel])]));
       body.appendChild(el('div', { class: 'jle-bar' }, [expB, typeSel, el('label', {}, [T('starting from', 'تبدأ من'), fromIn]), el('label', {}, [T('to', 'إلى'), toIn]), el('span', { class: 'jbo-muted', text: '·' }), upB]));
-      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn);
+      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn); body.appendChild(attIn); body.appendChild(commonIn);
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
       paint_();
     }
     function paint_() {
+      attInfo.textContent = (S.files.length ? S.files.length + T(' attachment file(s)', ' ملف مرفق') : T('no attachment files added', 'لم تُضف ملفات مرفقة')) + (S.common ? ' · ' + T('for every row: ', 'لكل الصفوف: ') + S.common.name : '');
       statusEl.textContent = S.busy || S.note;
       statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
       statsEl.innerHTML = '';
@@ -45931,7 +46071,7 @@ async function shrinkPic_(data) {
       runB.disabled = !S.dryDone || !ready || !!S.busy;
       dryB.disabled = !S.rows.length || !!S.busy;
       stopB.style.display = S.phase === 'running' ? '' : 'none';
-      [expB, upB].forEach((b) => { b.disabled = !!S.busy; });
+      [expB, upB, attB, commonB, clearAttB].forEach((b) => { b.disabled = !!S.busy || S.phase === 'running'; });
       resB.style.display = S.rows.some((r) => ['done', 'failed'].includes(r.state)) ? '' : 'none';
     }
     async function types_() {
@@ -45970,13 +46110,43 @@ async function shrinkPic_(data) {
           done++; S.busy = T('Reading leaves… ', 'جارٍ قراءة الإجازات… ') + done + '/' + emps.length + ' · ' + rows.length + T(' leave(s)', ' إجازة'); statusEl.textContent = S.busy;
         });
         rows.sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[4]).localeCompare(String(b[4])));
-        X.setNextLists({ 'New leave type': { values: (S.raw || []).map((t) => t.name).filter(Boolean), strict: false } });
+        { const lists = { 'New leave type': { values: (S.raw || []).map((t) => t.name).filter(Boolean), strict: false } }; const fn = Array.from(new Set(S.files.map((f) => f.name))).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })); if (fn.length) lists['File name Attachment'] = { values: fn, strict: false }; X.setNextLists(lists); }
         await X.downloadAoa('jisr-imported-leaves-' + slug_() + '.xlsx', HEADERS, rows, 'Imported leaves');
         S.note = rows.length + T(' imported leave(s) exported', ' إجازة مستوردة صُدّرت') + (failed ? ' (' + failed + T(' employee(s) could not be read)', ' موظف تعذّرت قراءته)') : '') + T('. Fill the “New …” columns for the ones to change (dates as YYYY-MM-DD or DD/MM/YYYY), then upload the file.', '. املأ أعمدة «New …» لما يجب تغييره (التواريخ بصيغة YYYY-MM-DD أو DD/MM/YYYY) ثم ارفع الملف.');
         S.noteErr = false;
       } catch (e) { S.note = e.message; S.noteErr = true; }
       S.busy = ''; paint_();
     });
+
+    // ---------------- attachments: ZIP or files, matched to rows by the "Attachment file" column
+    function readZip_(u8) {
+      const Xl = (typeof XLSX !== 'undefined' && XLSX) || W.XLSX;
+      if (!Xl || !Xl.CFB) throw new Error(T('The zip library did not load.', 'لم يتم تحميل مكتبة ZIP.'));
+      let cfb; try { cfb = Xl.CFB.read(u8, { type: 'array' }); } catch (e) { throw new Error(T('This file could not be opened as a ZIP.', 'تعذّر فتح هذا الملف كملف ZIP.')); }
+      const out = [];
+      (cfb.FullPaths || []).forEach((fp, i) => {
+        const path = String(fp).replace(/^Root Entry\//, ''); if (!path || /\/$/.test(path)) return;
+        const name = baseOf_(path);
+        if (/^[\u0000-\u001f]*Sh33tJ5$/.test(path) || /(^|\/)__MACOSX\//i.test(path) || name.startsWith('._') || /^(\.DS_Store|Thumbs\.db|desktop\.ini)$/i.test(name)) return;
+        const ent = cfb.FileIndex[i]; if (!ent || !ent.content || !ent.content.length) return;
+        out.push({ name, size: ent.content.length, bytes: ent.content instanceof Uint8Array ? ent.content : new Uint8Array(ent.content) });
+      });
+      return out;
+    }
+    attB.addEventListener('click', () => { attIn.value = ''; attIn.click(); });
+    attIn.addEventListener('change', async () => {
+      const list = Array.from(attIn.files || []); if (!list.length) return;
+      try {
+        S.busy = T('Reading attachments…', 'جارٍ قراءة المرفقات…'); paint_();
+        const out = S.files.slice();
+        for (const f of list) { if (extOf_(f.name) === 'zip') readZip_(new Uint8Array(await f.arrayBuffer())).forEach((z) => out.push(z)); else out.push({ name: f.name, size: f.size, blob: f }); }
+        S.files = out; S.dryDone = false; S.note = S.files.length + T(' attachment file(s) ready. Name them in the “File name Attachment” column, or run the Dry Run.', ' ملف مرفق جاهز. اكتب أسماءها في عمود «File name Attachment» أو شغّل التجريبي.'); S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+    commonB.addEventListener('click', () => { commonIn.value = ''; commonIn.click(); });
+    commonIn.addEventListener('change', () => { const f = commonIn.files && commonIn.files[0]; if (!f) return; S.common = { name: f.name, size: f.size, blob: f }; S.dryDone = false; S.note = T('This file will be attached to every row that names no attachment of its own.', 'سيُرفق هذا الملف بكل صف لا يحدد مرفقًا خاصًا.'); S.noteErr = false; paint_(); });
+    clearAttB.addEventListener('click', () => { S.files = []; S.common = null; S.dryDone = false; S.note = ''; paint_(); });
 
     // ---------------- upload
     upB.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
@@ -46004,7 +46174,7 @@ async function shrinkPic_(data) {
         const types = await types_();
         const byCode = new Map(emps.filter((e) => e.code != null).map((e) => [String(e.code).trim().toLowerCase(), e]));
         const todo = S.rows.filter((r) => r.state !== 'done');
-        todo.forEach((r) => { r.state = ''; r.msg = ''; r.leave = null; r.plan = null; r.changes = []; r.emp = byCode.get(r.empText.toLowerCase()) || null; if (!r.emp) { r.state = 'error'; r.msg = '✗ ' + T('Employee not found', 'الموظف غير موجود'); } });
+        todo.forEach((r) => { r.state = ''; r.msg = ''; r.leave = null; r.plan = null; r.changes = []; r.att = null; r.preview = null; r.emp = byCode.get(r.empText.toLowerCase()) || null; if (!r.emp) { r.state = 'error'; r.msg = '✗ ' + T('Employee not found', 'الموظف غير موجود'); } });
         if (!types) todo.filter((r) => !r.state).forEach((r) => { r.state = 'error'; r.msg = '✗ ' + T('Leave types could not be read from Jisr', 'تعذّرت قراءة أنواع الإجازات من جسر') + (S.typesErr ? ' (' + S.typesErr + ')' : ''); });
         const empIds = Array.from(new Set(todo.filter((r) => r.emp && !r.state).map((r) => String(r.emp.id))));
         let done = 0;
@@ -46026,17 +46196,31 @@ async function shrinkPic_(data) {
           const l = m.matches[0]; const k = r.emp.id + ':' + l.id;
           if (taken.has(k)) { r.state = 'skip'; r.msg = T('Same leave as row ', 'نفس الإجازة في الصف ') + taken.get(k); return; }
           taken.set(k, r.no); r.leave = l;
-          const pr = planRow_(r, l, types, S.raw, S.lang);
+          const pr = planRow_(r, l, types, S.raw, S.lang, { method: S.method });
           r.plan = pr.plan; r.changes = pr.changes;
+          if (S.method === 'request') {
+            const fa = findAtt_(r.attachName, S.files, S.common);
+            if (fa.err) pr.errs.push(fa.err);
+            else if (fa.att) {
+              r.att = fa.att;
+              if ((fa.att.size || 0) > cfg.maxAttachBytes) pr.errs.push(T('attachment is over 10 MB: ', 'المرفق أكبر من 10 ميغابايت: ') + fa.att.name);
+              else if (!MIME_[extOf_(fa.att.name)]) pr.errs.push(T('attachment type not supported: ', 'نوع المرفق غير مدعوم: ') + fa.att.name);
+            }
+          } else if (r.attachName) pr.errs.push(T('the Jisr import cannot carry an attachment: choose “New leave request” above', 'الاستيراد لا يحمل مرفقًا: اختر «طلب إجازة جديد» أعلاه'));
           if (pr.errs.length) { r.state = 'error'; r.msg = '✗ ' + pr.errs.join('\n✗ '); return; }
           if (!pr.changes.length) { r.state = 'skip'; r.msg = T('Nothing to change (the new values equal the current ones)', 'لا شيء للتغيير (القيم الجديدة تساوي الحالية)'); return; }
-          r.state = 'ready'; r.msg = T('import name: ', 'الاسم في الاستيراد: ') + r.plan.type.imp;
+          r.state = 'ready'; r.msg = S.method === 'import' ? T('import name: ', 'الاسم في الاستيراد: ') + r.plan.type.imp : T('new request', 'طلب جديد') + (r.att ? ' · ' + T('attachment ', 'مرفق ') + r.att.name : '');
         });
+        // a new request is also refused when it overlaps an ordinary (not imported) leave: read the employees' full history for that
+        if (S.method === 'request') {
+          const ids = Array.from(new Set(todo.filter((r) => r.state === 'ready').map((r) => String(r.emp.id)))); let dn = 0;
+          await LC().pool_(ids, 4, async (id) => { try { S.histAll.set(id, await histAll_(id)); } catch (e) { S.histAll.delete(id); } dn++; statusEl.textContent = T('Reading all leaves… ', 'جارٍ قراءة كل الإجازات… ') + dn + '/' + ids.length; });
+        }
         // overlaps: the new range must not touch another leave the employee keeps, or another new range of the same employee in this file
         const byEmp = new Map(); todo.filter((r) => r.state === 'ready').forEach((r) => { const k = String(r.emp.id); if (!byEmp.has(k)) byEmp.set(k, []); byEmp.get(k).push(r); });
         byEmp.forEach((rows, id) => {
           const replaced = new Set(rows.map((r) => String(r.leave.id)));
-          const keep = (S.hist.get(id) || []).filter((l) => !replaced.has(String(l.id)) && !LC().isGone_(l.status) && l.start && l.end);
+          const keep = ((S.method === 'request' && S.histAll.get(id)) || S.hist.get(id) || []).filter((l) => !replaced.has(String(l.id)) && !LC().isGone_(l.status) && l.start && l.end);
           rows.forEach((r, i) => {
             const hit = keep.find((l) => overlap_(r.plan, l)) || null;
             if (hit) { r.state = 'error'; r.msg = '✗ ' + T('The new dates overlap another leave: ', 'التواريخ الجديدة تتداخل مع إجازة أخرى: ') + (hit.type || hit.typeEn || '') + ' ' + hit.start + ' → ' + hit.end; return; }
@@ -46044,6 +46228,18 @@ async function shrinkPic_(data) {
             if (other) { r.state = 'error'; r.msg = '✗ ' + T('The new dates overlap the new dates of row ', 'التواريخ الجديدة تتداخل مع تواريخ الصف ') + other.no; }
           });
         });
+        // Jisr's own preview of each new request (reads only): days, warnings, and whether the leave type needs an attachment
+        if (S.method === 'request') {
+          const rdy = todo.filter((r) => r.state === 'ready'); let pn = 0;
+          await LC().pool_(rdy, 3, async (r) => {
+            try {
+              const pv = await previewOne_(r);
+              if (pv) { r.preview = pv; if (pv.attachReq && !r.att) { r.state = 'error'; r.msg = '✗ ' + T('this leave type needs an attachment: name a file in “File name Attachment” or add one for every row', 'نوع الإجازة هذا يتطلب مرفقًا: اكتب اسم ملف في «File name Attachment» أو أضف مرفقًا لكل الصفوف'); }
+                else r.msg += (pv.days !== '' ? ' · ' + pv.days + T(' day(s)', ' يوم') : '') + (pv.warn ? '\n⚠ ' + redact_(pv.warn) : ''); }
+            } catch (e) { /* a preview that cannot be read does not block the row */ }
+            pn++; statusEl.textContent = T('Asking Jisr to preview the new requests… ', 'جارٍ طلب معاينة الطلبات الجديدة من جسر… ') + pn + '/' + rdy.length;
+          });
+        }
         S.dryDone = true;
         const rd = S.rows.filter((r) => r.state === 'ready').length;
         S.note = T('Dry Run done: nothing was changed. ', 'انتهى التشغيل التجريبي: لم يتغيّر شيء. ') + rd + T(' leave(s) ready to edit for ', ' إجازة جاهزة للتعديل لـ ') + new Set(S.rows.filter((r) => r.state === 'ready').map((r) => r.emp.id)).size + T(' employee(s).', ' موظف.');
@@ -46055,9 +46251,42 @@ async function shrinkPic_(data) {
 
     // ---------------- live, one row at a time: cancel -> import -> read back -> (restore on failure)
     const impRow_ = (r, v) => ({ code: r.emp.code != null ? r.emp.code : r.emp.id, name: r.emp.name || '', typeName: v.typeName, start: v.start, end: v.end, comment: v.comment, resumption: v.resumption });
+    /** v4.85: create the corrected leave as a normal request (attachment inside), approve it at once, read it back from the full leave history */
+    async function viaRequest_(r, l, p, skip, attDataUrl, restore_) {
+      let cr;
+      try { cr = await LC().request_('POST', '/v2/employees/' + encodeURIComponent(r.emp.id) + '/leave_requests', null, createBody_(p, attDataUrl, r)); }
+      catch (e) {
+        if (/HTTP 401/.test(e.message)) { r.state = 'failed'; r.stage = 'restore_failed'; r.why = 'the Jisr sign-in ended after the old leave was cancelled: the original leave was NOT put back and must be restored from the results file (undo list)'; r.msg = '✗ ' + e.message + T(' The old leave was cancelled: import it again from the undo list.', ' أُلغيت الإجازة القديمة: استوردها من قائمة التراجع.'); throw e; }
+        if (e.unknown) { r.state = 'failed'; r.stage = 'unverified'; r.why = 'no answer from Jisr when creating the new request: the old leave was cancelled and the new request may or may not exist; check the employee in Jisr (the old values are in the results file)'; r.msg = '✗ ' + T('No answer from Jisr when creating the new request. The old leave was cancelled: check the employee in Jisr before doing anything else (old values are in the results file).', 'لا رد من جسر عند إنشاء الطلب الجديد. أُلغيت الإجازة القديمة: تحقّق من الموظف في جسر قبل أي إجراء (القيم القديمة في ملف النتائج).'); return false; }
+        await restore_(redact_(e.message), 'the new request could not be created', 'rolled_back'); return false;
+      }
+      if (!cr.ok) { await restore_(T('Jisr refused the new leave request: ', 'رفض جسر طلب الإجازة الجديد: ') + importMsg_(cr), 'Jisr refused the new leave request (HTTP ' + cr.status + ')', 'rolled_back'); return false; }
+      const lrObj = cr.json && cr.json.data && cr.json.data.leave_request; const newId = lrObj && lrObj.id != null ? lrObj.id : null;
+      r.newId = newId;
+      if (newId == null) { r.state = 'failed'; r.stage = 'unverified'; r.why = 'Jisr accepted the new request but its number was not in the answer: it could not be approved; find it in Jisr'; r.msg = '✗ ' + T('Jisr accepted the new request but did not give its number, so it could not be approved. Find it in Jisr (Requests → Approvals) and approve it. The old leave was cancelled.', 'قبل جسر الطلب الجديد لكنه لم يعطِ رقمه فلم يمكن اعتماده. ابحث عنه في جسر (الطلبات ← الموافقات) واعتمده. أُلغيت الإجازة القديمة.'); return false; }
+      let ap; try { ap = await approveLeave_(newId, T('Approved with Bulk Ops', 'اعتُمد عبر Bulk Ops')); } catch (e) { ap = { steps: 0, error: redact_(e.message) }; }
+      let w; try { w = await waitApproved_(r.emp.id, newId, p.start, p.end, skip); } catch (e) { w = { hit: null, list: [] }; }
+      const stillPending = w.hit && /pending|under|review|waiting/i.test(String(w.hit.status || ''));
+      if (stillPending || (!w.hit && (ap.error || !ap.steps))) {
+        r.state = 'failed'; r.stage = 'pending';
+        const why = ap.error ? 'approving it failed: ' + ap.error : ap.steps ? 'it is still waiting for approval' : (ap.why || 'it was not approved');
+        r.why = 'the new request #' + newId + ' was created but ' + why + '; the old leave was cancelled. Approve it in Jisr.';
+        r.msg = '✗ ' + T('The new request #', 'الطلب الجديد #') + newId + T(' was created, but ', ' أُنشئ لكن ') + why + T('. It is waiting for approval in Jisr (Requests → Approvals); the old leave was cancelled.', '. وهو بانتظار الاعتماد في جسر (الطلبات ← الموافقات)؛ أُلغيت الإجازة القديمة.');
+        return false;
+      }
+      if (!w.hit) { r.state = 'failed'; r.stage = 'not_reflected'; r.why = 'Jisr said the request was created and approved (OK) but the leave does not appear in the employee\'s leave history'; r.msg = '✗ ' + T('Jisr accepted and approved request #', 'قبل جسر الطلب واعتمده #') + newId + T(' but the leave does not appear in the employee\'s leaves. Check it in Jisr (the old leave was cancelled).', ' لكن الإجازة لا تظهر في إجازات الموظف. تحقق منها في جسر (أُلغيت الإجازة القديمة).'); return false; }
+      if (!sameType_(w.hit, p.type.id, S.types)) { r.state = 'failed'; r.stage = 'mismatch'; r.why = 'the leave was created with a different leave type than asked; the old leave was cancelled and needs checking in Jisr'; r.msg = '✗ ' + T('The leave was created as “', 'أُنشئت الإجازة بنوع «') + (w.hit.type || w.hit.typeEn) + T('” instead of “', '» بدل «') + p.type.name + T('”. Check it in Jisr (the old leave was cancelled).', '». تحقق منها في جسر (أُلغيت الإجازة القديمة).'); return false; }
+      S.histAll.delete(String(r.emp.id)); S.hist.delete(String(r.emp.id));
+      r.state = 'done'; r.stage = 'ok'; r.why = 'edited: new request created, approved and confirmed by reading the leave back from Jisr' + (r.att ? ' (with attachment)' : '');
+      r.msg = '✓ ' + T('edited and approved', 'عُدّلت واعتُمدت') + ' (#' + l.id + ' → #' + w.hit.id + ')' + (r.att ? ' · ' + T('attachment ', 'مرفق ') + r.att.name : '') + (!ap.steps ? '\n' + T('(Jisr approved it by itself: no approval was needed)', '(اعتمده جسر تلقائيًا: لم تلزم موافقة)') : '');
+      return true;
+    }
     async function editOne_(r, reason) {
       const l = r.leave, p = r.plan;
       const orig = { typeName: (function () { const c = (S.raw || []).find((x) => (l.typeId != null && x.id === String(l.typeId)) || (S.types && LC().resolveType_(l.type || l.typeEn, S.types).includes(x.id))); return c ? importName_(c, S.lang) : (l.type || l.typeEn); })(), start: l.start, end: l.end, comment: l.reason ? String(l.reason) : '', resumption: l.returnDate || '' };
+      // v4.85: read the attachment BEFORE anything is cancelled
+      let attDataUrl = '';
+      if (S.method === 'request' && r.att) { try { attDataUrl = await attUrl_(r.att); } catch (e) { r.state = 'failed'; r.stage = 'failed'; r.why = 'the attachment could not be read: nothing was changed'; r.msg = '✗ ' + T('The attachment could not be read (nothing changed): ', 'تعذّرت قراءة المرفق (لم يتغيّر شيء): ') + redact_(e.message); return false; } }
       // 1) cancel the old one
       const c = await LC().cancel_(r.emp.id, [l.id], reason);
       if (!c.ok) { r.state = 'failed'; r.stage = jboStageOfRes_(c); r.why = 'cancelling the old leave failed: nothing was changed'; r.msg = '✗ ' + T('Cancelling the old leave failed (nothing changed): ', 'فشل إلغاء الإجازة القديمة (لم يتغيّر شيء): ') + importMsg_(c); return false; }
@@ -46075,6 +46304,7 @@ async function shrinkPic_(data) {
         r.why = whyEn + '. ' + (ok ? 'The original leave was imported again.' : 'The original leave could NOT be put back: it must be restored from the results file (undo list).');
         r.msg = '✗ ' + why + '\n' + (ok ? T('The original leave was imported again.', 'أُعيد استيراد الإجازة الأصلية.') : T('The original leave could NOT be put back: import it again from the undo list (results file).', 'تعذّر إرجاع الإجازة الأصلية: استوردها من قائمة التراجع (ملف النتائج).') + extra);
       };
+      if (S.method === 'request') return await viaRequest_(r, l, p, skip, attDataUrl, restore_);
       // 2) import the corrected one
       let imp;
       try { imp = await importCall_([impRow_(r, { typeName: p.type.imp, start: p.start, end: p.end, comment: p.comment, resumption: p.resumption })]); }
@@ -46097,7 +46327,7 @@ async function shrinkPic_(data) {
       const todo = S.rows.filter((r) => r.state === 'ready');
       if (!todo.length) return;
       const nEmp = new Set(todo.map((r) => r.emp.id)).size;
-      if (!confirm(T('Edit ', 'تعديل ') + todo.length + T(' imported leave(s) of ', ' إجازة مستوردة لـ ') + nEmp + T(' employee(s) in ', ' موظف في ') + slug_() + '?\n\n' + T('Each old leave is cancelled, then the corrected one is imported. If a row fails the tool tries to put the original back and stops.\nThe old values go into the results file.', 'تُلغى كل إجازة قديمة ثم تُستورد الصحيحة. إن فشل صف تحاول الأداة إرجاع الأصلية وتتوقف.\nتُحفظ القيم القديمة في ملف النتائج.'))) return;
+      if (!confirm(T('Edit ', 'تعديل ') + todo.length + T(' imported leave(s) of ', ' إجازة مستوردة لـ ') + nEmp + T(' employee(s) in ', ' موظف في ') + slug_() + '?\n\n' + (S.method === 'request' ? T('Each old leave is cancelled, then a new leave request is created (with its attachment) and approved at once.\nIf Jisr refuses the new request the tool imports the original again and stops. If it cannot be approved it stays pending and the run stops.\nThe old values go into the results file.', 'تُلغى كل إجازة قديمة ثم يُنشأ طلب إجازة جديد (مع مرفقه) ويُعتمد فورًا.\nإن رفض جسر الطلب الجديد تعيد الأداة استيراد الأصلية وتتوقف. وإن تعذّر اعتماده يبقى معلّقًا ويتوقف التشغيل.\nتُحفظ القيم القديمة في ملف النتائج.') : T('Each old leave is cancelled, then the corrected one is imported. If a row fails the tool tries to put the original back and stops.\nThe old values go into the results file.', 'تُلغى كل إجازة قديمة ثم تُستورد الصحيحة. إن فشل صف تحاول الأداة إرجاع الأصلية وتتوقف.\nتُحفظ القيم القديمة في ملف النتائج.')))) return;
       S.phase = 'running'; S.stop = false; S.busy = ' '; paint_();
       let done = 0;
       // v4.83: one outcome row per leave for the Ops dashboard (the generic request log skips this tool: an HTTP 200 is not the outcome here)
@@ -46125,9 +46355,9 @@ async function shrinkPic_(data) {
     runB.addEventListener('click', runLive_);
     stopB.addEventListener('click', () => { S.stop = true; });
     resB.addEventListener('click', () => {
-      const H = ['Row', 'Employee ID', 'Employee Name', 'Old leave ID', 'Old leave type', 'Old start', 'Old end', 'Old resumption', 'Old comment', 'New leave type', 'New start', 'New end', 'New resumption', 'New comment', 'New leave ID', 'Result'];
+      const H = ['Row', 'Employee ID', 'Employee Name', 'Old leave ID', 'Old leave type', 'Old start', 'Old end', 'Old resumption', 'Old comment', 'New leave type', 'New start', 'New end', 'New resumption', 'New comment', 'New leave ID', 'Result', 'Attachment'];
       const aoa = [H].concat(S.rows.filter((r) => r.leave).map((r) => { const l = r.leave, p = r.plan || {};
-        return [r.no, r.emp ? r.emp.code || r.emp.id : r.empText, r.emp ? r.emp.name : '', l.id, l.type || l.typeEn, l.start, l.end, l.returnDate || '', l.reason || '', p.type ? p.type.name : '', p.start || '', p.end || '', p.resumption || '', p.comment || '', r.newId || '', String(r.msg || '').replace(/\n/g, ' | ')]; }));
+        return [r.no, r.emp ? r.emp.code || r.emp.id : r.empText, r.emp ? r.emp.name : '', l.id, l.type || l.typeEn, l.start, l.end, l.returnDate || '', l.reason || '', p.type ? p.type.name : '', p.start || '', p.end || '', p.resumption || '', p.comment || '', r.newId || '', String(r.msg || '').replace(/\n/g, ' | '), r.att ? r.att.name : '']; }));
       const wb = XLSX.utils.book_new(); const ws = XLSX.utils.aoa_to_sheet(aoa);
       ws['!cols'] = H.map((h) => ({ wch: Math.max(12, h.length + 2) }));
       XLSX.utils.book_append_sheet(wb, ws, 'Leave edit results');
@@ -46139,14 +46369,1182 @@ async function shrinkPic_(data) {
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'Edit Imported Leaves (Bulk)', open: openTool_, version: SECTION_VERSION };
-    W.__jisrLeaveEdit = { planRow_, rawTypes_, importName_, importXlsx_, parseEditAoa_, serial_, sameType_, overlap_, cfg };
+    W.__jisrLeaveEdit = { createBody_, findAtt_, deepFind_, approveLeave_, findApproval_, histAll_, planRow_, rawTypes_, importName_, importXlsx_, parseEditAoa_, serial_, sameType_, overlap_, previewOne_, waitApproved_, attUrl_, dataUrl_, MIME_, extOf_, baseOf_, cfg };
     if (g._rerender) g._rerender();
   }
   register_();
 })();
 
 // ###########################################################################
-// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.83.1
+// ##### SECTION 43 — Company Documents (bulk add, edit, delete)  v4.86.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 43 — Company Documents (Organization > Company documents)  v4.86.0
+ * ---------------------------------------------------------------------------
+ * CONFIRMED (user captures, onboardingteam, 2026-11-10), base https://apis.jisr.net/api/v2, every call with ?slug=:
+ *   GET    /company_attachments/                 -> 200 (the list; its answer was NOT captured: the tool looks for the array of records wherever it is)
+ *   POST   /company_attachments/                 {"company_attachment":{"document_number":"0001","name":"Test-bulk","description":"…","expiry_date":"2026-12-31",
+ *                                                 "include_in_employees_profile":true,"file":{"data":"data:application/pdf;base64,<…>","filename":"x.pdf"}}}
+ *   PUT    /company_attachments/{id}/            {"company_attachment":{"id":87599,"document_number":"2002","name":"1122","expiry_date":"2026-08-12",
+ *                                                 "include_in_employees_profile":true,"file":{"data":"data:image/png;base64,<…>","filename":"x.png"}}}  -> 200
+ *   DELETE /company_attachments/{id}/            (no body) -> 200
+ * One request, the file goes inside as a base64 data URL (no separate upload step), like the photos.
+ * NOT captured: the answer of the list / create calls, whether PUT accepts a body WITHOUT "file" (the captured one re-sent the file), whether
+ * expiry_date and document_number are required. So: (1) every result is read back from the list afterwards (ok / not applied / applied
+ * differently / gone), (2) the first edit of a run is read back before the rest are sent, (3) an edit that loses the file or the record is
+ * reported as "Original NOT restored" (data at risk) on the dashboard, (4) a create that gets no clear answer is never sent twice (the list decides).
+ * Add: a ZIP or several files. Name in Jisr = the file name (without its extension unless asked), with an optional universal name before or after it.
+ * Document number = optional serial (prefix + start + zero padding). Same expiry, description and "show in employees' profile" for all, or per row.
+ * Existing documents with the same name are skipped (so running the same ZIP twice adds nothing) unless "add even if the name exists" is on.
+ * Edit: load the list, tick documents, change fields by hand or in bulk (add text to the names, find / replace, renumber, set or clear expiry /
+ * description, show in profile) and optionally replace files from a ZIP matched by document name. Delete: tick documents, a metadata backup (.csv)
+ * is downloaded first, then each is deleted and the list is read again.
+ * Dry run is on by default and only reads. A live run asks first. One request at a time (delay, default 300 ms); 429 is retried; 5xx / no answer are
+ * retried only for edits and deletes. Never logged or shown: file data, signed links, cookies or tokens.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.86.0';
+  const MODULE_ID = 'company-documents';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  const MAX_FILES = 2000;
+  const BIG_BYTES = 5 * 1024 * 1024;
+  const MAX_BYTES = 10 * 1024 * 1024;
+  const MIME = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', txt: 'text/plain', csv: 'text/csv' };
+  const cfg = { backoffMs: 1000, retries: 3, verifyWaits: [600, 1500, 3000], maxPages: 60 };
+
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
+  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // ======================================================================= pure helpers
+  const baseName_ = (p) => String(p || '').replace(/\\/g, '/').split('/').pop();
+  const extOf_ = (n) => { const m = /\.([A-Za-z0-9]+)$/.exec(baseName_(n)); return m ? m[1].toLowerCase() : ''; };
+  const stem_ = (n) => baseName_(n).replace(/\.[A-Za-z0-9]+$/, '').trim();
+  const nk_ = (s) => String(s == null ? '' : s).normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+  const str_ = (v) => (v == null ? '' : typeof v === 'object' ? '' : String(v));
+  const natCmp_ = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  const mimeOf_ = (ext) => MIME[ext] || 'application/octet-stream';
+  const allowed_ = (ext) => Object.prototype.hasOwnProperty.call(MIME, ext);
+  /** No link, file data, token or cookie ever reaches the screen or the log file. */
+  function redact_(s) {
+    return String(s == null ? '' : s)
+      .replace(/data:[^\s,]*,[A-Za-z0-9+/=_-]{16,}/gi, '[file data removed]')
+      .replace(/https?:\/\/\S+/gi, '[link removed]')
+      .replace(/\b(bearer|token|cookie|authorization)\b\s*[:=]?\s*[A-Za-z0-9._~+/=-]{12,}/gi, '$1 [removed]')
+      .replace(/[A-Za-z0-9+/=]{200,}/g, '[data removed]')
+      .replace(/\s+/g, ' ').trim().slice(0, 240);
+  }
+  function jisrMsg_(j) {
+    if (!j || typeof j !== 'object') return '';
+    const m = j.message || j.error || (j.data && j.data.message) || (j.errors && (Array.isArray(j.errors) ? j.errors.join('; ') : typeof j.errors === 'object' ? Object.values(j.errors).flat().join('; ') : j.errors));
+    return m ? redact_(m) : '';
+  }
+  function deepFind_(node, key, depth) {
+    if (!node || typeof node !== 'object' || (depth || 0) > 8) return { found: false };
+    if (Object.prototype.hasOwnProperty.call(node, key)) return { found: true, value: node[key] };
+    for (const k of Object.keys(node)) { const r = deepFind_(node[k], key, (depth || 0) + 1); if (r.found) return r; }
+    return { found: false };
+  }
+  /** YYYY-MM-DD from what Jisr or a person writes (2026-12-31, 2026-12-31T00:00:00Z, 31-12-2026, 31/12/2026); '' when it is not a date */
+  function normDate_(s) {
+    const t = String(s == null ? '' : s).trim(); if (!t) return '';
+    let m = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:$|[T\s])/.exec(t);
+    let y, mo, d;
+    if (m) { y = +m[1]; mo = +m[2]; d = +m[3]; } else if ((m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(t))) { d = +m[1]; mo = +m[2]; y = +m[3]; } else return '';
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+    const dt = new Date(Date.UTC(y, mo - 1, d)); if (dt.getUTCMonth() !== mo - 1) return '';
+    return y + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+  }
+  /** the document title in Jisr for one file: the file name (no extension unless keepExt), with the universal name before or after it */
+  function nameFor_(file, o) {
+    const base = o.keepExt ? baseName_(file) : stem_(file);
+    const u = String(o.uni || '').trim(); if (!u) return base;
+    const sep = o.sep == null ? ' - ' : String(o.sep);
+    return o.pos === 'after' ? base + sep + u : u + sep + base;
+  }
+  /** the i-th document number: prefix + (start + i) padded with zeros to `digits` ('' when numbering is off) */
+  function numberFor_(i, o) {
+    if (!o.serial) return '';
+    const st = Number.isFinite(Number(o.start)) && String(o.start).trim() !== '' ? Math.floor(Number(o.start)) : 1;
+    const dg = Math.min(12, Math.max(0, Math.floor(Number(o.digits)) || 0));
+    return String(o.prefix == null ? '' : o.prefix) + String(Math.max(0, st + i)).padStart(dg, '0');
+  }
+  /** the highest number used with this prefix in the existing documents (null when none): "continue after the last number" */
+  function lastNumber_(docs, prefix) {
+    const p = String(prefix || ''); let best = null;
+    (docs || []).forEach((d) => { const s = String(d.number || ''); if (!s.startsWith(p)) return; const m = /^\d+$/.exec(s.slice(p.length)); if (m) { const n = Number(m[0]); if (best === null || n > best.n) best = { n, width: m[0].length }; } });
+    return best;
+  }
+
+  // ---- the list answer (its shape was not captured: look for the array of records)
+  function itemsOf_(j) {
+    const cands = [];
+    const walk = (n, d, key) => {
+      if (!n || typeof n !== 'object' || d > 5) return;
+      if (Array.isArray(n)) { if (!n.length || n.every((x) => x && typeof x === 'object' && !Array.isArray(x))) cands.push({ key, arr: n }); return; }
+      Object.keys(n).forEach((k) => walk(n[k], d + 1, k));
+    };
+    walk(j, 0, '');
+    const withId = cands.filter((c) => c.arr.length && c.arr[0].id !== undefined);
+    const pick = withId.find((c) => /attachment/i.test(c.key)) || withId.sort((a, b) => b.arr.length - a.arr.length)[0] || cands.find((c) => /attachment/i.test(c.key)) || cands[0];
+    return pick ? pick.arr : null;
+  }
+  function totalOf_(j) {
+    for (const k of ['total_count', 'total_entries', 'total_records', 'total_items', 'totalCount', 'total']) { const r = deepFind_(j, k); if (r.found && Number.isFinite(Number(r.value)) && Number(r.value) >= 0 && r.value !== null && typeof r.value !== 'object') return Number(r.value); }
+    return null;
+  }
+  /** one record of the list in one shape (what is not in the answer stays unknown: has.* tells) */
+  function docOf_(it) {
+    const f = it.file;
+    const fileUrl = (f && typeof f === 'object' ? f.url || f.file_url || f.path : typeof f === 'string' ? f : '') || it.file_url || it.attachment_url || '';
+    const fileName = (f && typeof f === 'object' ? f.filename || f.file_name || f.name : '') || it.file_name || it.filename || '';
+    return {
+      id: it.id, name: str_(it.name != null ? it.name : it.title), number: str_(it.document_number != null ? it.document_number : it.number),
+      expiry: normDate_(it.expiry_date != null ? it.expiry_date : it.expiry), expiryRaw: str_(it.expiry_date != null ? it.expiry_date : it.expiry), desc: str_(it.description),
+      inc: !!(it.include_in_employees_profile != null ? it.include_in_employees_profile : it.include_in_employee_profile),
+      fileName: str_(fileName), hasFile: !!(fileUrl || fileName),
+      has: { number: 'document_number' in it, expiry: 'expiry_date' in it, desc: 'description' in it, inc: 'include_in_employees_profile' in it },
+    };
+  }
+  const idFrom_ = (j) => { const c = deepFind_(j, 'company_attachment'); const n = c.found && c.value && typeof c.value === 'object' ? c.value.id : undefined; if (n !== undefined && n !== null) return n; const d = deepFind_(j && j.data, 'id'); return d.found && d.value !== null && typeof d.value !== 'object' ? d.value : ''; };
+
+  // ---- the Add plan
+  /** one row per file; type / size problems are fixed by the file, the rest (name, number, duplicates) follows the options */
+  function buildRows_(files) {
+    return files.slice().map((f, i) => ({ f, i })).sort((a, b) => natCmp_(a.f.name, b.f.name)).map((x, k) => {
+      const ext = extOf_(x.f.name), size = x.f.size || 0;
+      return { no: k + 1, file: x.f.name, size, ext, idx: x.i, cls: !allowed_(ext) ? 'bad' : !size ? 'empty' : size > MAX_BYTES ? 'big' : '', big: size > BIG_BYTES, name: '', number: '', expiry: '', desc: '', inc: false, status: 'ready', state: '', msg: '', warn: '' };
+    });
+  }
+  /** names, numbers and duplicate flags follow the options; what a person typed into a row (…Ed flags) is kept */
+  function applyOpts_(rows, o, existing) {
+    const exName = new Set(), exNum = new Set();
+    (existing || []).forEach((d) => { const k = nk_(d.name); if (k) exName.add(k); if (d.number) exNum.add(String(d.number)); });
+    const seen = new Set();
+    rows.forEach((r) => {
+      if (!r.nameEd) r.name = nameFor_(r.file, o);
+      if (!r.expEd) r.expiry = normDate_(o.expiry);
+      if (!r.descEd) r.desc = o.desc || '';
+      if (!r.incEd) r.inc = !!o.inc;
+      r.warn = ''; r.dupMsg = '';
+      if (r.cls) { r.status = r.cls; if (!r.numEd) r.number = ''; return; }
+      const k = nk_(r.name);
+      if (exName.has(k)) r.dupMsg = 'a document with this name already exists in Jisr';
+      else if (seen.has(k)) r.dupMsg = 'an earlier file in this list gets the same name';
+      seen.add(k);
+      r.status = r.dupMsg && !o.allowDup ? 'dup' : 'ready';
+      if (r.status !== 'ready' && !r.numEd) r.number = '';
+    });
+    let n = 0;
+    rows.forEach((r) => {
+      if (r.status !== 'ready') return;
+      if (!r.numEd) r.number = numberFor_(n, o);
+      n++;
+      if (r.number && exNum.has(String(r.number))) r.warn = 'this number is already used in Jisr';
+    });
+    return rows;
+  }
+  const createBody_ = (r, dataUrl) => {
+    const ca = { name: r.name, file: { data: dataUrl, filename: r.file } };
+    if (r.number) ca.document_number = r.number; if (r.desc) ca.description = r.desc; if (r.expiry) ca.expiry_date = r.expiry; if (r.inc) ca.include_in_employees_profile = true;
+    return { company_attachment: ca };
+  };
+  // ---- the Edit plan
+  const CHANGE_FIELDS = ['name', 'number', 'expiry', 'desc', 'inc'];
+  function changedFields_(d) { const o = d.orig || {}; const out = CHANGE_FIELDS.filter((k) => (k === 'inc' ? !!d[k] !== !!o[k] : String(d[k] == null ? '' : d[k]) !== String(o[k] == null ? '' : o[k]))); if (d.rep) out.push('file'); return out; }
+  function editBody_(d, dataUrl) {
+    const ca = { id: d.id, name: d.name, include_in_employees_profile: !!d.inc };
+    const ch = changedFields_(d);
+    if (d.number || ch.includes('number')) ca.document_number = d.number;
+    if (d.expiry || ch.includes('expiry')) ca.expiry_date = d.expiry || null;
+    if (d.desc || ch.includes('desc')) ca.description = d.desc;
+    if (dataUrl) ca.file = { data: dataUrl, filename: d.rep.name };
+    return { company_attachment: ca };
+  }
+  const FIELD_LABEL = () => ({ name: T('name', 'الاسم'), number: T('number', 'الرقم'), expiry: T('expiry date', 'تاريخ الانتهاء'), desc: T('description', 'الوصف'), inc: T('shown in employees\' profile', 'الظهور في ملف الموظف'), file: T('file', 'الملف') });
+
+  // ---- reading the result back from the list
+  /** the answer of one list read for one row: found / not there / differs. ctx.before = ids that existed before an Add run. */
+  function judgeAdd_(r, list, ctx) {
+    if (!list.ok || !list.complete) return { stage: 'unverified', why: 'could not read the full document list back, so the result is not confirmed' };
+    let d = r.newId !== '' && r.newId != null ? list.byId[String(r.newId)] : null;
+    if (!d) d = list.docs.find((x) => !ctx.before.has(String(x.id)) && !ctx.claimed.has(String(x.id)) && nk_(x.name) === nk_(r.name) && (!r.number || !x.has.number || String(x.number) === String(r.number)));
+    if (!d) return { stage: r.uncertain || 'not_reflected', why: r.uncertain ? 'Jisr answered with an error and the document is not in the list' : 'Jisr answered OK (HTTP ' + r.http + ') but the document is not in the list' };
+    ctx.claimed.add(String(d.id)); r.newId = d.id;
+    const diffs = [];
+    if (nk_(d.name) !== nk_(r.name)) diffs.push('name');
+    if (r.number && d.has.number && String(d.number) !== String(r.number)) diffs.push('number');
+    if (r.expiry && d.has.expiry && (d.expiry || !d.expiryRaw) && d.expiry !== r.expiry) diffs.push('expiry date');
+    if (d.has.inc && d.inc !== !!r.inc) diffs.push('shown in profile');
+    if (diffs.length) return { stage: 'mismatch', why: 'the document was created but Jisr kept a different ' + diffs.join(', ') };
+    return { stage: (r.tries || 1) > 1 ? 'ok_retry' : 'ok', why: r.uncertain ? 'Jisr answered with an error but the document is in the list' : 'document created (found in the list)' };
+  }
+  function judgeEdit_(r, list) {
+    if (!list.ok || !list.complete) return { stage: 'unverified', why: 'could not read the full document list back, so the result is not confirmed' };
+    const d = list.byId[String(r.id)];
+    if (!d) return { stage: 'restore_failed', why: 'the document is gone from the list after the edit: check it in Jisr' };
+    if (r.hadFile && !d.hasFile) return { stage: 'restore_failed', why: 'the document has no file after the edit: check it in Jisr' };
+    const x = r.sent || {}, diffs = [];
+    if (nk_(d.name) !== nk_(x.name)) diffs.push('name');
+    if (d.has.number && String(d.number) !== String(x.number || '')) diffs.push('number');
+    if (d.has.expiry && (d.expiry || !d.expiryRaw) && d.expiry !== (x.expiry || '')) diffs.push('expiry date');
+    if (d.has.desc && d.desc !== (x.desc || '')) diffs.push('description');
+    if (d.has.inc && d.inc !== !!x.inc) diffs.push('shown in profile');
+    if (r.rep && d.fileName && nk_(d.fileName) !== nk_(r.rep.name)) diffs.push('file');
+    if (diffs.length) return { stage: 'mismatch', why: 'Jisr answered OK but kept a different ' + diffs.join(', ') };
+    return { stage: (r.tries || 1) > 1 ? 'ok_retry' : 'ok', why: 'document edited (read back from the list)' };
+  }
+  function judgeDelete_(r, list) {
+    if (!list.ok || !list.complete) return { stage: 'unverified', why: 'could not read the full document list back, so the deletion is not confirmed' };
+    if (list.byId[String(r.id)]) return { stage: 'not_reflected', why: 'Jisr answered OK (HTTP ' + r.http + ') but the document is still in the list' };
+    return { stage: (r.tries || 1) > 1 ? 'ok_retry' : 'ok', why: 'document deleted (gone from the list)' };
+  }
+  const csvCell_ = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const STAGE_TEXT = () => ({ ok: T('Done', 'تم'), ok_retry: T('Done (after a retry)', 'تم (بعد إعادة المحاولة)'), pending: T('Waiting for approval', 'بانتظار الموافقة'), unverified: T('Not verified', 'لم يتم التحقق'), skipped: T('Skipped', 'تم التخطي'), no_match: T('No match', 'لا مطابقة'), rejected: T('Refused by Jisr', 'رفضها جسر'), denied: T('No permission / signed out', 'لا صلاحية / تم تسجيل الخروج'), not_found: T('Not found (404)', 'غير موجود (404)'), rate_limited: T('Rate limited', 'تجاوز حد الطلبات'), server_error: T('Jisr server error', 'خطأ في خادم جسر'), network: T('No answer from Jisr', 'لا رد من جسر'), not_reflected: T('Jisr said OK but it did not apply', 'قال جسر تم ولم يُطبَّق'), mismatch: T('Applied differently', 'طُبِّق بشكل مختلف'), rolled_back: T('Failed, original restored', 'فشل واستُعيد الأصل'), restore_failed: T('Original NOT restored', 'لم يُستعَد الأصل'), failed: T('Failed', 'فشل') });
+  function logCsv_(tab, rows) {
+    const head = ['Action', 'Document ID', 'Name', 'Document number', 'File', 'Expiry date', 'HTTP status', 'Stage', 'Detail'];
+    const lines = [head.map(csvCell_).join(',')];
+    rows.forEach((r) => lines.push([tab, tab === 'add' ? r.newId || '' : r.id, r.name, r.number, tab === 'add' ? r.file : (r.rep ? r.rep.name : r.fileName || ''), r.expiry, r.http || '', r.stage || (r.state === 'skip' ? 'skipped' : r.status && r.status !== 'ready' ? 'skipped' : ''), redact_(r.why || r.msg || '')].map(csvCell_).join(',')));
+    return lines.join('\r\n');
+  }
+
+  /** The files inside a ZIP (SheetJS' zip reader, already loaded for Excel). System files (__MACOSX, ._x, .DS_Store) are left out. */
+  function readZip_(u8) {
+    const X = (typeof XLSX !== 'undefined' && XLSX) || W.XLSX;
+    if (!X || !X.CFB) throw new Error(T('The zip library did not load (check that the script\'s @require lines are intact).', 'لم يتم تحميل مكتبة ZIP (تأكد من سطور ‎@require في السكربت).'));
+    let cfb; try { cfb = X.CFB.read(u8, { type: 'array' }); } catch (e) { throw new Error(T('This file could not be opened as a ZIP.', 'تعذّر فتح هذا الملف كملف ZIP.')); }
+    const out = [];
+    (cfb.FullPaths || []).forEach((fp, i) => {
+      const path = String(fp).replace(/^Root Entry\//, '');
+      if (!path || /\/$/.test(path)) return;
+      const name = baseName_(path);
+      if (/^[\u0000-\u001f]*Sh33tJ5$/.test(path) || /(^|\/)__MACOSX\//i.test(path) || name.startsWith('._') || /^(\.DS_Store|Thumbs\.db|desktop\.ini)$/i.test(name)) return;
+      const ent = cfb.FileIndex[i]; if (!ent || !ent.content || !ent.content.length) return;
+      out.push({ name, bytes: ent.content instanceof Uint8Array ? ent.content : new Uint8Array(ent.content) });
+    });
+    return out;
+  }
+  function dataUrl_(u8, mime) {
+    let b = ''; for (let i = 0; i < u8.length; i += 0x8000) b += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return 'data:' + mime + ';base64,' + btoa(b);
+  }
+
+  // ======================================================================= Jisr requests (one at a time, paced)
+  let lastAt = 0;
+  async function throttle_(ms) { const wait = lastAt + ms - Date.now(); if (wait > 0) await sleep_(wait); lastAt = Date.now(); }
+  /** 429 is always retried (Jisr did not process it). 5xx and "no answer" are retried only when opt.retry5xx is set (a create may already have happened). */
+  async function req_(method, path, body, query, delay, opt) {
+    const url = apiBase_() + path + '?' + new URLSearchParams(Object.assign({}, query || {}, { slug: slug_() })).toString();
+    const init = { method, credentials: 'include', headers: { accept: 'application/json', slug: slug_(), locale: 'en' } };
+    if (body !== undefined) { init.headers['content-type'] = 'application/json'; init.body = JSON.stringify(body); }
+    const again = opt && opt.retry5xx;
+    for (let a = 0; a <= cfg.retries; a++) {
+      await throttle_(delay);
+      let res;
+      try { res = await fetch(url, init); }
+      catch (e) { if (again && a < cfg.retries) { await sleep_(cfg.backoffMs * Math.pow(2, a)); continue; } const err = new Error(T('No answer from Jisr', 'لا رد من جسر')); err.noAnswer = true; throw err; }
+      if (res.status === 401) { const err = new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول.')); err.auth = true; throw err; }
+      if ((res.status === 429 || (again && res.status >= 500)) && a < cfg.retries) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_(isNaN(ra) ? cfg.backoffMs * Math.pow(2, a) : ra * 1000); continue; }
+      const json = await res.json().catch(() => null);
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json, tries: a + 1 };
+    }
+    throw new Error('Request failed after retries');
+  }
+  /** The whole list of company documents. complete=false when Jisr says there are more than were read. */
+  async function listDocs_(delay) {
+    const seen = new Map(); let total = null, firstErr = null, pages = 0;
+    for (let p = 1; p <= cfg.maxPages; p++) {
+      const res = await req_('GET', '/v2/company_attachments/', undefined, p === 1 ? undefined : { page: p }, delay, { retry5xx: true });
+      if (!res.ok) { if (p === 2 && res.status >= 400 && res.status < 500) break; if (p === 1) return { ok: false, status: res.status, error: jisrMsg_(res.json) || 'HTTP ' + res.status, stage: jboStageOfRes_(res), docs: [], byId: {}, complete: false }; firstErr = res; break; }
+      const arr = itemsOf_(res.json);
+      if (!arr) { if (p === 1) return { ok: false, status: res.status, error: T('Could not find the list of documents in Jisr\'s answer.', 'تعذّر العثور على قائمة المستندات في إجابة جسر.'), stage: 'failed', docs: [], byId: {}, complete: false, shape: Object.keys(res.json || {}).slice(0, 8).join(',') }; break; }
+      pages++;
+      const t = totalOf_(res.json); if (t !== null) total = t;
+      let fresh = 0; arr.forEach((it) => { if (it && it.id !== undefined && !seen.has(String(it.id))) { seen.set(String(it.id), docOf_(it)); fresh++; } });
+      if (!fresh) break;
+      if (total !== null && seen.size >= total) break;
+    }
+    const docs = Array.from(seen.values()); const byId = {}; docs.forEach((d) => { byId[String(d.id)] = d; });
+    const complete = !firstErr && (total === null || docs.length >= total);
+    return { ok: true, docs, byId, complete, total, pages };
+  }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c != null && c !== false && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-cd-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-cd-css', text: `
+      .jcd-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+      .jcd-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; }
+      .jcd-step { border: 1px solid #e8eaed; border-radius: 10px; padding: 10px 12px; }
+      .jcd-step b { display: block; font-size: 12.5px; margin-bottom: 6px; }
+      .jcd-step .jbo-btn { margin: 0 6px 6px 0; }
+      .jcd-step label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; margin: 4px 0; flex-wrap: wrap; }
+      .jcd-step input[type=text], .jcd-step input[type=number], .jcd-step input[type=date], .jcd-step select { font: inherit; padding: 3px 6px; border: 1px solid #dadce0; border-radius: 6px; max-width: 100%; }
+      .jcd-hint { font-size: 12px; }
+      .jcd-wrap { max-height: 42vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jcd-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jcd-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jcd-wrap td { padding: 4px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jcd-wrap td input[type=text], .jcd-wrap td input[type=date] { font: inherit; width: 100%; min-width: 90px; padding: 2px 5px; border: 1px solid #dadce0; border-radius: 5px; box-sizing: border-box; }
+      .jcd-wrap tr.jcd-off td { opacity: .55; }
+      .jcd-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jcd-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      .jcd-rule { font-size: 12px; margin: 0 0 10px; color: #5f6368; }
+      .jcd-bulk { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 8px 0; }
+      .jcd-wrap:empty { display: none; }
+      @media (max-width: 760px) { .jcd-steps, .jcd-bulk { grid-template-columns: 1fr; } }
+    ` }));
+  }
+  function saveCsv_(name, text) {
+    const url = URL.createObjectURL(new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' }));
+    const a = el('a', { href: url, download: name }); document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  function openTool_() {
+    injectCss_();
+    const S = {
+      tab: 'add', files: [], items: [], docs: null, listInfo: null, q: '', dry: true, busy: '', note: '', noteErr: false, ran: false, running: false, stop: false,
+      delay: Math.min(5000, Math.max(100, Number(gmGet_('companyDocsDelayMs', 300)) || 300)),
+      opt: { uni: '', pos: 'before', sep: ' - ', keepExt: false, serial: true, prefix: '', start: 1, digits: 4, expiry: '', desc: '', inc: false, allowDup: false },
+    };
+    const body = el('div', { class: 'jbo-modal-body' });
+    const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' });
+    const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': T('Close', 'إغلاق') });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1200px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root jcd' }, [modal]);
+    const close = () => { if (S.running && !confirm(T('Still running. Stop and close?', 'لا يزال التشغيل جاريًا. إيقاف وإغلاق؟'))) return; S.stop = true; backdrop.remove(); };
+    closeBtn.addEventListener('click', close);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    const statusEl = el('div', { class: 'jbo-muted jcd-msg', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const statsEl = el('div', { class: 'jcd-stats' });
+    const wrap = el('div', { class: 'jcd-wrap' });
+    const runB = el('button', { class: 'jbo-btn jbo-btn-primary jcd-run' });
+    const retryB = el('button', { class: 'jbo-btn jcd-retry', text: T('Retry failed', 'إعادة المحاولة للفاشلة') });
+    const stopB = el('button', { class: 'jbo-btn jcd-stop', text: T('Stop', 'إيقاف') });
+    const logB = el('button', { class: 'jbo-btn jcd-log', text: T('Log (.csv)', 'السجل (‎.csv)') });
+    const clearB = el('button', { class: 'jbo-btn jcd-clear', text: T('Clear', 'مسح') });
+    const dryCb = el('input', { type: 'checkbox', class: 'jcd-dry', checked: true });
+    const delayIn = el('input', { type: 'number', class: 'jcd-delay', min: '100', max: '5000', step: '50', value: String(S.delay), style: { width: '78px' } });
+    const picIn = el('input', { type: 'file', class: 'jcd-files', accept: '.zip,.pdf,.png,.jpg,.jpeg,.gif,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv', multiple: true, style: { display: 'none' } });
+    const repIn = el('input', { type: 'file', class: 'jcd-b-files', accept: '.zip,.pdf,.png,.jpg,.jpeg,.gif,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv', multiple: true, style: { display: 'none' } });
+    const lock_ = () => !!S.busy || S.running;
+    const isAdd = () => S.tab === 'add';
+    const rowsOf_ = () => (isAdd() ? S.items : S.docs || []);
+
+    // ---------------------------------------------------------------- results
+    const STAGE_CLS = (st) => (st === 'ok' || st === 'ok_retry' ? 'jbo-status-ok' : st === 'pending' || st === 'unverified' || st === 'skipped' || st === 'no_match' ? 'jbo-status-pending' : 'jbo-status-err');
+    function resultText_(r) {
+      const tab = S.tab;
+      if (tab === 'add' && r.status !== 'ready') return { cls: 'jbo-status-pending', txt: T('Skipped', 'تم التخطي') + ': ' + (r.status === 'dup' ? r.dupMsg : r.status === 'bad' ? T('file type not supported', 'نوع الملف غير مدعوم') : r.status === 'empty' ? T('the file is empty', 'الملف فارغ') : T('over 10 MB', 'أكبر من 10 ميغابايت')) };
+      if (r.state === 'success') return { cls: 'jbo-status-ok', txt: '✓ ' + (tab === 'add' ? T('Added', 'تمت الإضافة') : tab === 'edit' ? T('Saved', 'تم الحفظ') : T('Deleted', 'تم الحذف')) + (r.http ? ' (HTTP ' + r.http + ')' : '') + (r.stage === 'ok_retry' ? ' · ' + T('after a retry', 'بعد إعادة المحاولة') : '') };
+      if (r.state === 'failed' || r.state === 'warn') { const st = STAGE_TEXT()[r.stage] || r.stage || ''; return { cls: STAGE_CLS(r.stage), txt: (r.stage === 'unverified' ? '! ' : r.stage === 'restore_failed' ? '⚠ ' : '✗ ') + st + (r.http ? ' (HTTP ' + r.http + ')' : '') + (r.msg ? '\n' + r.msg : '') }; }
+      if (r.state === 'skip') return { cls: 'jbo-status-pending', txt: T('Skipped', 'تم التخطي') + ': ' + r.msg };
+      if (r.state === 'sent') return { cls: 'jbo-status-pending', txt: T('Sent, checking…', 'أُرسل، جارٍ التحقق…') };
+      if (r.state === 'ready') return { cls: 'jbo-status-pending', txt: (tab === 'add' ? T('would add', 'ستتم إضافته') : tab === 'edit' ? T('would save', 'سيتم حفظه') : T('would delete', 'سيتم حذفه')) + (r.msg ? ' · ' + r.msg : '') };
+      return { cls: 'jbo-status-pending', txt: [r.warn ? '⚠ ' + r.warn : '', r.big ? '⚠ ' + T('over 5 MB', 'أكبر من 5 ميغابايت') : ''].filter(Boolean).join('\n') || '—' };
+    }
+    function paintRow_(r) {
+      if (!r.tr) return;
+      const rt = resultText_(r); const c = r.tr.querySelector('.jcd-res'); if (c) { c.className = 'jcd-res ' + rt.cls; c.textContent = rt.txt; c.style.whiteSpace = 'pre-line'; }
+    }
+    function paintStats_() {
+      statsEl.innerHTML = ''; const rows = rowsOf_(); const cnt = (f) => rows.filter(f).length;
+      if (isAdd()) {
+        if (rows.length) {
+          const chips = [[rows.length, T('files', 'ملف')], [cnt((r) => r.status === 'ready'), T('ready', 'جاهز')], [cnt((r) => r.status === 'dup'), T('already exist', 'موجود مسبقًا')], [cnt((r) => r.status === 'bad' || r.status === 'empty' || r.status === 'big'), T('not usable', 'غير صالح')]];
+          if (S.ran) chips.push([cnt((r) => r.state === 'success'), T('done', 'تم')], [cnt((r) => r.state === 'warn'), T('not verified', 'لم يتم التحقق')], [cnt((r) => r.state === 'failed'), T('failed', 'فشل')]);
+          chips.filter(([v], i) => i < 2 || v).forEach(([v, l]) => statsEl.appendChild(el('span', { 'data-chip': l }, [el('b', { text: String(v) }), ' ' + l])));
+        }
+      } else if (S.docs) {
+        const sel = cnt((r) => r.sel), ch = cnt((r) => r.sel && S.tab === 'edit' && changedFields_(r).length);
+        const chips = [[S.docs.length, T('documents', 'مستند')], [sel, T('selected', 'محدد')]];
+        if (S.tab === 'edit') chips.push([ch, T('with changes', 'بها تغييرات')], [cnt((r) => r.rep), T('files to replace', 'ملفات للاستبدال')]);
+        if (S.ran) chips.push([cnt((r) => r.state === 'success'), T('done', 'تم')], [cnt((r) => r.state === 'warn'), T('not verified', 'لم يتم التحقق')], [cnt((r) => r.state === 'failed'), T('failed', 'فشل')]);
+        chips.filter(([v], i) => i < 2 || v).forEach(([v, l]) => statsEl.appendChild(el('span', { 'data-chip': l }, [el('b', { text: String(v) }), ' ' + l])));
+      }
+    }
+    const visibleDocs_ = () => { const q = nk_(S.q); return (S.docs || []).filter((d) => !q || nk_(d.name).includes(q) || nk_(d.number).includes(q)); };
+    const todo_ = (r) => (isAdd() ? r.status === 'ready' && r.state !== 'success' && r.state !== 'warn' : r.sel && r.state !== 'success' && (S.tab === 'delete' || changedFields_(r).length > 0));
+    function paintFoot_() {
+      const n = rowsOf_().filter(todo_).length;
+      const verb = S.tab === 'add' ? [T('add ', 'إضافة '), T(' document(s)', ' مستند')] : S.tab === 'edit' ? [T('save ', 'حفظ '), T(' change(s)', ' تعديل')] : [T('delete ', 'حذف '), T(' document(s)', ' مستند')];
+      runB.textContent = S.dry ? T('Dry run: check ', 'تشغيل تجريبي: فحص ') + n + verb[1] : (S.tab === 'delete' ? T('Delete ', 'حذف ') : S.tab === 'add' ? T('Add ', 'إضافة ') : T('Save ', 'حفظ ')) + n + verb[1] + T(' in ', ' في ') + slug_();
+      runB.disabled = !n || lock_();
+      retryB.style.display = rowsOf_().some((r) => r.state === 'failed') && !S.running ? '' : 'none'; retryB.disabled = lock_();
+      stopB.style.display = S.running ? '' : 'none';
+      logB.style.display = rowsOf_().length ? '' : 'none';
+      clearB.disabled = lock_(); dryCb.disabled = lock_(); delayIn.disabled = lock_();
+      body.querySelectorAll('.jcd-lockable').forEach((b) => { b.disabled = lock_(); });
+    }
+    function paintTable_() {
+      wrap.innerHTML = '';
+      const rows = isAdd() ? S.items : visibleDocs_();
+      if (!rows.length) { if (!isAdd() && S.docs) wrap.appendChild(el('div', { class: 'jbo-muted', style: { padding: '10px' }, text: T('No documents match.', 'لا توجد مستندات مطابقة.') })); return; }
+      const t = el('table'); const hd = [];
+      if (isAdd()) hd.push('#', T('File', 'الملف'), T('Name in Jisr', 'الاسم في جسر'), T('Document number', 'رقم المستند'), T('Expiry date', 'تاريخ الانتهاء'), T('Description', 'الوصف'), T('In profile', 'في الملف'), T('Result', 'النتيجة'));
+      else if (S.tab === 'edit') hd.push('', 'ID', T('Name in Jisr', 'الاسم في جسر'), T('Document number', 'رقم المستند'), T('Expiry date', 'تاريخ الانتهاء'), T('Description', 'الوصف'), T('In profile', 'في الملف'), T('File', 'الملف'), T('Result', 'النتيجة'));
+      else hd.push('', 'ID', T('Name in Jisr', 'الاسم في جسر'), T('Document number', 'رقم المستند'), T('Expiry date', 'تاريخ الانتهاء'), T('File', 'الملف'), T('Result', 'النتيجة'));
+      t.appendChild(el('tr', {}, hd.map((h, i) => (!isAdd() && i === 0 ? el('th', {}, [allCb_()]) : el('th', { text: h })))));
+      const sizeTxt = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB');
+      const inp = (cls, type, val, on, dis) => { const i = el('input', { type, class: cls, value: val || '' }); i.disabled = !!dis; i.addEventListener('input', () => { on(i.value); paintStats_(); paintFoot_(); }); return i; };
+      rows.forEach((r) => {
+        const tr = el('tr', { 'data-row': String(isAdd() ? r.no : r.id) }); r.tr = tr;
+        const rt = resultText_(r); const res = el('td', { class: 'jcd-res ' + rt.cls, style: { whiteSpace: 'pre-line' }, text: rt.txt });
+        const incCb = (get, set, dis) => { const c = el('input', { type: 'checkbox', class: 'jcd-i-inc' }); c.checked = !!get(); c.disabled = !!dis; c.addEventListener('change', () => { set(c.checked); paintStats_(); paintFoot_(); }); return el('td', {}, [c]); };
+        if (isAdd()) {
+          const off = r.status !== 'ready'; if (off) tr.className = 'jcd-off';
+          tr.append(el('td', { text: String(r.no) }), el('td', { text: r.file + (r.size ? ' (' + sizeTxt(r.size) + ')' : '') }),
+            el('td', {}, [inp('jcd-i-name', 'text', r.name, (v) => { r.name = v; r.nameEd = true; r.state = ''; }, off)]),
+            el('td', {}, [inp('jcd-i-num', 'text', r.number, (v) => { r.number = v; r.numEd = true; }, off)]),
+            el('td', {}, [inp('jcd-i-exp', 'date', r.expiry, (v) => { r.expiry = v; r.expEd = true; }, off)]),
+            el('td', {}, [inp('jcd-i-desc', 'text', r.desc, (v) => { r.desc = v; r.descEd = true; }, off)]),
+            incCb(() => r.inc, (v) => { r.inc = v; r.incEd = true; }, off), res);
+        } else {
+          const cb = el('input', { type: 'checkbox', class: 'jcd-sel' }); cb.checked = !!r.sel; cb.disabled = lock_();
+          cb.addEventListener('change', () => { r.sel = cb.checked; paintStats_(); paintFoot_(); });
+          tr.append(el('td', {}, [cb]), el('td', { text: String(r.id) }));
+          if (S.tab === 'edit') {
+            const mark = (k) => (changedFields_(r).includes(k) ? '#fff4d6' : '');
+            const mk = (cls, type, key) => { const i = inp(cls, type, r[key], (v) => { r[key] = v; i.style.background = mark(key); r.state = ''; }); i.style.background = mark(key); return el('td', {}, [i]); };
+            tr.append(mk('jcd-i-name', 'text', 'name'), mk('jcd-i-num', 'text', 'number'), mk('jcd-i-exp', 'date', 'expiry'), mk('jcd-i-desc', 'text', 'desc'),
+              incCb(() => r.inc, (v) => { r.inc = v; }), el('td', { class: 'jbo-muted', text: (r.rep ? '↻ ' + r.rep.name : r.fileName || (r.hasFile ? '✓' : '—')) }), res);
+          } else tr.append(el('td', { text: r.name }), el('td', { text: r.number || '—' }), el('td', { text: r.expiry || '—' }), el('td', { class: 'jbo-muted', text: r.fileName || (r.hasFile ? '✓' : '—') }), res);
+        }
+        t.appendChild(tr);
+      });
+      wrap.appendChild(t);
+    }
+    function allCb_() {
+      const c = el('input', { type: 'checkbox', class: 'jcd-all', 'aria-label': T('Select all shown', 'تحديد كل المعروض') });
+      const v = visibleDocs_(); c.checked = v.length > 0 && v.every((d) => d.sel);
+      c.addEventListener('change', () => { visibleDocs_().forEach((d) => { d.sel = c.checked; }); paintTable_(); paintStats_(); paintFoot_(); });
+      return c;
+    }
+    function paint_() {
+      statusEl.textContent = S.busy || S.note; statusEl.className = 'jcd-msg ' + (S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted');
+      paintStats_(); paintTable_(); paintFoot_();
+    }
+
+    // ---------------------------------------------------------------- loading the list from Jisr
+    async function loadDocs_(quiet) {
+      S.busy = T('Reading the documents from Jisr…', 'جارٍ قراءة المستندات من جسر…'); if (!quiet) paint_();
+      let l;
+      try { l = await listDocs_(S.delay); } catch (e) { S.busy = ''; S.note = redact_(e.message); S.noteErr = true; paint_(); return null; }
+      S.busy = '';
+      if (!l.ok) { S.note = T('Could not read the documents: ', 'تعذّرت قراءة المستندات: ') + l.error + (l.status ? ' (HTTP ' + l.status + ')' : '') + (l.shape ? ' · ' + T('answer keys: ', 'مفاتيح الإجابة: ') + l.shape : ''); S.noteErr = true; paint_(); return null; }
+      S.listInfo = l;
+      const old = {}; (S.docs || []).forEach((d) => { old[String(d.id)] = d; });
+      S.docs = l.docs.map((d) => Object.assign({}, d, { orig: { name: d.name, number: d.number, expiry: d.expiry, desc: d.desc, inc: d.inc }, sel: !!(old[String(d.id)] && old[String(d.id)].sel), state: '', msg: '' }));
+      S.note = S.docs.length + T(' document(s) read from Jisr.', ' مستند قُرئ من جسر.') + (l.complete ? '' : '\n' + T('⚠ Jisr reports ', '⚠ يذكر جسر ') + l.total + T(' documents but only ', ' مستند لكن قُرئ فقط ') + S.docs.length + T(' were read: results cannot be fully confirmed.', ': لا يمكن تأكيد النتائج بالكامل.')); S.noteErr = !l.complete;
+      return l;
+    }
+
+    // ---------------------------------------------------------------- run helpers
+    const stageOf_ = (r) => (r.state === 'success' ? r.stage || 'ok' : r.state === 'skip' ? 'skipped' : r.state === 'failed' || r.state === 'warn' ? r.stage || 'failed' : '');
+    function setFinal_(r, j) {
+      r.stage = j.stage; r.why = j.why;
+      r.state = j.stage === 'ok' || j.stage === 'ok_retry' ? 'success' : j.stage === 'unverified' ? 'warn' : 'failed';
+      r.msg = r.state === 'success' ? '' : j.why;
+    }
+    const reportKey_ = (r) => (isAdd() ? (r.newId !== '' && r.newId != null ? r.newId : 'f' + r.no) : r.id);
+    function report_(r) { const st = stageOf_(r); if (!st) return; try { jboActReport_(MODULE_ID, reportKey_(r), st, (r.why || st) + (r.http && st !== 'ok' && st !== 'ok_retry' ? ' (HTTP ' + r.http + ')' : '')); } catch (e) { /* ignore */ } }
+    /** Read the list again and decide every sent row; rows not yet found are looked for again a few times (Jisr may need a moment). */
+    async function verify_(rows, judge) {
+      let list; try { list = await listDocs_(S.delay); } catch (e) { if (e.auth) throw e; list = { ok: false, complete: false, docs: [], byId: {} }; }
+      const open = rows.slice(); const done = (j) => j.stage === 'ok' || j.stage === 'ok_retry' || j.stage === 'unverified';
+      const decide = () => open.slice().forEach((r) => { const j = judge(r, list); setFinal_(r, j); if (done(j)) open.splice(open.indexOf(r), 1); });
+      decide();
+      for (let i = 0; i < cfg.verifyWaits.length && list.ok && open.length; i++) {
+        await sleep_(cfg.verifyWaits[i]);
+        try { list = await listDocs_(S.delay); } catch (e) { if (e.auth) throw e; break; }
+        decide();
+      }
+      return list;
+    }
+    function beginRun_(rows, live) {
+      S.running = true; S.stop = false; S.ran = true; S.busy = ' '; S.note = ''; S.noteErr = false;
+      rows.forEach((r) => { if (r.state !== 'success') { r.state = ''; r.msg = ''; r.http = ''; r.stage = ''; r.why = ''; r.tries = 0; r.final = false; r.uncertain = ''; } });
+      paint_();
+    }
+    function endRun_(rows, live, label, authErr) {
+      rows.forEach((r) => { if (!r.state) { r.state = 'skip'; r.stage = 'skipped'; r.msg = T('not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); r.why = 'not sent: the run was stopped'; if (live) { try { jboActReport_(MODULE_ID, reportKey_(r), 'skipped', 'not sent: the run was stopped'); } catch (e) { /* ignore */ } } } });
+      S.running = false; S.busy = '';
+      const c = (st) => rows.filter((r) => r.state === st).length;
+      S.note = live
+        ? c('success') + T(' of ', ' من ') + rows.length + ' ' + label + ', ' + (c('warn') ? c('warn') + T(' not verified, ', ' لم يتم التحقق، ') : '') + c('failed') + T(' failed, ', ' فشلت، ') + c('skip') + T(' skipped.', ' تم تخطيها.')
+        : T('Dry run done: nothing was changed. ', 'انتهى التشغيل التجريبي: لم يتغيّر شيء. ') + c('ready') + T(' ready, ', ' جاهز، ') + c('failed') + T(' with a problem.', ' بها مشكلة.');
+      if (S.stop && rows.some((r) => r.state === 'skip')) S.note += '\n' + (authErr || T('Stopped: the rest were not sent.', 'تم الإيقاف: لم يُرسل الباقي.'));
+      S.noteErr = !!authErr || (live && (c('failed') > 0 || c('warn') > 0));
+      paint_();
+    }
+    const authFail_ = (r, e) => { r.state = 'failed'; r.stage = 'denied'; r.why = 'Jisr sign-in problem: the run was stopped'; r.msg = redact_(e.message); S.stop = true; };
+    const progress_ = (rows, live) => { S.busy = (live ? T('Working… ', 'جارٍ التنفيذ… ') : T('Checking… ', 'جارٍ الفحص… ')) + rows.filter((x) => x.state).length + '/' + rows.length; statusEl.textContent = S.busy; };
+
+    // ---------------------------------------------------------------- ADD
+    async function prepareAdd_() {
+      const l = await loadDocs_(true); if (!l) return null;
+      applyOpts_(S.items, S.opt, l.docs); S.note = ''; paint_(); return l;
+    }
+    async function sendAdd_(r) {
+      try {
+        const f = S.files[r.idx]; const bytes = f.bytes || new Uint8Array(await f.blob.arrayBuffer());
+        const res = await req_('POST', '/v2/company_attachments/', createBody_(r, dataUrl_(bytes, mimeOf_(r.ext))), undefined, S.delay, { retry5xx: false });
+        r.http = res.status; r.tries = res.tries || 1;
+        if (res.ok) { r.state = 'sent'; r.newId = idFrom_(res.json); }
+        else if (res.status >= 500) { r.state = 'sent'; r.uncertain = jboStageOfRes_(res); r.msg = jisrMsg_(res.json); r.newId = ''; }
+        else { r.state = 'failed'; r.stage = jboStageOfRes_(res); r.why = 'Jisr refused the document (HTTP ' + res.status + ')'; r.msg = jisrMsg_(res.json) || 'HTTP ' + res.status; }
+      } catch (e) {
+        if (e.auth) throw e;
+        if (e.noAnswer) { r.state = 'sent'; r.uncertain = 'network'; r.http = ''; r.newId = ''; }
+        else { r.state = 'failed'; r.stage = 'failed'; r.why = 'could not read the file'; r.msg = redact_(e.message); }
+      }
+    }
+    async function runAdd_(rows, live) {
+      beginRun_(rows, live); let authErr = '';
+      const before = new Set((S.listInfo ? S.listInfo.docs : []).map((d) => String(d.id)));
+      for (const r of rows) {
+        if (S.stop) break;
+        if (!live) { r.state = 'ready'; r.msg = r.number ? T('number ', 'الرقم ') + r.number : ''; progress_(rows, live); paintRow_(r); continue; }
+        try { await sendAdd_(r); } catch (e) { authFail_(r, e); authErr = e.message; }
+        progress_(rows, live); paintRow_(r);
+      }
+      if (live) {
+        const sent = rows.filter((r) => r.state === 'sent');
+        if (sent.length) {
+          S.busy = T('Reading the list back from Jisr…', 'جارٍ إعادة قراءة القائمة من جسر…'); statusEl.textContent = S.busy;
+          const ctx = { before, claimed: new Set() };
+          try { await verify_(sent, (r, list) => judgeAdd_(r, list, ctx)); } catch (e) { if (!e.auth) throw e; authErr = e.message; sent.forEach((r) => { if (r.state === 'sent') { r.state = 'warn'; r.stage = 'unverified'; r.why = 'signed out before the result could be read back'; } }); }
+        }
+        rows.forEach(report_);
+        S.items.filter((r) => r.status !== 'ready' && !r.reported).forEach((r) => { r.reported = true; try { jboActReport_(MODULE_ID, 'f' + r.no, 'skipped', r.status === 'dup' ? 'file skipped: a document with this name already exists' : 'file skipped: ' + (r.status === 'bad' ? 'type not supported' : r.status === 'empty' ? 'empty file' : 'over 10 MB')); } catch (e) { /* ignore */ } });
+      }
+      endRun_(rows, live, T('document(s) added', 'مستند أُضيف'), authErr);
+    }
+    function confirmAdd_(rows) {
+      const nums = rows.map((r) => r.number).filter(Boolean);
+      return confirm(T('Add ', 'إضافة ') + rows.length + T(' company document(s) to ', ' مستند للشركة إلى ') + slug_() + '?\n'
+        + (S.opt.uni ? T('Universal name: ', 'الاسم العام: ') + S.opt.uni + '\n' : '')
+        + (nums.length ? T('Document numbers: ', 'أرقام المستندات: ') + nums[0] + (nums.length > 1 ? ' … ' + nums[nums.length - 1] : '') + '\n' : T('No document numbers.', 'بلا أرقام مستندات.') + '\n')
+        + (S.items.some((r) => r.status === 'dup') ? T('Files whose name already exists are skipped.', 'الملفات التي يوجد اسمها مسبقًا يتم تخطيها.') + '\n' : '')
+        + (rows.some((r) => r.warn) ? '⚠ ' + rows.filter((r) => r.warn).length + T(' number(s) are already used in Jisr.', ' رقم مستخدم مسبقًا في جسر.') + '\n' : '')
+        + T('Each document is checked in the list afterwards.', 'يتم التحقق من كل مستند في القائمة بعد الانتهاء.'));
+    }
+
+    // ---------------------------------------------------------------- EDIT
+    async function sendEdit_(r) {
+      try {
+        let url = ''; if (r.rep) { const b = r.rep.bytes || new Uint8Array(await r.rep.blob.arrayBuffer()); url = dataUrl_(b, mimeOf_(extOf_(r.rep.name))); }
+        r.sent = { name: r.name, number: r.number, expiry: r.expiry, desc: r.desc, inc: r.inc }; r.hadFile = !!(r.hasFile || r.fileName);
+        const res = await req_('PUT', '/v2/company_attachments/' + encodeURIComponent(r.id) + '/', editBody_(r, url), undefined, S.delay, { retry5xx: true });
+        r.http = res.status; r.tries = res.tries || 1;
+        if (res.ok) r.state = 'sent';
+        else { r.state = 'failed'; r.stage = jboStageOfRes_(res); r.why = 'Jisr refused the edit (HTTP ' + res.status + ')'; r.msg = jisrMsg_(res.json) || 'HTTP ' + res.status; }
+      } catch (e) { if (e.auth) throw e; if (e.noAnswer) { r.state = 'failed'; r.stage = 'network'; r.why = 'no answer from Jisr when saving the edit'; r.msg = T('No answer from Jisr', 'لا رد من جسر'); } else { r.state = 'failed'; r.stage = 'failed'; r.why = 'could not read the replacement file'; r.msg = redact_(e.message); } }
+    }
+    function dryEdit_(r) {
+      const ch = changedFields_(r); const lab = FIELD_LABEL();
+      if (!nk_(r.name)) { r.state = 'failed'; r.stage = 'failed'; r.why = 'the name is empty'; r.msg = T('the name is empty', 'الاسم فارغ'); return; }
+      if (r.expiry && !normDate_(r.expiry)) { r.state = 'failed'; r.stage = 'failed'; r.why = 'the expiry date is not a date'; r.msg = T('the expiry date is not a date', 'تاريخ الانتهاء ليس تاريخًا'); return; }
+      r.state = 'ready'; r.msg = ch.map((k) => lab[k]).join(', ');
+    }
+    async function runEdit_(rows, live) {
+      beginRun_(rows, live); let authErr = '';
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i]; if (S.stop) break;
+        if (!live) { dryEdit_(r); progress_(rows, live); paintRow_(r); continue; }
+        if (!nk_(r.name)) { r.state = 'failed'; r.stage = 'failed'; r.why = 'the name is empty'; r.msg = T('the name is empty', 'الاسم فارغ'); paintRow_(r); continue; }
+        try { await sendEdit_(r); } catch (e) { authFail_(r, e); authErr = e.message; }
+        progress_(rows, live); paintRow_(r);
+        // the first edit is read back before the rest are sent (a PUT without the file was not captured: if it loses the file, stop at one)
+        if (live && i === 0 && r.state === 'sent' && rows.length > 1) {
+          S.busy = T('Checking the first edit before sending the rest…', 'جارٍ فحص أول تعديل قبل إرسال الباقي…'); statusEl.textContent = S.busy;
+          try { await verify_([r], (x, list) => judgeEdit_(x, list)); } catch (e) { if (!e.auth) throw e; authFail_(r, e); authErr = e.message; }
+          paintRow_(r);
+          if (r.state !== 'success') { S.stop = true; authErr = authErr || T('The first edit was not confirmed in Jisr, so the rest were NOT sent. Check that document in Jisr, then try again.', 'لم يتأكد أول تعديل في جسر، لذلك لم يُرسل الباقي. افحص ذلك المستند في جسر ثم أعد المحاولة.'); }
+        }
+      }
+      if (live) {
+        const sent = rows.filter((r) => r.state === 'sent');
+        if (sent.length) { S.busy = T('Reading the list back from Jisr…', 'جارٍ إعادة قراءة القائمة من جسر…'); statusEl.textContent = S.busy; try { await verify_(sent, (r, list) => judgeEdit_(r, list)); } catch (e) { if (!e.auth) throw e; authErr = e.message; sent.forEach((r) => { if (r.state === 'sent') { r.state = 'warn'; r.stage = 'unverified'; r.why = 'signed out before the result could be read back'; } }); } }
+        rows.forEach((r) => { if (r.state === 'success') { r.orig = { name: r.name, number: r.number, expiry: r.expiry, desc: r.desc, inc: r.inc }; r.rep = null; r.hasFile = r.hasFile || !!r.fileName; } });
+        rows.forEach(report_);
+      }
+      endRun_(rows, live, T('document(s) saved', 'مستند حُفظ'), authErr);
+      if (live && S.docs) paintTable_();
+    }
+    function confirmEdit_(rows) {
+      const lab = FIELD_LABEL(); const fields = {}; rows.forEach((r) => changedFields_(r).forEach((k) => { fields[k] = (fields[k] || 0) + 1; }));
+      return confirm(T('Save changes to ', 'حفظ التعديلات على ') + rows.length + T(' document(s) in ', ' مستند في ') + slug_() + '?\n'
+        + Object.keys(fields).map((k) => '• ' + lab[k] + ': ' + fields[k]).join('\n') + '\n'
+        + T('The first edit is checked in Jisr before the rest are sent, and every edit is read back afterwards.', 'يُفحص أول تعديل في جسر قبل إرسال الباقي، ثم تُقرأ كل التعديلات بعد الانتهاء.'));
+    }
+
+    // ---------------------------------------------------------------- DELETE
+    async function sendDelete_(r) {
+      try {
+        const res = await req_('DELETE', '/v2/company_attachments/' + encodeURIComponent(r.id) + '/', undefined, undefined, S.delay, { retry5xx: true });
+        r.http = res.status; r.tries = res.tries || 1;
+        if (res.ok || (res.status === 404 && r.tries > 1)) r.state = 'sent';
+        else { r.state = 'failed'; r.stage = jboStageOfRes_(res); r.why = 'Jisr refused the deletion (HTTP ' + res.status + ')'; r.msg = jisrMsg_(res.json) || 'HTTP ' + res.status; }
+      } catch (e) { if (e.auth) throw e; r.state = 'failed'; r.stage = 'network'; r.why = 'no answer from Jisr when deleting'; r.msg = T('No answer from Jisr', 'لا رد من جسر'); }
+    }
+    async function runDelete_(rows, live) {
+      beginRun_(rows, live); let authErr = '';
+      for (const r of rows) {
+        if (S.stop) break;
+        if (!live) { r.state = 'ready'; r.msg = ''; progress_(rows, live); paintRow_(r); continue; }
+        try { await sendDelete_(r); } catch (e) { authFail_(r, e); authErr = e.message; }
+        progress_(rows, live); paintRow_(r);
+      }
+      if (live) {
+        const sent = rows.filter((r) => r.state === 'sent');
+        if (sent.length) { S.busy = T('Reading the list back from Jisr…', 'جارٍ إعادة قراءة القائمة من جسر…'); statusEl.textContent = S.busy; try { await verify_(sent, (r, list) => judgeDelete_(r, list)); } catch (e) { if (!e.auth) throw e; authErr = e.message; sent.forEach((r) => { if (r.state === 'sent') { r.state = 'warn'; r.stage = 'unverified'; r.why = 'signed out before the result could be read back'; } }); } }
+        rows.forEach(report_);
+      }
+      endRun_(rows, live, T('document(s) deleted', 'مستند حُذف'), authErr);
+    }
+    function backupCsv_(rows) {
+      const head = ['Document ID', 'Name', 'Document number', 'Expiry date', 'Description', 'Shown in employees profile', 'File name'];
+      const lines = [head.map(csvCell_).join(',')];
+      rows.forEach((r) => lines.push([r.id, r.name, r.number, r.expiry, r.desc, r.inc ? 'yes' : 'no', r.fileName].map(csvCell_).join(',')));
+      saveCsv_('jisr-company-documents-deleted-backup-' + slug_() + '-' + new Date().toISOString().slice(0, 16).replace(/[:T-]/g, '') + '.csv', lines.join('\r\n'));
+    }
+    function confirmDelete_(rows) {
+      if (!confirm(T('DELETE ', 'حذف ') + rows.length + T(' company document(s) from ', ' مستند للشركة من ') + slug_() + '?\n' + T('This cannot be undone and the files cannot be recovered. A backup list (.csv) of their details is downloaded first.', 'لا يمكن التراجع ولا يمكن استرجاع الملفات. تُنزَّل أولًا قائمة نسخ احتياطي (‎.csv) بتفاصيلها.'))) return false;
+      const word = window.prompt(T('Type DELETE to confirm deleting ', 'اكتب DELETE لتأكيد حذف ') + rows.length + T(' document(s):', ' مستند:'), '');
+      return String(word || '').trim().toUpperCase() === 'DELETE';
+    }
+
+    // ---------------------------------------------------------------- reading files
+    async function readFiles_(list) {
+      const out = [];
+      for (const f of list) {
+        if (extOf_(f.name) === 'zip') readZip_(new Uint8Array(await f.arrayBuffer())).forEach((z) => out.push({ name: z.name, size: z.bytes.length, bytes: z.bytes }));
+        else out.push({ name: f.name, size: f.size, blob: f });
+      }
+      return out;
+    }
+    picIn.addEventListener('change', async () => {
+      const list = Array.from(picIn.files || []); if (!list.length) return;
+      S.busy = T('Reading files…', 'جارٍ قراءة الملفات…'); S.note = ''; paint_();
+      try {
+        const out = await readFiles_(list);
+        S.files = out.slice(0, MAX_FILES);
+        const cut = out.length > MAX_FILES ? '\n' + T('Only the first ', 'تمت قراءة أول ') + MAX_FILES + T(' files were read; run the rest separately.', ' ملف فقط؛ شغّل الباقي منفصلًا.') : '';
+        S.items = buildRows_(S.files); S.ran = false; applyOpts_(S.items, S.opt, S.listInfo ? S.listInfo.docs : []);
+        S.busy = ''; S.note = S.files.length + T(' file(s) read.', ' ملف قُرئ.') + cut; S.noteErr = false; paint_();
+        // the existing documents are read once so a name that already exists is flagged before anything is sent
+        const l = await loadDocs_(true); if (l && S.tab === 'add') { applyOpts_(S.items, S.opt, l.docs); S.note = S.files.length + T(' file(s) read; ', ' ملف قُرئ؛ ') + l.docs.length + T(' document(s) already in Jisr.', ' مستند موجود في جسر.') + cut; S.noteErr = false; paint_(); }
+        else if (!l) { S.note = (S.note ? S.note + '\n' : '') + T('(Existing names could not be checked yet; they are checked again when you run.)', '(تعذّر فحص الأسماء الموجودة الآن؛ ستُفحص عند التشغيل.)'); paint_(); }
+      } catch (e) { S.busy = ''; S.note = e.message; S.noteErr = true; paint_(); }
+    });
+    /** Edit: files that replace a document's file are matched to a document by its name (or by its current file name) */
+    repIn.addEventListener('change', async () => {
+      const list = Array.from(repIn.files || []); if (!list.length || !S.docs) return;
+      S.busy = T('Reading files…', 'جارٍ قراءة الملفات…'); paint_();
+      try {
+        const files = (await readFiles_(list)).slice(0, MAX_FILES); let hit = 0; const miss = [];
+        const byName = new Map(); S.docs.forEach((d) => { const k = nk_(d.name); if (k && !byName.has(k)) byName.set(k, d); }); const byFile = new Map(); S.docs.forEach((d) => { const k = nk_(d.fileName); if (k && !byFile.has(k)) byFile.set(k, d); });
+        files.forEach((f) => {
+          if (!allowed_(extOf_(f.name)) || !f.size || f.size > MAX_BYTES) { miss.push(f.name); return; }
+          const d = byFile.get(nk_(f.name)) || byName.get(nk_(stem_(f.name))) || byName.get(nk_(baseName_(f.name)));
+          if (d) { d.rep = f; d.sel = true; d.state = ''; hit++; } else miss.push(f.name);
+        });
+        S.busy = ''; S.note = hit + T(' file(s) matched to documents (by document name or current file name).', ' ملف طُوبق مع مستندات (باسم المستند أو اسم الملف الحالي).') + (miss.length ? '\n' + miss.length + T(' file(s) matched nothing: ', ' ملف بلا مطابقة: ') + miss.slice(0, 5).join(', ') + (miss.length > 5 ? '…' : '') : ''); S.noteErr = !!miss.length; paint_();
+      } catch (e) { S.busy = ''; S.note = e.message; S.noteErr = true; paint_(); }
+    });
+
+    // ---------------------------------------------------------------- the screen
+    const tabBtn_ = (id, en, ar) => { const b = el('button', { class: 'jbo-btn jcd-tab' + (S.tab === id ? ' jbo-btn-primary' : ''), 'data-tab': id, text: T(en, ar) }); b.addEventListener('click', () => { if (lock_() || S.tab === id) return; S.tab = id; S.note = ''; S.noteErr = false; S.ran = false; (S.docs || []).forEach((d) => { d.sel = false; d.state = ''; d.msg = ''; }); render_(); }); return b; };
+    const lab_ = (txt, ...kids) => el('label', {}, [txt, ...kids]);
+    function opt_(cls, type, key, extra) {
+      const i = el('input', Object.assign({ type, class: cls }, extra || {}));
+      if (type === 'checkbox') i.checked = !!S.opt[key]; else i.value = S.opt[key] == null ? '' : S.opt[key];
+      const on = () => { S.opt[key] = type === 'checkbox' ? i.checked : i.value; if (isAdd() && S.items.length) { applyOpts_(S.items, S.opt, S.listInfo ? S.listInfo.docs : []); paintTable_(); paintStats_(); paintFoot_(); } exampleEl.textContent = example_(); };
+      i.addEventListener(type === 'checkbox' || type === 'date' ? 'change' : 'input', on); return i;
+    }
+    const exampleEl = el('div', { class: 'jbo-muted jcd-hint jcd-example' });
+    const example_ = () => { const f = S.items.length ? S.items[0].file : 'Ahmad Ali.pdf'; return T('Example: ', 'مثال: ') + '“' + nameFor_(f, S.opt) + '”' + (S.opt.serial ? ' · ' + T('number ', 'الرقم ') + numberFor_(0, S.opt) : ''); };
+    function pickBtn_(cls, en, ar, input) { const b = el('button', { class: 'jbo-btn jcd-lockable ' + cls, text: T(en, ar) }); b.addEventListener('click', () => { input.value = ''; input.click(); }); return b; }
+    function render_() {
+      titleEl.textContent = T('Company documents: ', 'مستندات الشركة: ') + slug_();
+      if (!isAdd() && !S.docs && !S.note) { S.note = T('Click "Load documents from Jisr" to start.', 'اضغط "تحميل المستندات من جسر" للبدء.'); S.noteErr = false; }
+      body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(el('div', { class: 'jcd-tabs' }, [tabBtn_('add', 'Add', 'إضافة'), tabBtn_('edit', 'Edit', 'تعديل'), tabBtn_('delete', 'Delete', 'حذف')]));
+      if (isAdd()) {
+        const posSel = el('select', { class: 'jcd-pos' }, [el('option', { value: 'before', text: T('before the file name', 'قبل اسم الملف') }), el('option', { value: 'after', text: T('after the file name', 'بعد اسم الملف') })]); posSel.value = S.opt.pos;
+        posSel.addEventListener('change', () => { S.opt.pos = posSel.value; applyOpts_(S.items, S.opt, S.listInfo ? S.listInfo.docs : []); paintTable_(); exampleEl.textContent = example_(); });
+        const nextB = el('button', { class: 'jbo-btn jcd-next jcd-lockable', text: T('Continue after the last number in Jisr', 'المتابعة بعد آخر رقم في جسر') });
+        nextB.addEventListener('click', async () => {
+          const l = S.listInfo || await loadDocs_(false); if (!l) return;
+          const last = lastNumber_(l.docs, S.opt.prefix);
+          if (!last) { S.note = T('No document number with this prefix exists in Jisr yet: start at 1.', 'لا يوجد في جسر رقم مستند بهذه البادئة: ابدأ من 1.'); S.noteErr = false; S.opt.start = 1; }
+          else { S.opt.start = last.n + 1; S.opt.digits = Math.max(Number(S.opt.digits) || 0, last.width); S.note = T('The last number in Jisr with this prefix is ', 'آخر رقم في جسر بهذه البادئة هو ') + String(S.opt.prefix || '') + String(last.n).padStart(last.width, '0') + T('. Numbering starts at ', '. يبدأ الترقيم من ') + (last.n + 1) + '.'; S.noteErr = false; }
+          applyOpts_(S.items, S.opt, l.docs); render_();
+        });
+        body.appendChild(el('div', { class: 'jcd-steps' }, [
+          el('div', { class: 'jcd-step' }, [el('b', { text: T('1. Files', '1. الملفات') }), pickBtn_('jcd-pick', 'Choose ZIP or files', 'اختيار ملف ZIP أو ملفات', picIn),
+            el('div', { class: 'jbo-muted jcd-hint', text: T('A ZIP, or several files at once: PDF, pictures, Word, Excel, PowerPoint, text. Each file becomes one company document, titled with its file name. A file over 10 MB is not sent.', 'ملف ZIP أو عدة ملفات: PDF أو صور أو Word أو Excel أو PowerPoint أو نص. كل ملف يصبح مستندًا للشركة بعنوان اسم الملف. لا يُرسل ملف أكبر من 10 ميغابايت.') }),
+            el('div', { class: 'jbo-muted jcd-hint jcd-picinfo', text: S.files.length ? S.files.length + T(' file(s) loaded', ' ملف محمّل') : '' })]),
+          el('div', { class: 'jcd-step' }, [el('b', { text: T('2. Names and numbers', '2. الأسماء والأرقام') }),
+            lab_(T('Universal name (optional)', 'اسم عام (اختياري)'), opt_('jcd-uni', 'text', 'uni', { placeholder: T('e.g. Contracts', 'مثال: العقود'), style: 'width:140px' })),
+            lab_(T('Put it', 'ضعه'), posSel), lab_(T('Separator', 'الفاصل'), opt_('jcd-sep', 'text', 'sep', { style: 'width:46px' })),
+            lab_('', opt_('jcd-ext', 'checkbox', 'keepExt'), T('Keep the file extension in the name', 'إبقاء امتداد الملف في الاسم')),
+            lab_('', opt_('jcd-serial', 'checkbox', 'serial'), T('Generate document numbers (serial)', 'إنشاء أرقام المستندات (تسلسلي)')),
+            lab_(T('Prefix', 'بادئة'), opt_('jcd-prefix', 'text', 'prefix', { style: 'width:80px', placeholder: 'DOC-' }), T('Start', 'البداية'), opt_('jcd-start', 'number', 'start', { min: '0', style: 'width:76px' }), T('Digits', 'الخانات'), opt_('jcd-digits', 'number', 'digits', { min: '0', max: '12', style: 'width:52px' })),
+            nextB, exampleEl]),
+          el('div', { class: 'jcd-step' }, [el('b', { text: T('3. Details, check, run', '3. التفاصيل والفحص والتشغيل') }),
+            lab_(T('Expiry date (all)', 'تاريخ الانتهاء (للكل)'), opt_('jcd-expiry', 'date', 'expiry')),
+            lab_(T('Description (all)', 'الوصف (للكل)'), opt_('jcd-desc', 'text', 'desc', { style: 'width:150px' })),
+            lab_('', opt_('jcd-inc', 'checkbox', 'inc'), T('Show in employees\' profile', 'إظهار في ملف الموظف')),
+            lab_('', opt_('jcd-dup', 'checkbox', 'allowDup'), T('Add even if a document with the same name exists', 'إضافة حتى لو وُجد مستند بنفس الاسم')),
+            lab_('', dryCb, T('Dry run (check only, nothing sent)', 'تشغيل تجريبي (فحص فقط، بلا إرسال)')),
+            lab_(T('Delay between requests (ms)', 'التأخير بين الطلبات (مللي ثانية)'), delayIn)]),
+        ]));
+        body.appendChild(el('p', { class: 'jcd-rule', text: T('The name in Jisr is the file name (add a universal name to put the same word before or after every name). Names, numbers, dates and descriptions can still be changed in the table before running. A document whose name already exists in Jisr is skipped, so running the same ZIP twice adds nothing. Everything is checked in Jisr\'s list afterwards.', 'اسم المستند في جسر هو اسم الملف (أضف اسمًا عامًا لوضع الكلمة نفسها قبل كل اسم أو بعده). يمكن تعديل الأسماء والأرقام والتواريخ والأوصاف في الجدول قبل التشغيل. المستند الذي يوجد اسمه في جسر يتم تخطيه، فتشغيل الملف نفسه مرتين لا يضيف شيئًا. يتم التحقق من كل شيء في قائمة جسر بعد ذلك.') }));
+      } else {
+        const loadB = el('button', { class: 'jbo-btn jcd-load jcd-lockable', text: S.docs ? T('Reload from Jisr', 'إعادة التحميل من جسر') : T('Load documents from Jisr', 'تحميل المستندات من جسر') });
+        loadB.addEventListener('click', async () => { await loadDocs_(false); paint_(); });
+        const q = el('input', { type: 'text', class: 'jcd-q', placeholder: T('Search by name or number…', 'ابحث بالاسم أو الرقم…'), value: S.q, style: { font: 'inherit', padding: '4px 8px', border: '1px solid #dadce0', borderRadius: '6px', minWidth: '220px' } });
+        q.addEventListener('input', () => { S.q = q.value; paintTable_(); });
+        body.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' } }, [loadB, q, el('label', { style: { display: 'flex', gap: '6px', alignItems: 'center', fontSize: '12.5px' } }, [dryCb, T('Dry run (check only)', 'تشغيل تجريبي (فحص فقط)')]), el('label', { style: { fontSize: '12.5px' } }, [T('Delay (ms) ', 'التأخير (مللي ثانية) '), delayIn])]));
+        if (S.tab === 'edit') body.appendChild(bulkPanel_());
+        else body.appendChild(el('p', { class: 'jcd-rule', text: T('Tick the documents to delete. Deleting cannot be undone and the files cannot be recovered: a backup list (.csv) of the details is downloaded first, you type DELETE to confirm, and each deletion is checked in Jisr\'s list afterwards.', 'حدّد المستندات المراد حذفها. لا يمكن التراجع عن الحذف ولا استرجاع الملفات: تُنزَّل أولًا قائمة نسخ احتياطي (‎.csv) بالتفاصيل، وتكتب DELETE للتأكيد، ثم يتم التحقق من كل حذف في قائمة جسر.') }));
+      }
+      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(picIn); body.appendChild(repIn);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, [logB, clearB]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [stopB, retryB, runB]));
+      exampleEl.textContent = example_();
+      paint_();
+    }
+
+    // ---------------------------------------------------------------- Edit: change many at once (applies to the ticked documents; nothing is sent until Save)
+    function bulkPanel_() {
+      const sel_ = () => (S.docs || []).filter((d) => d.sel);
+      const need_ = () => { const s = sel_(); if (!s.length) { S.note = T('Tick at least one document first.', 'حدّد مستندًا واحدًا على الأقل أولًا.'); S.noteErr = true; paint_(); return null; } return s; };
+      const inputT = (cls, ph, w) => el('input', { type: 'text', class: cls, placeholder: ph, style: { width: w || '120px' } });
+      const btn = (cls, txt, fn) => { const b = el('button', { class: 'jbo-btn jcd-lockable ' + cls, text: txt }); b.addEventListener('click', () => { const s = need_(); if (s) { fn(s); S.ran = false; S.note = s.length + T(' document(s) changed in the table. Review them, then check or save.', ' مستند تغيّر في الجدول. راجعها ثم افحص أو احفظ.'); S.noteErr = false; paintTable_(); paintStats_(); paintFoot_(); statusEl.textContent = S.note; statusEl.className = 'jcd-msg jbo-muted'; } }); return b; };
+      const pre = inputT('jcd-b-pre', T('Text before the name', 'نص قبل الاسم')), suf = inputT('jcd-b-suf', T('Text after the name', 'نص بعد الاسم')), fnd = inputT('jcd-b-find', T('Find', 'بحث'), '90px'), rep = inputT('jcd-b-rep', T('Replace with', 'استبدال بـ'), '90px');
+      const bp = inputT('jcd-b-prefix', 'DOC-', '70px'), bs = el('input', { type: 'number', class: 'jcd-b-start', value: '1', min: '0', style: { width: '70px' } }), bd = el('input', { type: 'number', class: 'jcd-b-digits', value: '4', min: '0', max: '12', style: { width: '50px' } });
+      const be = el('input', { type: 'date', class: 'jcd-b-exp' }), bdsc = inputT('jcd-b-desc', T('Description', 'الوصف'), '150px');
+      return el('div', { class: 'jcd-bulk' }, [
+        el('div', { class: 'jcd-step' }, [el('b', { text: T('Names (ticked documents)', 'الأسماء (المستندات المحددة)') }), lab_('', pre, suf), lab_('', fnd, rep),
+          btn('jcd-b-name', T('Apply to names', 'تطبيق على الأسماء'), (s) => s.forEach((d) => { let n = d.name; if (fnd.value) n = n.split(fnd.value).join(rep.value); d.name = (pre.value || '') + n + (suf.value || ''); d.state = ''; }))]),
+        el('div', { class: 'jcd-step' }, [el('b', { text: T('Document numbers (ticked, in table order)', 'أرقام المستندات (المحددة، بترتيب الجدول)') }), lab_(T('Prefix', 'بادئة'), bp, T('Start', 'البداية'), bs, T('Digits', 'الخانات'), bd),
+          btn('jcd-b-num', T('Renumber', 'إعادة الترقيم'), (s) => { const order = (S.docs || []).filter((d) => d.sel); order.forEach((d, i) => { d.number = numberFor_(i, { serial: true, prefix: bp.value, start: bs.value, digits: bd.value }); d.state = ''; }); })]),
+        el('div', { class: 'jcd-step' }, [el('b', { text: T('Expiry, description, profile', 'الانتهاء والوصف والملف الشخصي') }), lab_(T('Expiry', 'الانتهاء'), be),
+          btn('jcd-b-expset', T('Set expiry', 'تعيين الانتهاء'), (s) => { const v = normDate_(be.value); if (v) s.forEach((d) => { d.expiry = v; d.state = ''; }); }),
+          btn('jcd-b-expclr', T('Clear expiry', 'مسح الانتهاء'), (s) => s.forEach((d) => { d.expiry = ''; d.state = ''; })), lab_('', bdsc),
+          btn('jcd-b-descset', T('Set description', 'تعيين الوصف'), (s) => s.forEach((d) => { d.desc = bdsc.value; d.state = ''; })),
+          btn('jcd-b-descclr', T('Clear description', 'مسح الوصف'), (s) => s.forEach((d) => { d.desc = ''; d.state = ''; })),
+          btn('jcd-b-incyes', T('Show in profile', 'إظهار في الملف'), (s) => s.forEach((d) => { d.inc = true; d.state = ''; })),
+          btn('jcd-b-incno', T('Hide from profile', 'إخفاء من الملف'), (s) => s.forEach((d) => { d.inc = false; d.state = ''; })),
+          pickBtn_('jcd-b-pick', 'Replace files from a ZIP…', 'استبدال الملفات من ZIP…', repIn)]),
+      ]);
+    }
+
+    // ---------------------------------------------------------------- buttons
+    runB.addEventListener('click', async () => {
+      S.dry = dryCb.checked; S.delay = Math.min(5000, Math.max(100, Number(delayIn.value) || 300)); gmSet_('companyDocsDelayMs', S.delay);
+      try {
+        if (isAdd()) {
+          if (!S.items.length) return;
+          const l = await prepareAdd_(); if (!l) return;
+          const rows = S.items.filter(todo_); if (!rows.length) { S.note = T('Nothing to add: every file is skipped or already exists.', 'لا شيء للإضافة: كل الملفات متخطاة أو موجودة مسبقًا.'); paint_(); return; }
+          if (!S.dry && !confirmAdd_(rows)) return;
+          await runAdd_(rows, !S.dry);
+        } else {
+          const rows = (S.docs || []).filter(todo_); if (!rows.length) return;
+          if (S.tab === 'edit') { if (!S.dry && !confirmEdit_(rows)) return; await runEdit_(rows, !S.dry); }
+          else { if (!S.dry) { if (!confirmDelete_(rows)) return; backupCsv_(rows); } await runDelete_(rows, !S.dry); }
+        }
+      } catch (e) { S.running = false; S.busy = ''; S.note = redact_(e.message); S.noteErr = true; paint_(); }
+    });
+    retryB.addEventListener('click', async () => {
+      const rows = rowsOf_().filter((r) => r.state === 'failed'); if (!rows.length) return;
+      try {
+        if (isAdd()) { const l = await prepareAdd_(); if (!l) return; const again = rows.filter((r) => r.status === 'ready'); if (!again.length) { S.note = T('Those documents already exist in Jisr now: nothing to retry.', 'هذه المستندات موجودة في جسر الآن: لا شيء لإعادته.'); paint_(); return; } if (!confirmAdd_(again)) return; await runAdd_(again, true); }
+        else if (S.tab === 'edit') { if (!confirmEdit_(rows)) return; await runEdit_(rows, true); }
+        else { if (!confirmDelete_(rows)) return; backupCsv_(rows); await runDelete_(rows, true); }
+      } catch (e) { S.running = false; S.busy = ''; S.note = redact_(e.message); S.noteErr = true; paint_(); }
+    });
+    stopB.addEventListener('click', () => { S.stop = true; });
+    clearB.addEventListener('click', () => { if (lock_()) return; if (isAdd()) { S.files = []; S.items = []; } else { S.docs = null; S.listInfo = null; } S.note = ''; S.ran = false; render_(); });
+    logB.addEventListener('click', () => saveCsv_('jisr-company-documents-log-' + S.tab + '-' + slug_() + '-' + new Date().toISOString().slice(0, 16).replace(/[:T-]/g, '') + '.csv', logCsv_(S.tab, rowsOf_())));
+    dryCb.addEventListener('change', () => { S.dry = dryCb.checked; paintFoot_(); });
+
+    render_();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Company Documents (Bulk)', open: openTool_, version: SECTION_VERSION };
+    W.__jisrCompanyDocs = { nameFor_, numberFor_, lastNumber_, normDate_, buildRows_, applyOpts_, createBody_, editBody_, changedFields_, itemsOf_, totalOf_, docOf_, idFrom_, judgeAdd_, judgeEdit_, judgeDelete_, logCsv_, readZip_, redact_, cfg };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+// ###########################################################################
+// ##### SECTION 44 — Create Leave Requests (bulk, with attachments, approved at once)  v4.86.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 44 — Create Leave Requests (Bulk)  v4.86
+ * ---------------------------------------------------------------------------
+ * A sheet in Jisr's own leave-import format (Employee ID | Name | Leave Type | From | To | Comment | Resumption Date | seha id) plus a column
+ * "File name Attachment" (typed, or picked from a drop-down that lists the attachments added in the tool). For every row the tool creates a normal leave
+ * request (POST /v2/employees/{id}/leave_requests, the attachment as a base64 data URL inside leave_request.attachments[{data, filename}]) and approves it
+ * at once through the approvals list, then reads it back from the employee's full leave history. Nothing is cancelled here: a row whose leave already exists
+ * (same type and dates) is skipped, so the same file can be run again after a stop.
+ * The helpers (body, attachment lookup, approval, read-back, preview) are the ones of SECTION 42 (window.__jisrLeaveEdit).
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.86.0';
+  const MODULE_ID = 'leave-create-bulk';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function slug_() { try { const o = GM_getValue(GM_PREFIX + 'slugOverride', ''); if (o) return o; } catch (e) { /* ignore */ } const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const LC = () => W.__jisrLeaveCancel || {};
+  const LE = () => W.__jisrLeaveEdit || {};
+  const redact_ = (s) => String(s == null ? '' : s).replace(/https?:\/\/\S+/gi, '(link removed)').replace(/Bearer\s+\S+/gi, '').replace(/\s+/g, ' ').slice(0, 240);
+  const dateOk_ = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(s + 'T00:00:00Z'));
+  const HEAD = ['Employee ID', 'Name', 'Leave Type', 'From', 'To', 'Comment', 'Resumption Date', 'seha id', 'File name Attachment'];
+  const norm_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
+
+  /** Reads the sheet (this tool's template, or Jisr's own import file) into rows. A date that is not understood is null. */
+  function parseCreateAoa_(aoa) {
+    const D = LC().date_;
+    let hi = aoa.findIndex((r) => r.some((x) => /employee|موظف|code/i.test(String(x)))); if (hi < 0) hi = 0;
+    const h = (aoa[hi] || []).map(norm_); const col = (re) => h.findIndex((x) => re.test(x));
+    const c = { emp: col(/^employee id$|employee code|employee number|^code$|رقم الموظف|الرقم الوظيفي/), type: col(/^(leave )?type$/), from: col(/^(from|start)( date)?$/), to: col(/^(to|end)( date)?$/),
+      comment: col(/^(comment|reason|note)s?$/), res: col(/^(resumption|return)/), seha: col(/^seha/), attach: col(/file name|attachment|^file$/) };
+    if (c.emp < 0) return { error: T('No Employee ID column found.', 'لم يُعثر على عمود Employee ID.') };
+    if (c.type < 0 || c.from < 0 || c.to < 0) return { error: T('The file needs the columns Leave Type, From and To.', 'يحتاج الملف أعمدة Leave Type وFrom وTo.') };
+    const get = (r, i) => (i >= 0 ? r[i] : ''); const txt = (v) => String(v == null ? '' : v).trim(); const rows = [];
+    aoa.slice(hi + 1).forEach((r, k) => {
+      const empText = txt(get(r, c.emp)).replace(/\.0+$/, ''); const typeText = txt(get(r, c.type));
+      if (!empText && !typeText) return;
+      const nd = (i) => { const v = get(r, i); return v === '' || v == null ? '' : D(v); };   // '' none, null not understood
+      rows.push({ no: hi + k + 2, empText, typeText, start: nd(c.from), end: nd(c.to), resumption: nd(c.res), comment: txt(get(r, c.comment)), seha: txt(get(r, c.seha)).replace(/\.0+$/, ''), attachName: txt(get(r, c.attach)), state: '', msg: '' });
+    });
+    return { rows };
+  }
+  /** One row: the employee's leave type and dates checked; returns { errs[], plan }. */
+  function planCreate_(row, types, raw) {
+    const errs = []; let t = null;
+    if (!row.typeText) errs.push(T('Leave type is empty', 'نوع الإجازة فارغ'));
+    else {
+      const ids = LC().resolveType_ ? LC().resolveType_(row.typeText, types) : [];
+      if (!ids.length) errs.push(T('Leave type "', 'نوع الإجازة "') + row.typeText + T('" not found in Jisr', '" غير موجود في جسر'));
+      else if (ids.length > 1) errs.push(T('Leave type "', 'نوع الإجازة "') + row.typeText + T('" matches several types: write it in full', '" يطابق عدة أنواع: اكتبه كاملًا'));
+      else { const n = (raw || []).find((x) => x.id === ids[0]); t = { id: ids[0], name: n ? n.name : row.typeText }; }
+    }
+    if (row.start === null || row.end === null || row.resumption === null) errs.push(T('A date was not understood (use YYYY-MM-DD or DD/MM/YYYY)', 'لم يُفهم تاريخ (استخدم YYYY-MM-DD أو DD/MM/YYYY)'));
+    else if (!dateOk_(row.start) || !dateOk_(row.end)) errs.push(T('From or To date is missing', 'تاريخ From أو To مفقود'));
+    else if (row.end < row.start) errs.push(T('End date is before the start date', 'تاريخ النهاية قبل تاريخ البداية'));
+    return { errs, plan: { type: t || { id: null, name: row.typeText }, start: row.start, end: row.end, comment: row.comment } };
+  }
+  const overlap_ = (a, b) => a.start <= b.end && b.start <= a.end;
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => { if (v === undefined || v === null || v === false) return; if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v; else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v); });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-lq-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-lq-css', text: `
+      .jlq-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+      .jlq-wrap { max-height: 44vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jlq-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jlq-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jlq-wrap td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jlq-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jlq-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      .jlq-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
+    ` }));
+  }
+
+  function openTool_() {
+    injectCss_();
+    const X = W.__jisrBulkOpsXlsx; const E = LE();
+    const S = { rows: [], types: null, raw: null, histAll: new Map(), files: [], common: null, busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false };
+    const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': 'Close' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1250px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => { if (S.phase === 'running' && !confirm(T('Still creating leave requests. Close anyway?', 'لا يزال إنشاء الطلبات جاريًا. هل تريد الإغلاق؟'))) return; S.stop = true; backdrop.remove(); };
+    closeBtn.addEventListener('click', close); backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    const ACCEPT = '.zip,.pdf,.png,.jpg,.jpeg,.gif,.doc,.docx,.xls,.xlsx,.txt';
+    const attIn = el('input', { type: 'file', multiple: true, accept: ACCEPT, style: { display: 'none' } });
+    const commonIn = el('input', { type: 'file', accept: ACCEPT.replace('.zip,', ''), style: { display: 'none' } });
+    const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
+    const attB = el('button', { class: 'jbo-btn', text: T('1) Attachments: ZIP or files…', '1) المرفقات: ZIP أو ملفات…') });
+    const commonB = el('button', { class: 'jbo-btn', text: T('One attachment for every row…', 'مرفق واحد لكل الصفوف…') });
+    const clearAttB = el('button', { class: 'jbo-btn', text: T('Clear attachments', 'مسح المرفقات') });
+    const attInfo = el('span', { class: 'jbo-muted' });
+    const tplB = el('button', { class: 'jbo-btn', text: T('2) Template (.xlsx)', '2) القالب (‎.xlsx)') });
+    const upB = el('button', { class: 'jbo-btn', text: T('3) Upload filled file', '3) رفع الملف بعد التعبئة') });
+    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const statsEl = el('div', { class: 'jlq-stats' }); const wrap = el('div', { class: 'jlq-wrap' });
+    const dryB = el('button', { class: 'jbo-btn', text: T('Dry Run', 'تشغيل تجريبي') });
+    const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
+    const resB = el('button', { class: 'jbo-btn', text: T('Results (.xlsx)', 'النتائج (‎.xlsx)') });
+
+    function render_() {
+      titleEl.textContent = T('Create Leave Requests (Bulk)', 'إنشاء طلبات إجازة (جماعي)');
+      body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
+        'Creates a normal leave request for each row of a sheet in Jisr\'s import format, with an attachment if the row has one, and approves it at once so it does not wait in the approval cycle. 1) Add the attachments (a ZIP or the files) so the template gets a drop-down of their names, 2) download the template and fill it: Employee ID, Leave Type, From, To, Comment, seha id and, in “File name Attachment”, the name of the file for that employee (typed or from the drop-down), 3) upload it, 4) Dry Run, 5) run. You must be an approver for these requests in Jisr, otherwise they stay pending.',
+        'ينشئ طلب إجازة عاديًا لكل صف في ملف بصيغة استيراد جسر، مع مرفق إن وُجد، ويعتمده فورًا فلا ينتظر دورة الاعتماد. 1) أضف المرفقات (ZIP أو الملفات) ليحصل القالب على قائمة منسدلة بأسمائها، 2) نزّل القالب واملأه: Employee ID وLeave Type وFrom وTo وComment وseha id وفي «File name Attachment» اسم ملف كل موظف (كتابةً أو من القائمة)، 3) ارفعه، 4) تشغيل تجريبي، 5) نفّذ. يجب أن تكون معتمِدًا لهذه الطلبات في جسر وإلا بقيت معلّقة.') }));
+      body.appendChild(el('div', { class: 'jlq-warn', text: T('Run the Dry Run first and try one or two rows before the whole file. A leave that already exists (same type and dates) is skipped, so you can run the same file again after a stop.', 'شغّل التجريبي أولًا وجرّب صفًا أو اثنين قبل الملف كله. الإجازة الموجودة (نفس النوع والتواريخ) تُتخطى، فيمكنك تشغيل الملف نفسه بعد أي توقف.') }));
+      body.appendChild(el('div', { class: 'jlq-bar' }, [attB, commonB, clearAttB, attInfo]));
+      body.appendChild(el('div', { class: 'jlq-bar' }, [tplB, upB]));
+      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn); body.appendChild(attIn); body.appendChild(commonIn);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
+      paint_();
+    }
+    function paint_() {
+      attInfo.textContent = (S.files.length ? S.files.length + T(' attachment file(s)', ' ملف مرفق') : T('no attachment files added', 'لم تُضف ملفات مرفقة')) + (S.common ? ' · ' + T('for every row: ', 'لكل الصفوف: ') + S.common.name : '');
+      statusEl.textContent = S.busy || S.note; statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      statsEl.innerHTML = '';
+      const cnt = (st) => S.rows.filter((r) => r.state === st).length;
+      if (S.rows.length) [[S.rows.length, T('rows', 'صف')], [cnt('ready'), T('ready', 'جاهز')], [cnt('error'), T('blocked', 'محجوب')], [cnt('skip'), T('skipped', 'تم تخطيه')], [cnt('done'), T('created ✓', 'أُنشئت ✓')], [cnt('failed'), T('failed', 'فشل')]]
+        .filter(([v], i) => i < 2 || v).forEach(([v, l]) => statsEl.appendChild(el('span', {}, [el('b', { text: String(v) }), ' ' + l])));
+      wrap.innerHTML = '';
+      if (S.rows.length) {
+        const t = el('table'); t.appendChild(el('tr', {}, ['#', T('Employee', 'الموظف'), T('Leave', 'الإجازة'), T('Attachment', 'المرفق'), T('Result', 'النتيجة')].map((h) => el('th', { text: h }))));
+        S.rows.slice(0, 3000).forEach((r) => {
+          const col = r.state === 'done' ? '#137333' : (r.state === 'error' || r.state === 'failed') ? '#c5221f' : r.state === 'skip' ? '#b06000' : '#5f6368';
+          t.appendChild(el('tr', {}, [el('td', { text: String(r.no) }), el('td', { text: r.emp ? (r.emp.name || '') + (r.emp.code ? ' · ' + r.emp.code : '') : r.empText }),
+            el('td', { text: (r.typeText || '—') + ' · ' + (r.start || '?') + (r.end && r.end !== r.start ? ' → ' + r.end : '') }), el('td', { text: r.att ? r.att.name : (r.attachName || '—') }),
+            el('td', { text: r.msg || (r.state === 'ready' ? T('ready', 'جاهز') : '—'), style: { color: col, whiteSpace: 'pre-line' } })]));
+        });
+        wrap.appendChild(t);
+      }
+      const ready = S.rows.filter((r) => r.state === 'ready').length;
+      runB.textContent = T('Create ', 'إنشاء ') + ready + T(' leave request(s)', ' طلب إجازة'); runB.disabled = !S.dryDone || !ready || !!S.busy;
+      dryB.disabled = !S.rows.length || !!S.busy; stopB.style.display = S.phase === 'running' ? '' : 'none';
+      [tplB, upB, attB, commonB, clearAttB].forEach((b) => { b.disabled = !!S.busy || S.phase === 'running'; });
+      resB.style.display = S.rows.some((r) => ['done', 'failed'].includes(r.state)) ? '' : 'none';
+    }
+    async function types_() {
+      if (!S.types) { try { const r = await LC().request_('GET', '/v2/leaves/leave_types/', null); if (!r.ok) throw new Error('HTTP ' + r.status); S.types = LC().typesFrom_(r.json); S.raw = E.rawTypes_(r.json); } catch (e) { S.types = null; S.raw = null; S.typesErr = e.message; } }
+      return S.types;
+    }
+
+    // ---------------- attachments
+    attB.addEventListener('click', () => { attIn.value = ''; attIn.click(); });
+    attIn.addEventListener('change', async () => {
+      const list = Array.from(attIn.files || []); if (!list.length) return;
+      try {
+        S.busy = T('Reading attachments…', 'جارٍ قراءة المرفقات…'); paint_();
+        const out = S.files.slice(); const rz = W.__jisrCompanyDocs && W.__jisrCompanyDocs.readZip_;
+        for (const f of list) {
+          if (E.extOf_(f.name) === 'zip') { if (!rz) throw new Error(T('The zip reader is not available.', 'قارئ ZIP غير متاح.')); rz(new Uint8Array(await f.arrayBuffer())).forEach((z) => out.push({ name: z.name, size: z.bytes.length, bytes: z.bytes })); }
+          else out.push({ name: f.name, size: f.size, blob: f });
+        }
+        S.files = out; S.dryDone = false; S.note = S.files.length + T(' attachment file(s) ready. Download the template now: its “File name Attachment” column gets a drop-down of these names.', ' ملف مرفق جاهز. نزّل القالب الآن: عمود «File name Attachment» فيه قائمة بهذه الأسماء.'); S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+    commonB.addEventListener('click', () => { commonIn.value = ''; commonIn.click(); });
+    commonIn.addEventListener('change', () => { const f = commonIn.files && commonIn.files[0]; if (!f) return; S.common = { name: f.name, size: f.size, blob: f }; S.dryDone = false; S.note = T('This file will be attached to every row that names no attachment of its own.', 'سيُرفق هذا الملف بكل صف لا يحدد مرفقًا خاصًا.'); S.noteErr = false; paint_(); });
+    clearAttB.addEventListener('click', () => { S.files = []; S.common = null; S.dryDone = false; S.note = ''; paint_(); });
+
+    // ---------------- template: Jisr's import columns + "File name Attachment" (drop-down of the added files)
+    tplB.addEventListener('click', async () => {
+      S.busy = T('Preparing the template…', 'جارٍ تجهيز القالب…'); paint_();
+      try {
+        await types_();
+        const names = Array.from(new Set(S.files.map((f) => f.name))).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+        const lists = {}; const tn = (S.raw || []).map((t) => t.name).filter(Boolean);
+        if (tn.length) lists['Leave Type'] = { values: tn, strict: false };
+        if (names.length) lists['File name Attachment'] = { values: names, strict: false };
+        X.setNextLists(lists);
+        await X.downloadAoa('jisr-leave-requests-template-' + slug_() + '.xlsx', HEAD, [], 'Leave requests');
+        S.note = T('Template downloaded. Fill it (dates as DD-MM-YYYY or YYYY-MM-DD) and upload it.', 'نُزّل القالب. املأه (التواريخ بصيغة DD-MM-YYYY أو YYYY-MM-DD) ثم ارفعه.') + (names.length ? ' ' + names.length + T(' attachment name(s) are in the drop-down of “File name Attachment”.', ' اسم مرفق في قائمة «File name Attachment».') : ' ' + T('No attachments were added yet, so “File name Attachment” has no drop-down: type the names, or add the attachments first and download the template again.', 'لم تُضف مرفقات بعد فلا توجد قائمة في «File name Attachment»: اكتب الأسماء أو أضف المرفقات أولًا ثم نزّل القالب مجددًا.')); S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+
+    // ---------------- upload
+    upB.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
+    fileIn.addEventListener('change', async () => {
+      const f = fileIn.files && fileIn.files[0]; if (!f) return;
+      try {
+        const isCsv = /\.csv$/i.test(f.name);
+        const wb = isCsv ? XLSX.read(await f.text(), { type: 'string', raw: true }) : XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array', cellDates: false });
+        const ws = wb.Sheets[wb.SheetNames.find((n) => !/^(lists|_?pick|instructions?|dropdown_list_items)$/i.test(n)) || wb.SheetNames[0]];
+        const p = parseCreateAoa_(XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true }));
+        if (p.error) throw new Error(p.error);
+        S.rows = p.rows; S.dryDone = false; S.note = S.rows.length + T(' row(s) read from the file. Run the Dry Run next.', ' صف قُرئ من الملف. شغّل التجريبي الآن.'); S.noteErr = !S.rows.length;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      paint_();
+    });
+
+    // ---------------- dry run (reads only)
+    async function dryRun_() {
+      S.busy = T('Checking…', 'جارٍ الفحص…'); S.note = ''; S.noteErr = false; paint_();
+      try {
+        const emps = await W.__jisrBulkOpsEmployees.get(false); const types = await types_();
+        const byCode = new Map(emps.filter((e) => e.code != null).map((e) => [String(e.code).trim().toLowerCase(), e]));
+        const todo = S.rows.filter((r) => r.state !== 'done');
+        todo.forEach((r) => { r.state = ''; r.msg = ''; r.plan = null; r.att = null; r.emp = byCode.get(r.empText.toLowerCase()) || null; if (!r.emp) { r.state = 'error'; r.msg = '✗ ' + T('Employee not found', 'الموظف غير موجود'); } });
+        if (!types) todo.filter((r) => !r.state).forEach((r) => { r.state = 'error'; r.msg = '✗ ' + T('Leave types could not be read from Jisr', 'تعذّرت قراءة أنواع الإجازات من جسر') + (S.typesErr ? ' (' + S.typesErr + ')' : ''); });
+        const ids = Array.from(new Set(todo.filter((r) => r.emp && !r.state).map((r) => String(r.emp.id)))); let n = 0;
+        await LC().pool_(ids, 4, async (id) => {
+          try { S.histAll.set(id, await E.histAll_(id)); } catch (e) { todo.filter((r) => r.emp && String(r.emp.id) === id).forEach((r) => { r.state = 'error'; r.msg = '✗ ' + e.message; }); }
+          n++; statusEl.textContent = T('Reading leaves… ', 'جارٍ قراءة الإجازات… ') + n + '/' + ids.length;
+        });
+        todo.filter((r) => !r.state).forEach((r) => {
+          const pr = planCreate_(r, types, S.raw); r.plan = pr.plan;
+          const fa = E.findAtt_(r.attachName, S.files, S.common);
+          if (fa.err) pr.errs.push(fa.err);
+          else if (fa.att) {
+            r.att = fa.att;
+            if ((fa.att.size || 0) > E.cfg.maxAttachBytes) pr.errs.push(T('attachment is over 10 MB: ', 'المرفق أكبر من 10 ميغابايت: ') + fa.att.name);
+            else if (!E.MIME_[E.extOf_(fa.att.name)]) pr.errs.push(T('attachment type not supported: ', 'نوع المرفق غير مدعوم: ') + fa.att.name);
+          }
+          if (pr.errs.length) { r.state = 'error'; r.msg = '✗ ' + pr.errs.join('\n✗ '); return; }
+          const have = (S.histAll.get(String(r.emp.id)) || []).filter((l) => l.start && l.end && !LC().isGone_(l.status));
+          const same = have.find((l) => l.start === r.plan.start && l.end === r.plan.end && E.sameType_(l, r.plan.type.id, types));
+          if (same) { r.state = 'skip'; r.msg = T('Already has this leave (same type and dates): skipped', 'لديه هذه الإجازة بالفعل (نفس النوع والتواريخ): تم تخطيها'); return; }
+          const hit = have.find((l) => overlap_(r.plan, l));
+          if (hit) { r.state = 'error'; r.msg = '✗ ' + T('The dates overlap another leave: ', 'التواريخ تتداخل مع إجازة أخرى: ') + (hit.type || hit.typeEn || '') + ' ' + hit.start + ' → ' + hit.end; return; }
+          r.state = 'ready'; r.msg = T('new request', 'طلب جديد') + (r.att ? ' · ' + T('attachment ', 'مرفق ') + r.att.name : '');
+        });
+        // the same employee twice in the file with overlapping dates
+        const byEmp = new Map(); todo.filter((r) => r.state === 'ready').forEach((r) => { const k = String(r.emp.id); if (!byEmp.has(k)) byEmp.set(k, []); byEmp.get(k).push(r); });
+        byEmp.forEach((rows) => rows.forEach((r, i) => { const o = rows.find((x, j) => j < i && x.state === 'ready' && overlap_(r.plan, x.plan)); if (o) { r.state = 'error'; r.msg = '✗ ' + T('The dates overlap row ', 'التواريخ تتداخل مع الصف ') + o.no; } }));
+        // Jisr's own preview of each new request (reads only)
+        const rdy = todo.filter((r) => r.state === 'ready'); let pn = 0;
+        await LC().pool_(rdy, 3, async (r) => {
+          try {
+            const pv = await E.previewOne_(r);
+            if (pv) { r.preview = pv; if (pv.attachReq && !r.att) { r.state = 'error'; r.msg = '✗ ' + T('this leave type needs an attachment: name a file in “File name Attachment” or add one for every row', 'نوع الإجازة هذا يتطلب مرفقًا: اكتب اسم ملف في «File name Attachment» أو أضف مرفقًا لكل الصفوف'); } else r.msg += (pv.days !== '' ? ' · ' + pv.days + T(' day(s)', ' يوم') : '') + (pv.warn ? '\n⚠ ' + redact_(pv.warn) : ''); }
+          } catch (e) { /* a preview that cannot be read does not block the row */ }
+          pn++; statusEl.textContent = T('Asking Jisr to preview the requests… ', 'جارٍ طلب معاينة الطلبات من جسر… ') + pn + '/' + rdy.length;
+        });
+        S.dryDone = true; const rd = S.rows.filter((r) => r.state === 'ready').length;
+        S.note = T('Dry Run done: nothing was changed. ', 'انتهى التشغيل التجريبي: لم يتغيّر شيء. ') + rd + T(' leave request(s) ready for ', ' طلب جاهز لـ ') + new Set(S.rows.filter((r) => r.state === 'ready').map((r) => r.emp.id)).size + T(' employee(s).', ' موظف.'); S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    }
+    dryB.addEventListener('click', dryRun_);
+
+    // ---------------- live: create -> approve -> read back (nothing is cancelled, so a failed row leaves the employee as it was)
+    async function createOne_(r) {
+      const p = r.plan; let url = '';
+      if (r.att) { try { url = await E.attUrl_(r.att); } catch (e) { r.state = 'failed'; r.stage = 'failed'; r.why = 'the attachment could not be read: nothing was sent'; r.msg = '✗ ' + T('The attachment could not be read (nothing sent): ', 'تعذّرت قراءة المرفق (لم يُرسل شيء): ') + redact_(e.message); return 'next'; } }
+      let cr;
+      try { cr = await LC().request_('POST', '/v2/employees/' + encodeURIComponent(r.emp.id) + '/leave_requests', null, E.createBody_(p, url, r)); }
+      catch (e) {
+        if (/HTTP 401/.test(e.message)) { r.state = 'failed'; r.stage = 'denied'; r.why = 'Jisr sign-in problem: the run was stopped'; r.msg = '✗ ' + e.message; return 'stop'; }
+        if (e.unknown) { r.state = 'failed'; r.stage = 'unverified'; r.why = 'no answer from Jisr when creating the request: it may or may not exist; check the employee in Jisr'; r.msg = '✗ ' + T('No answer from Jisr: the request may or may not exist. Check the employee in Jisr before running this row again.', 'لا رد من جسر: قد يكون الطلب أُنشئ أو لا. تحقّق من الموظف في جسر قبل إعادة تشغيل هذا الصف.'); return 'stop'; }
+        r.state = 'failed'; r.stage = 'failed'; r.why = 'the request could not be created: ' + redact_(e.message); r.msg = '✗ ' + redact_(e.message); return 'next';
+      }
+      if (!cr.ok) { r.state = 'failed'; r.stage = jboStageOfRes_(cr); r.why = 'Jisr refused the leave request (HTTP ' + cr.status + ')'; r.msg = '✗ ' + T('Jisr refused the leave request: ', 'رفض جسر طلب الإجازة: ') + redact_((LC().jisrMsg_ && LC().jisrMsg_(cr.json)) || 'HTTP ' + cr.status); return 'next'; }
+      const lrObj = cr.json && cr.json.data && cr.json.data.leave_request; const newId = lrObj && lrObj.id != null ? lrObj.id : null; r.newId = newId;
+      if (newId == null) { r.state = 'failed'; r.stage = 'unverified'; r.why = 'Jisr accepted the request but its number was not in the answer: it could not be approved; find it in Jisr'; r.msg = '✗ ' + T('Jisr accepted the request but did not give its number, so it could not be approved. Find it in Jisr (Requests → Approvals).', 'قبل جسر الطلب لكنه لم يعطِ رقمه فلم يمكن اعتماده. ابحث عنه في جسر (الطلبات ← الموافقات).'); return 'stop'; }
+      let ap; try { ap = await E.approveLeave_(newId, T('Approved with Bulk Ops', 'اعتُمد عبر Bulk Ops')); } catch (e) { ap = { steps: 0, error: redact_(e.message) }; }
+      let w; try { w = await E.waitApproved_(r.emp.id, newId, p.start, p.end, new Set()); } catch (e) { w = { hit: null }; }
+      const stillPending = w.hit && /pending|under|review|waiting/i.test(String(w.hit.status || ''));
+      if (stillPending || (!w.hit && (ap.error || !ap.steps))) {
+        const why = ap.error ? 'approving it failed: ' + ap.error : ap.steps ? 'it is still waiting for approval' : (ap.why || 'it was not approved');
+        r.state = 'failed'; r.stage = 'pending'; r.why = 'the request #' + newId + ' was created but ' + why + '. Approve it in Jisr.';
+        r.msg = '✗ ' + T('Request #', 'الطلب #') + newId + T(' was created, but ', ' أُنشئ لكن ') + why + T('. It is waiting for approval in Jisr (Requests → Approvals).', '. وهو بانتظار الاعتماد في جسر (الطلبات ← الموافقات).');
+        return 'stop';   // the next rows would end the same way
+      }
+      if (!w.hit) { r.state = 'failed'; r.stage = 'not_reflected'; r.why = 'Jisr said the request was created and approved (OK) but the leave does not appear in the employee\'s leave history'; r.msg = '✗ ' + T('Jisr accepted and approved request #', 'قبل جسر الطلب واعتمده #') + newId + T(' but the leave does not appear in the employee\'s leaves. Check it in Jisr.', ' لكن الإجازة لا تظهر في إجازات الموظف. تحقق منها في جسر.'); return 'next'; }
+      if (!E.sameType_(w.hit, p.type.id, S.types)) { r.state = 'failed'; r.stage = 'mismatch'; r.why = 'the leave was created with a different leave type than asked'; r.msg = '✗ ' + T('The leave was created as “', 'أُنشئت الإجازة بنوع «') + (w.hit.type || w.hit.typeEn) + T('” instead of “', '» بدل «') + p.type.name + T('”. Check it in Jisr.', '». تحقق منها في جسر.'); return 'next'; }
+      S.histAll.delete(String(r.emp.id));
+      r.state = 'done'; r.stage = 'ok'; r.why = 'leave request created, approved and confirmed by reading the leave back from Jisr' + (r.att ? ' (with attachment)' : '');
+      r.msg = '✓ ' + T('created and approved', 'أُنشئت واعتُمدت') + ' (#' + w.hit.id + ')' + (r.att ? ' · ' + T('attachment ', 'مرفق ') + r.att.name : '') + (!ap.steps ? '\n' + T('(Jisr approved it by itself: no approval was needed)', '(اعتمده جسر تلقائيًا: لم تلزم موافقة)') : '');
+      return 'next';
+    }
+    async function runLive_() {
+      const todo = S.rows.filter((r) => r.state === 'ready'); if (!todo.length) return;
+      if (!confirm(T('Create ', 'إنشاء ') + todo.length + T(' leave request(s) for ', ' طلب إجازة لـ ') + new Set(todo.map((r) => r.emp.id)).size + T(' employee(s) in ', ' موظف في ') + slug_() + '?\n\n' + T('Each request is created with its attachment and approved at once. If one cannot be approved (you are not its approver) it stays pending and the run stops.', 'يُنشأ كل طلب مع مرفقه ويُعتمد فورًا. إن تعذّر اعتماد أحدها (لست معتمِده) يبقى معلّقًا ويتوقف التشغيل.'))) return;
+      S.phase = 'running'; S.stop = false; S.busy = ' '; paint_(); let done = 0;
+      const report_ = (r) => { if (r.reported) return; r.reported = true; const st = r.state === 'done' ? 'ok' : r.state === 'failed' ? (r.stage || 'failed') : 'skipped'; try { jboActReport_(MODULE_ID, r.emp ? r.emp.id : 'row' + r.no, st, r.state === 'done' || r.state === 'failed' ? (r.why || st) : 'not sent: the run stopped before this row'); } catch (e) { /* ignore */ } };
+      todo.forEach((r) => { r.reported = false; r.stage = ''; r.why = ''; });
+      for (const r of todo) {
+        if (S.stop) { r.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); report_(r); continue; }
+        let how = 'next'; try { how = await createOne_(r); } catch (e) { how = 'stop'; if (r.state !== 'failed') { r.state = 'failed'; r.stage = 'failed'; r.why = 'the row failed with an error: check it in Jisr'; r.msg = '✗ ' + redact_(e.message); } }
+        report_(r); done++; S.busy = T('Creating… ', 'جارٍ الإنشاء… ') + done + '/' + todo.length; paint_();
+        if (how === 'stop') { S.stop = true; todo.filter((x) => x.state === 'ready').forEach((x) => { x.msg = T('Not sent: the run stopped', 'لم يُرسل: توقّف التشغيل'); }); break; }
+        if (E.cfg.paceMs) await sleep_(E.cfg.paceMs);
+      }
+      S.phase = 'done'; S.busy = ''; todo.forEach(report_);
+      const okN = todo.filter((r) => r.state === 'done').length;
+      S.note = okN + T(' of ', ' من ') + todo.length + T(' leave request(s) created.', ' طلب إجازة أُنشئ.') + (okN < todo.length ? T(' Read the Result column, fix the cause, then run the Dry Run again (rows already created are skipped).', ' اقرأ عمود النتيجة وأصلح السبب ثم شغّل التجريبي مجددًا (الصفوف المُنشأة تُتخطى).') : ''); S.noteErr = okN < todo.length; paint_();
+    }
+    runB.addEventListener('click', runLive_); stopB.addEventListener('click', () => { S.stop = true; });
+    resB.addEventListener('click', () => {
+      const H = ['Row', 'Employee ID', 'Employee Name', 'Leave Type', 'From', 'To', 'Comment', 'seha id', 'File name Attachment', 'New leave ID', 'Result'];
+      const aoa = [H].concat(S.rows.map((r) => [r.no, r.emp ? r.emp.code || r.emp.id : r.empText, r.emp ? r.emp.name : '', r.typeText, r.start || '', r.end || '', r.comment || '', r.seha || '', r.att ? r.att.name : r.attachName || '', r.newId || '', String(r.msg || '').replace(/\n/g, ' | ')]));
+      const wb = XLSX.utils.book_new(); const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = H.map((h) => ({ wch: Math.max(12, h.length + 2) })); XLSX.utils.book_append_sheet(wb, ws, 'Leave request results'); XLSX.writeFile(wb, 'jisr-leave-requests-results-' + slug_() + '.xlsx');
+    });
+    render_();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Create Leave Requests (Bulk)', open: openTool_, version: SECTION_VERSION };
+    W.__jisrLeaveCreate = { parseCreateAoa_, planCreate_, HEAD };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.86.0
 // ###########################################################################
 
 /** Business trip city catalogue (v4.22): Saudi regions, cities, towns and villages (homaily/Saudi-Arabia-Regions-Cities-and-Districts) and world cities with population over ~15,000 (datasets/world-cities, GeoNames) by country (dr5hn/countries-states-cities-database). Read-only reference data. */
@@ -46154,7 +47552,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.83.1
+// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.86.0
 // ###########################################################################
 
 /*
@@ -46693,7 +48091,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.83.1
+// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.86.0
 // ###########################################################################
 
 /*
@@ -47263,7 +48661,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 27 — Activation Checklist sidebar  v4.83.1
+// ##### SECTION 27 — Activation Checklist sidebar  v4.86.0
 // ###########################################################################
 
 /**
@@ -47727,7 +49125,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.83.1
+// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.86.0
 // ###########################################################################
 
 /**
@@ -47785,7 +49183,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 39 — Locations Setup (onboarding): set country, region, city and manager for many locations at once  v4.83.1
+// ##### SECTION 39 — Locations Setup (onboarding): set country, region, city and manager for many locations at once  v4.86.0
 // ###########################################################################
 
 /*
