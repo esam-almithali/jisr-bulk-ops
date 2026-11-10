@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.86.0
+// @version      4.86.1
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -76,7 +76,8 @@ function jboActFlush_() {
   let actor = ''; try { actor = GM_getValue('jisrBulkOps_ownerLabel', '') || ''; } catch (e) { /* ignore */ }
   let settled = false;
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
-  // v4.86.0: new tool "Create Leave Requests (Bulk)": a sheet in Jisr import format plus a "File name Attachment" column (typed or drop-down of the uploaded attachments); each row becomes a normal leave request with its attachment, approved at once and read back. The Edit tool uses the same column name.
+  // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
+  // v4.86.1: new tool "Create Leave Requests (Bulk)": a sheet in Jisr import format plus a "File name Attachment" column (typed or drop-down of the uploaded attachments); each row becomes a normal leave request with its attachment, approved at once and read back. The Edit tool uses the same column name.
   const settle = (retry, err, fatal) => {
     if (settled) return; settled = true; jboAct_.sending = false;
     if (retry && (jboAct_.tries || 0) < 4) { jboAct_.tries = (jboAct_.tries || 0) + 1; jboAct_.buf.unshift(...batch); jboAct_.lastError = err + ' (trying again)'; jboAct_.timer = setTimeout(jboActFlush_, 3000 * jboAct_.tries); return; }
@@ -297,7 +298,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.86.0
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.86.1
 // ###########################################################################
 
 /*
@@ -1324,7 +1325,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0c — Google sign-in (company accounts only)  v4.86.0
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.86.1
 // ###########################################################################
 
 /*
@@ -1670,7 +1671,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.86.0
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.86.1
 // ###########################################################################
 
 /*
@@ -28568,7 +28569,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.86.0
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.86.1
 // ###########################################################################
 
 /*
@@ -30143,7 +30144,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.86.0
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.86.1
 // ###########################################################################
 
 /*
@@ -30792,7 +30793,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v4.86.0
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.86.1
 // ###########################################################################
 
 /*
@@ -31660,7 +31661,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.86.0
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.86.1
 // ###########################################################################
 
 /*
@@ -33282,7 +33283,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.86.0
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.86.1
 // ###########################################################################
 
 /*
@@ -33752,7 +33753,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 20 — Employee Documents bulk upload  v4.86.0
+// ##### SECTION 20 — Employee Documents bulk upload  v4.86.1
 // ###########################################################################
 
 /*
@@ -34584,7 +34585,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 21 — Bulk Offboarding  v4.86.0
+// ##### SECTION 21 — Bulk Offboarding  v4.86.1
 // ###########################################################################
 
 /**
@@ -35232,7 +35233,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 22 — Bulk Final Settlement  v4.86.0
+// ##### SECTION 22 — Bulk Final Settlement  v4.86.1
 // ###########################################################################
 
 /**
@@ -35717,7 +35718,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 24 — Bulk Payroll Transactions  v4.86.0
+// ##### SECTION 24 — Bulk Payroll Transactions  v4.86.1
 // ###########################################################################
 
 /**
@@ -36389,7 +36390,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.86.0
+// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.86.1
 // ###########################################################################
 
 /**
@@ -36829,7 +36830,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.86.0
+// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.86.1
 // ###########################################################################
 
 /*
@@ -37449,7 +37450,7 @@ function jboRedact_(msg) {
 })();
 
 // ###########################################################################
-// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.86.0
+// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.86.1
 // ###########################################################################
 
 /**
@@ -38045,7 +38046,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.86.0
+// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.86.1
 // ###########################################################################
 
 /**
@@ -38119,7 +38120,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.86.0
+// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.86.1
 // ###########################################################################
 
 /**
@@ -38132,7 +38133,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.86.0
+// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.86.1
 // ###########################################################################
 
 /*
@@ -38868,7 +38869,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 36 — Shifts & Day Offs: assign day offs / a shift, or clear — any range up to one year, week by week  v4.86.0
+// ##### SECTION 36 — Shifts & Day Offs: assign day offs / a shift, or clear — any range up to one year, week by week  v4.86.1
 // ###########################################################################
 
 /*
@@ -39303,7 +39304,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 37 — Family Members (bulk add; passport numbers with letters; nationalities by name)  v4.86.0
+// ##### SECTION 37 — Family Members (bulk add; passport numbers with letters; nationalities by name)  v4.86.1
 // ###########################################################################
 
 /*
@@ -39776,7 +39777,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 38 — Letter Templates: open, edit and save Jisr's letters directly (simple editor + variables)  v4.86.0
+// ##### SECTION 38 — Letter Templates: open, edit and save Jisr's letters directly (simple editor + variables)  v4.86.1
 // ###########################################################################
 
 /*
@@ -39799,7 +39800,7 @@ function jboRedact_(msg) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.86.0';
+  const SECTION_VERSION = '4.86.1';
   const MODULE_ID = 'letter-templates';
   function gmSet_(k, v) { try { GM_setValue('jisrBulkOps_' + k, v); } catch (e) { /* ignore */ } }
   const W = unsafeWindow;
@@ -42101,7 +42102,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.86.0
+// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.86.1
 // ###########################################################################
 
 /*
@@ -42599,7 +42600,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.86.0
+// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.86.1
 // ###########################################################################
 
 /*
@@ -44327,7 +44328,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.86.0
+// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.86.1
 // ###########################################################################
 
 /*
@@ -44635,7 +44636,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 40 — Probation Periods (bulk create / adjust / delete)  v4.86.0
+// ##### SECTION 40 — Probation Periods (bulk create / adjust / delete)  v4.86.1
 // ###########################################################################
 
 /*
@@ -44658,7 +44659,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.86.0';
+  const SECTION_VERSION = '4.86.1';
   const MODULE_ID = 'probation-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -45032,7 +45033,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 41 — Bulk Employee Photos (profile picture for many employees in one run)  v4.86.0
+// ##### SECTION 41 — Bulk Employee Photos (profile picture for many employees in one run)  v4.86.1
 // ###########################################################################
 
 /*
@@ -45046,7 +45047,7 @@ async function shrinkPic_(data) {
  * The id in the path is Jisr's internal number (not the employee code, e.g. UV49): the employee list gives both, the code is matched here.
  * v4.82 (user test 2026-11-10): Jisr can answer 200 with the picture under data.employee.pending_changes.avatar (+ avatar_file_name, changeset {})
  * and NO live header_avatar: the photo is then waiting for approval in Jisr. The tool reports that as "Waiting for approval" (never as Uploaded).
- * v4.86.0 (user test): a ZIP of 755 pictures was cut at 500 (a built-in limit). The limit is now 2000 pictures per run; above that the tool says how many were read.
+ * v4.86.1 (user test): a ZIP of 755 pictures was cut at 500 (a built-in limit). The limit is now 2000 pictures per run; above that the tool says how many were read.
  * v4.82.1 (user test): Jisr can fill pending_changes AND apply the picture a moment later, so the answer to the PUT is not the verdict: the tool
  * looks at the profile again (header_avatar) and only calls a row "Waiting for approval" when the live photo has not changed after the checks.
  * Matching (v4.82): code, then name, then Iqama / national ID; anything unmatched can be picked by hand from a searchable list.
@@ -45061,13 +45062,13 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.86.0';
+  const SECTION_VERSION = '4.86.1';
   const MODULE_ID = 'employee-photos';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
-  const MAX_FILES = 2000;   // pictures read per run (was 500 until v4.86.0)
+  const MAX_FILES = 2000;   // pictures read per run (was 500 until v4.86.1)
   const BIG_BYTES = 5 * 1024 * 1024;
   const OK_EXT = ['jpg', 'jpeg', 'png'];
   const cfg = { backoffMs: 1000, retries: 3, verifyWaits: [700, 1500, 3000] };   // verifyWaits: after a send, look at the profile again up to this many times (ms between looks)
@@ -45660,7 +45661,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 42 — Edit imported leaves (cancel + new approved leave request, or re-import)  v4.86.0
+// ##### SECTION 42 — Edit imported leaves (cancel + new approved leave request, or re-import)  v4.86.1
 // ###########################################################################
 
 /*
@@ -45695,7 +45696,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.86.0';
+  const SECTION_VERSION = '4.86.1';
   const MODULE_ID = 'leave-edit-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -45776,6 +45777,7 @@ async function shrinkPic_(data) {
       put(3, { t: 'n', v: serial_(r.start), z: 'dd-mm-yyyy' }); put(4, { t: 'n', v: serial_(r.end), z: 'dd-mm-yyyy' });
       if (r.comment) put(5, { t: 's', v: String(r.comment) });
       if (r.resumption) put(6, { t: 'n', v: serial_(r.resumption), z: 'dd-mm-yyyy' });
+      if (r.seha) put(7, { t: 's', v: String(r.seha) });
     });
     ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length, c: 7 } });
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
@@ -46369,19 +46371,19 @@ async function shrinkPic_(data) {
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'Edit Imported Leaves (Bulk)', open: openTool_, version: SECTION_VERSION };
-    W.__jisrLeaveEdit = { createBody_, findAtt_, deepFind_, approveLeave_, findApproval_, histAll_, planRow_, rawTypes_, importName_, importXlsx_, parseEditAoa_, serial_, sameType_, overlap_, previewOne_, waitApproved_, attUrl_, dataUrl_, MIME_, extOf_, baseOf_, cfg };
+    W.__jisrLeaveEdit = { createBody_, findAtt_, deepFind_, approveLeave_, findApproval_, histAll_, planRow_, rawTypes_, importName_, importXlsx_, parseEditAoa_, serial_, sameType_, overlap_, previewOne_, waitApproved_, attUrl_, dataUrl_, MIME_, extOf_, baseOf_, importCall_, importMsg_, cfg };
     if (g._rerender) g._rerender();
   }
   register_();
 })();
 
 // ###########################################################################
-// ##### SECTION 43 — Company Documents (bulk add, edit, delete)  v4.86.0
+// ##### SECTION 43 — Company Documents (bulk add, edit, delete)  v4.86.1
 // ###########################################################################
 
 /*
  * ===========================================================================
- * SECTION 43 — Company Documents (Organization > Company documents)  v4.86.0
+ * SECTION 43 — Company Documents (Organization > Company documents)  v4.86.1
  * ---------------------------------------------------------------------------
  * CONFIRMED (user captures, onboardingteam, 2026-11-10), base https://apis.jisr.net/api/v2, every call with ?slug=:
  *   GET    /company_attachments/                 -> 200 (the list; its answer was NOT captured: the tool looks for the array of records wherever it is)
@@ -46407,7 +46409,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.86.0';
+  const SECTION_VERSION = '4.86.1';
   const MODULE_ID = 'company-documents';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -47217,7 +47219,7 @@ async function shrinkPic_(data) {
 })();
 
 // ###########################################################################
-// ##### SECTION 44 — Create Leave Requests (bulk, with attachments, approved at once)  v4.86.0
+// ##### SECTION 44 — Create Leave Requests (bulk, with attachments, approved at once)  v4.86.1
 // ###########################################################################
 
 /*
@@ -47234,12 +47236,14 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.86.0';
+  const SECTION_VERSION = '4.86.1';
   const MODULE_ID = 'leave-create-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
   function slug_() { try { const o = GM_getValue(GM_PREFIX + 'slugOverride', ''); if (o) return o; } catch (e) { /* ignore */ } const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
   const LC = () => W.__jisrLeaveCancel || {};
@@ -47308,7 +47312,7 @@ async function shrinkPic_(data) {
   function openTool_() {
     injectCss_();
     const X = W.__jisrBulkOpsXlsx; const E = LE();
-    const S = { rows: [], types: null, raw: null, histAll: new Map(), files: [], common: null, busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false };
+    const S = { rows: [], types: null, raw: null, histAll: new Map(), files: [], common: null, busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false, useImport: gmGet_('leaveCreateImport', false) === true, lang: gmGet_('leaveEditNameLang', 'ar') === 'en' ? 'en' : 'ar' };
     const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
     const titleEl = el('div', { class: 'jbo-modal-title' }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': 'Close' });
     const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1250px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
@@ -47325,6 +47329,10 @@ async function shrinkPic_(data) {
     const commonB = el('button', { class: 'jbo-btn', text: T('One attachment for every row…', 'مرفق واحد لكل الصفوف…') });
     const clearAttB = el('button', { class: 'jbo-btn', text: T('Clear attachments', 'مسح المرفقات') });
     const attInfo = el('span', { class: 'jbo-muted' });
+    const impChk = el('input', { type: 'checkbox', id: 'jlq-imp' }); impChk.checked = S.useImport;
+    const langSel = el('select', {}, [el('option', { value: 'ar', text: 'العربية' }), el('option', { value: 'en', text: 'English' })]); langSel.value = S.lang;
+    impChk.addEventListener('change', () => { S.useImport = impChk.checked; gmSet_('leaveCreateImport', S.useImport); });
+    langSel.addEventListener('change', () => { S.lang = langSel.value; gmSet_('leaveEditNameLang', S.lang); });
     const tplB = el('button', { class: 'jbo-btn', text: T('2) Template (.xlsx)', '2) القالب (‎.xlsx)') });
     const upB = el('button', { class: 'jbo-btn', text: T('3) Upload filled file', '3) رفع الملف بعد التعبئة') });
     const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
@@ -47343,6 +47351,7 @@ async function shrinkPic_(data) {
       body.appendChild(el('div', { class: 'jlq-warn', text: T('Run the Dry Run first and try one or two rows before the whole file. A leave that already exists (same type and dates) is skipped, so you can run the same file again after a stop.', 'شغّل التجريبي أولًا وجرّب صفًا أو اثنين قبل الملف كله. الإجازة الموجودة (نفس النوع والتواريخ) تُتخطى، فيمكنك تشغيل الملف نفسه بعد أي توقف.') }));
       body.appendChild(el('div', { class: 'jlq-bar' }, [attB, commonB, clearAttB, attInfo]));
       body.appendChild(el('div', { class: 'jlq-bar' }, [tplB, upB]));
+      body.appendChild(el('div', { class: 'jlq-bar' }, [el('label', { for: 'jlq-imp', style: { display: 'flex', gap: '6px', alignItems: 'center', cursor: 'pointer' } }, [impChk, T('If Jisr refuses a request because the date is too far back, add that leave with Jisr\'s import instead (the import cannot carry an attachment)', 'إذا رفض جسر الطلب لأن التاريخ قديم جدًا، أضف تلك الإجازة عبر استيراد جسر (الاستيراد لا يحمل مرفقًا)')]), el('span', { class: 'jbo-muted', text: T('Leave type name in the import:', 'اسم نوع الإجازة في الاستيراد:') }), langSel]));
       body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn); body.appendChild(attIn); body.appendChild(commonIn);
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
@@ -47457,6 +47466,8 @@ async function shrinkPic_(data) {
           const hit = have.find((l) => overlap_(r.plan, l));
           if (hit) { r.state = 'error'; r.msg = '✗ ' + T('The dates overlap another leave: ', 'التواريخ تتداخل مع إجازة أخرى: ') + (hit.type || hit.typeEn || '') + ' ' + hit.start + ' → ' + hit.end; return; }
           r.state = 'ready'; r.msg = T('new request', 'طلب جديد') + (r.att ? ' · ' + T('attachment ', 'مرفق ') + r.att.name : '');
+          const back = Math.round((Date.now() - Date.parse(r.plan.start + 'T00:00:00Z')) / 86400000); r.back = back;
+          if (back > 30) r.msg += '\n⚠ ' + back + T(' days back: Jisr may refuse a request this old', ' يوم مضى: قد يرفض جسر طلبًا بهذا القِدم') + (S.useImport ? T(' (it will then be added with the import, without the attachment)', ' (ثم تُضاف عبر الاستيراد بدون المرفق)') : '');
         });
         // the same employee twice in the file with overlapping dates
         const byEmp = new Map(); todo.filter((r) => r.state === 'ready').forEach((r) => { const k = String(r.emp.id); if (!byEmp.has(k)) byEmp.set(k, []); byEmp.get(k).push(r); });
@@ -47478,6 +47489,25 @@ async function shrinkPic_(data) {
     dryB.addEventListener('click', dryRun_);
 
     // ---------------- live: create -> approve -> read back (nothing is cancelled, so a failed row leaves the employee as it was)
+    /** Jisr refused the request as too far back: add the leave with Jisr's own import (no attachment possible), then read it back. */
+    async function viaImport_(r, why) {
+      const p = r.plan; const E2 = LE(); const raw = (S.raw || []).find((x) => String(x.id) === String(p.type.id));
+      const typeName = raw ? E2.importName_(raw, S.lang) : p.type.name; let ir;
+      try { ir = await E2.importCall_([{ code: r.emp.code || r.emp.id, name: r.emp.name || '', typeName, start: p.start, end: p.end, comment: p.comment, resumption: '', seha: r.seha }]); }
+      catch (e) {
+        if (/HTTP 401/.test(e.message)) { r.state = 'failed'; r.stage = 'denied'; r.why = 'Jisr sign-in problem: the run was stopped'; r.msg = '✗ ' + redact_(e.message); return 'stop'; }
+        if (e.unknown) { r.state = 'failed'; r.stage = 'unverified'; r.why = 'no answer from Jisr for the import: the leave may or may not exist; check the employee in Jisr'; r.msg = '✗ ' + T('No answer from Jisr for the import: the leave may or may not exist. Check the employee in Jisr before running this row again.', 'لا رد من جسر على الاستيراد: قد تكون الإجازة أُضيفت أو لا. تحقّق من الموظف في جسر قبل إعادة تشغيل هذا الصف.'); return 'stop'; }
+        r.state = 'failed'; r.stage = 'failed'; r.why = 'the import could not be sent: ' + redact_(e.message); r.msg = '✗ ' + redact_(e.message); return 'next';
+      }
+      if (!ir.ok) { r.state = 'failed'; r.stage = jboStageOfRes_(ir); r.why = 'Jisr refused the request (too far back) and then refused the import (HTTP ' + ir.status + ')'; r.msg = '✗ ' + T('Jisr refused the request (', 'رفض جسر الطلب (') + why + T(') and then the import: ', ') ثم رفض الاستيراد: ') + E2.importMsg_(ir); return 'next'; }
+      let w; try { w = await E2.waitApproved_(r.emp.id, null, p.start, p.end, new Set()); } catch (e) { w = { hit: null }; }
+      if (!w.hit) { r.state = 'failed'; r.stage = 'not_reflected'; r.why = 'Jisr accepted the import (OK) but the leave does not appear in the employee\'s leave history'; r.msg = '✗ ' + T('Jisr accepted the import but the leave does not appear in the employee\'s leaves. Check it in Jisr (Imported requests).', 'قبل جسر الاستيراد لكن الإجازة لا تظهر في إجازات الموظف. تحقق منها في جسر (الطلبات المستوردة).'); return 'next'; }
+      if (!E2.sameType_(w.hit, p.type.id, S.types)) { r.state = 'failed'; r.stage = 'mismatch'; r.why = 'the imported leave has a different leave type than asked'; r.msg = '✗ ' + T('The leave was imported as “', 'استُوردت الإجازة بنوع «') + (w.hit.type || w.hit.typeEn) + T('” instead of “', '» بدل «') + p.type.name + T('”. Check it in Jisr.', '». تحقق منها في جسر.'); return 'next'; }
+      S.histAll.delete(String(r.emp.id)); r.newId = w.hit.id;
+      r.state = 'done'; r.stage = 'ok_retry'; r.why = 'Jisr refused the request as too far back; the leave was added with Jisr\'s import and confirmed by reading it back' + (r.att ? ' (the attachment could not be added)' : '');
+      r.msg = '✓ ' + T('added with Jisr\'s import (the request was refused as too far back)', 'أُضيفت عبر استيراد جسر (رُفض الطلب لأنه قديم جدًا)') + ' (#' + w.hit.id + ')' + (r.att ? '\n⚠ ' + T('the attachment ', 'المرفق ') + r.att.name + T(' could not be added: an import cannot carry one. Add it in Jisr if needed.', ' لم يُضف: الاستيراد لا يحمل مرفقًا. أضفه في جسر إن لزم.') : '');
+      return 'next';
+    }
     async function createOne_(r) {
       const p = r.plan; let url = '';
       if (r.att) { try { url = await E.attUrl_(r.att); } catch (e) { r.state = 'failed'; r.stage = 'failed'; r.why = 'the attachment could not be read: nothing was sent'; r.msg = '✗ ' + T('The attachment could not be read (nothing sent): ', 'تعذّرت قراءة المرفق (لم يُرسل شيء): ') + redact_(e.message); return 'next'; } }
@@ -47487,6 +47517,11 @@ async function shrinkPic_(data) {
         if (/HTTP 401/.test(e.message)) { r.state = 'failed'; r.stage = 'denied'; r.why = 'Jisr sign-in problem: the run was stopped'; r.msg = '✗ ' + e.message; return 'stop'; }
         if (e.unknown) { r.state = 'failed'; r.stage = 'unverified'; r.why = 'no answer from Jisr when creating the request: it may or may not exist; check the employee in Jisr'; r.msg = '✗ ' + T('No answer from Jisr: the request may or may not exist. Check the employee in Jisr before running this row again.', 'لا رد من جسر: قد يكون الطلب أُنشئ أو لا. تحقّق من الموظف في جسر قبل إعادة تشغيل هذا الصف.'); return 'stop'; }
         r.state = 'failed'; r.stage = 'failed'; r.why = 'the request could not be created: ' + redact_(e.message); r.msg = '✗ ' + redact_(e.message); return 'next';
+      }
+      if (!cr.ok) {
+        const jm = redact_((LC().jisrMsg_ && LC().jisrMsg_(cr.json)) || '');
+        const tooOld = /قبل\s*\d+\s*(يوم|أيام|ايام)|(before|older than|more than)\s*\d+\s*days?|\d+\s*days?\s*(ago|back|in the past)/i.test(jm);
+        if (S.useImport && tooOld && !(/seha/i.test(jm) && !r.seha)) return viaImport_(r, jm);
       }
       if (!cr.ok) { r.state = 'failed'; r.stage = jboStageOfRes_(cr); r.why = 'Jisr refused the leave request (HTTP ' + cr.status + ')'; r.msg = '✗ ' + T('Jisr refused the leave request: ', 'رفض جسر طلب الإجازة: ') + redact_((LC().jisrMsg_ && LC().jisrMsg_(cr.json)) || 'HTTP ' + cr.status); return 'next'; }
       const lrObj = cr.json && cr.json.data && cr.json.data.leave_request; const newId = lrObj && lrObj.id != null ? lrObj.id : null; r.newId = newId;
@@ -47509,9 +47544,9 @@ async function shrinkPic_(data) {
     }
     async function runLive_() {
       const todo = S.rows.filter((r) => r.state === 'ready'); if (!todo.length) return;
-      if (!confirm(T('Create ', 'إنشاء ') + todo.length + T(' leave request(s) for ', ' طلب إجازة لـ ') + new Set(todo.map((r) => r.emp.id)).size + T(' employee(s) in ', ' موظف في ') + slug_() + '?\n\n' + T('Each request is created with its attachment and approved at once. If one cannot be approved (you are not its approver) it stays pending and the run stops.', 'يُنشأ كل طلب مع مرفقه ويُعتمد فورًا. إن تعذّر اعتماد أحدها (لست معتمِده) يبقى معلّقًا ويتوقف التشغيل.'))) return;
+      if (!confirm(T('Create ', 'إنشاء ') + todo.length + T(' leave request(s) for ', ' طلب إجازة لـ ') + new Set(todo.map((r) => r.emp.id)).size + T(' employee(s) in ', ' موظف في ') + slug_() + '?\n\n' + T('Each request is created with its attachment and approved at once. If one cannot be approved (you are not its approver) it stays pending and the run stops.', 'يُنشأ كل طلب مع مرفقه ويُعتمد فورًا. إن تعذّر اعتماد أحدها (لست معتمِده) يبقى معلّقًا ويتوقف التشغيل.') + (S.useImport ? '\n\n' + T('A request Jisr refuses as too far back is added with Jisr\'s import instead, WITHOUT its attachment.', 'الطلب الذي يرفضه جسر لأنه قديم جدًا يُضاف عبر استيراد جسر بدون مرفقه.') : ''))) return;
       S.phase = 'running'; S.stop = false; S.busy = ' '; paint_(); let done = 0;
-      const report_ = (r) => { if (r.reported) return; r.reported = true; const st = r.state === 'done' ? 'ok' : r.state === 'failed' ? (r.stage || 'failed') : 'skipped'; try { jboActReport_(MODULE_ID, r.emp ? r.emp.id : 'row' + r.no, st, r.state === 'done' || r.state === 'failed' ? (r.why || st) : 'not sent: the run stopped before this row'); } catch (e) { /* ignore */ } };
+      const report_ = (r) => { if (r.reported) return; r.reported = true; const st = r.state === 'done' ? (r.stage || 'ok') : r.state === 'failed' ? (r.stage || 'failed') : 'skipped'; try { jboActReport_(MODULE_ID, r.emp ? r.emp.id : 'row' + r.no, st, r.state === 'done' || r.state === 'failed' ? (r.why || st) : 'not sent: the run stopped before this row'); } catch (e) { /* ignore */ } };
       todo.forEach((r) => { r.reported = false; r.stage = ''; r.why = ''; });
       for (const r of todo) {
         if (S.stop) { r.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); report_(r); continue; }
@@ -47544,7 +47579,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.86.0
+// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.86.1
 // ###########################################################################
 
 /** Business trip city catalogue (v4.22): Saudi regions, cities, towns and villages (homaily/Saudi-Arabia-Regions-Cities-and-Districts) and world cities with population over ~15,000 (datasets/world-cities, GeoNames) by country (dr5hn/countries-states-cities-database). Read-only reference data. */
@@ -47552,7 +47587,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.86.0
+// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.86.1
 // ###########################################################################
 
 /*
@@ -48091,7 +48126,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.86.0
+// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.86.1
 // ###########################################################################
 
 /*
@@ -48661,7 +48696,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 27 — Activation Checklist sidebar  v4.86.0
+// ##### SECTION 27 — Activation Checklist sidebar  v4.86.1
 // ###########################################################################
 
 /**
@@ -49125,7 +49160,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.86.0
+// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.86.1
 // ###########################################################################
 
 /**
@@ -49183,7 +49218,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 39 — Locations Setup (onboarding): set country, region, city and manager for many locations at once  v4.86.0
+// ##### SECTION 39 — Locations Setup (onboarding): set country, region, city and manager for many locations at once  v4.86.1
 // ###########################################################################
 
 /*
