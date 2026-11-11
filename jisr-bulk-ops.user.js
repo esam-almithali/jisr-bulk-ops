@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.86.1
+// @version      4.87.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -41,7 +41,7 @@ if (/^jisr\.jisr\.net$/i.test(location.hostname)) { throw new Error('Jisr Bulk O
 // it in the same form the older tools use (/api/log: one row per write: status, short redacted message, delay). It never changes a request,
 // never reads a request body, and fails open: no backend set, or any error, means nothing happens.
 const JBO_TRACKED_TOOLS = ['payroll-transactions-bulk', 'leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'shifts-bulk', 'fixed-hours-bulk', 'flight-tickets-bulk', 'shifts-clear', 'family-details-bulk', 'letter-templates', 'approval-cycles', 'performance-templates', 'delete-employees', 'business-trip-cities', 'final-settlement-bulk', 'locations-onboarding', 'probation-bulk', 'employee-photos', 'company-documents'];
-const JBO_OPEN_ONLY_TOOLS = ['payroll-reconciliation', 'data-validation', 'activation-checklist', 'letter-converter']; // read-only: the dashboard shows that they were used
+const JBO_OPEN_ONLY_TOOLS = ['payroll-reconciliation', 'data-validation', 'data-cleanser', 'activation-checklist', 'letter-converter']; // read-only: the dashboard shows that they were used
 // v4.83: tools that check the result themselves (read it back from Jisr) report ONE row per employee / leave with its real outcome stage, so the
 // wrapper below leaves them alone: "HTTP 200" is not the outcome for them (Jisr can answer OK and not apply the change).
 const JBO_SELF_REPORT_TOOLS = ['employee-photos', 'leave-edit-bulk', 'leave-create-bulk', 'company-documents'];
@@ -77,6 +77,7 @@ function jboActFlush_() {
   let settled = false;
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
   // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
+  // v4.87.0: two new tools. Data Cleanser: cleans a client's employee sheet offline (spaces, dates, phones, e-mails, nationality and repeated spellings, duplicate IDs, contract end dates) and lists what needs a decision; writes nothing to Jisr. Salary Comparison: compares a client salary sheet with Jisr (basic, allowances, total), lists differences, and writes the ticked ones with the Salary Increment rules (one write per employee, current allowances kept, confirmed in the change history).
   // v4.86.1: new tool "Create Leave Requests (Bulk)": a sheet in Jisr import format plus a "File name Attachment" column (typed or drop-down of the uploaded attachments); each row becomes a normal leave request with its attachment, approved at once and read back. The Edit tool uses the same column name.
   const settle = (retry, err, fatal) => {
     if (settled) return; settled = true; jboAct_.sending = false;
@@ -298,7 +299,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.86.1
+// ##### SECTION 0 — Language follows the Jisr page (EN/AR)  v4.87.0
 // ###########################################################################
 
 /*
@@ -1110,6 +1111,8 @@ function jboRedact_(msg) {
 "Bulk Cancel Leave Requests": "إلغاء طلبات الإجازة الجماعي",
 "Edit Imported Leaves (Bulk)": "تعديل الإجازات المستوردة (جماعي)",
 "Create Leave Requests (Bulk)": "إنشاء طلبات إجازة (جماعي)",
+"Data Cleanser": "منظّف البيانات",
+"Salary Comparison": "مقارنة الرواتب",
 "Bulk Payroll Transactions": "حركات الرواتب الجماعية",
 "Fixed Working Hours (Bulk)": "ساعات العمل الثابتة (جماعي)",
 "New Area": "المنطقة الجديدة",
@@ -1325,7 +1328,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0c — Google sign-in (company accounts only)  v4.86.1
+// ##### SECTION 0c — Google sign-in (company accounts only)  v4.87.0
 // ###########################################################################
 
 /*
@@ -1671,7 +1674,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.86.1
+// ##### SECTION 0b — Shared employee list + hub search/dropdown  v4.87.0
 // ###########################################################################
 
 /*
@@ -2293,8 +2296,8 @@ function jboRedact_(msg) {
 
   // ======================================================================= hub menu
   const CATEGORIES = [
-    ['employees', 'Employees', 'الموظفون', ['data-validation', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'delete-employees']],
-    ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'gosi-compliance', 'payroll-reconciliation', 'flight-tickets-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk']],
+    ['employees', 'Employees', 'الموظفون', ['data-validation', 'data-cleanser', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'delete-employees']],
+    ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'salary-compare', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'gosi-compliance', 'payroll-reconciliation', 'flight-tickets-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk']],
     ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units', 'company-documents']],
     ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear', 'attendance-log-converter']],
     ['performance', 'Performance', 'الأداء', ['performance-templates']],
@@ -2305,7 +2308,7 @@ function jboRedact_(msg) {
   const SECTIONS = [
     { key: 'bulk', en: 'Bulk actions', ar: 'العمليات الجماعية', icon: 'layers', color: '#8FA8F7', groups: [
       ['employees', 'Employees', 'الموظفون', ['employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'delete-employees']],
-      ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk']],
+      ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'salary-compare', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk']],
       ['policies', 'Policies & benefits', 'السياسات والمزايا', ['business-trip-cities', 'flight-tickets-bulk']],
       ['performance', 'Performance', 'الأداء', ['performance-templates']],
       ['requests', 'Requests & approvals', 'الطلبات والموافقات', ['approval-cycles']],
@@ -2313,7 +2316,7 @@ function jboRedact_(msg) {
       ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear']],
     ] },
     { key: 'check', en: 'Validate, convert & reconcile', ar: 'التحقق والتحويل والمطابقة', icon: 'scale', color: '#5FD0B0', groups: [
-      ['validate', 'Validate & reconcile', 'التحقق والمطابقة', ['data-validation', 'payroll-reconciliation', 'gosi-compliance']],
+      ['validate', 'Validate & reconcile', 'التحقق والمطابقة', ['data-validation', 'data-cleanser', 'payroll-reconciliation', 'gosi-compliance']],
       ['convert', 'Convert & export', 'التحويل والتصدير', ['attendance-log-converter', 'letter-templates', 'letter-converter', 'export-everything']],
     ] },
   ];
@@ -2374,6 +2377,8 @@ function jboRedact_(msg) {
     'gosi-applicable-amount-bulk': ['Set GOSI salaries in bulk', 'ضبط رواتب التأمينات جماعيًا'],
     'gosi-compliance': ['Export and check GOSI salaries', 'تصدير رواتب التأمينات والتحقق منها'],
     'payroll-reconciliation': ['Compare a payrun with the client file', 'مقارنة المسير بملف العميل'],
+    'salary-compare': ['Compare a salary sheet with Jisr and write the differences you tick', 'مقارنة ملف الرواتب بجسر وكتابة الفروق التي تحددها'],
+    'data-cleanser': ['Clean a client employee sheet: fix spaces, dates, phones, spellings; list what needs a decision; no changes in Jisr', 'تنظيف ملف موظفي العميل: إصلاح المسافات والتواريخ والجوالات والتهجئات، وسرد ما يحتاج قرارًا؛ دون أي تغيير في جسر'],
     'flight-tickets-bulk': ['Assign, move or remove employees; allocated and custom (up to 2) tickets', 'تعيين الموظفين أو نقلهم أو إزالتهم؛ التذاكر المخصصة والإضافية (حتى تذكرتين)'],
     'business-trip-cities': ['Destinations for business trip policies: every Saudi city, town and village, or any country', 'وجهات سياسات رحلات العمل: كل مدن وقرى السعودية أو أي دولة'],
     'payroll-transactions-bulk': ['Add, edit or delete transactions (in or out of payroll)', 'إضافة الحركات أو تعديلها أو حذفها (ضمن المسير أو خارجه)'],
@@ -2397,7 +2402,7 @@ function jboRedact_(msg) {
     'letter-templates': ['Open, edit and save Jisr\'s letter templates (variables, header, body, footer)', 'فتح قوالب خطابات جسر وتعديلها وحفظها (المتغيرات، الترويسة، النص، التذييل)'],
     'letter-converter': ['Word letters to Jisr templates', 'تحويل خطابات Word إلى قوالب جسر'],
   };
-  const NEW_IDS = ['leave-create-bulk', 'company-documents', 'leave-edit-bulk', 'employee-photos', 'probation-bulk', 'locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
+  const NEW_IDS = ['salary-compare', 'data-cleanser', 'leave-create-bulk', 'company-documents', 'leave-edit-bulk', 'employee-photos', 'probation-bulk', 'locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
   const svg_ = (k, size) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('width', size || 16); s.setAttribute('height', size || 16); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.8'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round'); s.innerHTML = ICONS[k] || ICONS.other; return s; };
   const normQ_ = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[ً-ٰٟـ]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
   function highlight_(text, q) {
@@ -11386,6 +11391,8 @@ function jboRedact_(msg) {
     loadEmployees(false);
   }
 
+  // v4.87: the Salary Comparison tool (SECTION 46) reads and writes salaries with these same primitives, so both tools always behave alike.
+  unsafeWindow.__jisrSalaryApi = { fetchCurrentEarnings_, buildSalaryIncrementBody_, apiRequest_, fetchCompensationChangeHistories_, normalizeName_, parseDmyToIso_, isoToDmy_, todayIso_, createRunControls_, toast_ };
   registerModule_(MODULE_ID, MODULE_TITLE, openSalaryModal_, '1.9.2');
 })();
 
@@ -28569,7 +28576,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.86.1
+// ##### SECTION 15b — Attendance push into Jisr (learned from one real edit)  v4.87.0
 // ###########################################################################
 
 /*
@@ -30144,7 +30151,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.86.1
+// ##### MODULE 16 — GOSI Compliance — Export & Salary Check  v4.87.0
 // ###########################################################################
 
 /*
@@ -30793,7 +30800,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### MODULE 17 — Cancel Transactions & Loans  v4.86.1
+// ##### MODULE 17 — Cancel Transactions & Loans  v4.87.0
 // ###########################################################################
 
 /*
@@ -31661,7 +31668,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.86.1
+// ##### SECTION 18 — Tools ported from the user-supplied Jisr Bulk Ops 2.0.0 script (replace 10 hub tools)  v4.87.0
 // ###########################################################################
 
 /*
@@ -33283,7 +33290,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.86.1
+// ##### SECTION 19 — Bulk Unsuspend (tab inside Suspend Payrun)  v4.87.0
 // ###########################################################################
 
 /*
@@ -33753,7 +33760,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 20 — Employee Documents bulk upload  v4.86.1
+// ##### SECTION 20 — Employee Documents bulk upload  v4.87.0
 // ###########################################################################
 
 /*
@@ -34585,7 +34592,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 21 — Bulk Offboarding  v4.86.1
+// ##### SECTION 21 — Bulk Offboarding  v4.87.0
 // ###########################################################################
 
 /**
@@ -35233,7 +35240,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 22 — Bulk Final Settlement  v4.86.1
+// ##### SECTION 22 — Bulk Final Settlement  v4.87.0
 // ###########################################################################
 
 /**
@@ -35718,7 +35725,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 24 — Bulk Payroll Transactions  v4.86.1
+// ##### SECTION 24 — Bulk Payroll Transactions  v4.87.0
 // ###########################################################################
 
 /**
@@ -36390,7 +36397,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.86.1
+// ##### SECTION 25 — Bulk Cancel Leave Requests  v4.87.0
 // ###########################################################################
 
 /**
@@ -36830,7 +36837,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.86.1
+// ##### SECTION 35 — Shifts (create, edit, duplicate, delete — form + Excel)  v4.87.0
 // ###########################################################################
 
 /*
@@ -37450,7 +37457,7 @@ function jboRedact_(msg) {
 })();
 
 // ###########################################################################
-// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.86.1
+// ##### SECTION 26 — Fixed Working Hours (weekly schedules)  v4.87.0
 // ###########################################################################
 
 /**
@@ -38046,7 +38053,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.86.1
+// ##### SECTION 28b — Look up knowledge (Activation Playbook, team notes)  v4.87.0
 // ###########################################################################
 
 /**
@@ -38120,7 +38127,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.86.1
+// ##### SECTION 28 — Saudi Labor Law reference data (Look up tab)  v4.87.0
 // ###########################################################################
 
 /**
@@ -38133,7 +38140,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.86.1
+// ##### SECTION 31 — Flight Ticket Allowance (bulk, finds each employee's policy)  v4.87.0
 // ###########################################################################
 
 /*
@@ -38869,7 +38876,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 36 — Shifts & Day Offs: assign day offs / a shift, or clear — any range up to one year, week by week  v4.86.1
+// ##### SECTION 36 — Shifts & Day Offs: assign day offs / a shift, or clear — any range up to one year, week by week  v4.87.0
 // ###########################################################################
 
 /*
@@ -39304,7 +39311,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 37 — Family Members (bulk add; passport numbers with letters; nationalities by name)  v4.86.1
+// ##### SECTION 37 — Family Members (bulk add; passport numbers with letters; nationalities by name)  v4.87.0
 // ###########################################################################
 
 /*
@@ -39777,7 +39784,7 @@ function jboRedact_(msg) {
 
 
 // ###########################################################################
-// ##### SECTION 38 — Letter Templates: open, edit and save Jisr's letters directly (simple editor + variables)  v4.86.1
+// ##### SECTION 38 — Letter Templates: open, edit and save Jisr's letters directly (simple editor + variables)  v4.87.0
 // ###########################################################################
 
 /*
@@ -39800,7 +39807,7 @@ function jboRedact_(msg) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.86.1';
+  const SECTION_VERSION = '4.87.0';
   const MODULE_ID = 'letter-templates';
   function gmSet_(k, v) { try { GM_setValue('jisrBulkOps_' + k, v); } catch (e) { /* ignore */ } }
   const W = unsafeWindow;
@@ -42102,7 +42109,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.86.1
+// ##### SECTION 34 — Approval Cycles (duplicate + bulk edit of request approval steps)  v4.87.0
 // ###########################################################################
 
 /*
@@ -42600,7 +42607,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.86.1
+// ##### SECTION 33 — Performance Evaluation Templates (bulk: Excel or any workbook, one sheet = one template)  v4.87.0
 // ###########################################################################
 
 /*
@@ -44328,7 +44335,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.86.1
+// ##### SECTION 32 — Delete Employees (bulk, permanent, caution banner with the account name)  v4.87.0
 // ###########################################################################
 
 /*
@@ -44636,7 +44643,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 40 — Probation Periods (bulk create / adjust / delete)  v4.86.1
+// ##### SECTION 40 — Probation Periods (bulk create / adjust / delete)  v4.87.0
 // ###########################################################################
 
 /*
@@ -44659,7 +44666,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.86.1';
+  const SECTION_VERSION = '4.87.0';
   const MODULE_ID = 'probation-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -45033,7 +45040,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 41 — Bulk Employee Photos (profile picture for many employees in one run)  v4.86.1
+// ##### SECTION 41 — Bulk Employee Photos (profile picture for many employees in one run)  v4.87.0
 // ###########################################################################
 
 /*
@@ -45062,7 +45069,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.86.1';
+  const SECTION_VERSION = '4.87.0';
   const MODULE_ID = 'employee-photos';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -45661,7 +45668,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 42 — Edit imported leaves (cancel + new approved leave request, or re-import)  v4.86.1
+// ##### SECTION 42 — Edit imported leaves (cancel + new approved leave request, or re-import)  v4.87.0
 // ###########################################################################
 
 /*
@@ -45696,7 +45703,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.86.1';
+  const SECTION_VERSION = '4.87.0';
   const MODULE_ID = 'leave-edit-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -46378,7 +46385,7 @@ async function shrinkPic_(data) {
 })();
 
 // ###########################################################################
-// ##### SECTION 43 — Company Documents (bulk add, edit, delete)  v4.86.1
+// ##### SECTION 43 — Company Documents (bulk add, edit, delete)  v4.87.0
 // ###########################################################################
 
 /*
@@ -46409,7 +46416,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.86.1';
+  const SECTION_VERSION = '4.87.0';
   const MODULE_ID = 'company-documents';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -47219,7 +47226,7 @@ async function shrinkPic_(data) {
 })();
 
 // ###########################################################################
-// ##### SECTION 44 — Create Leave Requests (bulk, with attachments, approved at once)  v4.86.1
+// ##### SECTION 44 — Create Leave Requests (bulk, with attachments, approved at once)  v4.87.0
 // ###########################################################################
 
 /*
@@ -47236,7 +47243,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.86.1';
+  const SECTION_VERSION = '4.87.0';
   const MODULE_ID = 'leave-create-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -47579,7 +47586,1780 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.86.1
+// ##### SECTION 45 — Data Cleanser (client employee sheet: fix what is safe, list what is not)  v4.87.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 45 — Data Cleanser  v4.87
+ * ---------------------------------------------------------------------------
+ * Reads a client's employee sheet (xlsx / xls / csv, any sheet, any header row) and cleans it offline: spaces, Arabic digits, Excel date numbers, DD/MM/YYYY
+ * dates, mobile numbers, e-mail case, nationality against Jisr's list, repeated spellings in other columns (suggested merges the operator ticks), duplicate
+ * IDs, and the contract end date computed from joining date + duration. It never writes to Jisr: the result is a cleaned .xlsx (Cleaned data, Changes, Needs a
+ * decision, Already in Jisr). The engine below is the cleaner of the Payroll Validation page, lifted without its page code.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.87.0';
+  const MODULE_ID = 'data-cleanser';
+  const W = unsafeWindow;
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  const t = (ar, en) => T(en === undefined ? ar : en, ar);        // the engine's own bilingual helper (Arabic first)
+  function fmtCell(v) { if (v === null || v === undefined || v === '') return ''; if (v instanceof Date) return formatDateISO(v); return String(v); }
+  let uidN_ = 0; function uid(p) { return p + '_' + (++uidN_).toString(36) + Math.random().toString(36).slice(2, 5); }
+
+  // ----------------------------------------------------------------------- engine (pure logic, no page code)
+
+const ARABIC_DIACRITICS = /[ؐ-ًؚ-ٟۖ-ۜ۟-۪ۨ-ۭ]/g;
+const TATWEEL = /ـ/g;
+
+function stripDiacritics(s) { return s.replace(ARABIC_DIACRITICS, '').replace(TATWEEL, ''); }
+
+function normalizeArabicLetters(s) {
+  return s
+    .replace(/[آأإٱ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/ؤ/g, 'و')
+    .replace(/ئ/g, 'ي');
+}
+
+const HONORIFICS = ['mr','mrs','ms','dr','eng','eng.','mr.','mrs.','ms.','dr.','السيد','السيدة','الاستاذ','الأستاذ'];
+
+function normalizeText(raw) {
+  if (raw === null || raw === undefined) return '';
+  let s = String(raw).trim();
+  s = stripDiacritics(s);
+  s = normalizeArabicLetters(s);
+  s = s.toLowerCase();
+  s = s.replace(/[‎‏‪-‮]/g, '');
+  s = s.replace(/[._\-\/\\,]+/g, ' ');
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+function nameTokens(raw) {
+  const norm = normalizeText(raw);
+  if (!norm) return [];
+  return norm.split(' ').filter(t => t.length > 0 && !HONORIFICS.includes(t));
+}
+
+function normalizeCode(raw) {
+  if (raw === null || raw === undefined) return '';
+  let s = String(raw).trim();
+  s = s.replace(/\.0$/, '');
+  s = s.toUpperCase();
+  s = s.replace(/[^A-Z0-9؀-ۿ]/g, '');
+  return s;
+}
+
+function normalizeIdNumber(raw) {
+  if (raw === null || raw === undefined) return '';
+  let s = String(raw).trim().toUpperCase();
+  s = s.replace(/\.0$/, '');
+  s = s.replace(/[^A-Z0-9]/g, '');
+  return s;
+}
+
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  const al = a.length, bl = b.length;
+  if (al === 0) return bl;
+  if (bl === 0) return al;
+  let prev = new Array(bl + 1);
+  let curr = new Array(bl + 1);
+  for (let j = 0; j <= bl; j++) prev[j] = j;
+  for (let i = 1; i <= al; i++) {
+    curr[0] = i;
+    const ca = a.charCodeAt(i - 1);
+    for (let j = 1; j <= bl; j++) {
+      const cost = ca === b.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[bl];
+}
+
+function levenshteinRatio(a, b) {
+  if (!a && !b) return 1;
+  if (!a || !b) return 0;
+  const dist = levenshtein(a, b);
+  const maxLen = Math.max(a.length, b.length);
+  return maxLen === 0 ? 1 : 1 - dist / maxLen;
+}
+
+function tokenSetRatio(aTokens, bTokens) {
+  if (aTokens.length === 0 && bTokens.length === 0) return 1;
+  if (aTokens.length === 0 || bTokens.length === 0) return 0;
+  const setA = new Set(aTokens);
+  const setB = new Set(bTokens);
+  const inter = [...setA].filter(t => setB.has(t));
+  const union = new Set([...setA, ...setB]);
+  const jaccard = inter.length / union.size;
+  const smaller = setA.size <= setB.size ? setA : setB;
+  const larger = setA.size <= setB.size ? setB : setA;
+  const containment = [...smaller].filter(t => larger.has(t)).length / smaller.size;
+  return Math.max(jaccard, containment * 0.92);
+}
+
+function nameSimilarity(rawA, rawB) {
+  const na = normalizeText(rawA);
+  const nb = normalizeText(rawB);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  const lev = levenshteinRatio(na, nb);
+  const tsr = tokenSetRatio(nameTokens(rawA), nameTokens(rawB));
+  return Math.max(lev, tsr, lev * 0.5 + tsr * 0.5);
+}
+
+function naturalCompare(a, b) {
+  const sa = a === null || a === undefined ? '' : String(a);
+  const sb = b === null || b === undefined ? '' : String(b);
+  const re = /(\d+)|(\D+)/g;
+  const ta = sa.match(re) || [];
+  const tb = sb.match(re) || [];
+  const len = Math.max(ta.length, tb.length);
+  for (let i = 0; i < len; i++) {
+    const pa = ta[i], pb = tb[i];
+    if (pa === undefined) return -1;
+    if (pb === undefined) return 1;
+    const na = /^\d+$/.test(pa), nb = /^\d+$/.test(pb);
+    if (na && nb) {
+      const diff = parseInt(pa, 10) - parseInt(pb, 10);
+      if (diff !== 0) return diff;
+      if (pa.length !== pb.length) return pa.length - pb.length;
+    } else {
+      const cmp = pa.localeCompare(pb);
+      if (cmp !== 0) return cmp;
+    }
+  }
+  return 0;
+}
+
+function excelSerialToDate(serial) {
+  const utcMs = Math.round((serial - 25569) * 86400 * 1000);
+  return new Date(utcMs);
+}
+
+const MONTHS_EN = {
+  jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
+  january:1,february:2,march:3,april:4,june:6,july:7,august:8,september:9,october:10,november:11,december:12,
+};
+
+const EXCEL_SERIAL_MIN = 10959, EXCEL_SERIAL_MAX = 84005;
+
+function parseDateFlexible(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (value instanceof Date && !isNaN(value.getTime())) return { date: value, ambiguous: false };
+  if (typeof value === 'number') {
+    if (isFinite(value) && value >= EXCEL_SERIAL_MIN && value <= EXCEL_SERIAL_MAX) {
+      return { date: excelSerialToDate(value), ambiguous: false };
+    }
+    return null;
+  }
+  let s = String(value).trim();
+  if (!s) return null;
+  const looksNumeric = /^\(?-?[\d,]+(\.\d+)?\)?$/.test(s);
+  if (looksNumeric) return null;
+
+  let m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})(?:[T ].*)?$/);
+  if (m) { const [, y, mo, d] = m; return mkDate(+y, +mo, +d, false); }
+
+  m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})$/);
+  if (m) {
+    let [, a, b, y] = m; a = +a; b = +b; y = +y;
+    if (y < 100) y += y < 50 ? 2000 : 1900;
+    const ambiguous = a <= 12 && b <= 12 && a !== b;
+    if (a > 12 && b <= 12) return mkDate(y, b, a, false);
+    if (b > 12 && a <= 12) return mkDate(y, a, b, false);
+    return mkDate(y, b, a, ambiguous);
+  }
+  m = s.match(/^(\d{1,2})\s*[-\s]\s*([a-zA-Z]{3,9})\s*[-\s,]\s*(\d{2,4})$/);
+  if (m) {
+    const mon = MONTHS_EN[m[2].toLowerCase()];
+    if (mon) { let y = +m[3]; if (y < 100) y += y < 50 ? 2000 : 1900; return mkDate(y, mon, +m[1], false); }
+  }
+  m = s.match(/^([a-zA-Z]{3,9})\s+(\d{1,2}),?\s+(\d{2,4})$/);
+  if (m) {
+    const mon = MONTHS_EN[m[1].toLowerCase()];
+    if (mon) { let y = +m[3]; if (y < 100) y += y < 50 ? 2000 : 1900; return mkDate(y, mon, +m[2], false); }
+  }
+  const native = new Date(s);
+  if (!isNaN(native.getTime())) return { date: native, ambiguous: false };
+  return null;
+}
+
+function mkDate(y, mo, d, ambiguous) {
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (isNaN(dt.getTime())) return null;
+  return { date: dt, ambiguous };
+}
+
+function formatDateISO(date) {
+  if (!date) return '';
+  const y = date.getUTCFullYear(), m = String(date.getUTCMonth() + 1).padStart(2, '0'), d = String(date.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function daysBetween(d1, d2) { return Math.round((d2.getTime() - d1.getTime()) / 86400000); }
+
+function parseNumberFlexible(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number') return isFinite(value) ? value : null;
+  let s = String(value).trim();
+  if (!s) return null;
+  let negative = false;
+  if (/^\(.*\)$/.test(s)) { negative = true; s = s.slice(1, -1); }
+  s = s.replace(/[,\s]/g, '');
+  if (s.startsWith('-')) { negative = !negative; s = s.slice(1); }
+  else if (s.startsWith('+')) { s = s.slice(1); }
+  s = s.replace(/[^\d.]/g, '');
+  if (!s || !/\d/.test(s)) return null;
+  const n = parseFloat(s);
+  if (isNaN(n)) return null;
+  return negative ? -n : n;
+}
+
+/* ==========================================================================
+   1b. CONTRACT-DATE HELPERS — duration text parsing (Arabic/English, incl.
+   dual grammatical forms like سنتان/سنتين) and calendar-safe date arithmetic,
+   used by the "Contract Dates" panel (join-date / contract-date correction
+   + start-date + duration -> end-date calculator).
+   ========================================================================== */
+
+function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function convertArabicIndicDigits(s) {
+  const map = { '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9', '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9' };
+  return s.replace(/[٠-٩۰-۹]/g, d => map[d] || d);
+}
+
+// Same Arabic-letter unification as normalizeText (ة->ه, أ/إ/آ->ا, ...) plus
+// Arabic-Indic digit conversion — kept separate from normalizeText because that
+// function also collapses '.', '-', ',' to spaces, which would break decimal
+// durations like "2.5".
+function normalizeDurationText(raw) {
+  if (raw === null || raw === undefined) return '';
+  let s = String(raw).trim();
+  s = stripDiacritics(s);
+  s = normalizeArabicLetters(s);
+  s = convertArabicIndicDigits(s);
+  s = s.toLowerCase();
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+// Word forms below are written already in normalized form (post normalizeArabicLetters:
+// ة->ه, أ/إ/آ->ا) so they match normalizeDurationText() output directly.
+const DURATION_UNIT_DEFS = [
+  { key: 'year', dual: ['سنتان', 'سنتين', 'عامان', 'عامين'], singular: ['سنه', 'عام'], pluralWords: ['سنوات', 'اعوام'], enWords: ['years', 'year', 'yrs', 'yr'] },
+  { key: 'month', dual: ['شهران', 'شهرين'], singular: ['شهر'], pluralWords: ['اشهر', 'شهور'], enWords: ['months', 'month', 'mos', 'mo'] },
+  { key: 'day', dual: ['يومان', 'يومين'], singular: ['يوم'], pluralWords: ['ايام'], enWords: ['days', 'day'] },
+];
+const DURATION_NUM_WORDS = {
+  'صفر': 0, 'واحد': 1, 'واحده': 1, 'اثنان': 2, 'اثنين': 2,
+  'ثلاث': 3, 'ثلاثه': 3, 'اربع': 4, 'اربعه': 4, 'خمس': 5, 'خمسه': 5,
+  'ست': 6, 'سته': 6, 'سبع': 7, 'سبعه': 7, 'ثمان': 8, 'ثمانيه': 8,
+  'تسع': 9, 'تسعه': 9, 'عشر': 10, 'عشره': 10,
+};
+const DURATION_UNIT_LABELS_AR = { year: 'سنة', month: 'شهر', day: 'يوم' };
+const DURATION_UNIT_LABELS_EN = { year: 'year', month: 'month', day: 'day' };
+
+// Parses free-text contract-duration values into { years, months, days }.
+// Handles Arabic dual forms (سنتان/سنتين = 2), plural/singular Arabic words,
+// Arabic-Indic digits, English words, and a bare number (interpreted via
+// `defaultUnit`, one of 'year'|'month'|'day'). Multiple units in one string
+// (e.g. "سنتين و6 أشهر") are summed. Returns null when nothing is parseable.
+function parseDurationFlexible(raw, defaultUnit) {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === 'number' && !isFinite(raw)) return null;
+  let s = normalizeDurationText(raw);
+  if (!s) return null;
+  const originalNumeric = parseNumberFlexible(raw);
+  let years = 0, months = 0, days = 0, matchedAny = false;
+  function add(key, v) { if (key === 'year') years += v; else if (key === 'month') months += v; else days += v; }
+
+  DURATION_UNIT_DEFS.forEach(def => {
+    def.dual.forEach(w => {
+      const re = new RegExp(w, 'g');
+      if (re.test(s)) { add(def.key, 2); matchedAny = true; s = s.replace(re, ' '); }
+    });
+  });
+  DURATION_UNIT_DEFS.forEach(def => {
+    const unitAlt = [...def.pluralWords, ...def.singular, ...def.enWords].map(escapeRegExp).join('|');
+    const numRe = new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(?:${unitAlt})`, 'g');
+    let m;
+    while ((m = numRe.exec(s))) { add(def.key, parseFloat(m[1])); matchedAny = true; }
+    s = s.replace(numRe, ' ');
+    Object.keys(DURATION_NUM_WORDS).forEach(w => {
+      const wordRe = new RegExp(`${escapeRegExp(w)}\\s*(?:${unitAlt})`, 'g');
+      if (wordRe.test(s)) { add(def.key, DURATION_NUM_WORDS[w]); matchedAny = true; s = s.replace(wordRe, ' '); }
+    });
+    def.singular.forEach(w => {
+      const bareRe = new RegExp(`(?:^|\\s)${escapeRegExp(w)}(?:\\s|$)`, 'g');
+      if (bareRe.test(s)) { add(def.key, 1); matchedAny = true; s = s.replace(bareRe, ' '); }
+    });
+  });
+
+  if (!matchedAny) {
+    if (originalNumeric === null) return null;
+    add(defaultUnit || 'year', originalNumeric);
+    matchedAny = true;
+  }
+  if (!matchedAny) return null;
+  return { years, months, days };
+}
+
+function durationLabel(dur) {
+  if (!dur) return '';
+  const parts = [];
+  if (dur.years) parts.push(t(`${dur.years} سنة`, `${dur.years} ${dur.years === 1 ? 'year' : 'years'}`));
+  if (dur.months) parts.push(t(`${dur.months} شهر`, `${dur.months} ${dur.months === 1 ? 'month' : 'months'}`));
+  if (dur.days) parts.push(t(`${dur.days} يوم`, `${dur.days} ${dur.days === 1 ? 'day' : 'days'}`));
+  return parts.join(t('، ', ', ')) || t('0', '0');
+}
+
+function daysInMonth(y, mo /* 1-based */) { return new Date(Date.UTC(y, mo, 0)).getUTCDate(); }
+
+// Calendar-safe: clamps the resulting day to the last valid day of the target
+// month (e.g. Jan 31 + 1 month -> Feb 28/29, never an overflowed March date).
+function addDurationToDate(date, dur, subtractOneDay) {
+  const y = date.getUTCFullYear(), mo = date.getUTCMonth() + 1, d = date.getUTCDate();
+  const totalMonths = Math.round((dur.years || 0) * 12 + (dur.months || 0));
+  const monthIndex0 = (mo - 1) + totalMonths;
+  const newYear = y + Math.floor(monthIndex0 / 12);
+  const newMonth = ((monthIndex0 % 12) + 12) % 12 + 1;
+  const newDay = Math.min(d, daysInMonth(newYear, newMonth));
+  let result = new Date(Date.UTC(newYear, newMonth - 1, newDay));
+  if (dur.days) result = new Date(result.getTime() + dur.days * 86400000);
+  if (subtractOneDay) result = new Date(result.getTime() - 86400000);
+  return result;
+}
+
+// Replaces the day+month of `date` with `day`/`month`, keeping its year —
+// clamped to the target month's last valid day (e.g. day=31 into February).
+function replaceDayMonth(date, day, month) {
+  const y = date.getUTCFullYear();
+  const clampedDay = Math.min(day, daysInMonth(y, month));
+  return new Date(Date.UTC(y, month - 1, clampedDay));
+}
+
+// Swaps day<->month (fixes a reversed-entry date like 09-01-2020 meant to be
+// 01-09-2020). Returns null when the swap is not structurally valid (original
+// day > 12, so it cannot become a month).
+function swapDayMonth(date) {
+  const y = date.getUTCFullYear(), mo = date.getUTCMonth() + 1, d = date.getUTCDate();
+  if (d < 1 || d > 12) return null;
+  return new Date(Date.UTC(y, d - 1, mo));
+}
+
+const HEADER_HINTS = {
+  employee_id: ['employee id','employee no','emp id','emp no','emp code','employee code','staff no','staff id','file no','file number','code','رقم الموظف','الرقم الوظيفي','رقم وظيفي','كود الموظف','الرقم التعريفي','رقم الملف'],
+  national_id: ['national id','iqama','identification no','identification number','civil id','id number','passport','رقم الهوية','الهوية','الاقامة','الإقامة','رقم مدني','السجل المدني','رقم الجواز'],
+  name: ['name','employee name','full name','الاسم','اسم الموظف','الأسم','اسم'],
+  date: ['date','تاريخ','من تاريخ','الى تاريخ','إلى تاريخ','start date','end date','join date','hire date','birth date','dob'],
+  email: ['email','بريد','البريد الالكتروني','البريد الإلكتروني'],
+  currency: ['salary','amount','total','net','basic','allowance','deduction','bonus','commission','راتب','مبلغ','إجمالي','الاجمالي','صافي','بدل','خصم','مكافأة','عمولة'],
+};
+
+function matchesHints(headerNorm, hints) { return hints.some(h => headerNorm.includes(normalizeText(h))); }
+
+// Recognizes payroll-amount field categories by name (bilingual) so the compare
+// dashboard can show a plain-language "how much did the net/gross/basic salary
+// change" summary automatically, instead of just a generic per-field chart.
+// labelAr/labelEn (not a pre-resolved `label`) because this list is built once at
+// script load, before the user can ever switch languages via setLang().
+const PAYROLL_FIELD_CATEGORIES = [
+  { key: 'net', labelAr: 'صافي الراتب', labelEn: 'Net salary', icon: '💰', hints: ['net', 'صافي'] },
+  { key: 'gross', labelAr: 'إجمالي الراتب', labelEn: 'Gross / total salary', icon: '📦', hints: ['gross', 'total', 'اجمالي', 'إجمالي', 'مجموع'] },
+  { key: 'basic', labelAr: 'الراتب الأساسي', labelEn: 'Basic salary', icon: '🧱', hints: ['basic', 'اساسي', 'أساسي'] },
+  { key: 'allowance', labelAr: 'البدلات', labelEn: 'Allowances', icon: '➕', hints: ['allowance', 'بدل', 'بدلات'] },
+  { key: 'deduction', labelAr: 'الخصومات', labelEn: 'Deductions', icon: '➖', hints: ['deduction', 'خصم', 'خصومات'] },
+  { key: 'bonus', labelAr: 'المكافآت والعمولات', labelEn: 'Bonuses & commissions', icon: '🎁', hints: ['bonus', 'commission', 'مكافأة', 'مكافاة', 'عمولة'] },
+];
+function detectPayrollCategory(fieldName) {
+  const norm = normalizeText(fieldName);
+  return PAYROLL_FIELD_CATEGORIES.find(c => c.hints.some(h => norm.includes(normalizeText(h)))) || null;
+}
+
+function detectColumnRole(header, samples) {
+  const headerNorm = normalizeText(header);
+  const nonEmpty = samples.filter(v => v !== null && v !== undefined && String(v).trim() !== '');
+  const n = nonEmpty.length || 1;
+  if (matchesHints(headerNorm, HEADER_HINTS.email)) return 'email';
+  const dateHits = nonEmpty.filter(v => { const p = parseDateFlexible(v); return p && p.date.getUTCFullYear() > 1950 && p.date.getUTCFullYear() < 2100; }).length;
+  if (matchesHints(headerNorm, HEADER_HINTS.date) || dateHits / n > 0.7) return 'date';
+  const codeHits = nonEmpty.filter(v => /^[A-Za-z؀-ۿ]{1,6}[-_ ]?\d{1,6}$/.test(String(v).trim())).length;
+  const idDigitHits = nonEmpty.filter(v => { const s = normalizeIdNumber(v); return /^[A-Z]?\d{7,13}$/.test(s); }).length;
+  if (matchesHints(headerNorm, HEADER_HINTS.employee_id)) return 'employee_id';
+  if (matchesHints(headerNorm, HEADER_HINTS.national_id)) return 'national_id';
+  if (codeHits / n > 0.6 && !matchesHints(headerNorm, HEADER_HINTS.currency)) return 'employee_id';
+  if (idDigitHits / n > 0.6) return 'national_id';
+  if (matchesHints(headerNorm, HEADER_HINTS.name)) return 'name';
+  const numHits = nonEmpty.filter(v => parseNumberFlexible(v) !== null).length;
+  if (matchesHints(headerNorm, HEADER_HINTS.currency) || numHits / n > 0.8) return 'number';
+  const alphaHits = nonEmpty.filter(v => /^[A-Za-z؀-ۿ][A-Za-z؀-ۿ .'-]{1,60}$/.test(String(v).trim())).length;
+  if (alphaHits / n > 0.7) return 'text';
+  return 'text';
+}
+
+function detectHeaderRow(aoa, maxScan = 15) {
+  let best = 0, bestScore = -Infinity;
+  const scanLimit = Math.min(maxScan, aoa.length);
+  for (let r = 0; r < scanLimit; r++) {
+    const row = aoa[r] || [];
+    const nonEmpty = row.filter(v => v !== null && v !== undefined && String(v).trim() !== '');
+    if (nonEmpty.length === 0) continue;
+    const textish = nonEmpty.filter(v => typeof v === 'string' && !/^\d+(\.\d+)?$/.test(v.trim()));
+    const uniqueRatio = new Set(nonEmpty.map(v => String(v).trim().toLowerCase())).size / nonEmpty.length;
+    let score = nonEmpty.length * 2 + textish.length * 1.5 + uniqueRatio * 3;
+    const next = aoa[r + 1] || [];
+    const nextNonEmpty = next.filter(v => v !== null && v !== undefined && String(v).trim() !== '');
+    if (nextNonEmpty.length >= nonEmpty.length * 0.5) score += 2;
+    if (score > bestScore) { bestScore = score; best = r; }
+  }
+  return best;
+}
+
+function aoaToRows(aoa, headerRowIndex) {
+  const headerRaw = aoa[headerRowIndex] || [];
+  const seen = {};
+  const headers = headerRaw.map((h, i) => {
+    let label = (h === null || h === undefined || String(h).trim() === '') ? t(`عمود ${i + 1}`, `Column ${i + 1}`) : String(h).trim();
+    if (seen[label] !== undefined) { seen[label]++; label = `${label} (${seen[label]})`; } else { seen[label] = 0; }
+    return label;
+  });
+  const rows = [];
+  for (let r = headerRowIndex + 1; r < aoa.length; r++) {
+    const raw = aoa[r] || [];
+    const isBlank = raw.every(v => v === null || v === undefined || String(v).trim() === '');
+    if (isBlank) continue;
+    const obj = { __rowNum: r + 1 };
+    headers.forEach((h, i) => { obj[h] = raw[i] !== undefined ? raw[i] : null; });
+    rows.push(obj);
+  }
+  return { headers, rows };
+}
+
+const ID_PRESETS = {
+  saudi_id: { label: 'هوية / إقامة سعودية (10 أرقام تبدأ بـ 1 أو 2)', test: v => /^[12]\d{9}$/.test(normalizeIdNumber(v)) },
+  kuwait_civil: { label: 'الرقم المدني الكويتي (12 رقم)', test: v => /^\d{12}$/.test(normalizeIdNumber(v)) },
+  email: { label: 'بريد إلكتروني', test: v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v).trim()) },
+  numeric: { label: 'رقم فقط', test: v => parseNumberFlexible(v) !== null },
+  date: { label: 'تاريخ صالح', test: v => parseDateFlexible(v) !== null },
+  non_empty: { label: 'غير فارغ', test: v => v !== null && v !== undefined && String(v).trim() !== '' },
+};
+
+const TEMPLATE_CLEANER_FIELDS = [
+  { key: 'emp_id', labelAr: 'الرقم الوظيفي', labelEn: 'Employee ID', type: 'emp_id', required: true, unique: true },
+  { key: 'full_name', labelAr: 'الاسم (عربي)', labelEn: 'Full name (Arabic)', type: 'name_ar', required: true },
+  { key: 'full_name_en', labelAr: 'الاسم (إنجليزي)', labelEn: 'Full name (English)', type: 'name_en', required: false },
+  { key: 'id_number', labelAr: 'رقم الهوية / الإقامة', labelEn: 'National ID / Iqama number', type: 'id_number', required: true, unique: true },
+  { key: 'nationality', labelAr: 'الجنسية', labelEn: 'Nationality', type: 'text', required: true },
+  { key: 'location', labelAr: 'الموقع / الفرع', labelEn: 'Location / branch', type: 'text', required: false },
+  { key: 'department', labelAr: 'القسم', labelEn: 'Department', type: 'text', required: false },
+  { key: 'job_title', labelAr: 'المسمى الوظيفي', labelEn: 'Job title', type: 'text', required: false },
+  { key: 'employment_type', labelAr: 'نوع التوظيف', labelEn: 'Employment type', type: 'text', required: false },
+  { key: 'contract_type', labelAr: 'نوع العقد', labelEn: 'Contract type', type: 'text', required: false },
+  { key: 'joining_date', labelAr: 'تاريخ الانضمام', labelEn: 'Joining date', type: 'date', required: true },
+  { key: 'contract_years', labelAr: 'سنوات العقد', labelEn: 'Contract years', type: 'number_years', required: false },
+  { key: 'contract_months', labelAr: 'أشهر العقد', labelEn: 'Contract months', type: 'number_months', required: false },
+  { key: 'email', labelAr: 'البريد الإلكتروني', labelEn: 'Email', type: 'email', required: false },
+  { key: 'mobile_number', labelAr: 'رقم الجوال', labelEn: 'Mobile number', type: 'mobile', required: false },
+];
+
+// Extra header keywords for fields TEMPLATE_CLEANER covers that HEADER_HINTS
+// doesn't already have an entry for (employee_id/national_id/name/date/email
+// are reused from HEADER_HINTS directly).
+const TEMPLATE_FIELD_HINTS = {
+  full_name_en: ['name (en)', 'english name', 'name en', 'full name en', 'الاسم بالانجليزي', 'الاسم بالإنجليزي', 'الاسم انجليزي'],
+  nationality: ['nationality', 'الجنسية', 'جنسية'],
+  location: ['location', 'branch', 'site', 'الموقع', 'الفرع', 'موقع العمل'],
+  department: ['department', 'dept', 'القسم', 'الادارة', 'الإدارة'],
+  job_title: ['job title', 'position', 'title', 'المسمى الوظيفي', 'المسمى', 'الوظيفة'],
+  employment_type: ['employment type', 'work type', 'نوع التوظيف', 'نوع العمل'],
+  contract_type: ['contract type', 'نوع العقد'],
+  contract_years: ['contract years', 'years', 'سنوات العقد', 'مدة العقد بالسنوات', 'عدد السنوات'],
+  contract_months: ['contract months', 'months', 'أشهر العقد', 'مدة العقد بالأشهر', 'عدد الأشهر'],
+  mobile_number: ['mobile', 'phone', 'cell', 'contact number', 'رقم الجوال', 'الجوال', 'رقم الهاتف', 'الهاتف', 'جوال'],
+  joining_date: ['joining date', 'join date', 'hire date', 'تاريخ الانضمام', 'تاريخ التعيين'],
+};
+const TEMPLATE_HINT_ALIAS = { emp_id: 'employee_id', id_number: 'national_id', full_name: 'name', email: 'email', joining_date: 'date' };
+function templateHintsFor(fieldKey) {
+  const base = HEADER_HINTS[TEMPLATE_HINT_ALIAS[fieldKey] || fieldKey] || [];
+  // 'date' hints are far too generic for the joining-date field (they would also
+  // match "end date" / "birth date"), so it uses its own list only.
+  return (fieldKey === 'joining_date' ? [] : base).concat(TEMPLATE_FIELD_HINTS[fieldKey] || []);
+}
+
+// Shared issue-kind labels for the template cleaner's results table + Excel
+// export — kept in one place since both need the same bilingual text.
+const TEMPLATE_ISSUE_LABELS_AR = { missing: 'قيمة مفقودة', duplicate: 'قيمة مكررة', bad_format: 'تنسيق غير صحيح', wrong_script: 'لغة/أبجدية غير متوقعة', out_of_range: 'خارج النطاق المعقول', not_a_date: 'ليست تاريخًا صالحًا', contains_text: 'قيمة نصية في عمود متوقَّع أن يكون رقميًا', not_in_list: 'غير موجودة في القائمة المعتمدة' };
+const TEMPLATE_ISSUE_LABELS_EN = { missing: 'Missing value', duplicate: 'Duplicate value', bad_format: 'Bad format', wrong_script: 'Unexpected script', out_of_range: 'Out of expected range', not_a_date: 'Not a valid date', contains_text: 'Text value in an expected-numeric column', not_in_list: 'Not in the approved list' };
+function templateIssueLabel(kind) { return t(TEMPLATE_ISSUE_LABELS_AR[kind] || kind, TEMPLATE_ISSUE_LABELS_EN[kind] || kind); }
+
+// Best-effort auto column mapping for the template cleaner: matches dataset
+// headers against each field's keyword hints (falls back to the dataset's
+// already-detected column roles for emp_id/id_number/name/date/email).
+function guessTemplateMapping(ds) {
+  const mapping = {};
+  const used = new Set();
+  const roleForField = { emp_id: 'employee_id', id_number: 'national_id', full_name: 'name', joining_date: 'date', email: 'email' };
+  TEMPLATE_CLEANER_FIELDS.forEach(f => {
+    const hints = templateHintsFor(f.key);
+    let best = ds.headers.find(h => !used.has(h) && matchesHints(normalizeText(h), hints));
+    if (!best && roleForField[f.key]) best = ds.headers.find(h => !used.has(h) && ds.roles[h] === roleForField[f.key]);
+    if (best) { mapping[f.key] = best; used.add(best); }
+  });
+  return mapping;
+}
+
+// Normalizes a mobile number to a leading-'+' international form when it can
+// confidently do so (Saudi 05xxxxxxxx -> +9665xxxxxxxx, a 00-prefixed intl
+// number -> +...), otherwise just strips separators. Returns null input as-is.
+function normalizeMobileNumber(raw) {
+  if (raw === null || raw === undefined || String(raw).trim() === '') return { value: raw, valid: false, changed: false };
+  let s = String(raw).trim().replace(/[\s\-().]/g, '');
+  s = convertArabicIndicDigits(s);
+  const original = s;
+  if (/^00/.test(s)) s = '+' + s.slice(2);
+  if (/^05\d{8}$/.test(s)) s = '+966' + s.slice(1);
+  else if (/^5\d{8}$/.test(s)) s = '+966' + s;
+  const valid = /^\+?\d{8,14}$/.test(s);
+  return { value: s, valid, changed: s !== original };
+}
+
+// Parses a contract-duration cell that should be a single-unit whole number
+// (a "years" or "months" column) but may still be free text like "سنتان" —
+// falls back to the same flexible duration parser used by the Contracts panel.
+function parseFlexibleWholeUnit(value, unit) {
+  const n = parseNumberFlexible(value);
+  if (n !== null) return n;
+  const dur = parseDurationFlexible(value, unit);
+  if (!dur) return null;
+  if (unit === 'year') return +(dur.years + (dur.months || 0) / 12 + (dur.days || 0) / 365).toFixed(2);
+  return +(dur.months + (dur.years || 0) * 12 + (dur.days || 0) / 30).toFixed(2);
+}
+
+function collapseWhitespace(s) { return String(s).trim().replace(/\s+/g, ' '); }
+const ARABIC_LETTERS_RE = /[؀-ۿ]/;
+const LATIN_LETTERS_RE = /[A-Za-z]/;
+
+// ---- Generic "dropdown-style" value normalization --------------------------
+// Handles columns whose value set is really a fixed list (nationality,
+// department, gender, marital status, contract type, employment type, ...)
+// but where different rows typed the value slightly differently — extra
+// spaces/punctuation, an alternate Arabic letter form (ة/ه، أ/إ/آ، ى/ي...,
+// already unified by normalizeText), or a genuinely different-but-equivalent
+// spelling (e.g. "السعودية" vs "سعودي"). Not tied to a fixed field list —
+// works on whatever categorical-looking column exists in the uploaded file.
+
+// The Arabic definite article "ال" is a very common source of spelling
+// variance for exactly this kind of value ("السعودية" vs "سعودية") and isn't
+// otherwise stripped by normalizeText.
+function stripArabicDefiniteArticle(s) { return s.replace(/^ال/, ''); }
+
+function categoricalSimilarity(rawA, rawB) {
+  const na = stripArabicDefiniteArticle(normalizeText(rawA));
+  const nb = stripArabicDefiniteArticle(normalizeText(rawB));
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  const lev = levenshteinRatio(na, nb);
+  const tsr = tokenSetRatio(nameTokens(rawA), nameTokens(rawB));
+  return Math.max(lev, lev * 0.5 + tsr * 0.5);
+}
+const CATEGORICAL_FUZZY_THRESHOLD = 0.8;
+
+// Clusters a column's raw values into "same underlying value" groups.
+// Pass 1 (exact): group by normalizeText() — this alone already merges pure
+// formatting differences (extra spaces, "-"/"."/"," separators, ة/ه، أ/إ/آ،
+// ى/ي، ؤ/و، ئ/ي, case) since normalizeText/normalizeArabicLetters already do
+// that unification. These are safe to auto-fix — it's the same value.
+// Pass 2 (fuzzy): merges pass-1 groups whose canonical spellings are still
+// highly similar (e.g. "السعودية" vs "سعودي") — only ever offered as a
+// reviewable suggestion, never auto-applied, since a fuzzy match can be wrong.
+// Within any merged group the most-frequent raw spelling wins as canonical.
+function clusterCategoricalValues(rawValues) {
+  const exact = new Map(); // normKey -> Map(raw -> count)
+  rawValues.forEach(raw => {
+    const key = normalizeText(raw);
+    if (!key) return;
+    if (!exact.has(key)) exact.set(key, new Map());
+    const m = exact.get(key);
+    m.set(String(raw), (m.get(String(raw)) || 0) + 1);
+  });
+  const nodes = Array.from(exact.entries()).map(([key, variants]) => {
+    let canonical = null, canonicalCount = -1, total = 0;
+    variants.forEach((count, raw) => { total += count; if (count > canonicalCount) { canonicalCount = count; canonical = raw; } });
+    return { key, variants, canonical, total };
+  });
+
+  const used = new Array(nodes.length).fill(false);
+  const clusters = [];
+  nodes.forEach((node, i) => {
+    if (used[i]) return;
+    const group = [node]; used[i] = true;
+    nodes.forEach((other, j) => {
+      if (i === j || used[j]) return;
+      if (categoricalSimilarity(node.canonical, other.canonical) >= CATEGORICAL_FUZZY_THRESHOLD) { group.push(other); used[j] = true; }
+    });
+    const total = group.reduce((s, g) => s + g.total, 0);
+    const winner = group.reduce((best, g) => (g.total > best.total ? g : best), group[0]);
+    const variants = [];
+    group.forEach(g => g.variants.forEach((count, raw) => variants.push({ raw, count })));
+    variants.sort((a, b) => b.count - a.count);
+    clusters.push({ canonical: winner.canonical, total, fuzzy: group.length > 1, variants });
+  });
+  return clusters;
+}
+
+// True when a cell's content is nothing but digits (incl. Arabic-Indic) plus
+// common numeric punctuation/separators — used to tell an "expected numeric"
+// column (an ID, phone, account number...) apart from one that got a text
+// value where a number belonged.
+function valueLooksPureNumeric(raw) {
+  const s = String(raw).trim();
+  if (!s) return true;
+  const stripped = s.replace(/[\s\-+().,\/]/g, '').replace(/[0-9٠-٩۰-۹]/g, '');
+  return stripped.length === 0;
+}
+
+// Fixed nationality list from the user's real HR template dropdown (223
+// entries, exactly as provided — including a few visually-similar-but-
+// distinct transliterations kept as separate real dropdown options, e.g.
+// "جرينادا"/"غرينادا"). The nationality field is checked against this
+// authoritative list instead of just in-file frequency: an exact match
+// (after normalization) needs no fix, a close-but-not-exact spelling is
+// offered as a reviewable correction to the nearest list entry, and a
+// value with no close match is flagged for manual review.
+const NATIONALITY_LIST = [
+  'أذربيجان',
+  'أردني',
+  'أسباني',
+  'أفريقيا الوسطى',
+  'ألماني',
+  'أمريكي',
+  'أندورا',
+  'أوروجواي',
+  'أوغندا',
+  'إرتريا',
+  'إيراني',
+  'الأرجنتيني',
+  'الأسترالي',
+  'الأفغاني',
+  'الألبانية',
+  'الأندونيسي',
+  'الأنغولي',
+  'الأوزبكستاني',
+  'الأوكراني',
+  'الأيرلندي',
+  'الأيرلندي الشمالي',
+  'الإريترية',
+  'الإستونية',
+  'الإماراتي',
+  'الإيطالي',
+  'الاسكتلندي',
+  'الاكوادوري',
+  'الايسلندي',
+  'البالاوية',
+  'البحريني',
+  'البلغارية',
+  'البورمية',
+  'البوسنية',
+  'البولندي',
+  'البيلاروسية',
+  'التيموريون الشرقيون',
+  'الجابون',
+  'الجامايكي',
+  'الجبل الأسود',
+  'الجورجية',
+  'الدومينيكان',
+  'الرأس الأخضر',
+  'السيراليوني',
+  'الصحراء',
+  'الغاني',
+  'الفرنسية',
+  'الفنلندية',
+  'الفيجية',
+  'القبائل النازحة',
+  'القبرصي',
+  'الكازاخستاني',
+  'الكاميروني',
+  'الكرواتية',
+  'الكندية',
+  'الكوبية',
+  'الكونغو',
+  'الكونغولي',
+  'الكيني',
+  'اللاتفية',
+  'اللاوسي',
+  'اللتوانية',
+  'المارشالية',
+  'المالديف',
+  'المالطي',
+  'الموريتاني',
+  'الناميبي',
+  'النمساوي',
+  'النيجر',
+  'الهرسك',
+  'الويلزي',
+  'انتيغوا',
+  'اوقيانيا',
+  'بابوا غينيا الجديدة',
+  'باراغواي',
+  'باربادوسي',
+  'باكستاني',
+  'باهامى',
+  'برازيلي',
+  'بربودا',
+  'برتغالي',
+  'برمودا',
+  'بروناى',
+  'بريطاني',
+  'بلجيكي',
+  'بليز',
+  'بنجلاديش',
+  'بنمي',
+  'بنين',
+  'بوتان',
+  'بوتسوانا',
+  'بورتوريكو',
+  'بوركينا فاسو',
+  'بوروندي',
+  'بوليفي',
+  'بيرو',
+  'تايلاندي',
+  'تايواني',
+  'تركمانستان',
+  'تركي',
+  'ترينيداديان و توباغونيان',
+  'تشاد',
+  'تشيكي',
+  'تنزاني',
+  'توغو',
+  'توفالي',
+  'تونجا',
+  'تونسي',
+  'تونغا',
+  'جبل طارق',
+  'جرينادا',
+  'جزائري',
+  'جزر القمر',
+  'جزر الكناري',
+  'جزر سليمان',
+  'جزيرة ريونيون',
+  'جزيرة فيرجن',
+  'جمهورية لاو',
+  'جنوب افريقي',
+  'جواديلوب',
+  'جويانا',
+  'جيبوتي',
+  'دانماركي',
+  'دومينيكا',
+  'رواندا',
+  'روسي',
+  'روماني',
+  'زامبي',
+  'زيمبابوي',
+  'ساحل العاج',
+  'ساموا',
+  'سان مارينيز',
+  'سانت فنسنت وغرينادين',
+  'سانت كيتس ونيفس',
+  'سانت لوسيان',
+  'ساو توميان',
+  'سري لانكي',
+  'سعودي',
+  'سلفادوري',
+  'سلوفاكي',
+  'سلوفيني',
+  'سنغافوري',
+  'سنغالي',
+  'سوازي',
+  'سوداني',
+  'سوري',
+  'سورينام',
+  'سويدي',
+  'سويسري',
+  'سيشل',
+  'شيلي',
+  'صربي',
+  'صومالي',
+  'صينى',
+  'طاجيكي',
+  'عماني',
+  'غابون',
+  'غامبيا',
+  'غرينادا',
+  'غواتيمالا',
+  'غيانا',
+  'غيانا الفرنسية',
+  'غير سعودي',
+  'غينيا',
+  'غينيا الاستوائية',
+  'غينيا بيساوان',
+  'فلبيني',
+  'فلسطين المحتلة',
+  'فلسطيني',
+  'فنزويلي',
+  'فيتنامي',
+  'قطري',
+  'قيرغيزستان',
+  'كمبوديا',
+  'كوري الجنوبي',
+  'كوري شمالي',
+  'كوستاريكا',
+  'كوسوفي',
+  'كولومبي',
+  'كويتي',
+  'كيتيان ونيفيسيان',
+  'كيريباتي',
+  'لأرميني',
+  'لبناني',
+  'لكسمبرغ',
+  'ليبي',
+  'ليبيري',
+  'ليختنشتاين',
+  'ليسوتو',
+  'مارتينيك',
+  'مالاوى',
+  'مالي',
+  'ماليزي',
+  'مختلطة',
+  'مدغشقر',
+  'مصرى',
+  'مغربي',
+  'مقدوني',
+  'مكسيكي',
+  'منغولي',
+  'موريشيوس',
+  'موزمبيق',
+  'مولدوفا',
+  'موناكو',
+  'ميانمار',
+  'ميكرونيزيا',
+  'ناورو',
+  'نرويجي',
+  'ني فانواتو',
+  'نيبالي',
+  'نيجيري',
+  'نيكاراغوا',
+  'نيوزيلندي',
+  'هايتي',
+  'هندوراس',
+  'هندي',
+  'هنغاري',
+  'هولندي',
+  'هونج كونج',
+  'هيبرد الجديدة',
+  'ياباني',
+  'يمني',
+  'يوغسلافيا',
+  'يوناني',
+];
+// A field key -> fixed reference list of allowed values, for fields where the
+// real HR system uses an actual fixed dropdown (currently: nationality).
+// Checked instead of the generic in-file frequency clustering above: the file
+// itself may only ever contain one (wrong) spelling, so there'd be nothing to
+// cluster against — the authoritative list is what decides the correct value.
+const CANONICAL_VALUE_LISTS = { nationality: NATIONALITY_LIST };
+const CANONICAL_FUZZY_THRESHOLD = 0.8;
+
+// Checks one raw value against a fixed reference list: 'exact' (already
+// correct, or only differs by formatting normalizeText already unifies —
+// safe to auto-fix to the list's exact spelling), 'fuzzy' (closest list entry
+// above the similarity threshold — a reviewable suggestion, never applied
+// automatically), or 'none' (no close-enough match — flagged for review).
+function matchCanonicalValue(raw, list) {
+  const normRaw = stripArabicDefiniteArticle(normalizeText(raw));
+  if (!normRaw) return { status: 'none' };
+  const exact = list.find(entry => stripArabicDefiniteArticle(normalizeText(entry)) === normRaw);
+  if (exact) return { status: 'exact', value: exact };
+  let best = null, bestScore = 0;
+  list.forEach(entry => { const score = categoricalSimilarity(raw, entry); if (score > bestScore) { bestScore = score; best = entry; } });
+  if (best && bestScore >= CANONICAL_FUZZY_THRESHOLD) return { status: 'fuzzy', value: best, score: bestScore };
+  return { status: 'none' };
+}
+
+// Auto-detects a column's generic "shape" for the template cleaner's
+// column-level pass, from the dataset's already-detected column role plus a
+// cardinality check — the SAME classification used both by the check itself
+// and by the "every column in the file" review list in the UI, so what's
+// shown always matches exactly what will be checked.
+function classifyGenericColumn(ds, col) {
+  const role = ds.roles ? ds.roles[col] : null;
+  const nonEmpty = ds.rows.map(r => r[col]).filter(v => v !== null && v !== undefined && String(v).trim() !== '');
+  if (!nonEmpty.length) return 'empty';
+  if (role === 'date') return 'date';
+  const numericRate = nonEmpty.filter(valueLooksPureNumeric).length / nonEmpty.length;
+  if ((role === 'employee_id' || role === 'national_id' || role === 'number') && numericRate >= 0.8) return 'numeric';
+  const uniqueRatio = new Set(nonEmpty.map(v => normalizeText(v))).size / nonEmpty.length;
+  const isCategoricalShape = nonEmpty.length >= 3 && uniqueRatio <= 0.5 && String(nonEmpty[0]).length <= 40;
+  if (role === 'text' && isCategoricalShape) return 'categorical';
+  return 'free_text';
+}
+
+// Runs the full template check: for every mapped field on every row, applies
+// a safe auto-fix when the fix is unambiguous (trimming, ID/phone
+// normalization, parsing a flexible duration into a plain number) and
+// records anything it can't safely fix as an issue for manual review.
+// Beyond the fixed HR field mapping, it also scans every OTHER column the
+// uploaded file actually has (not limited to any fixed count/list): a
+// date-shaped column gets its non-date cells flagged, a numeric-shaped one
+// (an ID, phone, account number...) gets any text-containing cell flagged,
+// and a dropdown-shaped one (nationality, department, gender, marital
+// status...) gets its inconsistent spellings clustered and unified — exact
+// spelling/formatting variants are auto-fixed, and fuzzy-matched ones (e.g.
+// "السعودية" vs "سعودي") are offered as a reviewable suggestion in
+// `clusters`, never auto-applied.
+// Returns cleaned rows (only fixed/mapped cells differ from the source) plus
+// `changes` (auto-fixes applied), `issues` (flagged, not auto-fixed), and
+// `clusters` (fuzzy spelling-unification suggestions awaiting confirmation).
+function runTemplateCleaner(ds, mapping, columnOverrides) {
+  columnOverrides = columnOverrides || {};
+  const mappedFields = TEMPLATE_CLEANER_FIELDS.filter(f => mapping[f.key]);
+  const empIdSeen = new Map(), idNumberSeen = new Map();
+  const changes = [], issues = [], clusters = [];
+  const empLabelCol = mapping.full_name || mapping.emp_id;
+  const empLabelFor = row => empLabelCol ? fmtCell(row[empLabelCol]) : `#${row.__rowNum}`;
+
+  // ---- Pass 1: precise per-field rules for the fixed HR schema (all mapped
+  // field types except plain "text" ones, which move to the column-level
+  // clustering pass below since they're exactly the dropdown-style case). ----
+  const textTypeFields = [];
+  const rows = ds.rows.map(row => {
+    const out = Object.assign({}, row);
+    const empLabel = empLabelFor(row);
+    out.__empLabel = empLabel;
+    const flag = (field, kind, value) => issues.push({ rowNum: row.__rowNum, empLabel, field: field.key, fieldLabel: t(field.labelAr, field.labelEn), kind, value: value === null || value === undefined ? '' : String(value) });
+    const fix = (field, col, before, after) => {
+      out[col] = after;
+      if (fmtCell(before) === fmtCell(after)) return; // value already in canonical form: not a change
+      changes.push({ rowNum: row.__rowNum, empLabel, field: field.key, fieldLabel: t(field.labelAr, field.labelEn), before: fmtCell(before), after: fmtCell(after) });
+    };
+
+    mappedFields.forEach(f => {
+      if (f.type === 'text') { if (!textTypeFields.includes(f)) textTypeFields.push(f); return; }
+      const col = mapping[f.key];
+      const raw = row[col];
+      const blank = raw === null || raw === undefined || String(raw).trim() === '';
+      if (blank) { if (f.required) flag(f, 'missing', raw); return; }
+
+      if (f.type === 'emp_id') {
+        // Codes are only tidied (trim, inner spaces, Arabic digits, ".0" from Excel): hyphens and
+        // letters are part of many clients' codes, so they are never stripped from the value itself.
+        const norm = normalizeCode(raw);
+        const tidy = convertArabicIndicDigits(collapseWhitespace(raw)).replace(/\.0$/, '');
+        if (String(raw) !== tidy) fix(f, col, raw, tidy);
+        if (f.unique) { const k = norm; if (empIdSeen.has(k)) flag(f, 'duplicate', raw); else empIdSeen.set(k, row.__rowNum); }
+      } else if (f.type === 'id_number') {
+        const norm = normalizeIdNumber(raw);
+        const looksValid = ID_PRESETS.saudi_id.test(norm) || ID_PRESETS.kuwait_civil.test(norm);
+        if (String(raw).trim() !== norm && looksValid) fix(f, col, raw, norm);
+        if (!looksValid) flag(f, 'bad_format', raw);
+        if (f.unique && norm) { if (idNumberSeen.has(norm)) flag(f, 'duplicate', raw); else idNumberSeen.set(norm, row.__rowNum); }
+      } else if (f.type === 'name_ar' || f.type === 'name_en') {
+        const clean = collapseWhitespace(raw);
+        if (clean !== String(raw)) fix(f, col, raw, clean);
+        if (f.type === 'name_en' && ARABIC_LETTERS_RE.test(clean)) flag(f, 'wrong_script', raw);
+        if (f.type === 'name_ar' && LATIN_LETTERS_RE.test(clean) && !ARABIC_LETTERS_RE.test(clean)) flag(f, 'wrong_script', raw);
+      } else if (f.type === 'email') {
+        const clean = String(raw).trim().toLowerCase();
+        const valid = ID_PRESETS.email.test(clean);
+        if (valid && clean !== String(raw)) fix(f, col, raw, clean);
+        if (!valid) flag(f, 'bad_format', raw);
+      } else if (f.type === 'mobile') {
+        const res = normalizeMobileNumber(raw);
+        if (res.valid && res.changed) fix(f, col, raw, res.value);
+        if (!res.valid) flag(f, 'bad_format', raw);
+      } else if (f.type === 'date') {
+        const parsed = parseDateFlexible(raw);
+        if (!parsed) flag(f, 'bad_format', raw);
+        else if (!(raw instanceof Date)) fix(f, col, raw, parsed.date);
+      } else if (f.type === 'number_years' || f.type === 'number_months') {
+        const unit = f.type === 'number_years' ? 'year' : 'month';
+        const n = parseFlexibleWholeUnit(raw, unit);
+        if (n === null) { flag(f, 'bad_format', raw); return; }
+        if (String(raw).trim() !== String(n)) fix(f, col, raw, n);
+        const max = unit === 'year' ? 45 : 11;
+        if (n < 0 || n > max) flag(f, 'out_of_range', raw);
+      }
+    });
+    return out;
+  });
+
+  // ---- Pass 2: column-level checks. Covers the mapped "plain text" fields
+  // (nationality, department, job title... — the dropdown-style case) AND
+  // — the key part — EVERY OTHER COLUMN the file actually has, whether or
+  // not it matches any of the 15 fixed HR fields: not limited to any fixed
+  // count or list of expected columns. `columnsInfo` records, for every
+  // single header, what it was understood as and how it was checked, so the
+  // UI can show the user the full column list with nothing silently skipped.
+  // Column "type" is auto-detected (`classifyGenericColumn`) but can be
+  // overridden per column via `columnOverrides` (date / numeric / categorical
+  // / ignore) — a mapped field with a fixed reference list (nationality) is
+  // always checked against that list and isn't overridable.
+  const handledCols = new Set(mappedFields.filter(f => f.type !== 'text').map(f => mapping[f.key]));
+  const columnsInfo = [];
+  ds.headers.forEach(col => {
+    if (handledCols.has(col)) {
+      const f = mappedFields.find(mf => mapping[mf.key] === col);
+      columnsInfo.push({ column: col, fieldKey: f.key, fieldLabel: t(f.labelAr, f.labelEn), type: f.type, autoType: f.type, overridable: false });
+      return;
+    }
+    const mappedText = textTypeFields.find(f => mapping[f.key] === col);
+    const field = mappedText || { key: col, labelAr: col, labelEn: col };
+    const canonicalList = CANONICAL_VALUE_LISTS[field.key];
+    const nonEmpty = rows.map(r => r[col]).filter(v => v !== null && v !== undefined && String(v).trim() !== '');
+
+    let autoType;
+    if (!nonEmpty.length) autoType = 'empty';
+    else if (canonicalList) autoType = 'canonical';
+    else if (mappedText) autoType = 'categorical';
+    else autoType = classifyGenericColumn(ds, col);
+
+    const overridable = !canonicalList;
+    const override = overridable ? columnOverrides[col] : null;
+    const effType = override || autoType;
+    columnsInfo.push({ column: col, fieldKey: mappedText ? field.key : null, fieldLabel: mappedText ? t(field.labelAr, field.labelEn) : null, type: effType, autoType, overridable, canonical: !!canonicalList });
+
+    if (!nonEmpty.length || effType === 'ignore' || effType === 'empty' || effType === 'free_text') return;
+
+    if (effType === 'canonical' && canonicalList) {
+      // A field with a real fixed reference list (currently: nationality) is
+      // checked against THAT list instead of in-file frequency — the file
+      // itself might only ever contain one (wrong) spelling, so there'd be
+      // nothing to cluster against, but the authoritative list still knows
+      // the correct value.
+      const distinctRaws = Array.from(new Set(nonEmpty.map(v => String(v))));
+      const matchByRaw = new Map(distinctRaws.map(raw => [raw, matchCanonicalValue(raw, canonicalList)]));
+      rows.forEach(row => {
+        const raw = row[col];
+        if (raw === null || raw === undefined || String(raw).trim() === '') return;
+        const m = matchByRaw.get(String(raw));
+        if (!m) return;
+        if (m.status === 'exact') {
+          // Recognised value: only stray spaces are tidied, the client's own spelling (ي/ى, ة/ه) is kept.
+          const tidyRaw = collapseWhitespace(raw);
+          if (String(raw) !== tidyRaw) {
+            changes.push({ rowNum: row.__rowNum, empLabel: row.__empLabel, field: field.key, fieldLabel: t(field.labelAr, field.labelEn), before: fmtCell(raw), after: fmtCell(tidyRaw) });
+            row[col] = tidyRaw;
+          }
+        } else if (m.status === 'none') {
+          issues.push({ rowNum: row.__rowNum, empLabel: row.__empLabel, field: field.key, fieldLabel: t(field.labelAr, field.labelEn), kind: 'not_in_list', value: fmtCell(raw) });
+        }
+      });
+      distinctRaws.forEach(raw => {
+        const m = matchByRaw.get(raw);
+        if (m.status === 'fuzzy') {
+          const count = nonEmpty.filter(v => String(v) === raw).length;
+          clusters.push({
+            id: uid('cl'), field: field.key, fieldLabel: t(field.labelAr, field.labelEn), column: col,
+            canonical: m.value, total: count, selected: true,
+            variants: [{ raw, count }],
+          });
+        }
+      });
+      return;
+    }
+
+    if (effType === 'date') {
+      rows.forEach(row => {
+        const raw = row[col];
+        if (raw === null || raw === undefined || String(raw).trim() === '') return;
+        const parsed = parseDateFlexible(raw);
+        const rowNum = row.__rowNum, empLabel = row.__empLabel;
+        if (!parsed) issues.push({ rowNum, empLabel, field: field.key, fieldLabel: t(field.labelAr, field.labelEn), kind: 'not_a_date', value: fmtCell(raw) });
+        else if (!(raw instanceof Date)) { changes.push({ rowNum, empLabel, field: field.key, fieldLabel: t(field.labelAr, field.labelEn), before: fmtCell(raw), after: fmtCell(parsed.date) }); row[col] = parsed.date; }
+      });
+      return;
+    }
+
+    if (effType === 'numeric') {
+      rows.forEach(row => {
+        const raw = row[col];
+        if (raw === null || raw === undefined || String(raw).trim() === '') return;
+        if (!valueLooksPureNumeric(raw)) issues.push({ rowNum: row.__rowNum, empLabel: row.__empLabel, field: field.key, fieldLabel: t(field.labelAr, field.labelEn), kind: 'contains_text', value: fmtCell(raw) });
+      });
+      return;
+    }
+
+    if (effType === 'categorical') {
+      clusterCategoricalValues(nonEmpty).filter(c => c.variants.length > 1).forEach(cluster => {
+        if (!cluster.fuzzy) {
+          // Same value, purely a formatting/spelling-form difference — safe auto-fix.
+          rows.forEach(row => {
+            const raw = row[col];
+            if (raw === null || raw === undefined || String(raw).trim() === '') return;
+            if (String(raw) !== cluster.canonical && normalizeText(raw) === normalizeText(cluster.canonical)) {
+              changes.push({ rowNum: row.__rowNum, empLabel: row.__empLabel, field: field.key, fieldLabel: t(field.labelAr, field.labelEn), before: fmtCell(raw), after: fmtCell(cluster.canonical) });
+              row[col] = cluster.canonical;
+            }
+          });
+        } else {
+          clusters.push({
+            id: uid('cl'), field: field.key, fieldLabel: t(field.labelAr, field.labelEn), column: col,
+            canonical: cluster.canonical, total: cluster.total, selected: true,
+            variants: cluster.variants.filter(v => v.raw !== cluster.canonical),
+          });
+        }
+      });
+    }
+  });
+
+  return {
+    rows, changes, issues, clusters, columnsInfo,
+    mappedCount: mappedFields.length,
+    stats: { rowCount: ds.rows.length, fixCount: changes.length, issueCount: issues.length, affectedRows: new Set(issues.map(i => i.rowNum)).size },
+  };
+}
+
+// Applies the selected fuzzy-cluster unification suggestions (from
+// runTemplateCleaner's `clusters`) onto an already-computed result in place:
+// mutates `res.rows`, appends to `res.changes`/`res.stats`, and removes the
+// applied clusters so they aren't offered again.
+function applyTemplateCleanerClusters(res, clusterIds) {
+  const idSet = new Set(clusterIds);
+  const toApply = res.clusters.filter(c => idSet.has(c.id));
+  toApply.forEach(cluster => {
+    const variantRaws = new Set(cluster.variants.map(v => v.raw));
+    res.rows.forEach(row => {
+      const raw = row[cluster.column];
+      if (raw === null || raw === undefined) return;
+      if (variantRaws.has(String(raw))) {
+        res.changes.push({ rowNum: row.__rowNum, empLabel: row.__empLabel, field: cluster.field, fieldLabel: cluster.fieldLabel, before: fmtCell(raw), after: fmtCell(cluster.canonical) });
+        row[cluster.column] = cluster.canonical;
+      }
+    });
+  });
+  res.clusters = res.clusters.filter(c => !idSet.has(c.id));
+  res.stats.fixCount = res.changes.length;
+  return toApply.length;
+}
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => { if (v === undefined || v === null || v === false) return; if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v; else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else if (k.startsWith('on') && typeof v === 'function') n.addEventListener(k.slice(2), v); else n.setAttribute(k, v === true ? '' : v); });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-dc-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-dc-css', text: `
+      .jdc-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+      .jdc-wrap { max-height: 42vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jdc-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jdc-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jdc-wrap td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jdc-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jdc-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      .jdc-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 8px; }
+      .jdc-tabs button { border: 1px solid #dadce0; background: #fff; border-radius: 16px; padding: 4px 12px; cursor: pointer; font-size: 12.5px; }
+      .jdc-tabs button.on { background: #202124; color: #fff; border-color: #202124; }
+      .jdc-map { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 14px; margin-bottom: 10px; }
+      .jdc-map label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: #5f6368; }
+      .jdc-map select { font-size: 12.5px; padding: 3px; }
+      .jdc-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
+      .jdc-bad { color: #c5221f; } .jdc-ok { color: #137333; } .jdc-mid { color: #b06000; }
+    ` }));
+  }
+  const empLabel_ = (e) => (e ? (e.name || '') + (e.code ? ' · ' + e.code : '') : '');
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function openTool_() {
+    injectCss_();
+    const S = { wb: null, fileName: '', sheet: '', aoa: [], headerRow: 0, ds: null, mapping: {}, overrides: {}, res: null, tab: 'issues', emps: null, inJisr: new Map(), busy: '', note: '', noteErr: false, dates: [] }; if (W.__jisrDataCleanser) W.__jisrDataCleanser._S = S; // read by the tests
+    const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': 'Close' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1200px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => { backdrop.remove(); };
+    closeBtn.addEventListener('click', close); backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
+    const upB = el('button', { class: 'jbo-btn', text: T('1) Choose the client file…', '1) اختر ملف العميل…') });
+    const sheetSel = el('select'); const hdrIn = el('input', { type: 'number', min: '1', style: { width: '64px' } });
+    const runB = el('button', { class: 'jbo-btn', text: T('3) Clean the data', '3) نظّف البيانات') });
+    const jisrB = el('button', { class: 'jbo-btn', text: T('Check which employees are already in Jisr', 'تحقق من الموظفين الموجودين في جسر') });
+    const applyB = el('button', { class: 'jbo-btn', text: '' });
+    const xlsB = el('button', { class: 'jbo-btn', text: T('Download cleaned file (.xlsx)', 'تنزيل الملف المنظّف (‎.xlsx)') });
+    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const mapBox = el('div'); const statsEl = el('div', { class: 'jdc-stats' }); const tabsEl = el('div', { class: 'jdc-tabs' }); const wrap = el('div', { class: 'jdc-wrap' });
+
+    const FIELDS = () => TEMPLATE_CLEANER_FIELDS;
+    function loadSheet_() {
+      const ws = S.wb.Sheets[S.sheet];
+      S.aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+      S.headerRow = detectHeaderRow(S.aoa);
+      buildDs_();
+    }
+    function buildDs_() {
+      const ds = aoaToRows(S.aoa, S.headerRow);
+      ds.roles = {}; ds.headers.forEach((h) => { ds.roles[h] = detectColumnRole(h, ds.rows.map((r) => r[h])); });
+      S.ds = ds; S.mapping = guessTemplateMapping(ds); S.overrides = {}; S.res = null; S.inJisr = new Map(); S.dates = [];
+    }
+    function render_() {
+      titleEl.textContent = T('Data Cleanser', 'منظّف البيانات');
+      body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '8px' }, text: T(
+        'Reads a client\'s employee sheet and fixes what can be fixed safely: stray spaces, Arabic digits, Excel date numbers, DD/MM/YYYY dates, phone numbers, e-mail case, and spellings of nationality and other repeated values. Anything it cannot decide is listed for you instead of being changed. Nothing is sent to Jisr: you download a cleaned copy.',
+        'يقرأ ملف موظفي العميل ويصلح ما يمكن إصلاحه بأمان: المسافات الزائدة، الأرقام العربية، أرقام التاريخ في Excel، تواريخ DD/MM/YYYY، أرقام الجوال، حالة أحرف البريد، وتهجئات الجنسية وغيرها من القيم المتكررة. وما لا يستطيع البت فيه يعرضه لك دون تغيير. لا يُرسل شيء إلى جسر: تنزّل نسخة منظّفة.') }));
+      body.appendChild(el('div', { class: 'jdc-bar' }, [upB, S.wb ? el('span', {}, [T('Sheet: ', 'الورقة: '), sheetSel]) : null, S.wb ? el('span', {}, [T('Header row: ', 'صف العناوين: '), hdrIn]) : null, el('span', { class: 'jbo-muted', text: S.fileName })]));
+      body.appendChild(statusEl);
+      if (S.ds) {
+        body.appendChild(el('div', { class: 'jbo-muted', style: { margin: '4px 0' }, text: T('2) Check which column holds what (guessed from the headers). Leave a field empty if the file does not have it.', '2) تأكد من العمود الذي يحمل كل بيان (مخمَّن من العناوين). اترك الحقل فارغًا إن لم يكن في الملف.') }));
+        mapBox.innerHTML = ''; const grid = el('div', { class: 'jdc-map' });
+        FIELDS().forEach((f) => {
+          const sel = el('select', {}, [el('option', { value: '', text: '—' })].concat(S.ds.headers.map((h) => el('option', { value: h, text: h }))));
+          sel.value = S.mapping[f.key] || '';
+          sel.addEventListener('change', () => { if (sel.value) S.mapping[f.key] = sel.value; else delete S.mapping[f.key]; S.res = null; paint_(); });
+          grid.appendChild(el('label', {}, [T(f.labelEn, f.labelAr) + (f.required ? ' *' : ''), sel]));
+        });
+        mapBox.appendChild(grid); body.appendChild(mapBox);
+        body.appendChild(el('div', { class: 'jdc-bar' }, [runB, jisrB, applyB]));
+      }
+      body.appendChild(statsEl); body.appendChild(tabsEl); body.appendChild(wrap); body.appendChild(fileIn);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [xlsB]));
+      paint_();
+    }
+    function tabDefs_() {
+      const r = S.res; if (!r) return [];
+      return [['issues', T('Needs your decision', 'يحتاج قرارك'), r.issues.length], ['changes', T('Fixed', 'تم إصلاحه'), r.changes.length], ['clusters', T('Suggested merges', 'دمج مقترح'), r.clusters.length],
+        ['dates', T('Contract dates', 'تواريخ العقود'), S.dates.length], ['columns', T('All columns', 'كل الأعمدة'), r.columnsInfo.length], ['jisr', T('Already in Jisr', 'موجود في جسر'), S.inJisr.size]];
+    }
+    function table_(heads, rows) {
+      const tb = el('table'); tb.appendChild(el('tr', {}, heads.map((h) => el('th', { text: h }))));
+      rows.slice(0, 2500).forEach((cells) => tb.appendChild(el('tr', {}, cells.map((c) => (c instanceof Node ? el('td', {}, [c]) : el('td', { text: String(c == null ? '' : c) }))))));
+      if (rows.length > 2500) tb.appendChild(el('tr', {}, [el('td', { colspan: String(heads.length), class: 'jbo-muted', text: T('Showing the first 2500 rows; the downloaded file has all of them.', 'يُعرض أول 2500 صف؛ الملف المنزّل يحتوي الكل.') })]));
+      return tb;
+    }
+    function computeDates_() {
+      S.dates = []; const m = S.mapping; const r = S.res; if (!r || !m.joining_date) return;
+      r.rows.forEach((row) => {
+        const p = parseDateFlexible(row[m.joining_date]); if (!p) return;
+        const yrs = m.contract_years ? parseFlexibleWholeUnit(row[m.contract_years], 'year') : null; const mos = m.contract_months ? parseFlexibleWholeUnit(row[m.contract_months], 'month') : null;
+        const y = yrs != null ? yrs : 0; const mo = mos != null ? mos : 0;
+        const amb = p.ambiguous; const end = (y || mo) ? formatDateISO(addDurationToDate(p.date, { years: y, months: mo }, true)) : '';
+        if (end || amb) S.dates.push({ rowNum: row.__rowNum, emp: row.__empLabel, join: formatDateISO(p.date), years: y, months: mo, end, amb });
+      });
+    }
+    function paint_() {
+      statusEl.textContent = S.busy || S.note; statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      const r = S.res; statsEl.innerHTML = ''; tabsEl.innerHTML = ''; wrap.innerHTML = '';
+      runB.disabled = !S.ds || !!S.busy; jisrB.disabled = !r || !!S.busy; xlsB.style.display = r ? '' : 'none';
+      const pend = r ? r.clusters.filter((c) => c.selected).length : 0;
+      applyB.textContent = T('Apply ', 'طبّق ') + pend + T(' suggested merge(s)', ' دمجًا مقترحًا'); applyB.style.display = r && r.clusters.length ? '' : 'none'; applyB.disabled = !pend || !!S.busy;
+      if (!r) return;
+      [[r.stats.rowCount, T('rows', 'صف')], [r.changes.length, T('fixed', 'أُصلح')], [r.issues.length, T('to decide', 'للقرار')], [r.stats.affectedRows, T('rows touched', 'صفوف متأثرة')]].forEach(([v, l]) => statsEl.appendChild(el('span', {}, [el('b', { text: String(v) }), ' ' + l])));
+      tabDefs_().forEach(([k, label, n]) => { const b = el('button', { class: S.tab === k ? 'on' : '', text: label + ' (' + n + ')' }); b.addEventListener('click', () => { S.tab = k; paint_(); }); tabsEl.appendChild(b); });
+      if (S.tab === 'issues') wrap.appendChild(table_(['#', T('Employee', 'الموظف'), T('Field', 'الحقل'), T('Problem', 'المشكلة'), T('Value', 'القيمة')], r.issues.map((x) => [x.rowNum, x.empLabel, x.fieldLabel, templateIssueLabel(x.kind), x.value])));
+      else if (S.tab === 'changes') wrap.appendChild(table_(['#', T('Employee', 'الموظف'), T('Field', 'الحقل'), T('Before', 'قبل'), T('After', 'بعد')], r.changes.map((x) => [x.rowNum, x.empLabel, x.fieldLabel, x.before, x.after])));
+      else if (S.tab === 'clusters') {
+        wrap.appendChild(table_([T('Use', 'استخدم'), T('Field', 'الحقل'), T('Becomes', 'يصبح'), T('Spellings found', 'التهجئات الموجودة'), T('Rows', 'الصفوف')], r.clusters.map((c) => {
+          const cb = el('input', { type: 'checkbox' }); cb.checked = !!c.selected; cb.addEventListener('change', () => { c.selected = cb.checked; paint_(); });
+          return [cb, c.fieldLabel, c.canonical, c.variants.map((v) => v.raw + ' (' + v.count + ')').join(' · '), c.total];
+        })));
+      } else if (S.tab === 'dates') {
+        wrap.appendChild(table_(['#', T('Employee', 'الموظف'), T('Joining date', 'تاريخ الانضمام'), T('Contract', 'العقد'), T('Computed end date', 'تاريخ النهاية المحسوب'), T('Note', 'ملاحظة')], S.dates.map((d) => [d.rowNum, d.emp, d.join, (d.years ? d.years + T('y ', 'س ') : '') + (d.months ? d.months + T('m', 'ش') : ''), d.end || '—', d.amb ? T('Day and month could be swapped: confirm this date with the client', 'اليوم والشهر قد يكونان معكوسين: أكّد التاريخ مع العميل') : ''])));
+      } else if (S.tab === 'columns') {
+        wrap.appendChild(table_([T('Column', 'العمود'), T('Understood as', 'مفهوم على أنه'), T('Checked as', 'يُفحص كـ'), T('Change how it is checked', 'غيّر طريقة الفحص')], r.columnsInfo.map((c) => {
+          let ctl = '';
+          if (c.overridable) {
+            const sel = el('select', {}, [['', T('automatic', 'تلقائي')], ['date', T('date', 'تاريخ')], ['numeric', T('number', 'رقم')], ['categorical', T('repeated values', 'قيم متكررة')], ['ignore', T('skip', 'تجاهل')]].map(([v, l]) => el('option', { value: v, text: l })));
+            sel.value = S.overrides[c.column] || ''; sel.addEventListener('change', () => { if (sel.value) S.overrides[c.column] = sel.value; else delete S.overrides[c.column]; S.note = T('Run “Clean the data” again to apply the new setting.', 'شغّل «نظّف البيانات» مرة أخرى لتطبيق الإعداد.'); paint_(); });
+            ctl = sel;
+          }
+          return [c.column, c.fieldLabel || c.autoType, c.type, ctl];
+        })));
+      } else if (S.tab === 'jisr') {
+        wrap.appendChild(S.inJisr.size ? table_(['#', T('Employee (sheet)', 'الموظف (الملف)'), T('Matched in Jisr', 'المطابق في جسر'), T('By', 'بواسطة')], Array.from(S.inJisr.entries()).map(([n, v]) => [n, v.label, empLabel_(v.emp), v.by])) : el('div', { class: 'jbo-muted', style: { padding: '10px' }, text: T('Press “Check which employees are already in Jisr”.', 'اضغط «تحقق من الموظفين الموجودين في جسر».') }));
+      }
+    }
+
+    upB.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
+    fileIn.addEventListener('change', async () => {
+      const f = fileIn.files && fileIn.files[0]; if (!f) return;
+      try {
+        S.busy = T('Reading the file…', 'جارٍ قراءة الملف…'); paint_();
+        S.wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array', cellDates: false }); S.fileName = f.name;
+        S.sheet = S.wb.SheetNames[0]; loadSheet_(); S.note = (S.ds.rows.length) + T(' data rows found.', ' صفًا من البيانات.'); S.noteErr = false;
+        sheetSel.innerHTML = ''; S.wb.SheetNames.forEach((n) => sheetSel.appendChild(el('option', { value: n, text: n }))); sheetSel.value = S.sheet; hdrIn.value = String(S.headerRow + 1);
+      } catch (e) { S.note = T('Could not read the file: ', 'تعذّرت قراءة الملف: ') + e.message; S.noteErr = true; }
+      S.busy = ''; render_();
+    });
+    sheetSel.addEventListener('change', () => { S.sheet = sheetSel.value; loadSheet_(); hdrIn.value = String(S.headerRow + 1); render_(); });
+    hdrIn.addEventListener('change', () => { const n = Math.max(1, parseInt(hdrIn.value, 10) || 1); S.headerRow = n - 1; buildDs_(); render_(); });
+    runB.addEventListener('click', () => {
+      try {
+        S.res = runTemplateCleaner(S.ds, S.mapping, S.overrides); computeDates_();
+        S.tab = S.res.issues.length ? 'issues' : 'changes'; S.noteErr = false;
+        S.note = T('Done. ', 'تم. ') + S.res.changes.length + T(' value(s) fixed, ', ' قيمة أُصلحت، ') + S.res.issues.length + T(' left for you.', ' متروكة لك.');
+      } catch (e) { S.note = T('The cleaner stopped: ', 'توقف المنظّف: ') + e.message; S.noteErr = true; }
+      paint_();
+    });
+    applyB.addEventListener('click', () => {
+      const ids = S.res.clusters.filter((c) => c.selected).map((c) => c.id);
+      applyTemplateCleanerClusters(S.res, ids); computeDates_(); S.note = ids.length + T(' merge(s) applied.', ' دمجًا طُبّق.'); paint_();
+    });
+    jisrB.addEventListener('click', async () => {
+      try {
+        S.busy = T('Loading the employees of this company from Jisr…', 'جارٍ تحميل موظفي هذه الشركة من جسر…'); paint_();
+        const E = W.__jisrBulkOpsEmployees; if (!E) throw new Error(T('The employee list is not available on this page.', 'قائمة الموظفين غير متاحة في هذه الصفحة.'));
+        S.emps = await E.get(false); const byCode = new Map(); const byNid = new Map();
+        S.emps.forEach((e) => { if (e.code) byCode.set(normalizeCode(e.code), e); if (e.nid) byNid.set(normalizeIdNumber(e.nid), e); });
+        S.inJisr = new Map(); const m = S.mapping;
+        S.res.rows.forEach((row) => {
+          let hit = null, by = '';
+          if (m.emp_id && row[m.emp_id] != null && String(row[m.emp_id]).trim()) { const e = byCode.get(normalizeCode(row[m.emp_id])); if (e) { hit = e; by = T('employee ID', 'الرقم الوظيفي'); } }
+          if (!hit && m.id_number && row[m.id_number] != null && String(row[m.id_number]).trim()) { const e = byNid.get(normalizeIdNumber(row[m.id_number])); if (e) { hit = e; by = T('ID / iqama', 'الهوية / الإقامة'); } }
+          if (hit) S.inJisr.set(row.__rowNum, { label: row.__empLabel, emp: hit, by });
+        });
+        S.tab = 'jisr'; S.noteErr = false; S.note = S.inJisr.size + T(' of ', ' من ') + S.res.rows.length + T(' rows are already employees in this Jisr company (matched by employee ID or ID/iqama number).', ' صفًا موجود فعلًا كموظف في هذه الشركة (مطابقة بالرقم الوظيفي أو الهوية/الإقامة).');
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+    xlsB.addEventListener('click', () => {
+      const r = S.res; if (!r) return; const H = S.ds.headers;
+      const cell = (v) => (v instanceof Date ? formatDateISO(v) : v == null ? '' : v);
+      const data = [H.concat(S.mapping.joining_date && (S.mapping.contract_years || S.mapping.contract_months) ? ['Contract end (computed)'] : [])].concat(r.rows.map((row) => {
+        const base = H.map((h) => cell(row[h])); const d = S.dates.find((x) => x.rowNum === row.__rowNum); return S.mapping.joining_date && (S.mapping.contract_years || S.mapping.contract_months) ? base.concat([d ? d.end : '']) : base;
+      }));
+      const wb = XLSX.utils.book_new(); const mk = (aoa, name) => { const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = (aoa[0] || []).map((h) => ({ wch: Math.max(12, Math.min(40, String(h).length + 4)) })); XLSX.utils.book_append_sheet(wb, ws, name); };
+      mk(data, 'Cleaned data');
+      mk([['Row', 'Employee', 'Field', 'Before', 'After']].concat(r.changes.map((x) => [x.rowNum, x.empLabel, x.field, x.before, x.after])), 'Changes');
+      mk([['Row', 'Employee', 'Field', 'Problem', 'Value']].concat(r.issues.map((x) => [x.rowNum, x.empLabel, x.field, templateIssueLabel(x.kind), x.value])), 'Needs a decision');
+      if (S.inJisr.size) mk([['Row', 'Employee (sheet)', 'Matched in Jisr', 'By']].concat(Array.from(S.inJisr.entries()).map(([n, v]) => [n, v.label, empLabel_(v.emp), v.by])), 'Already in Jisr');
+      XLSX.writeFile(wb, 'cleaned-' + (S.fileName || 'data').replace(/\.[^.]+$/, '') + '.xlsx');
+    });
+    render_();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Data Cleanser', open: openTool_, version: SECTION_VERSION };
+    W.__jisrDataCleanser = Object.assign(W.__jisrDataCleanser || {}, { runTemplateCleaner, applyTemplateCleanerClusters, guessTemplateMapping, aoaToRows, detectHeaderRow, detectColumnRole, parseNumberFlexible, normalizeText, normalizeCode, normalizeIdNumber, convertArabicIndicDigits });
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 46 — Salary Comparison (client salary sheet vs Jisr, and apply the differences)  v4.87.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 46 — Salary Comparison  v4.87
+ * ---------------------------------------------------------------------------
+ * A client salary sheet (basic salary, allowances, optional total) is compared with what Jisr holds for each employee (GET /v2/employees/{id}?profile_tab=
+ * salary_and_financial, read with a pool of 6). Differences are listed per employee and per component. The operator ticks the differences to put into Jisr and
+ * picks the timing and effective date exactly as in Salary Increment; each employee is then written ONCE (POST /v2/finance/employees/{id}/earnings, Jisr replaces
+ * the whole record, so the current allowances are sent back unchanged except the ticked ones) and confirmed in the compensation-change history.
+ * An allowance the employee does not have in Jisr cannot be created here (same rule as Salary Increment): it is listed as blocked.
+ * Jisr's "current earnings" read moves only when the payrun processes a change, so a change applied by this tool is remembered in this browser and shown as
+ * "applied, waiting for the payrun" instead of as a new difference.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.87.0';
+  const MODULE_ID = 'salary-compare';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
+  function slug_() { try { const o = GM_getValue(GM_PREFIX + 'slugOverride', ''); if (o) return o; } catch (e) { /* ignore */ } const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  const API = () => W.__jisrSalaryApi || {};
+  const DC = () => W.__jisrDataCleanser || {};
+  const redact_ = (s) => String(s == null ? '' : s).replace(/https?:\/\/\S+/gi, '(link removed)').replace(/Bearer\s+\S+/gi, '').replace(/\s+/g, ' ').slice(0, 240);
+  const TIMINGS = ['future', 'immediate', 'retrospective', 'retrospective_no_change'];
+  const TIMING_LABEL = () => ({ future: T('Future', 'مستقبلي'), immediate: T('Immediate', 'فوري'), retrospective: T('Retrospective (recalculates past payroll)', 'بأثر رجعي (يعيد حساب الرواتب السابقة)'), retrospective_no_change: T('Retrospective, no recalculation', 'بأثر رجعي دون إعادة حساب') });
+  const round2_ = (n) => Math.round(n * 100) / 100;
+  const num_ = (v) => { const f = DC().parseNumberFlexible; if (v === null || v === undefined || String(v).trim() === '') return null; const n = f ? f(v) : Number(String(v).replace(/,/g, '')); return n === null || n === undefined || isNaN(n) ? null : n; };
+  const fmt_ = (n) => (n === null || n === undefined ? '—' : (Math.round(n * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }));
+
+  // ----------------------------------------------------------------------- pure logic
+  const lineKey_ = (empId, comp, name, normName) => empId + '|' + comp + '|' + (comp === 'basic' ? '' : normName(name));
+  /** Builds the per-employee, per-component comparison lines. Pure: takes the parsed sheet, the Jisr reads and the options. */
+  function compareRows_(input) {
+    const { sheetRows, emps, jisr, map, allowMap, tol, applied, normName } = input;
+    const byCode = new Map(), byNid = new Map();
+    emps.forEach((e) => { if (e.code) byCode.set(DC().normalizeCode(e.code), e); if (e.nid) byNid.set(DC().normalizeIdNumber(e.nid), e); });
+    const lines = [], notInJisr = [], seenEmp = new Set(), dupInSheet = [];
+    sheetRows.forEach((r) => {
+      const raw = r[map.id]; if (raw === null || raw === undefined || String(raw).trim() === '') return;
+      const emp = byCode.get(DC().normalizeCode(raw)) || byNid.get(DC().normalizeIdNumber(raw)) || null;
+      if (!emp) { notInJisr.push({ no: r.__rowNum, id: String(raw).trim(), name: map.name ? String(r[map.name] == null ? '' : r[map.name]).trim() : '' }); return; }
+      if (seenEmp.has(emp.id)) { dupInSheet.push({ no: r.__rowNum, emp }); return; }
+      seenEmp.add(emp.id);
+      const cur = jisr.get(emp.id);                       // undefined: not read yet; null: could not be read
+      const base = { no: r.__rowNum, empId: emp.id, empName: emp.name || '', empCode: emp.code || '' };
+      const push = (comp, name, jv, sv, extra) => {
+        let status;
+        if (cur === null) status = 'unread';
+        else if (cur === undefined) status = 'pending';
+        else if (sv === null && comp !== 'basic') status = 'nosheet';
+        else if (comp === 'total') status = (jv !== null && sv !== null && Math.abs(jv - sv) > tol) ? 'total_differs' : 'match';
+        else if (jv === null) status = (sv === null || sv === 0) ? 'match' : 'missing';
+        else if (sv === null) status = 'nosheet';
+        else status = Math.abs(jv - sv) > tol ? 'differs' : 'match';
+        const out = Object.assign({}, base, { comp, name, jisr: jv, sheet: sv, diff: jv !== null && sv !== null ? round2_(sv - jv) : null, status }, extra || {});
+        if (status === 'differs') {
+          const a = (applied || {})[lineKey_(emp.id, comp, name, normName)];
+          if (a && Math.abs(a.value - sv) <= tol) out.status = 'applied';
+        }
+        lines.push(out);
+      };
+      const jBasic = cur ? num_(cur.basicSalary) : null;
+      if (map.basic) push('basic', T('Basic salary', 'الراتب الأساسي'), jBasic, num_(r[map.basic]));
+      Object.keys(allowMap || {}).forEach((col) => {
+        const target = allowMap[col]; if (!target) return;
+        const sv = num_(r[col]);
+        const b = cur ? (cur.benefits || []).find((x) => normName(x.name) === normName(target)) : null;
+        push('allow', target, cur ? (b ? num_(b.company_contribution) : null) : null, sv, { col });
+      });
+      if (map.total) {
+        const jt = cur ? (num_(cur.basicSalary) || 0) + (cur.benefits || []).reduce((a, b) => a + (num_(b.company_contribution) || 0), 0) : null;
+        push('total', T('Total package', 'إجمالي الراتب'), jt, num_(r[map.total]));
+      }
+    });
+    const inSheet = new Set(lines.map((l) => l.empId));
+    const notInSheet = emps.filter((e) => !inSheet.has(e.id)).map((e) => ({ emp: e }));
+    return { lines, notInJisr, notInSheet, dupInSheet };
+  }
+  /** Groups the ticked differences into one operation per employee. Pure. */
+  function planApply_(lines, selectedKeys) {
+    const per = new Map();
+    lines.forEach((l) => {
+      if (!selectedKeys.has(l.key) || l.status !== 'differs') return;
+      if (!per.has(l.empId)) per.set(l.empId, { empId: l.empId, empName: l.empName, empCode: l.empCode, basic: null, allowances: [] });
+      const p = per.get(l.empId);
+      if (l.comp === 'basic') p.basic = { old: l.jisr, value: l.sheet }; else if (l.comp === 'allow') p.allowances.push({ name: l.name, old: l.jisr, value: l.sheet });
+    });
+    return Array.from(per.values());
+  }
+  /** Timing and date must agree, as in Salary Increment. Returns an error text or ''. */
+  function checkTiming_(timing, dmy) {
+    const A = API(); const iso = A.parseDmyToIso_(dmy);
+    if (!iso) return T('Effective date must be a real date written DD-MM-YYYY.', 'تاريخ السريان يجب أن يكون تاريخًا حقيقيًا بصيغة DD-MM-YYYY.');
+    const today = A.todayIso_(); const td = A.isoToDmy_(today);
+    if (timing === 'future' && !(iso > today)) return T('“Future” needs a date after today (', 'الخيار «مستقبلي» يحتاج تاريخًا بعد اليوم (') + td + ').';
+    if (timing === 'immediate' && iso !== today) return T('“Immediate” needs exactly today (', 'الخيار «فوري» يحتاج تاريخ اليوم تمامًا (') + td + ').';
+    if ((timing === 'retrospective' || timing === 'retrospective_no_change') && !(iso < today)) return T('A retrospective change needs a date before today (', 'التغيير بأثر رجعي يحتاج تاريخًا قبل اليوم (') + td + ').';
+    return '';
+  }
+  /** Did the compensation-change history record this write? Matches the reason plus every changed amount. */
+  function historyMatches_(histories, op, normName) {
+    const toN = (v) => { const n = Number(String(v == null ? '' : v).replace(/,/g, '')); return isNaN(n) ? null : n; };
+    return (histories || []).some((h) => Array.isArray(h.changes) && String(h.reason || '') === String(op.reason || '') && op.checks.every((c) => h.changes.some((x) => {
+      const item = String(x.edit_item || ''); const hit = c.basic ? /basic salary/i.test(item) : normName(item).includes(normName(c.name));
+      return hit && toN(x.current) !== null && Math.abs(toN(x.current) - c.value) < 0.005;
+    })));
+  }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => { if (v === undefined || v === null || v === false) return; if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v; else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else if (k.startsWith('on') && typeof v === 'function') n.addEventListener(k.slice(2), v); else n.setAttribute(k, v === true ? '' : v); });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-sc-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-sc-css', text: `
+      .jsc-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+      .jsc-wrap { max-height: 40vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jsc-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jsc-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jsc-wrap td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jsc-wrap td.n, .jsc-wrap th.n { text-align: end; font-variant-numeric: tabular-nums; }
+      .jsc-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jsc-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      .jsc-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 8px; }
+      .jsc-tabs button { border: 1px solid #dadce0; background: #fff; border-radius: 16px; padding: 4px 12px; cursor: pointer; font-size: 12.5px; }
+      .jsc-tabs button.on { background: #202124; color: #fff; border-color: #202124; }
+      .jsc-map { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 14px; margin-bottom: 10px; }
+      .jsc-map label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: #5f6368; }
+      .jsc-map select, .jsc-bar select, .jsc-bar input { font-size: 12.5px; padding: 3px 5px; }
+      .jsc-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
+      .jsc-up { color: #137333; } .jsc-down { color: #c5221f; } .jsc-mid { color: #b06000; }
+    ` }));
+  }
+  const STATUS_TXT = () => ({ match: T('matches', 'مطابق'), differs: T('differs', 'مختلف'), missing: T('allowance not on this employee in Jisr', 'البدل غير موجود لدى الموظف في جسر'), nosheet: T('empty in the sheet', 'فارغ في الملف'), applied: T('applied, waiting for the payrun', 'طُبّق، بانتظار المسير'), total_differs: T('total differs (information)', 'الإجمالي مختلف (للعلم)'), unread: T('could not read from Jisr', 'تعذّرت قراءته من جسر'), pending: T('not read yet', 'لم يُقرأ بعد') });
+
+  function openTool_() {
+    injectCss_();
+    const A = API(); const X = W.__jisrBulkOpsXlsx;
+    if (!A.fetchCurrentEarnings_ || !DC().aoaToRows) { alert(T('The salary tools did not finish loading. Reload the page and try again.', 'لم تكتمل أدوات الرواتب بعد. أعد تحميل الصفحة وحاول مرة أخرى.')); return; }
+    const S = { wb: null, fileName: '', sheet: '', aoa: [], headerRow: 0, ds: null, map: {}, allowMap: {}, tol: 0.5, emps: null, jisr: new Map(), cmp: null, tab: 'diff', q: '', sel: new Set(), phase: 'idle', stop: false, busy: '', note: '', noteErr: false, dryKey: '', results: new Map(), timing: 'future', date: '', reason: '' };
+    W.__jisrSalaryCompare = Object.assign(W.__jisrSalaryCompare || {}, { _S: S });
+    const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': 'Close' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1250px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => { if (S.phase === 'running' && !confirm(T('Still writing to Jisr. Close anyway? The run stops after the current employee.', 'لا تزال الكتابة إلى جسر جارية. هل تريد الإغلاق؟ يتوقف التشغيل بعد الموظف الحالي.'))) return; S.stop = true; backdrop.remove(); };
+    closeBtn.addEventListener('click', close); backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
+    const upB = el('button', { class: 'jbo-btn', text: T('1) Choose the salary sheet…', '1) اختر ملف الرواتب…') });
+    const sheetSel = el('select'); const hdrIn = el('input', { type: 'number', min: '1', style: { width: '64px' } }); const tolIn = el('input', { type: 'number', min: '0', step: '0.01', style: { width: '70px' } });
+    const readB = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('2) Read Jisr and compare', '2) اقرأ جسر وقارن') });
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
+    const repB = el('button', { class: 'jbo-btn', text: T('Report (.xlsx)', 'التقرير (‎.xlsx)') });
+    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const mapBox = el('div'); const statsEl = el('div', { class: 'jsc-stats' }); const tabsEl = el('div', { class: 'jsc-tabs' }); const wrap = el('div', { class: 'jsc-wrap' }); const applyBox = el('div');
+    const searchIn = el('input', { placeholder: T('Search name or code…', 'ابحث بالاسم أو الرقم…'), style: { minWidth: '180px' } });
+    const timingSel = el('select', {}, TIMINGS.map((t0) => el('option', { value: t0, text: TIMING_LABEL()[t0] }))); const dateIn = el('input', { placeholder: 'DD-MM-YYYY', style: { width: '110px' } }); const reasonIn = el('input', { placeholder: T('Reason (auto if empty)', 'السبب (تلقائي إن ترك فارغًا)'), style: { minWidth: '220px' } });
+    const dryB = el('button', { class: 'jbo-btn', text: T('Dry Run', 'تشغيل تجريبي') }); const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
+    const selAllB = el('button', { class: 'jbo-btn', text: T('Tick all differences', 'حدّد كل الفروق') }); const selNoneB = el('button', { class: 'jbo-btn', text: T('Clear ticks', 'إلغاء التحديد') });
+    const ST = STATUS_TXT;
+
+    function loadSheet_() { S.aoa = XLSX.utils.sheet_to_json(S.wb.Sheets[S.sheet], { header: 1, defval: '', raw: true }); S.headerRow = DC().detectHeaderRow(S.aoa); buildDs_(); }
+    function buildDs_() {
+      const ds = DC().aoaToRows(S.aoa, S.headerRow); ds.roles = {}; ds.headers.forEach((h) => { ds.roles[h] = DC().detectColumnRole(h, ds.rows.map((r) => r[h])); });
+      S.ds = ds; S.jisr = new Map(); S.cmp = null; S.sel = new Set(); S.results = new Map(); S.dryKey = ''; S.allowMap = {};
+      const nz = DC().normalizeText; const find = (re) => ds.headers.find((h) => re.test(nz(h)));
+      S.map = { id: ds.headers.find((h) => ds.roles[h] === 'employee_id') || find(/employee id|emp id|employee code|code|الرقم الوظيفي|رقم الموظف|رقم الهوية|الاقامه|iqama|national/) || '', name: find(/name|الاسم/) || '', basic: find(/basic|الاساسي|اساسي/) || '', total: find(/total|gross|اجمالي|الاجمالي/) || '' };
+      Object.keys(S.map).forEach((k) => { if (!S.map[k]) delete S.map[k]; });
+    }
+    const colNumeric_ = (h) => { const v = S.ds.rows.map((r) => r[h]).filter((x) => x !== '' && x != null); return v.length > 0 && v.filter((x) => num_(x) !== null).length / v.length >= 0.7; };
+    function jisrAllowNames_() { const seen = new Map(); S.jisr.forEach((c) => { if (c && c.benefits) c.benefits.forEach((b) => { if (b.name && !seen.has(A.normalizeName_(b.name))) seen.set(A.normalizeName_(b.name), b.name); }); }); return Array.from(seen.values()).sort((a, b) => a.localeCompare(b)); }
+    function guessAllow_() {
+      const names = jisrAllowNames_(); const nz = DC().normalizeText; S.allowMap = {};
+      const used = new Set(Object.values(S.map));
+      S.ds.headers.forEach((h) => { if (used.has(h) || !colNumeric_(h) || S.ds.roles[h] === 'national_id' || S.ds.roles[h] === 'employee_id') return; const hn = nz(h); const hit = names.find((n) => { const nn = nz(n); return nn && (hn === nn || hn.includes(nn) || nn.includes(hn)); }); if (hit) S.allowMap[h] = hit; });
+    }
+    function recompute_() {
+      if (!S.ds || !S.emps || !S.map.id) { S.cmp = null; return; }
+      const applied = gmGet_('salaryCompareApplied_' + slug_(), {}) || {};
+      S.cmp = compareRows_({ sheetRows: S.ds.rows, emps: S.emps, jisr: S.jisr, map: S.map, allowMap: S.allowMap, tol: S.tol, applied, normName: A.normalizeName_ });
+      S.cmp.lines.forEach((l) => { l.key = lineKey_(l.empId, l.comp, l.name, A.normalizeName_); });
+    }
+
+    function render_() {
+      titleEl.textContent = T('Salary Comparison', 'مقارنة الرواتب');
+      body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '8px' }, text: T(
+        'Compares the client\'s salary sheet (basic salary, allowances, total) with what Jisr holds, employee by employee. Tick the differences you want, choose when they apply, and the tool writes each employee once and confirms it in Jisr\'s change history. An allowance the employee does not have in Jisr cannot be created here.',
+        'يقارن ملف رواتب العميل (الأساسي والبدلات والإجمالي) بما في جسر موظفًا موظفًا. حدّد الفروق التي تريدها واختر وقت السريان، فيكتب الأداة لكل موظف مرة واحدة ويؤكدها في سجل تغييرات جسر. أما البدل غير الموجود لدى الموظف في جسر فلا يمكن إنشاؤه هنا.') }));
+      body.appendChild(el('div', { class: 'jsc-bar' }, [upB, S.wb ? el('span', {}, [T('Sheet: ', 'الورقة: '), sheetSel]) : null, S.wb ? el('span', {}, [T('Header row: ', 'صف العناوين: '), hdrIn]) : null, S.wb ? el('span', {}, [T('Ignore differences up to ', 'تجاهل الفروق حتى '), tolIn]) : null, el('span', { class: 'jbo-muted', text: S.fileName })]));
+      body.appendChild(statusEl);
+      if (S.ds) {
+        body.appendChild(el('div', { class: 'jbo-muted', style: { margin: '4px 0' }, text: T('Which column is what? (guessed from the headers; the ID column may hold the employee code or the ID / iqama number)', 'أي عمود يحمل ماذا؟ (مخمَّن من العناوين؛ عمود المعرّف قد يحمل الرقم الوظيفي أو رقم الهوية/الإقامة)') }));
+        mapBox.innerHTML = ''; const g = el('div', { class: 'jsc-map' });
+        [['id', T('Employee ID / code / iqama *', 'الرقم الوظيفي / الهوية *')], ['name', T('Name (display only)', 'الاسم (للعرض فقط)')], ['basic', T('Basic salary', 'الراتب الأساسي')], ['total', T('Total package (information only)', 'إجمالي الراتب (للعلم فقط)')]].forEach(([k, label]) => {
+          const sel = el('select', {}, [el('option', { value: '', text: '—' })].concat(S.ds.headers.map((h) => el('option', { value: h, text: h })))); sel.value = S.map[k] || '';
+          sel.addEventListener('change', () => { if (sel.value) S.map[k] = sel.value; else delete S.map[k]; S.sel = new Set(); recompute_(); paint_(); });
+          g.appendChild(el('label', {}, [label, sel]));
+        });
+        mapBox.appendChild(g);
+        const names = jisrAllowNames_();
+        if (names.length) {
+          mapBox.appendChild(el('div', { class: 'jbo-muted', style: { margin: '4px 0' }, text: T('Allowance columns: choose the Jisr allowance each sheet column belongs to (leave empty to ignore the column).', 'أعمدة البدلات: اختر بدل جسر الذي ينتمي إليه كل عمود في الملف (اتركه فارغًا لتجاهل العمود).') }));
+          const g2 = el('div', { class: 'jsc-map' }); const used = new Set(Object.values(S.map));
+          S.ds.headers.filter((h) => !used.has(h) && colNumeric_(h) && S.ds.roles[h] !== 'national_id').forEach((h) => {
+            const sel = el('select', {}, [el('option', { value: '', text: '—' })].concat(names.map((n) => el('option', { value: n, text: n })))); sel.value = S.allowMap[h] || '';
+            sel.addEventListener('change', () => { if (sel.value) S.allowMap[h] = sel.value; else delete S.allowMap[h]; S.sel = new Set(); recompute_(); paint_(); });
+            g2.appendChild(el('label', {}, [h, sel]));
+          });
+          mapBox.appendChild(g2);
+        }
+        body.appendChild(mapBox);
+        body.appendChild(el('div', { class: 'jsc-bar' }, [readB, stopB]));
+      }
+      body.appendChild(statsEl); body.appendChild(tabsEl);
+      body.appendChild(el('div', { class: 'jsc-bar' }, [searchIn, selAllB, selNoneB]));
+      body.appendChild(wrap); body.appendChild(applyBox); body.appendChild(fileIn);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [repB]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, runB]));
+      paint_();
+    }
+    function table_(heads, rows, numCols) {
+      const tb = el('table'); tb.appendChild(el('tr', {}, heads.map((h, i) => el('th', { text: h, class: (numCols || []).includes(i) ? 'n' : '' }))));
+      rows.slice(0, 3000).forEach((cells) => tb.appendChild(el('tr', {}, cells.map((c, i) => (c instanceof Node ? el('td', {}, [c]) : el('td', { text: String(c == null ? '' : c), class: (numCols || []).includes(i) ? 'n' : '' }))))));
+      if (rows.length > 3000) tb.appendChild(el('tr', {}, [el('td', { colspan: String(heads.length), class: 'jbo-muted', text: T('Showing the first 3000 lines; the report has all of them.', 'يُعرض أول 3000 سطر؛ التقرير يحتوي الكل.') })]));
+      return tb;
+    }
+    const empText_ = (l) => (l.empName || '') + (l.empCode ? ' · ' + l.empCode : '');
+    function visible_() {
+      const c = S.cmp; if (!c) return [];
+      const q = DC().normalizeText(S.q || '');
+      let rows = c.lines;
+      if (S.tab === 'diff') rows = rows.filter((l) => ['differs', 'missing', 'applied', 'unread'].includes(l.status));
+      else if (S.tab === 'total') rows = rows.filter((l) => l.status === 'total_differs');
+      if (q) rows = rows.filter((l) => DC().normalizeText(empText_(l) + ' ' + l.name).includes(q));
+      return rows;
+    }
+    function paint_() {
+      statusEl.textContent = S.busy || S.note; statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      statsEl.innerHTML = ''; tabsEl.innerHTML = ''; wrap.innerHTML = ''; applyBox.innerHTML = '';
+      const c = S.cmp; const reading = S.phase === 'reading'; const running = S.phase === 'running';
+      readB.disabled = !S.ds || !S.map.id || !!S.busy || running; stopB.style.display = reading || running ? '' : 'none'; repB.style.display = c && c.lines.length ? '' : 'none';
+      [upB].forEach((b) => { b.disabled = reading || running; });
+      const sel = c ? c.lines.filter((l) => S.sel.has(l.key) && l.status === 'differs') : []; const emps = new Set(sel.map((l) => l.empId));
+      dryB.style.display = runB.style.display = c && c.lines.some((l) => l.status === 'differs') ? '' : 'none';
+      dryB.disabled = !sel.length || !!S.busy; runB.textContent = T('Write ', 'اكتب ') + sel.length + T(' change(s) for ', ' تغييرًا لـ ') + emps.size + T(' employee(s) to Jisr', ' موظفًا إلى جسر'); runB.disabled = !sel.length || !!S.busy || S.dryKey !== keyOfSel_();
+      selAllB.disabled = selNoneB.disabled = !c || running;
+      if (!c) return;
+      const n = (st) => c.lines.filter((l) => l.status === st).length;
+      [[new Set(c.lines.map((l) => l.empId)).size, T('employees matched', 'موظفًا مطابقًا')], [n('match'), T('lines match', 'سطرًا مطابقًا')], [n('differs'), T('differ', 'مختلف')], [n('missing'), T('blocked (no such allowance)', 'محجوب (لا يوجد البدل)')], [c.notInJisr.length, T('sheet rows not in Jisr', 'صفوف الملف غير الموجودة في جسر')], [c.notInSheet.length, T('Jisr employees not in the sheet', 'موظفو جسر غير الموجودين في الملف')]].filter(([v], i) => i < 2 || v).forEach(([v, l]) => statsEl.appendChild(el('span', {}, [el('b', { text: String(v) }), ' ' + l])));
+      [['diff', T('Differences', 'الفروق'), c.lines.filter((l) => ['differs', 'missing', 'applied', 'unread'].includes(l.status)).length], ['all', T('All lines', 'كل الأسطر'), c.lines.length], ['total', T('Total differs', 'اختلاف الإجمالي'), n('total_differs')], ['nj', T('Not in Jisr', 'غير موجود في جسر'), c.notInJisr.length], ['ns', T('Not in the sheet', 'غير موجود في الملف'), c.notInSheet.length]].forEach(([k, label, cnt]) => { const b = el('button', { class: S.tab === k ? 'on' : '', text: label + ' (' + cnt + ')' }); b.addEventListener('click', () => { S.tab = k; paint_(); }); tabsEl.appendChild(b); });
+      if (S.tab === 'nj') wrap.appendChild(table_(['#', T('ID in the sheet', 'المعرّف في الملف'), T('Name in the sheet', 'الاسم في الملف')], c.notInJisr.map((x) => [x.no, x.id, x.name])));
+      else if (S.tab === 'ns') wrap.appendChild(table_([T('Employee in Jisr', 'الموظف في جسر'), T('Code', 'الرقم'), T('ID / iqama', 'الهوية / الإقامة')], c.notInSheet.map((x) => [x.emp.name || '', x.emp.code || '', x.emp.nid || ''])));
+      else {
+        const rows = visible_();
+        wrap.appendChild(table_(['', '#', T('Employee', 'الموظف'), T('Component', 'البند'), T('Jisr', 'جسر'), T('Sheet', 'الملف'), T('Difference', 'الفرق'), T('Status', 'الحالة')], rows.map((l) => {
+          let cb = ''; if (l.status === 'differs') { cb = el('input', { type: 'checkbox' }); cb.checked = S.sel.has(l.key); cb.disabled = running; cb.addEventListener('change', () => { if (cb.checked) S.sel.add(l.key); else S.sel.delete(l.key); S.dryKey = ''; paint_(); }); }
+          const r = S.results.get(l.empId); const st = r ? r.msg : ST()[l.status] || l.status; const cls = r ? (r.ok ? 'jsc-up' : 'jsc-down') : (l.status === 'differs' ? 'jsc-mid' : l.status === 'missing' || l.status === 'unread' ? 'jsc-down' : '');
+          return [cb, l.no, empText_(l), l.name, fmt_(l.jisr), fmt_(l.sheet), l.diff === null ? '—' : (l.diff > 0 ? '+' : '') + fmt_(l.diff), el('span', { class: cls, text: st })];
+        }), [4, 5, 6]));
+      }
+      if (c.lines.some((l) => l.status === 'differs')) {
+        applyBox.appendChild(el('div', { class: 'jsc-warn', text: T('Writing to Jisr: the sheet is taken as right. Jisr shows a new amount in its salary screen only after the payrun processes the change, so this tool keeps a note of what it applied and shows it as “applied, waiting for the payrun”. Run the Dry Run first, then try one or two employees before the rest.', 'الكتابة إلى جسر: يُعتبر الملف هو الصحيح. لا يعرض جسر المبلغ الجديد في شاشة الراتب إلا بعد أن يعالج المسير التغيير، لذلك تحتفظ الأداة بملاحظة بما طبّقته وتعرضه «طُبّق، بانتظار المسير». شغّل التجربة أولًا ثم جرّب موظفًا أو اثنين قبل الباقي.') }));
+        applyBox.appendChild(el('div', { class: 'jsc-bar' }, [el('span', {}, [T('Timing: ', 'التوقيت: '), timingSel]), el('span', {}, [T('Effective date: ', 'تاريخ السريان: '), dateIn]), reasonIn]));
+      }
+    }
+    const keyOfSel_ = () => Array.from(S.sel).sort().join(',') + '|' + S.timing + '|' + S.date + '|' + S.reason;
+
+    // ---------------- file
+    upB.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
+    fileIn.addEventListener('change', async () => {
+      const f = fileIn.files && fileIn.files[0]; if (!f) return;
+      try {
+        S.busy = T('Reading the file…', 'جارٍ قراءة الملف…'); paint_();
+        S.wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' }); S.fileName = f.name; S.sheet = S.wb.SheetNames[0]; loadSheet_();
+        sheetSel.innerHTML = ''; S.wb.SheetNames.forEach((nm) => sheetSel.appendChild(el('option', { value: nm, text: nm }))); sheetSel.value = S.sheet; hdrIn.value = String(S.headerRow + 1); tolIn.value = String(S.tol);
+        S.note = S.ds.rows.length + T(' rows read. Check the columns, then press “Read Jisr and compare”.', ' صفًا قُرئ. تأكد من الأعمدة ثم اضغط «اقرأ جسر وقارن».'); S.noteErr = false;
+      } catch (e) { S.note = T('Could not read the file: ', 'تعذّرت قراءة الملف: ') + e.message; S.noteErr = true; }
+      S.busy = ''; render_();
+    });
+    sheetSel.addEventListener('change', () => { S.sheet = sheetSel.value; loadSheet_(); hdrIn.value = String(S.headerRow + 1); render_(); });
+    hdrIn.addEventListener('change', () => { S.headerRow = Math.max(1, parseInt(hdrIn.value, 10) || 1) - 1; buildDs_(); render_(); });
+    tolIn.addEventListener('change', () => { S.tol = Math.max(0, Number(tolIn.value) || 0); S.sel = new Set(); recompute_(); paint_(); });
+    searchIn.addEventListener('input', () => { S.q = searchIn.value; paint_(); searchIn.focus(); });
+    selAllB.addEventListener('click', () => { visible_().forEach((l) => { if (l.status === 'differs') S.sel.add(l.key); }); S.dryKey = ''; paint_(); });
+    selNoneB.addEventListener('click', () => { S.sel = new Set(); S.dryKey = ''; paint_(); });
+    timingSel.addEventListener('change', () => { S.timing = timingSel.value; S.dryKey = ''; paint_(); });
+    dateIn.addEventListener('input', () => { S.date = dateIn.value.trim(); S.dryKey = ''; runB.disabled = true; });
+    reasonIn.addEventListener('input', () => { S.reason = reasonIn.value.trim(); S.dryKey = ''; runB.disabled = true; });
+
+    // ---------------- read Jisr
+    readB.addEventListener('click', async () => {
+      try {
+        S.phase = 'reading'; S.stop = false; S.busy = T('Loading this company\'s employees…', 'جارٍ تحميل موظفي هذه الشركة…'); paint_();
+        const E = W.__jisrBulkOpsEmployees; if (!E) throw new Error(T('The employee list is not available on this page.', 'قائمة الموظفين غير متاحة في هذه الصفحة.'));
+        S.emps = await E.get(false); S.jisr = new Map(); recompute_();
+        const wanted = Array.from(new Set(S.cmp.lines.map((l) => l.empId))).map((id) => S.emps.find((e) => e.id === id)).filter(Boolean);
+        let next = 0, done = 0, failed = 0;
+        const worker = async () => { while (!S.stop) { const i = next++; if (i >= wanted.length) return; const e = wanted[i]; let cur = null; try { cur = await A.fetchCurrentEarnings_(e.id); } catch (x) { cur = null; } S.jisr.set(e.id, cur); if (!cur) failed++; done++; if (done % 5 === 0 || done === wanted.length) { S.busy = T('Reading salaries from Jisr… ', 'جارٍ قراءة الرواتب من جسر… ') + done + '/' + wanted.length; paint_(); } } };
+        await Promise.all(Array.from({ length: Math.min(6, wanted.length) }, worker));
+        guessAllow_(); recompute_(); S.sel = new Set(); S.dryKey = '';
+        S.noteErr = false; S.note = (S.stop ? T('Stopped. ', 'تم الإيقاف. ') : '') + S.jisr.size + T(' employee(s) read from Jisr', ' موظفًا قُرئ من جسر') + (failed ? ', ' + failed + T(' could not be read (marked in the list; nothing will be written for them).', ' تعذّرت قراءتهم (معلّمون في القائمة؛ لن يُكتب شيء لهم).') : '.') + (jisrAllowNames_().length ? '' : ' ' + T('No allowances were found on these employees.', 'لم تُوجد بدلات لدى هؤلاء الموظفين.'));
+        S.tab = 'diff'; S.phase = 'idle'; S.busy = ''; render_();
+      } catch (e) { S.phase = 'idle'; S.busy = ''; S.note = e.message; S.noteErr = true; paint_(); }
+    });
+    stopB.addEventListener('click', () => { S.stop = true; });
+
+    // ---------------- dry run + write
+    async function buildOps_(live) {
+      const err = checkTiming_(S.timing, S.date); if (err) throw new Error(err);
+      const plan = planApply_(S.cmp.lines, S.sel); const ops = [];
+      for (const p of plan) {
+        S.busy = T('Reading again before writing: ', 'قراءة جديدة قبل الكتابة: ') + p.empName; paint_();
+        const cur = await A.fetchCurrentEarnings_(p.empId);
+        if (!cur) { ops.push({ p, error: T('could not read the current salary from Jisr; nothing will be written', 'تعذّرت قراءة الراتب الحالي من جسر؛ لن يُكتب شيء') }); continue; }
+        const benefits = cur.benefits.map((b) => Object.assign({}, b)); const checks = []; const lines = []; let newSalary = Number(cur.basicSalary); const gone = [];
+        if (p.basic) { if (Math.abs(num_(cur.basicSalary) - p.basic.value) <= S.tol) gone.push('basic'); else { lines.push(T('Basic ', 'الأساسي ') + fmt_(num_(cur.basicSalary)) + ' → ' + fmt_(p.basic.value)); newSalary = p.basic.value; checks.push({ basic: true, value: p.basic.value }); } }
+        p.allowances.forEach((a) => { const b = benefits.find((x) => A.normalizeName_(x.name) === A.normalizeName_(a.name)); if (!b) { gone.push(a.name); return; } if (Math.abs(num_(b.company_contribution) - a.value) <= S.tol) { gone.push(a.name); return; } lines.push(a.name + ' ' + fmt_(num_(b.company_contribution)) + ' → ' + fmt_(a.value)); b.company_contribution = a.value; checks.push({ name: a.name, value: a.value }); });
+        if (!checks.length) { ops.push({ p, skip: T('already equal in Jisr now; nothing to write', 'مطابق الآن في جسر؛ لا شيء للكتابة') }); continue; }
+        const iso = A.parseDmyToIso_(S.date); const dd = A.isoToDmy_(iso);
+        ops.push({ p, cur, op: { employeeId: p.empId, newSalary, benefits, timing: S.timing, effectiveDate: iso, reason: S.reason || (T('Salary comparison - ', 'مقارنة الرواتب - ') + S.timing + ' ' + dd), checks }, lines });
+      }
+      S.busy = ''; return ops;
+    }
+    dryB.addEventListener('click', async () => {
+      try {
+        S.results = new Map(); const ops = await buildOps_(false); let would = 0;
+        ops.forEach((o) => { if (o.error) S.results.set(o.p.empId, { ok: false, msg: o.error }); else if (o.skip) S.results.set(o.p.empId, { ok: true, msg: o.skip }); else { would++; S.results.set(o.p.empId, { ok: true, msg: T('would change: ', 'سيتغير: ') + o.lines.join('; ') }); } });
+        S.dryKey = keyOfSel_(); S.noteErr = false; S.note = T('Dry Run done: ', 'انتهت التجربة: ') + would + T(' employee(s) would be written. Nothing was sent.', ' موظفًا سيُكتب لهم. لم يُرسل شيء.');
+      } catch (e) { S.note = e.message; S.noteErr = true; S.busy = ''; }
+      paint_();
+    });
+    runB.addEventListener('click', async () => {
+      let ops;
+      try { S.busy = ' '; paint_(); ops = await buildOps_(true); } catch (e) { S.busy = ''; S.note = e.message; S.noteErr = true; paint_(); return; }
+      const todo = ops.filter((o) => o.op);
+      ops.filter((o) => !o.op).forEach((o) => S.results.set(o.p.empId, { ok: !o.error, msg: o.error || o.skip }));
+      if (!todo.length) { S.busy = ''; S.note = T('Nothing to write.', 'لا شيء للكتابة.'); paint_(); return; }
+      const when_ = TIMING_LABEL()[S.timing] + ' · ' + S.date;
+      if (!confirm(T('Write the salary of ' + todo.length + ' employee(s) to ' + slug_() + ' (' + when_ + ')?\n\nJisr replaces each employee\'s whole earnings record; their other allowances are sent back unchanged. Use the Dry Run lines if you ever need to reverse it.',
+        'كتابة راتب ' + todo.length + ' موظف إلى ' + slug_() + ' (' + when_ + ')؟\n\nيستبدل جسر سجل أرباح الموظف كاملًا؛ وتُعاد بدلاته الأخرى دون تغيير. استخدم سطور التجربة إن احتجت إلى العكس.'))) { S.busy = ''; paint_(); return; }
+      const rc = A.createRunControls_(MODULE_ID, todo.map((o) => String(o.p.empId)));
+      if (!(await rc.checkLock())) { S.busy = ''; paint_(); return; }
+      S.phase = 'running'; S.stop = false; applyBox.innerHTML = ''; applyBox.appendChild(rc.container); applyBox.appendChild(rc.summaryEl);
+      const appliedStore = gmGet_('salaryCompareApplied_' + slug_(), {}) || {};
+      let okN = 0, badN = 0;
+      for (let i = 0; i < todo.length; i++) {
+        const o = todo[i]; const key = String(o.p.empId);
+        if (rc.isCancelled() || S.stop) { S.results.set(o.p.empId, { ok: false, msg: T('not sent (stopped)', 'لم يُرسل (تم الإيقاف)') }); continue; }
+        if (rc.isDone(key)) { S.results.set(o.p.empId, { ok: true, msg: T('already done in an earlier run', 'تم في تشغيل سابق') }); continue; }
+        S.busy = T('Writing… ', 'جارٍ الكتابة… ') + (i + 1) + '/' + todo.length + ' · ' + o.p.empName; paint_();
+        try {
+          const res = await A.apiRequest_('POST', '/v2/finance/employees/' + encodeURIComponent(o.op.employeeId) + '/earnings', { body: A.buildSalaryIncrementBody_(o.op) });
+          if (!res.json || res.json.success !== true) throw new Error(T('Jisr answered HTTP ', 'أجاب جسر برمز ') + res.status + T(' but did not confirm success. Treat it as failed.', ' ولم يؤكد النجاح. اعتبرها فاشلة.'));
+          let hist = [], histOk = false; try { hist = await A.fetchCompensationChangeHistories_(o.op.employeeId, o.op.timing === 'future'); histOk = true; } catch (x) { /* unverified */ }
+          const hit = histOk && historyMatches_(hist, o.op, A.normalizeName_);
+          if (!hit && histOk && hist.length) throw new Error(T('Jisr said success, but this change is not in the employee\'s compensation-change history. Treat it as not confirmed and check the employee in Jisr.', 'قال جسر إن العملية نجحت لكن التغيير ليس في سجل تغييرات الموظف. اعتبره غير مؤكد وافحص الموظف في جسر.'));
+          if (o.p.basic) appliedStore[lineKey_(o.p.empId, 'basic', '', A.normalizeName_)] = { value: o.p.basic.value, at: Date.now() };
+          o.p.allowances.forEach((a) => { appliedStore[lineKey_(o.p.empId, 'allow', a.name, A.normalizeName_)] = { value: a.value, at: Date.now() }; });
+          const gosi = res.json.data && res.json.data.gosi_error; const msg = '✓ ' + o.lines.join('; ') + (hit ? ' (' + T('confirmed', 'مؤكد') + ')' : ' (' + T('not independently confirmed', 'غير مؤكد بشكل مستقل') + ')') + (gosi ? ' | GOSI: ' + redact_(gosi) : '');
+          S.results.set(o.p.empId, { ok: true, msg }); rc.recordResult(key, 'ok', msg); okN++;
+        } catch (e) { const msg = redact_(e.message); S.results.set(o.p.empId, { ok: false, msg }); rc.recordResult(key, 'err', msg); badN++; if (/401|403|logged in|session/i.test(msg)) { S.stop = true; } }
+        gmSet_('salaryCompareApplied_' + slug_(), appliedStore); paint_();
+        if (i < todo.length - 1) await rc.pace();
+      }
+      if (!rc.isCancelled() && !S.stop) rc.finish();
+      S.phase = 'idle'; S.busy = ''; S.sel = new Set(); S.dryKey = ''; recompute_();
+      S.noteErr = badN > 0; S.note = okN + T(' of ', ' من ') + todo.length + T(' employee(s) written.', ' موظفًا كُتب.') + (badN ? ' ' + badN + T(' failed: read the Status column.', ' فشلوا: اقرأ عمود الحالة.') : '');
+      paint_();
+    });
+
+    // ---------------- report
+    repB.addEventListener('click', () => {
+      const c = S.cmp; if (!c) return; const ST2 = ST();
+      const wb = XLSX.utils.book_new(); const mk = (aoa, name) => { const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = (aoa[0] || []).map((h) => ({ wch: Math.max(12, Math.min(40, String(h).length + 4)) })); XLSX.utils.book_append_sheet(wb, ws, name); };
+      const head = ['Row', 'Employee', 'Code', 'Component', 'Jisr', 'Sheet', 'Difference', 'Status', 'Result'];
+      const line = (l) => { const r = S.results.get(l.empId); return [l.no, l.empName, l.empCode, l.name, l.jisr === null ? '' : l.jisr, l.sheet === null ? '' : l.sheet, l.diff === null ? '' : l.diff, ST2[l.status] || l.status, r ? r.msg : '']; };
+      mk([head].concat(c.lines.map(line)), 'All lines'); mk([head].concat(c.lines.filter((l) => ['differs', 'missing', 'applied', 'unread'].includes(l.status)).map(line)), 'Differences');
+      mk([['Row', 'ID in the sheet', 'Name in the sheet']].concat(c.notInJisr.map((x) => [x.no, x.id, x.name])), 'Not in Jisr');
+      mk([['Employee in Jisr', 'Code', 'ID / iqama']].concat(c.notInSheet.map((x) => [x.emp.name || '', x.emp.code || '', x.emp.nid || ''])), 'Not in the sheet');
+      XLSX.writeFile(wb, 'salary-comparison-' + slug_() + '.xlsx');
+    });
+    render_();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Salary Comparison', open: openTool_, version: SECTION_VERSION };
+    W.__jisrSalaryCompare = Object.assign(W.__jisrSalaryCompare || {}, { compareRows_, planApply_, checkTiming_, historyMatches_, lineKey_ });
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 28c — Business trip city catalogue (Saudi regions, cities, towns, villages; world cities)  v4.87.0
 // ###########################################################################
 
 /** Business trip city catalogue (v4.22): Saudi regions, cities, towns and villages (homaily/Saudi-Arabia-Regions-Cities-and-Districts) and world cities with population over ~15,000 (datasets/world-cities, GeoNames) by country (dr5hn/countries-states-cities-database). Read-only reference data. */
@@ -47587,7 +49367,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.86.1
+// ##### SECTION 30 — Business Trip Cities (bulk destinations)  v4.87.0
 // ###########################################################################
 
 /*
@@ -48126,7 +49906,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.86.1
+// ##### SECTION 29 — Data Validation (initial sheet × Muqeem × GOSI, read-only)  v4.87.0
 // ###########################################################################
 
 /*
@@ -48696,7 +50476,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 27 — Activation Checklist sidebar  v4.86.1
+// ##### SECTION 27 — Activation Checklist sidebar  v4.87.0
 // ###########################################################################
 
 /**
@@ -49160,7 +50940,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.86.1
+// ##### SECTION 23 — Jisr Letter Converter (launcher + embedded single-file tool)  v4.87.0
 // ###########################################################################
 
 /**
@@ -49218,7 +50998,7 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 39 — Locations Setup (onboarding): set country, region, city and manager for many locations at once  v4.86.1
+// ##### SECTION 39 — Locations Setup (onboarding): set country, region, city and manager for many locations at once  v4.87.0
 // ###########################################################################
 
 /*
