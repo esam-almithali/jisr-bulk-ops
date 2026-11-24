@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.107.0
+// @version      4.107.1
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -187,6 +187,7 @@ function jboActFlush_() {
   let settled = false;
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
   // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
+  // v4.107.1: Access Report: date and time of the invitation. Jisr gives no invitation date anywhere (checked), so the tool logs the date and time of each invitation it sends (kept in this browser, per company) and shows it in the table and the Excel file; invitations sent before stay blank.
   // v4.107.0: Access Report: ID / Iqama number and phone on screen (search finds them too). New: tick employees and invite them from the tool (Jisr's own invite call, confirm window first; the first send goes to one person, later ones in groups of 25, max 100; stops if Jisr's invitation total rises more than expected; a request with no answer is never repeated).
   // v4.106.0: Access Report (new tool, Employees). One Excel report of every employee: main data, invitation status (invited, accepted, waiting, expired, not delivered, never invited, no email), whether they have ever logged in and when they were last active. Read only; Jisr keeps no log-out times or sign-in history, so 'last active' is the closest it gives.
   // v4.105.0: Automations (new tool, Requests & approvals). A rule says: when a custom request type is approved, do the next step for that employee: assign a day off (one date or a range) or a shift in the scheduler, or add a payroll transaction (amount and date read from the request's own fields). It acts only on requests approved after the rule's start date, once per request (ledger by request id), with caps per check and on amounts, a pause switch, a 'Review first' mode and a Preview, and it switches a rule off if Jisr records something differently from what was asked. It checks every 5 minutes while a Jisr tab is open and signed in (one tab at a time).
@@ -50017,12 +50018,12 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 53 — Access Report (who was invited, who accepted, who has signed in; invite from here)  v4.107.0
+// ##### SECTION 53 — Access Report (who was invited, who accepted, who has signed in; invite from here)  v4.107.1
 // ###########################################################################
 
 /*
  * ===========================================================================
- * SECTION 53 — Access Report  v4.107
+ * SECTION 53 — Access Report  v4.107.1
  * ---------------------------------------------------------------------------
  * One Excel report: every employee's main data (incl. ID / Iqama number and phone) + invitation status + last time they were active in Jisr.
  * v4.107 adds ONE write: invite the employees you tick. POST /v2/employees/invite_all with { filter: { id: [employee ids] } } (this is the body Jisr's own
@@ -50035,13 +50036,16 @@ async function shrinkPic_(data) {
  *   GET /api/v2/overview/employee_invites?page=1&rpp=100  -> data.employee_invites[] = { id, employee_info{ id, code, email, status … }, invitee_email, status (accepted | pending | expired | not_delivered), status_i18n, description }
  *   GET /api/v2/overview/employee_invites/statistics        -> { active_employees_count, total_invites, accepted_count, pending_count, expired_count, not_delivered_count, not_invited_employees }
  *   GET /api/v2/employees/{id}                              -> data.employee.last_active_time = "Never logged in" or "22 Nov 2026 – 9:15 PM" (locale en), is_invited
+ * NO invitation date anywhere in Jisr (checked live 2026-11-24: employee_invites items have only id, employee_info, invitee_email, status, status_i18n, description;
+ *   /v2/employees/{id} has none; 10 list column names for it all 422; no per-invite or per-employee invitation route). So the tool keeps its OWN log: the date and time of
+ *   every invitation it sends (GM storage, per company, id -> 'YYYY-MM-DD HH:MM'); older invitations stay blank.
  * NOT available in Jisr (looked for, 404 / not in any list): a sign-in history, log-out times, a session list. The report says so; it shows the LAST time each person was active.
  * Safety: reading is GET only; the one write is the invite above; nothing is saved in this browser or sent anywhere else; the file is built here and downloaded. 3 reads at a time, a Stop button, and one failed read never stops the rest.
  * ===========================================================================
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.107.0';
+  const SECTION_VERSION = '4.107.1';
   const MODULE_ID = 'access-report';
   const W = unsafeWindow;
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
@@ -50192,8 +50196,16 @@ async function shrinkPic_(data) {
     if (authErr) throw authErr;
     const now = Date.now();
     emps.forEach((e) => { e.inv = im.get(e.id) || { best: '', count: 0, detail: '' }; e.status = classify_(e); e.days = e.act && e.act.ts ? daysSince_(e.act.ts, now) : null; });
+    applyLog_({ emps });
     return { emps, invites, stats, failed, stoppedEarly: stopped() && done < total, at: new Date(), includeOffboarded: !!opts.includeOffboarded };
   }
+
+  // ======================================================================= our own invitation log (Jisr gives no invitation date)
+  const logKey_ = () => 'jisrBulkOps_accessInviteLog_' + (slug_() || 'jisr');
+  const stamp_ = (d) => d.getFullYear() + '-' + pad_(d.getMonth() + 1) + '-' + pad_(d.getDate()) + ' ' + pad_(d.getHours()) + ':' + pad_(d.getMinutes());
+  function logRead_() { try { const v = typeof GM_getValue === 'function' ? GM_getValue(logKey_(), {}) : {}; return v && typeof v === 'object' ? v : {}; } catch (e) { return {}; } }
+  function logAdd_(ids, d) { try { if (typeof GM_setValue !== 'function') return; const m = logRead_(); const t = stamp_(d || new Date()); ids.forEach((id) => { m[id] = t; }); GM_setValue(logKey_(), m); } catch (e) { /* the log is a convenience, never stops a send */ } }
+  const applyLog_ = (rep) => { const m = logRead_(); rep.emps.forEach((e) => { e.invitedAt = m[e.id] || ''; }); return rep; };
 
   // ======================================================================= inviting (the one write)
   const INVITABLE = new Set(['not_invited', 'expired', 'not_delivered', 'pending']);
@@ -50216,7 +50228,7 @@ async function shrinkPic_(data) {
       const r = await post_('/v2/employees/invite_all', inviteBody_(batch.map((e) => e.id)));
       if (r.noAnswer) { out.unanswered = true; out.failedCount = batch.length; out.notSent = left(s + 1); break; }
       if (!r.ok) { out.failed = msgOf_(r.json) || ('HTTP ' + r.status); out.failedCount = batch.length; out.notSent = left(s + 1); break; }
-      batch.forEach((e) => out.sent.push(e.id)); out.message = msgOf_(r.json) || out.message;
+      batch.forEach((e) => out.sent.push(e.id)); out.message = msgOf_(r.json) || out.message; logAdd_(batch.map((e) => e.id), new Date());
       const after = await invTotal_();
       if (before != null && after != null) { const d = after - before; if (d > batch.length) { out.tooMany = d; out.notSent = left(s + 1); break; } }
       if (after != null) before = after;
@@ -50241,8 +50253,8 @@ async function shrinkPic_(data) {
   function empRows_(rep) {
     const ST = STATUS();
     const head = [T('Code', 'الرقم'), T('Full name', 'الاسم'), T('Employment status', 'حالة الموظف'), T('ID / Iqama number', 'رقم الهوية / الإقامة'), T('Email', 'البريد'), T('Phone', 'الجوال'), T('Job title', 'المسمى الوظيفي'), T('Department', 'القسم'), T('Location', 'الموقع'), T('Line manager', 'المدير المباشر'),
-      T('Employment type', 'نوع التوظيف'), T('Nationality', 'الجنسية'), T('Gender', 'الجنس'), T('Joining date', 'تاريخ الانضمام'), T('Access status', 'حالة الدخول'), T('Invitation', 'الدعوة'), T('Invitations sent', 'عدد الدعوات'), T('Last active (as Jisr shows it)', 'آخر نشاط (كما يعرضه جسر)'), T('Last active (date and time)', 'آخر نشاط (التاريخ والوقت)'), T('Days since last active', 'أيام منذ آخر نشاط')];
-    const rows = rep.emps.map((e) => [e.code, e.name, e.statusText || e.state, e.nid, e.email, e.phone, e.job, e.dept, e.loc, e.manager, e.empType, e.nationality, e.gender, e.joined, ST[e.status] || e.status, invText_(e.inv.best), e.inv.count || '',
+      T('Employment type', 'نوع التوظيف'), T('Nationality', 'الجنسية'), T('Gender', 'الجنس'), T('Joining date', 'تاريخ الانضمام'), T('Access status', 'حالة الدخول'), T('Invitation', 'الدعوة'), T('Invitations sent', 'عدد الدعوات'), T('Invitation sent from this tool (date and time)', 'دعوة أُرسلت من هذه الأداة (التاريخ والوقت)'), T('Last active (as Jisr shows it)', 'آخر نشاط (كما يعرضه جسر)'), T('Last active (date and time)', 'آخر نشاط (التاريخ والوقت)'), T('Days since last active', 'أيام منذ آخر نشاط')];
+    const rows = rep.emps.map((e) => [e.code, e.name, e.statusText || e.state, e.nid, e.email, e.phone, e.job, e.dept, e.loc, e.manager, e.empType, e.nationality, e.gender, e.joined, ST[e.status] || e.status, invText_(e.inv.best), e.inv.count || '', e.invitedAt || '',
       e.act ? (e.act.never ? T('Never logged in', 'لم يسجّل الدخول') : e.act.raw || '') : '', e.act && e.act.iso ? e.act.iso : '', e.days == null ? '' : e.days]);
     return { head, rows };
   }
@@ -50254,6 +50266,7 @@ async function shrinkPic_(data) {
     a.push([T('By access status', 'حسب حالة الدخول'), T('Employees', 'الموظفون')]); ORDER.forEach((k) => { if (s.by[k] || k !== 'unknown') a.push([ST[k], s.by[k] || 0]); }); a.push([]);
     a.push([T('By recent activity (those who have signed in)', 'حسب آخر نشاط (من سجّلوا الدخول)'), T('Employees', 'الموظفون')]); s.act.forEach((x) => a.push([x.label, x.n])); a.push([]);
     if (st) { a.push([T("Jisr's own invitation totals (whole company)", 'إجمالي الدعوات لدى جسر (الشركة كلها)'), '']); [[T('Invitations sent', 'الدعوات المرسلة'), st.total_invites], [T('Accepted', 'مقبولة'), st.accepted_count], [T('Pending', 'قيد الانتظار'), st.pending_count], [T('Expired', 'منتهية'), st.expired_count], [T('Not delivered', 'لم تصل'), st.not_delivered_count], [T('Employees never invited', 'موظفون لم تُرسل لهم دعوة'), st.not_invited_employees]].forEach((r) => a.push(r)); a.push([]); }
+    a.push([T('Invitation dates', 'تواريخ الدعوات'), T('Jisr does not give the date of an invitation. The column "Invitation sent from this tool" is filled only for invitations sent with this tool in this browser; older ones stay blank.', 'لا يعطي جسر تاريخ الدعوة. عمود "دعوة أُرسلت من هذه الأداة" يمتلئ فقط للدعوات المرسلة بهذه الأداة من هذا المتصفح؛ أما الأقدم فيبقى فارغًا.')]);
     a.push([T('Note', 'ملاحظة'), T('Jisr does not keep log-out times or a sign-in history that this tool can read. "Last active" is the last time Jisr saw the person use the system.', 'لا يحتفظ جسر بأوقات تسجيل الخروج ولا بسجل دخول يمكن لهذه الأداة قراءته. "آخر نشاط" هو آخر مرة رصد فيها جسر استخدام الشخص للنظام.')]);
     if (rep.failed) a.push([T('Could not read', 'تعذّرت قراءة'), rep.failed + T(' employee(s): marked "Could not read"', ' موظف: مُعلَّمون "تعذّرت القراءة"')]);
     if (rep.stoppedEarly) a.push([T('Stopped early', 'أُوقف مبكرًا'), T('Some employees were not read', 'لم تُقرأ بيانات بعض الموظفين')]);
@@ -50267,7 +50280,7 @@ async function shrinkPic_(data) {
   function workbook_(rep) {
     const wb = XLSX.utils.book_new(); const add = (name, aoa, widths, filter) => { const ws = XLSX.utils.aoa_to_sheet(aoa); if (widths) ws['!cols'] = widths.map((w) => ({ wch: w })); if (filter && aoa.length > 1) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: aoa[0].length - 1 } }) }; XLSX.utils.book_append_sheet(wb, ws, name); };
     add(T('Summary', 'الملخص'), summaryAoa_(rep), [46, 22, 12]);
-    const er = empRows_(rep); add(T('Employees', 'الموظفون'), [er.head].concat(er.rows), [10, 26, 14, 18, 28, 16, 24, 20, 16, 22, 16, 14, 9, 13, 26, 14, 9, 24, 17, 10], true);
+    const er = empRows_(rep); add(T('Employees', 'الموظفون'), [er.head].concat(er.rows), [10, 26, 14, 18, 28, 16, 24, 20, 16, 22, 16, 14, 9, 13, 26, 14, 9, 20, 24, 17, 10], true);
     const ir = invRows_(rep); add(T('Invitations', 'الدعوات'), [ir.head].concat(ir.rows), [10, 26, 30, 14, 60], true);
     return wb;
   }
@@ -50349,13 +50362,13 @@ async function shrinkPic_(data) {
         const hdr = el('input', { type: 'checkbox', 'aria-label': T('Select everyone shown who can be invited', 'حدّد كل من يمكن دعوته في القائمة') }); hdr.disabled = !pick.length;
         const syncHdr = () => { hdr.checked = !!pick.length && pick.every((e) => S.sel.has(e.id)); };
         hdr.addEventListener('change', () => { pick.forEach((e) => { if (hdr.checked) S.sel.add(e.id); else S.sel.delete(e.id); }); rowCbs.forEach(([cb, e]) => { cb.checked = S.sel.has(e.id); }); updateBar(); });
-        const heads = [T('Code', 'الرقم'), T('Name', 'الاسم'), T('ID / Iqama', 'الهوية / الإقامة'), T('Phone', 'الجوال'), T('Email', 'البريد'), T('Access status', 'حالة الدخول'), T('Invitation', 'الدعوة'), T('Last active', 'آخر نشاط'), T('Job title', 'المسمى'), T('Department', 'القسم')];
-        const tb = el('table', { class: 'jar-tbl' }, [el('tr', {}, [el('th', { class: 'jar-ck' }, [hdr])].concat(heads.map((h) => el('th', { text: h }))))]);
+        const heads = [T('Code', 'الرقم'), T('Name', 'الاسم'), T('ID / Iqama', 'الهوية / الإقامة'), T('Phone', 'الجوال'), T('Email', 'البريد'), T('Access status', 'حالة الدخول'), T('Invitation', 'الدعوة'), T('Invited from tool', 'دُعي من الأداة'), T('Last active', 'آخر نشاط'), T('Job title', 'المسمى'), T('Department', 'القسم')];
+        const tb = el('table', { class: 'jar-tbl' }, [el('tr', {}, [el('th', { class: 'jar-ck' }, [hdr])].concat(heads.map((h) => el('th', { text: h, title: h === T('Invited from tool', 'دُعي من الأداة') ? T('Date and time of the invitation sent with this tool. Jisr does not give invitation dates, so older invitations are blank.', 'تاريخ ووقت الدعوة المرسلة بهذه الأداة. لا يعطي جسر تواريخ الدعوات، لذا تبقى الأقدم فارغة.') : undefined }))))]);
         list.slice(0, 300).forEach((e) => {
           const cb = el('input', { type: 'checkbox', 'aria-label': e.name }); cb.checked = S.sel.has(e.id) && canInvite_(e); cb.disabled = !canInvite_(e); if (cb.disabled) cb.title = whyNot_(e);
           cb.addEventListener('change', () => { if (cb.checked) S.sel.add(e.id); else S.sel.delete(e.id); syncHdr(); updateBar(); }); rowCbs.push([cb, e]);
           const cell = (v, c) => el('td', { class: c || '', text: String(v == null ? '' : v) });
-          tb.appendChild(el('tr', {}, [el('td', { class: 'jar-ck' }, [cb]), cell(e.code), cell(e.name), cell(e.nid, 'jar-ltr'), cell(e.phone, 'jar-ltr'), cell(e.email), cell(ST[e.status] || e.status), cell(invText_(e.inv.best)), cell(e.act ? (e.act.never ? '—' : e.act.iso || e.act.raw || '') : ''), cell(e.job), cell(e.dept)]));
+          tb.appendChild(el('tr', {}, [el('td', { class: 'jar-ck' }, [cb]), cell(e.code), cell(e.name), cell(e.nid, 'jar-ltr'), cell(e.phone, 'jar-ltr'), cell(e.email), cell(ST[e.status] || e.status), cell(invText_(e.inv.best)), cell(e.invitedAt, 'jar-ltr'), cell(e.act ? (e.act.never ? '—' : e.act.iso || e.act.raw || '') : ''), cell(e.job), cell(e.dept)]));
         });
         holder.appendChild(tb); if (list.length > 300) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px 8px' }, text: T('Showing the first 300 of ', 'يعرض أول 300 من ') + list.length + T('. The Excel file has everyone.', '. ملف Excel يحتوي الجميع.') }));
         if (!list.length) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '8px' }, text: T('Nobody matches.', 'لا أحد مطابق.') }));
@@ -50390,6 +50403,7 @@ async function shrinkPic_(data) {
       S.busy = true; S.stop = false; mainB.disabled = true; stopB.style.display = ''; render(); let res = null, refreshErr = '';
       try {
         res = await inviteSend_(batch, { progress: (t) => setNote(t), stopped: () => S.stop });
+        applyLog_(S.rep);
         setNote(T('Reading the invitations again…', 'جارٍ إعادة قراءة الدعوات…'));
         try { await refreshInvites_(S.rep); } catch (e) { if (e.auth) throw e; refreshErr = T(' Could not re-read the invitations: reload the report.', ' تعذّرت إعادة قراءة الدعوات: أعد إعداد التقرير.'); }
         res.sent.forEach((id) => S.sel.delete(id));
@@ -50436,7 +50450,7 @@ async function shrinkPic_(data) {
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'Access Report', open: openTool_, version: SECTION_VERSION };
-    W.__jisrAccessReport = { build_, inviteSend_, refreshInvites_, canInvite_, inviteBody_, post_, parseActive_, classify_, inviteMap_, summarize_, empRows_, summaryAoa_, invRows_, workbook_, empOf_, cfg };
+    W.__jisrAccessReport = { logRead_, applyLog_, build_, inviteSend_, refreshInvites_, canInvite_, inviteBody_, post_, parseActive_, classify_, inviteMap_, summarize_, empRows_, summaryAoa_, invRows_, workbook_, empOf_, cfg };
     if (g._rerender) g._rerender();
   }
   register_();
