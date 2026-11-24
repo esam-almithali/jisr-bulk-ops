@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.106.0
+// @version      4.107.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -187,6 +187,7 @@ function jboActFlush_() {
   let settled = false;
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
   // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
+  // v4.107.0: Access Report: ID / Iqama number and phone on screen (search finds them too). New: tick employees and invite them from the tool (Jisr's own invite call, confirm window first; the first send goes to one person, later ones in groups of 25, max 100; stops if Jisr's invitation total rises more than expected; a request with no answer is never repeated).
   // v4.106.0: Access Report (new tool, Employees). One Excel report of every employee: main data, invitation status (invited, accepted, waiting, expired, not delivered, never invited, no email), whether they have ever logged in and when they were last active. Read only; Jisr keeps no log-out times or sign-in history, so 'last active' is the closest it gives.
   // v4.105.0: Automations (new tool, Requests & approvals). A rule says: when a custom request type is approved, do the next step for that employee: assign a day off (one date or a range) or a shift in the scheduler, or add a payroll transaction (amount and date read from the request's own fields). It acts only on requests approved after the rule's start date, once per request (ledger by request id), with caps per check and on amounts, a pause switch, a 'Review first' mode and a Preview, and it switches a rule off if Jisr records something differently from what was asked. It checks every 5 minutes while a Jisr tab is open and signed in (one tab at a time).
   // v4.104.0: UI rework by the 20 design laws (charles-design-laws), on the shared layer so all tools follow. One accent per window: the footer shows ONE filled button (Run live when it is ready, otherwise Dry Run), red is kept for deleting only (Run live / Create / Apply were red in 25 tools and blue in 10), Stop is a quiet red outline while it runs, and a button that cannot be used yet is not coloured. Long intro text folds to two lines after the first time a tool is opened ("More" opens it). J panel: the address line is just the site name, the Tools list starts with the 3 tools used last, "new" tags are quiet and disappear once the tool has been opened, and "Load all employees" is a quiet button.
@@ -3152,7 +3153,7 @@ const JBOUI = (function () {
     'leave-edit-bulk': ['Change dates, leave type or comment of leaves that were imported in bulk: a new approved leave request (with an attachment) replaces each one', 'تغيير التواريخ أو نوع الإجازة أو التعليق للإجازات المستوردة جماعيًا: طلب إجازة جديد معتمد (مع مرفق) يحل محل كل واحدة'],
     'leave-create-bulk': ['Create leave requests from a sheet in Jisr\'s import format, with an attachment per employee (File name Attachment), approved at once', 'إنشاء طلبات إجازة من ملف بصيغة استيراد جسر، مع مرفق لكل موظف (File name Attachment) واعتماد فوري'],
     'business-trip-requests': ['Create business trip requests for many employees from Excel: the destination is checked against each employee\'s own policy; approved at once or left in the approval workflow', 'إنشاء طلبات رحلات عمل لعدة موظفين من إكسل: تُفحص الوجهة مقابل سياسة كل موظف؛ تُعتمد فورًا أو تُترك في مسار الاعتماد'],
-    'access-report': ['One Excel report of every employee: main data, who was invited, who accepted, who is still waiting, who never logged in, and when each person was last active', 'تقرير Excel واحد لكل موظف: البيانات الأساسية ومن دُعي ومن قبل ومن ما زال ينتظر ومن لم يسجّل الدخول ومتى كان كل شخص نشطًا آخر مرة'],
+    'access-report': ['One Excel report of every employee: main data, who was invited, who accepted, who is still waiting, who never logged in, and when each person was last active; invite the ones who have not signed in', 'تقرير Excel واحد لكل موظف: البيانات الأساسية ومن دُعي ومن قبل ومن ما زال ينتظر ومن لم يسجّل الدخول ومتى كان كل شخص نشطًا آخر مرة'],
     'automations': ['When a custom request is approved, do the next step by itself: assign the day off or shift in the scheduler, or add a payroll transaction', 'عند اعتماد طلب مخصص، نفّذ الخطوة التالية تلقائيًا: تحديد يوم إجازة أو وردية في الجدول أو إضافة معاملة رواتب'],
     'requests-manage': ['Find the requests in the employees\' files (any type, by date range, status, leave type), export them, and cancel, delete forever or edit them: with the approval workflow or bypassing it', 'إيجاد الطلبات في ملفات الموظفين (أي نوع، بنطاق تاريخ والحالة ونوع الإجازة)، وتصديرها، وإلغاؤها أو حذفها نهائيًا أو تعديلها: مع مسار الاعتماد أو بتجاوزه'],
     'fixed-hours-bulk': ['Weekly schedules and assignments', 'الجداول الأسبوعية والتعيينات'],
@@ -50016,14 +50017,18 @@ async function shrinkPic_(data) {
 
 
 // ###########################################################################
-// ##### SECTION 53 — Access Report (who was invited, who accepted, who has signed in)  v4.106.0
+// ##### SECTION 53 — Access Report (who was invited, who accepted, who has signed in; invite from here)  v4.107.0
 // ###########################################################################
 
 /*
  * ===========================================================================
- * SECTION 53 — Access Report  v4.106
+ * SECTION 53 — Access Report  v4.107
  * ---------------------------------------------------------------------------
- * One Excel report: every employee's main data + invitation status + last time they were active in Jisr. Read only.
+ * One Excel report: every employee's main data (incl. ID / Iqama number and phone) + invitation status + last time they were active in Jisr.
+ * v4.107 adds ONE write: invite the employees you tick. POST /v2/employees/invite_all with { filter: { id: [employee ids] } } (this is the body Jisr's own
+ *   'Invite employees' window sends for its 'Employees' option; read from Jisr's app code, NOT yet confirmed live). Nothing is sent without a confirm window; the
+ *   first send from the tool goes to ONE person; later sends go in groups of 25 (max 100 a time); after every group the company's invitation total is read and the
+ *   tool stops if it rose by more than the group size; a request that gets no answer is never repeated.
  * CONFIRMED (user's browser, onboardingteam, 2026-11-24, read only):
  *   GET /api/v2/employees/list?page=1&rpp=100&columns[]=full_name&columns[]=email…   -> data.employees[] (each requested column is a key), data.pagination
  *       (columns[] must be repeated: columns[]=a,b and columns[0]=a are refused. full_name = { id, code, full_name_i18n, main_status }; status = { main_status, main_status_i18n, tags_i18n, joining_date … })
@@ -50031,18 +50036,18 @@ async function shrinkPic_(data) {
  *   GET /api/v2/overview/employee_invites/statistics        -> { active_employees_count, total_invites, accepted_count, pending_count, expired_count, not_delivered_count, not_invited_employees }
  *   GET /api/v2/employees/{id}                              -> data.employee.last_active_time = "Never logged in" or "22 Nov 2026 – 9:15 PM" (locale en), is_invited
  * NOT available in Jisr (looked for, 404 / not in any list): a sign-in history, log-out times, a session list. The report says so; it shows the LAST time each person was active.
- * Safety: only GET calls; nothing is saved in this browser or sent anywhere; the file is built here and downloaded. 3 reads at a time, a Stop button, and one failed read never stops the rest.
+ * Safety: reading is GET only; the one write is the invite above; nothing is saved in this browser or sent anywhere else; the file is built here and downloaded. 3 reads at a time, a Stop button, and one failed read never stops the rest.
  * ===========================================================================
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.106.0';
+  const SECTION_VERSION = '4.107.0';
   const MODULE_ID = 'access-report';
   const W = unsafeWindow;
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
   const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
-  const cfg = { rpp: 100, workers: 3, maxPages: 60 };
+  const cfg = { rpp: 100, workers: 3, maxPages: 60, inviteBatch: 25, inviteMax: 100 };
 
   // ======================================================================= network (GET only)
   function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
@@ -50068,6 +50073,18 @@ async function shrinkPic_(data) {
     }
     throw new Error(T('No answer from Jisr', 'لا رد من جسر'));
   }
+
+  /** POST without any automatic retry: a request that got no answer may already have been done. -> { status, ok, json, noAnswer } */
+  async function post_(path, body) {
+    const url = apiBase_() + path + '?slug=' + encodeURIComponent(slug_());
+    let res;
+    try { res = await fetch(url, { method: 'POST', credentials: 'include', headers: { accept: 'application/json', 'content-type': 'application/json', slug: slug_(), locale: 'en' }, body: JSON.stringify(body) }); }
+    catch (e) { return { status: 0, ok: false, json: null, noAnswer: true }; }
+    if (res.status === 401) { const err = new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول.')); err.auth = true; throw err; }
+    const json = await res.json().catch(() => null);
+    return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+  }
+  const msgOf_ = (j) => { if (!j) return ''; const e = j.errors; const m = j.message || j.error || (e ? (Array.isArray(e) ? e.map((x) => (x && (x.message || x.detail)) || x).join(', ') : typeof e === 'object' ? Object.values(e).join(', ') : e) : ''); return String(m || '').slice(0, 200); };
 
   // ======================================================================= reading
   const COLS = ['full_name', 'status', 'id_iqama_number', 'email', 'telephone', 'job_title', 'department', 'location', 'joining_date', 'line_manager', 'employment_type', 'nationality', 'gender'];
@@ -50178,6 +50195,42 @@ async function shrinkPic_(data) {
     return { emps, invites, stats, failed, stoppedEarly: stopped() && done < total, at: new Date(), includeOffboarded: !!opts.includeOffboarded };
   }
 
+  // ======================================================================= inviting (the one write)
+  const INVITABLE = new Set(['not_invited', 'expired', 'not_delivered', 'pending']);
+  const canInvite_ = (e) => !!(e && e.email && INVITABLE.has(e.status));
+  const whyNot_ = (e) => !e.email ? T('No email: Jisr cannot invite this person', 'لا بريد: لا يمكن لجسر دعوته') : e.status === 'signed_in' ? T('Already signed in', 'سجّل الدخول بالفعل') : e.status === 'accepted_never' ? T('Already accepted the invitation', 'قبل الدعوة بالفعل') : T('Not available', 'غير متاح');
+  const inviteBody_ = (ids) => ({ filter: { id: ids } });
+  async function invTotal_() { const st = await readStats_(); return st && st.total_invites != null && !isNaN(Number(st.total_invites)) ? Number(st.total_invites) : null; }
+  let inviteVerified_ = false;
+  /** Sends invitations in groups. Stops at the first refusal, the first request with no answer, or the first group after which Jisr's total rose by more than the group.
+   *  -> { sent: [ids], failed: 'why', failedCount, unanswered, tooMany, notSent, message } */
+  async function inviteSend_(emps, hooks) {
+    hooks = hooks || {}; const say = hooks.progress || (() => {}); const stopped = hooks.stopped || (() => false);
+    const out = { sent: [], failed: '', failedCount: 0, unanswered: false, tooMany: 0, notSent: 0, message: '' };
+    const steps = []; for (let i = 0; i < emps.length; i += cfg.inviteBatch) steps.push(emps.slice(i, i + cfg.inviteBatch));
+    const left = (from) => steps.slice(from).reduce((a, b) => a + b.length, 0);
+    let before = await invTotal_();
+    for (let s = 0; s < steps.length; s++) {
+      if (stopped()) { out.notSent = left(s); break; }
+      const batch = steps[s]; say(T('Sending invitations… ', 'جارٍ إرسال الدعوات… ') + out.sent.length + ' / ' + emps.length);
+      const r = await post_('/v2/employees/invite_all', inviteBody_(batch.map((e) => e.id)));
+      if (r.noAnswer) { out.unanswered = true; out.failedCount = batch.length; out.notSent = left(s + 1); break; }
+      if (!r.ok) { out.failed = msgOf_(r.json) || ('HTTP ' + r.status); out.failedCount = batch.length; out.notSent = left(s + 1); break; }
+      batch.forEach((e) => out.sent.push(e.id)); out.message = msgOf_(r.json) || out.message;
+      const after = await invTotal_();
+      if (before != null && after != null) { const d = after - before; if (d > batch.length) { out.tooMany = d; out.notSent = left(s + 1); break; } }
+      if (after != null) before = after;
+      if (s < steps.length - 1) await sleep_(600);
+    }
+    return out;
+  }
+  /** Re-reads the invitations and re-classifies everybody (last active is kept as it was). */
+  async function refreshInvites_(rep) {
+    const invites = await listInvites_(() => false); const im = inviteMap_(invites); rep.invites = invites;
+    rep.emps.forEach((e) => { e.inv = im.get(e.id) || { best: '', count: 0, detail: '' }; e.status = classify_(e); });
+    const st = await readStats_(); if (st) rep.stats = st; return rep;
+  }
+
   // ======================================================================= numbers and the file
   function summarize_(rep) {
     const by = {}; ORDER.forEach((k) => { by[k] = 0; }); rep.emps.forEach((e) => { by[e.status] = (by[e.status] || 0) + 1; });
@@ -50252,11 +50305,14 @@ async function shrinkPic_(data) {
       .jar-bar { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
       .jar-bar input[type=text] { font: inherit; padding: 6px 8px; border: 1px solid #dadce0; border-radius: 6px; min-width: 220px; }
       .jar-sec { margin: 12px 0 6px; font-weight: 700; font-size: 13px; }
+      .jar-tbl td.jar-ltr { direction: ltr; text-align: start; white-space: nowrap; }
+      .jar-tbl th.jar-ck, .jar-tbl td.jar-ck { width: 28px; padding-inline-end: 0; }
+      .jar-dlg p { margin: 6px 0; font-size: 13px; line-height: 1.45; } .jar-dlg ul { margin: 6px 0; padding-inline-start: 18px; font-size: 13px; }
     ` }));
   }
   function openTool_() {
     injectCss_(); try { jboActOpen_(MODULE_ID); } catch (e) { /* ignore */ }
-    const S = { rep: null, busy: false, stop: false, filter: '', q: '', includeOff: false };
+    const S = { rep: null, busy: false, stop: false, filter: '', q: '', includeOff: false, sel: new Set() };
     const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
     const titleEl = el('div', { class: 'jbo-modal-title', text: T('Access report: invitations and sign-ins', 'تقرير الدخول والدعوات') }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': 'Close' });
     const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1100px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
@@ -50278,22 +50334,84 @@ async function shrinkPic_(data) {
       ORDER.forEach((k) => { if (s.by[k] || (k !== 'unknown' && k !== 'accepted_never')) cards.appendChild(mk(k, ST[k], s.by[k] || 0)); });
       wrap.appendChild(cards);
       const act = el('div', { class: 'jbo-muted', text: s.act.map((x) => x.label + ': ' + x.n).join('   ·   ') }); wrap.appendChild(act);
-      const q = el('input', { type: 'text', value: S.q, placeholder: T('Search name, code, email…', 'ابحث بالاسم أو الرقم أو البريد…') }); q.addEventListener('input', () => { S.q = q.value; renderTable(); });
-      wrap.appendChild(el('div', { class: 'jar-bar' }, [q, el('span', { class: 'jbo-muted', text: S.filter ? T('Showing: ', 'المعروض: ') + ST[S.filter] : T('Showing: all (click a box to filter)', 'المعروض: الكل (اضغط مربعًا للتصفية)') })]));
+      const q = el('input', { type: 'text', value: S.q, placeholder: T('Search name, code, ID, phone, email…', 'ابحث بالاسم أو الرقم أو الهوية أو الجوال أو البريد…') }); q.addEventListener('input', () => { S.q = q.value; renderTable(); });
+      const byId = new Map(rep.emps.map((e) => [e.id, e]));
+      const chosen = () => rep.emps.filter((e) => S.sel.has(e.id) && canInvite_(e));
+      const invB = el('button', { class: 'jbo-btn', type: 'button' });
+      const updateBar = () => { const n = chosen().length; invB.textContent = T('Invite selected (', 'ادعُ المحدّدين (') + n + ')'; invB.disabled = !n || S.busy; };
+      invB.addEventListener('click', () => inviteNow(chosen()));
+      wrap.appendChild(el('div', { class: 'jar-bar' }, [q, invB, el('span', { class: 'jbo-muted', text: S.filter ? T('Showing: ', 'المعروض: ') + ST[S.filter] : T('Showing: all (click a box to filter)', 'المعروض: الكل (اضغط مربعًا للتصفية)') })]));
       const holder = el('div', { class: 'jar-scroll' }); wrap.appendChild(holder);
       function renderTable() {
         holder.textContent = ''; const needle = S.q.trim().toLowerCase();
-        const list = rep.emps.filter((e) => (!S.filter || e.status === S.filter) && (!needle || (e.name + ' ' + e.code + ' ' + e.email).toLowerCase().includes(needle)));
-        const tb = el('table', { class: 'jar-tbl' }, [el('tr', {}, [T('Code', 'الرقم'), T('Name', 'الاسم'), T('Email', 'البريد'), T('Access status', 'حالة الدخول'), T('Invitation', 'الدعوة'), T('Last active', 'آخر نشاط'), T('Job title', 'المسمى'), T('Department', 'القسم')].map((h) => el('th', { text: h })))]);
-        list.slice(0, 300).forEach((e) => tb.appendChild(el('tr', {}, [e.code, e.name, e.email, ST[e.status] || e.status, invText_(e.inv.best), e.act ? (e.act.never ? '—' : e.act.iso || e.act.raw || '') : '', e.job, e.dept].map((v) => el('td', { text: String(v == null ? '' : v) })))));
+        const list = rep.emps.filter((e) => (!S.filter || e.status === S.filter) && (!needle || (e.name + ' ' + e.code + ' ' + e.email + ' ' + e.nid + ' ' + e.phone).toLowerCase().includes(needle)));
+        const pick = list.filter(canInvite_); const rowCbs = [];
+        const hdr = el('input', { type: 'checkbox', 'aria-label': T('Select everyone shown who can be invited', 'حدّد كل من يمكن دعوته في القائمة') }); hdr.disabled = !pick.length;
+        const syncHdr = () => { hdr.checked = !!pick.length && pick.every((e) => S.sel.has(e.id)); };
+        hdr.addEventListener('change', () => { pick.forEach((e) => { if (hdr.checked) S.sel.add(e.id); else S.sel.delete(e.id); }); rowCbs.forEach(([cb, e]) => { cb.checked = S.sel.has(e.id); }); updateBar(); });
+        const heads = [T('Code', 'الرقم'), T('Name', 'الاسم'), T('ID / Iqama', 'الهوية / الإقامة'), T('Phone', 'الجوال'), T('Email', 'البريد'), T('Access status', 'حالة الدخول'), T('Invitation', 'الدعوة'), T('Last active', 'آخر نشاط'), T('Job title', 'المسمى'), T('Department', 'القسم')];
+        const tb = el('table', { class: 'jar-tbl' }, [el('tr', {}, [el('th', { class: 'jar-ck' }, [hdr])].concat(heads.map((h) => el('th', { text: h }))))]);
+        list.slice(0, 300).forEach((e) => {
+          const cb = el('input', { type: 'checkbox', 'aria-label': e.name }); cb.checked = S.sel.has(e.id) && canInvite_(e); cb.disabled = !canInvite_(e); if (cb.disabled) cb.title = whyNot_(e);
+          cb.addEventListener('change', () => { if (cb.checked) S.sel.add(e.id); else S.sel.delete(e.id); syncHdr(); updateBar(); }); rowCbs.push([cb, e]);
+          const cell = (v, c) => el('td', { class: c || '', text: String(v == null ? '' : v) });
+          tb.appendChild(el('tr', {}, [el('td', { class: 'jar-ck' }, [cb]), cell(e.code), cell(e.name), cell(e.nid, 'jar-ltr'), cell(e.phone, 'jar-ltr'), cell(e.email), cell(ST[e.status] || e.status), cell(invText_(e.inv.best)), cell(e.act ? (e.act.never ? '—' : e.act.iso || e.act.raw || '') : ''), cell(e.job), cell(e.dept)]));
+        });
         holder.appendChild(tb); if (list.length > 300) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px 8px' }, text: T('Showing the first 300 of ', 'يعرض أول 300 من ') + list.length + T('. The Excel file has everyone.', '. ملف Excel يحتوي الجميع.') }));
         if (!list.length) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '8px' }, text: T('Nobody matches.', 'لا أحد مطابق.') }));
+        syncHdr(); updateBar();
       }
       renderTable();
     }
+    function confirm_(batch, total, first) {
+      return new Promise((resolve) => {
+        const ST = STATUS(); const by = {}; batch.forEach((e) => { by[e.status] = (by[e.status] || 0) + 1; });
+        const names = batch.slice(0, 5).map((e) => el('li', { text: e.name + ' · ' + e.email }));
+        if (batch.length > 5) names.push(el('li', { text: T('and ', 'و') + (batch.length - 5) + T(' more', ' آخرين') }));
+        const lines = [
+          el('p', { text: T('Jisr will email an invitation to ', 'سيرسل جسر دعوة بالبريد إلى ') + batch.length + (batch.length === 1 ? T(' employee.', ' موظف.') : T(' employees.', ' موظفًا.')) }),
+          el('p', { class: 'jbo-muted', text: Object.keys(by).map((k) => ST[k] + ': ' + by[k]).join('   ·   ') }), el('ul', {}, names)];
+        if (first) lines.push(el('p', { text: T('This is the first send from this tool, so it goes to one person only. Once you see their invitation in the list, you can send to the rest.', 'هذا أول إرسال من هذه الأداة، لذا يذهب إلى شخص واحد فقط. عندما ترى دعوته في القائمة يمكنك الإرسال للباقين.') + (total > 1 ? ' ' + T((total - 1) + ' other(s) stay ticked.', 'يبقى ' + (total - 1) + ' آخرون محددين.') : '') }));
+        else if (total > batch.length) lines.push(el('p', { text: T('Only the first ' + cfg.inviteMax + ' go now. Send again for the rest.', 'يُرسل أول ' + cfg.inviteMax + ' الآن فقط. أرسل مرة أخرى للباقين.') }));
+        lines.push(el('p', { text: T('The invitation is a real email, it lasts 2 weeks, and it cannot be taken back.', 'الدعوة بريد حقيقي، وصلاحيتها أسبوعان، ولا يمكن سحبها.') }));
+        const cancel = el('button', { class: 'jbo-btn', type: 'button', text: T('Cancel', 'إلغاء') });
+        const go = el('button', { class: 'jbo-btn jbo-btn-primary', type: 'button', text: batch.length === 1 ? T('Send 1 invitation', 'أرسل دعوة واحدة') : T('Send ' + batch.length + ' invitations', 'أرسل ' + batch.length + ' دعوة') });
+        const dlg = el('div', { class: 'jbo-modal jar-dlg', style: { width: 'min(480px, 94vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: first ? T('Send a first invitation', 'إرسال أول دعوة') : T('Send invitations', 'إرسال الدعوات') })]), el('div', { class: 'jbo-modal-body' }, lines), el('div', { class: 'jbo-modal-foot' }, [cancel, go])]);
+        dlg.__jboRun = true; // a small question window: no activity bar
+        const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); const done = (v) => { bd.remove(); resolve(v); };
+        cancel.addEventListener('click', () => done(false)); go.addEventListener('click', () => done(true)); bd.addEventListener('mousedown', (e) => { if (e.target === bd) done(false); });
+        document.body.appendChild(bd);
+      });
+    }
+    async function inviteNow(list) {
+      if (S.busy || !S.rep || !list.length) return;
+      const first = !inviteVerified_; const batch = first ? list.slice(0, 1) : list.slice(0, cfg.inviteMax);
+      if (!(await confirm_(batch, list.length, first))) return;
+      S.busy = true; S.stop = false; mainB.disabled = true; stopB.style.display = ''; render(); let res = null, refreshErr = '';
+      try {
+        res = await inviteSend_(batch, { progress: (t) => setNote(t), stopped: () => S.stop });
+        setNote(T('Reading the invitations again…', 'جارٍ إعادة قراءة الدعوات…'));
+        try { await refreshInvites_(S.rep); } catch (e) { if (e.auth) throw e; refreshErr = T(' Could not re-read the invitations: reload the report.', ' تعذّرت إعادة قراءة الدعوات: أعد إعداد التقرير.'); }
+        res.sent.forEach((id) => S.sel.delete(id));
+        const byId = new Map(S.rep.emps.map((e) => [e.id, e])); const shown = res.sent.filter((id) => byId.get(id) && byId.get(id).inv.best).length;
+        if (first && res.sent.length && shown && !res.failed && !res.unanswered && !res.tooMany) inviteVerified_ = true;
+        const parts = [];
+        if (res.sent.length) parts.push(T('Jisr accepted the invitation for ' + res.sent.length + ' employee(s).', 'قبل جسر الدعوة لـ ' + res.sent.length + ' موظف.') + (res.message ? ' ' + res.message : ''));
+        if (res.sent.length && !shown && !refreshErr) parts.push(T('But no invitation shows in the list yet. Check Jisr before sending more.', 'لكن لا تظهر دعوة في القائمة بعد. تحقق في جسر قبل إرسال المزيد.'));
+        if (res.failed) parts.push(T('Jisr refused: ', 'رفض جسر: ') + res.failed + (res.notSent ? T(' (' + res.notSent + ' more not sent)', ' (' + res.notSent + ' آخرون لم يُرسلوا)') : ''));
+        if (res.unanswered) parts.push(T('No answer from Jisr for the last request; it may or may not have gone through. Check the Invitation column before sending again.', 'لا رد من جسر على آخر طلب؛ قد يكون نُفّذ وقد لا يكون. تحقق من عمود الدعوة قبل الإرسال مرة أخرى.'));
+        if (res.tooMany) parts.push(T('Stopped: Jisr\'s invitation total rose by ' + res.tooMany + ', more than the group just sent. Check Jisr before doing anything else.', 'أُوقف: ارتفع إجمالي الدعوات في جسر بمقدار ' + res.tooMany + '، أكثر من المجموعة المرسلة. تحقق في جسر قبل أي إجراء آخر.'));
+        if (S.stop && res.notSent && !res.failed && !res.unanswered && !res.tooMany) parts.push(T('Stopped: ' + res.notSent + ' not sent.', 'أُوقف: ' + res.notSent + ' لم تُرسل.'));
+        if (first && inviteVerified_ && list.length > 1) parts.push(T('Look at the Invitation column, then tick the rest and send again.', 'انظر إلى عمود الدعوة، ثم حدّد الباقين وأرسل مرة أخرى.'));
+        setNote(parts.join('\n') + refreshErr, !!(res.failed || res.unanswered || res.tooMany || refreshErr));
+        const stage = res.failed ? 'failed' : res.unanswered ? 'unverified' : res.tooMany ? 'mismatch' : 'ok';
+        try { jboActReport_(MODULE_ID, 'invite', stage, res.sent.length + ' invited' + (res.failed ? '; refused: ' + res.failed : '')); } catch (e) { /* ignore */ }
+      } catch (e) { setNote(String(e.message || e).slice(0, 240), true); }
+      finally { S.busy = false; mainB.disabled = false; stopB.style.display = 'none'; render(); }
+    }
     function render() {
       body.textContent = '';
-      body.appendChild(el('div', { class: 'jar-note', text: T('Read only. It shows each employee\'s main data, who was invited, who accepted, who is still waiting, and when each person was last active in Jisr. Jisr does not keep log-out times or a sign-in history, so "last active" is the closest it gives. About 1 minute for 250 employees.', 'للقراءة فقط. يعرض البيانات الأساسية لكل موظف ومن دُعي ومن قبل ومن ما زال ينتظر ومتى كان كل شخص نشطًا آخر مرة في جسر. لا يحتفظ جسر بأوقات الخروج ولا بسجل دخول، لذا "آخر نشاط" هو الأقرب. حوالي دقيقة لكل 250 موظفًا.') }));
+      body.appendChild(el('div', { class: 'jar-note', text: T('It reads each employee\'s main data, who was invited, who accepted, who is still waiting, and when each person was last active in Jisr. Jisr does not keep log-out times or a sign-in history, so "last active" is the closest it gives. About 1 minute for 250 employees. It only reads, unless you tick people and choose to invite them: nothing is sent before you confirm.', 'يقرأ البيانات الأساسية لكل موظف ومن دُعي ومن قبل ومن ما زال ينتظر ومتى كان كل شخص نشطًا آخر مرة في جسر. لا يحتفظ جسر بأوقات الخروج ولا بسجل دخول، لذا "آخر نشاط" هو الأقرب. حوالي دقيقة لكل 250 موظفًا. يقرأ فقط، إلا إذا حددت أشخاصًا واخترت دعوتهم: لا يُرسل شيء قبل أن تؤكد.') }));
       const off = el('input', { type: 'checkbox' }); off.checked = S.includeOff; off.disabled = S.busy; off.addEventListener('change', () => { S.includeOff = off.checked; });
       body.appendChild(el('div', { class: 'jar-opts' }, [el('label', {}, [off, ' ' + T('Include offboarded employees', 'تضمين الموظفين المنتهية خدماتهم')])]));
       body.appendChild(noteEl);
@@ -50301,7 +50419,7 @@ async function shrinkPic_(data) {
       mainB.textContent = S.rep && !S.busy ? T('Download Excel', 'نزّل ملف Excel') : T('Build the report', 'أعدّ التقرير');
     }
     async function buildNow() {
-      if (S.busy) return; S.busy = true; S.stop = false; S.rep = null; mainB.disabled = true; stopB.style.display = ''; render();
+      if (S.busy) return; S.busy = true; S.stop = false; S.rep = null; S.sel = new Set(); mainB.disabled = true; stopB.style.display = ''; render();
       try {
         const rep = await build_({ includeOffboarded: S.includeOff }, { progress: (t) => setNote(t), stopped: () => S.stop });
         S.rep = rep; setNote(rep.stoppedEarly ? T('Stopped: the report has only the employees read so far.', 'أُوقف: التقرير يحوي الموظفين الذين قُرئوا فقط.') : rep.failed ? T('Done. ', 'تم. ') + rep.failed + T(' employee(s) could not be read (marked in the file).', ' موظف تعذّرت قراءتهم (معلَّمون في الملف).') : T('Done. Click "Download Excel".', 'تم. اضغط "نزّل ملف Excel".'));
@@ -50318,7 +50436,7 @@ async function shrinkPic_(data) {
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'Access Report', open: openTool_, version: SECTION_VERSION };
-    W.__jisrAccessReport = { build_, parseActive_, classify_, inviteMap_, summarize_, empRows_, summaryAoa_, invRows_, workbook_, empOf_, cfg };
+    W.__jisrAccessReport = { build_, inviteSend_, refreshInvites_, canInvite_, inviteBody_, post_, parseActive_, classify_, inviteMap_, summarize_, empRows_, summaryAoa_, invRows_, workbook_, empOf_, cfg };
     if (g._rerender) g._rerender();
   }
   register_();
