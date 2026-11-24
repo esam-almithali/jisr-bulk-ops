@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.111.0
+// @version      4.112.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -187,6 +187,7 @@ function jboActFlush_() {
   let settled = false;
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
   // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
+  // v4.112.0: Fixed Working Hours: when Jisr answers "another request is in progress for the same resource, please retry later", the row is no longer marked failed. It shows "Jisr is still busy, trying again in Ns (try n)", the panel says "waiting for Jisr", and the same change is sent again automatically until Jisr accepts it (up to about 12 minutes, or Stop). Works for create, edit and delete. New button "Retry failed (n)" puts failed rows back in the queue and sends them again.
   // v4.111.0: Fixed Working Hours (and every tool window): a visible percentage while it works. Fixed Hours has its own progress panel (percentage, bar, done of total, ticks and crosses) for reading schedules, the dry run and saving, and its result cells now count in the window's status strip; the strip shows the percentage next to its bar for every tool ("…" while only requests are known).
   // v4.110.0: Import Word, PDF or picture files into the editor, in both Letter Templates and the Letter Converter. One "Import file" button in the Studio bar (and drag-and-drop on the page): Word and PDF go to the tool's own importer; a picture asks what it is: a picture in the letter, a letterhead (top of the header, page wide), or a scan to read (Arabic + English text recognition, tesseract.js pinned with an integrity hash, downloaded on first use). The Letter Converter now also imports PDF (text, or a scanned PDF read page by page) and picture files, and has a new look ported from a Lovable prototype: teal brand, aurora header, six-step stepper with hints, rounded cards, dot-grid canvas, variable pills, light/dark theme. The Studio toolbar and dialogs share the same colours.
   // v4.109.0: Letter Studio takes the useful parts of Jisr's tiptap letter-editor proof of concept. Page break is always available (Insert menu and a toolbar button): it shows as a dashed "Page break" line in the editor and is saved as the <!-- pagebreak --> marker today's Jisr reads. A new "Jisr's new letter editor" switch (Letter Templates and Letter Converter, off by default) adds a font list (31 fonts incl. Arabic: Cairo, Tajawal, Amiri...) saved as font-family stacks and writes the page break as the new editor's <div data-type="page-break"> element; pasting keeps both only while it is on. Show-blocks toggle, preview counts page breaks and page margins (Word-style top/bottom margins), checker knows the new markup.
@@ -39123,7 +39124,7 @@ function jlStudioFactory_() {
       progPct.textContent = det ? pct + '%' : '…';
       progFill.style.width = det ? pct + '%' : '';
       if (det) progEl.setAttribute('aria-valuenow', String(pct)); else progEl.removeAttribute('aria-valuenow');
-      progSub.textContent = det ? S.pd + ' / ' + S.pt + (S.pOk != null ? ' · ✓ ' + S.pOk + (S.pBad ? ' · ✗ ' + S.pBad : '') : '') + ' · ' + T('keep this window open', 'أبقِ هذه النافذة مفتوحة') : T('Please wait: this can take a minute for large companies.', 'يرجى الانتظار: قد يستغرق دقيقة في الشركات الكبيرة.');
+      progSub.textContent = det ? S.pd + ' / ' + S.pt + (S.pOk != null ? ' · ✓ ' + S.pOk + (S.pBad ? ' · ✗ ' + S.pBad : '') : '') + (S.pWait ? ' · ⏳ ' + S.pWait : '') + ' · ' + T('keep this window open', 'أبقِ هذه النافذة مفتوحة') : T('Please wait: this can take a minute for large companies.', 'يرجى الانتظار: قد يستغرق دقيقة في الشركات الكبيرة.');
     }
     /** shows what is running, with a percentage when the total is known (done of total) */
     function prog_(label, done, total, ok, bad) { S.busy = label || ''; S.pd = done || 0; S.pt = total || 0; S.pOk = ok == null ? null : ok; S.pBad = bad || 0; paintProg_(); }
@@ -39131,6 +39132,7 @@ function jlStudioFactory_() {
     const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
     const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
     const resB = el('button', { class: 'jbo-btn', text: T('Results (.xlsx)', 'النتائج (‎.xlsx)') });
+    const retB = el('button', { class: 'jbo-btn', text: '' });
     const monday = () => wdSel.value === 'mon';
 
     function render_() {
@@ -39145,7 +39147,7 @@ function jlStudioFactory_() {
       body.appendChild(el('div', { class: 'jfh-bar' }, [expB, upB, el('label', {}, [T('Jisr\'s first day (weekday 0)', 'أول يوم في جسر (اليوم 0)'), wdSel])]));
       body.appendChild(progEl); body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn);
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
-      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, retB, runB]));
       paint_();
     }
     function paint_() {
@@ -39171,6 +39173,8 @@ function jlStudioFactory_() {
       runB.disabled = !S.dryDone || !ready || !!S.busy;
       dryB.disabled = !S.parsed || !!S.busy;
       stopB.style.display = S.phase === 'running' ? '' : 'none';
+      const nFail = it.filter((r) => r.state === 'failed' && r.p).length;
+      retB.textContent = T('Retry failed (', 'إعادة المحاولة للفاشل (') + nFail + ')'; retB.style.display = nFail && S.phase !== 'running' && !S.busy ? '' : 'none';
       [expB, upB, wdSel].forEach((b) => { b.disabled = !!S.busy; });
       resB.style.display = it.some((r) => ['done', 'failed'].includes(r.state)) ? '' : 'none';
     }
@@ -39408,18 +39412,45 @@ function jlStudioFactory_() {
       if (got.nameEn !== want.nameEn) bad.push(T('name differs', 'الاسم مختلف'));
       return bad.length ? '\n⚠ ' + T('Jisr shows: ', 'يظهر في جسر: ') + bad.join(', ') : T(' · verified', ' · تم التحقق');
     }
+    // v4.112: Jisr refuses a change while it is still busy with the previous one ("another request is in progress for the same resource").
+    // That is not a failure: wait, try the same change again, and carry on until Jisr accepts it (or Stop, or about 12 minutes).
+    const BUSY_RE = /another request|same resource|in progress for|already in progress|retry later|try again later|قيد التقدم|المحاولة لاحق|المحاولة مرة/i;
+    const cfg = { busyDelays: [4000, 6000, 8000, 10000, 15000], busyMaxMs: 12 * 60 * 1000, tickMs: 1000 };
+    W.__jisrFixedHoursCfg = cfg;
+    async function sendRetry_(it, method, path, body) {
+      const t0 = Date.now(); let tries = 0;
+      for (;;) {
+        const r = await request_(method, path, null, body);
+        if (r.ok || !BUSY_RE.test(jisrMsg_(r.json))) { S.pWait = ''; return r; }
+        if (S.stop) { S.pWait = ''; r.stopped = true; return r; }
+        if (Date.now() - t0 > cfg.busyMaxMs) { S.pWait = ''; r.gaveUp = true; return r; }
+        tries++; const wait = cfg.busyDelays[Math.min(tries - 1, cfg.busyDelays.length - 1)];
+        for (let left = wait; left > 0 && !S.stop; left -= cfg.tickMs) {
+          it.msg = '⏳ ' + T('Jisr is still busy with a previous change. Trying again in ', 'جسر ما زال مشغولًا بتغيير سابق. إعادة المحاولة بعد ') + Math.ceil(left / 1000) + T('s (try ', ' ث (محاولة ') + tries + (I.isAr() ? ')' : ')');
+          S.pWait = T('waiting for Jisr', 'بانتظار جسر'); paintProg_(); paint_();
+          await sleep_(Math.min(cfg.tickMs, left));
+        }
+      }
+    }
+    function busyEnd_(it, r) {
+      if (r.stopped) { it.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); return true; }
+      if (r.gaveUp) { it.state = 'failed'; it.msg = '✗ ' + T('Jisr stayed busy for 12 minutes. Press “Retry failed” later.', 'بقي جسر مشغولًا ١٢ دقيقة. اضغط «إعادة المحاولة للفاشل» لاحقًا.'); return true; }
+      return false;
+    }
     async function runOne_(it) {
       const p = it.p;
       try {
         if (p.kind === 'delete') {
-          const r = await request_('DELETE', BASE + '/' + encodeURIComponent(p.m.id), null, null);
+          const r = await sendRetry_(it, 'DELETE', BASE + '/' + encodeURIComponent(p.m.id), null);
+          if (busyEnd_(it, r)) return;
           if (!r.ok) { it.state = 'failed'; it.msg = '✗ ' + (jisrMsg_(r.json) || 'HTTP ' + r.status); return; }
           let still = null; try { still = (await listTemplates_()).some((t) => String(t.id) === String(p.m.id)); } catch (e) { still = null; }
           it.state = still ? 'failed' : 'done'; it.msg = still ? '✗ ' + T('Jisr answered OK but the schedule is still listed', 'ردّ جسر بنجاح لكن الجدول ما زال موجودًا') : '✓ ' + T('deleted', 'حُذف');
           return;
         }
         const b = body_(p.want, S.catalog, !!p.confirm);
-        const r = p.kind === 'create' ? await request_('POST', BASE, null, b) : await request_('PUT', BASE + '/' + encodeURIComponent(p.m.id), null, b);
+        const r = p.kind === 'create' ? await sendRetry_(it, 'POST', BASE, b) : await sendRetry_(it, 'PUT', BASE + '/' + encodeURIComponent(p.m.id), b);
+        if (busyEnd_(it, r)) return;
         if (!r.ok) { it.state = 'failed'; it.msg = '✗ ' + (jisrMsg_(r.json) || 'HTTP ' + r.status); return; }
         const t = r.json && r.json.data && (r.json.data.weekly_shift_template || (isTpl_(r.json.data) ? r.json.data : null));
         const id = p.kind === 'create' ? (t && t.id) : p.m.id;
@@ -39447,6 +39478,8 @@ function jlStudioFactory_() {
       paint_();
     }
     runB.addEventListener('click', runLive_);
+    // put the failed rows back in the queue (same change, same body) and run them again
+    retB.addEventListener('click', () => { S.items.forEach((x) => { if (x.state === 'failed' && x.p) { x.state = 'ready'; x.msg = ''; x.live = false; } }); paint_(); runLive_(); });
     stopB.addEventListener('click', () => { S.stop = true; });
     resB.addEventListener('click', () => {
       const aoa = [['Sheet / row', 'Schedule', 'Action', 'Changes', 'Result']].concat(S.items.map((x) => [x.where, x.label, x.actionLabel, (x.plan || []).join(' | '), String(x.msg || '').replace(/\n/g, ' | ')]));
