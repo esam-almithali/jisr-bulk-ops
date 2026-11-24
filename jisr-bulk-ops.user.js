@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.110.0
+// @version      4.111.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -187,6 +187,7 @@ function jboActFlush_() {
   let settled = false;
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
   // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
+  // v4.111.0: Fixed Working Hours (and every tool window): a visible percentage while it works. Fixed Hours has its own progress panel (percentage, bar, done of total, ticks and crosses) for reading schedules, the dry run and saving, and its result cells now count in the window's status strip; the strip shows the percentage next to its bar for every tool ("…" while only requests are known).
   // v4.110.0: Import Word, PDF or picture files into the editor, in both Letter Templates and the Letter Converter. One "Import file" button in the Studio bar (and drag-and-drop on the page): Word and PDF go to the tool's own importer; a picture asks what it is: a picture in the letter, a letterhead (top of the header, page wide), or a scan to read (Arabic + English text recognition, tesseract.js pinned with an integrity hash, downloaded on first use). The Letter Converter now also imports PDF (text, or a scanned PDF read page by page) and picture files, and has a new look ported from a Lovable prototype: teal brand, aurora header, six-step stepper with hints, rounded cards, dot-grid canvas, variable pills, light/dark theme. The Studio toolbar and dialogs share the same colours.
   // v4.109.0: Letter Studio takes the useful parts of Jisr's tiptap letter-editor proof of concept. Page break is always available (Insert menu and a toolbar button): it shows as a dashed "Page break" line in the editor and is saved as the <!-- pagebreak --> marker today's Jisr reads. A new "Jisr's new letter editor" switch (Letter Templates and Letter Converter, off by default) adds a font list (31 fonts incl. Arabic: Cairo, Tajawal, Amiri...) saved as font-family stacks and writes the page break as the new editor's <div data-type="page-break"> element; pasting keeps both only while it is on. Show-blocks toggle, preview counts page breaks and page margins (Word-style top/bottom margins), checker knows the new markup.
   // v4.108.0: Letter Studio (new, shared by Letter Templates and the Letter Converter). Checked against Jisr's new letter editor preview and built to do more: paragraph styles (title, headings, small), font size in pt, text colour and highlight, strike, sub / superscript, line spacing, indents, tables (insert, rows and columns, merge, header row, borders, cell colour), special characters, Gregorian and Hijri date text, signature and stamp block, English | Arabic two-column block, links and pictures, Arabic-aware find / replace, saved-HTML view, variable autocomplete (type / or {{ in English or Arabic), clean paste from Word, Google Docs and web pages (keeps only what Jisr keeps), preview with sample or real employees (page count, page lines, print / PDF), a letter check that explains and fixes problems before saving, and five ready letters in English and Arabic using real Jisr variables. Letter Converter: new button "Start from a ready letter" and the same bar inside the letter editor.
@@ -3281,6 +3282,8 @@ function jlStudioFactory_() {
     .jbo-run .bar { flex: 1 1 140px; min-width: 120px; height: 6px; border-radius: 999px; background: #e3e5f4; overflow: hidden; position: relative; }
     .jbo-run .bar i { position: absolute; inset: 0 auto 0 0; width: 0; background: linear-gradient(90deg, #4f5bf5, #8b5cf6); border-radius: 999px; transition: width .25s; }
     .jbo-run.indet .bar i { width: 35%; animation: jboRunSlide 1.1s ease-in-out infinite; }
+    .jbo-run .pct { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 38px; text-align: end; color: #4f5bf5; }
+    .jbo-run:not(.busy) .pct { color: #137333; } .jbo-run.bad:not(.busy) .pct { color: #5f6368; }
     .jbo-run .n { display: inline-flex; gap: 12px; font-variant-numeric: tabular-nums; }
     .jbo-run .n b { font-weight: 700; } .jbo-run .ok b { color: #137333; } .jbo-run .no b { color: #c5221f; } .jbo-run .wt b { color: #5f6368; }
     .jbo-run .rq { color: #70757a; font-size: 11.5px; font-variant-numeric: tabular-nums; }
@@ -3333,11 +3336,11 @@ function jlStudioFactory_() {
     try { jboLaws_(modal, tool, T); } catch (e) { /* the window works without it */ }
     const strip = mk('div', 'jbo-run'), stEl = mk('span', 'st'), sp = mk('span', 'sp'), dot = mk('span', 'dot'), stT = mk('span');
     stEl.appendChild(sp); stEl.appendChild(dot); stEl.appendChild(stT);
-    const bar = mk('span', 'bar'); bar.appendChild(mk('i'));
+    const bar = mk('span', 'bar'); bar.appendChild(mk('i')); const pctEl = mk('span', 'pct');
     const nums = mk('span', 'n'), rq = mk('span', 'rq');
     const showB = mk('button', '', ''), copyB = mk('button', '', T('Copy failed', 'نسخ ما فشل')), onlyB = mk('button', '', T('Only failed rows', 'الصفوف الفاشلة فقط'));
     [showB, copyB, onlyB].forEach((b) => { b.type = 'button'; b.style.display = 'none'; });
-    strip.append(stEl, bar, nums, rq, showB, onlyB, copyB);
+    strip.append(stEl, bar, pctEl, nums, rq, showB, onlyB, copyB);
     const list = mk('div', 'jbo-run-list'); list.style.display = 'none';
     head.after(strip); strip.after(list);
     let open = false, timer = 0, lastFails = [];
@@ -3369,6 +3372,9 @@ function jlStudioFactory_() {
         : rowsDone ? (bad ? T('Finished with problems', 'انتهى مع مشاكل') : T('Finished', 'انتهى'))
         : (T0.fail ? T('Finished with failed requests', 'انتهى مع طلبات فاشلة') : T('Done', 'تم'));
       bar.firstChild.style.width = busy && !rowsDone ? '' : rowsTotal ? Math.round(rowsDone / rowsTotal * 100) + '%' : (busy ? '' : '100%');
+      // v4.111: the percentage next to the bar: rows done of rows total; "…" while only requests are known; nothing once a run with no rows is over
+      pctEl.textContent = rowsTotal ? Math.round(rowsDone / rowsTotal * 100) + '%' : (busy ? '…' : '');
+      bar.setAttribute('role', 'progressbar'); if (rowsTotal) bar.setAttribute('aria-valuenow', String(Math.round(rowsDone / rowsTotal * 100))); else bar.removeAttribute('aria-valuenow');
       nums.innerHTML = '';
       if (rowsTotal) {
         const lab = wrote ? [T('succeeded', 'نجح'), T('failed', 'فشل')] : [T('ready', 'جاهز'), T('problems', 'مشاكل')];
@@ -39065,6 +39071,16 @@ function jlStudioFactory_() {
       .jfh-wrap td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
       .jfh-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
       .jfh-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      .jfh-prog { display: none; margin: 8px 0 10px; padding: 10px 12px; border: 1px solid #dfe3f3; border-radius: 12px; background: #f6f7fd; }
+      .jfh-prog.on { display: block; }
+      .jfh-prog .pr { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12.5px; font-weight: 600; color: #3c4043; }
+      .jfh-prog .pc { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; color: #4f5bf5; min-width: 52px; text-align: end; }
+      .jfh-prog .pb { margin-top: 7px; height: 8px; border-radius: 999px; background: #e3e5f4; overflow: hidden; position: relative; }
+      .jfh-prog .pb i { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 999px; background: linear-gradient(90deg, #4f5bf5, #8b5cf6); transition: width .25s; }
+      .jfh-prog.indet .pb i { width: 35%; animation: jfhSlide 1.1s ease-in-out infinite; }
+      .jfh-prog small { display: block; margin-top: 4px; color: #70757a; font-size: 11.5px; }
+      @keyframes jfhSlide { 0% { transform: translateX(-100%); } 100% { transform: translateX(290%); } }
+      @media (prefers-reduced-motion: reduce) { .jfh-prog.indet .pb i { animation: none; } }
       .jfh-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
     ` }));
   }
@@ -39094,6 +39110,23 @@ function jlStudioFactory_() {
     const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls', style: { display: 'none' } });
     const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
     const statsEl = el('div', { class: 'jfh-stats' }); const wrap = el('div', { class: 'jfh-wrap' });
+    // v4.111: a visible progress panel (percentage + bar) for every step that takes time: reading schedules, the dry run, saving
+    const progEl = el('div', { class: 'jfh-prog', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100' });
+    const progTxt = el('span', {}); const progPct = el('span', { class: 'pc' }); const progFill = el('i'); const progSub = el('small', {});
+    progEl.append(el('div', { class: 'pr' }, [progTxt, progPct]), el('div', { class: 'pb' }, [progFill]), progSub);
+    function paintProg_() {
+      const on = !!S.busy; progEl.classList.toggle('on', on);
+      if (!on) { progEl.removeAttribute('aria-valuenow'); return; }
+      const det = S.pt > 0; progEl.classList.toggle('indet', !det);
+      const pct = det ? Math.max(0, Math.min(100, Math.round(S.pd / S.pt * 100))) : null;
+      progTxt.textContent = String(S.busy).trim() || T('Working…', 'جارٍ العمل…');
+      progPct.textContent = det ? pct + '%' : '…';
+      progFill.style.width = det ? pct + '%' : '';
+      if (det) progEl.setAttribute('aria-valuenow', String(pct)); else progEl.removeAttribute('aria-valuenow');
+      progSub.textContent = det ? S.pd + ' / ' + S.pt + (S.pOk != null ? ' · ✓ ' + S.pOk + (S.pBad ? ' · ✗ ' + S.pBad : '') : '') + ' · ' + T('keep this window open', 'أبقِ هذه النافذة مفتوحة') : T('Please wait: this can take a minute for large companies.', 'يرجى الانتظار: قد يستغرق دقيقة في الشركات الكبيرة.');
+    }
+    /** shows what is running, with a percentage when the total is known (done of total) */
+    function prog_(label, done, total, ok, bad) { S.busy = label || ''; S.pd = done || 0; S.pt = total || 0; S.pOk = ok == null ? null : ok; S.pBad = bad || 0; paintProg_(); }
     const dryB = el('button', { class: 'jbo-btn', text: T('Dry Run', 'تشغيل تجريبي') });
     const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
     const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
@@ -39110,14 +39143,15 @@ function jlStudioFactory_() {
         'Check once: open one schedule in Jisr and compare its days with the exported file. If the days are shifted by one, change “Jisr\'s first day (weekday 0)” and export again. Shifts are used as they are; create new shift times in Jisr first.',
         'تحقّق مرة واحدة: افتح جدولًا في جسر وقارن أيامه بالملف المصدّر. إن كانت الأيام مزاحة بيوم، غيّر «أول يوم في جسر (اليوم 0)» وصدّر مجددًا. تُستخدم الورديات كما هي؛ أنشئ أوقات الورديات الجديدة في جسر أولًا.') }));
       body.appendChild(el('div', { class: 'jfh-bar' }, [expB, upB, el('label', {}, [T('Jisr\'s first day (weekday 0)', 'أول يوم في جسر (اليوم 0)'), wdSel])]));
-      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn);
+      body.appendChild(progEl); body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn);
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
       paint_();
     }
     function paint_() {
-      statusEl.textContent = S.busy || S.note;
+      statusEl.textContent = S.busy ? '' : S.note;
       statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      paintProg_();
       statsEl.innerHTML = ''; wrap.innerHTML = '';
       const it = S.items; const cnt = (st) => it.filter((r) => r.state === st).length;
       if (it.length) {
@@ -39128,7 +39162,7 @@ function jlStudioFactory_() {
         it.forEach((r) => {
           const col = r.state === 'done' ? '#137333' : (r.state === 'error' || r.state === 'failed') ? '#c5221f' : r.state === 'skip' ? '#5f6368' : '#202124';
           t.appendChild(el('tr', {}, [el('td', { text: r.where || '' }), el('td', { text: r.label || '' }), el('td', { text: r.actionLabel || '' }), el('td', { text: (r.plan || []).join('\n'), style: { whiteSpace: 'pre-line' } }),
-            el('td', { text: r.msg || (r.state === 'ready' ? T('ready', 'جاهز') : '—'), style: { color: col, whiteSpace: 'pre-line' } })]));
+            el('td', { text: r.msg || (r.state === 'ready' ? (r.live ? T('waiting…', 'بالانتظار…') : T('ready', 'جاهز')) : '—'), class: r.live ? (r.state === 'done' ? 'jbo-status-ok' : (r.state === 'failed' ? 'jbo-status-err' : 'jbo-status-pending')) : '', style: { color: col, whiteSpace: 'pre-line' } })]));
         });
         wrap.appendChild(t);
       }
@@ -39148,7 +39182,7 @@ function jlStudioFactory_() {
         let d = null; try { d = await detail_(t.id); } catch (e) { d = null; }
         const m = readTemplate_(d || t, S.catalog);
         if (!d) m.detailErr = true;
-        out.push(m); n++; statusEl.textContent = T('Reading schedules… ', 'جارٍ قراءة الجداول… ') + n + '/' + list.length;
+        out.push(m); n++; prog_(T('Reading schedules… ', 'جارٍ قراءة الجداول… ') + n + '/' + list.length, n, list.length);
       });
       await extraShifts_(S.catalog);
       out.sort((a, b) => a.nameEn.localeCompare(b.nameEn));
@@ -39161,7 +39195,7 @@ function jlStudioFactory_() {
 
     // ---------------- export
     expB.addEventListener('click', async () => {
-      S.busy = T('Reading schedules…', 'جارٍ قراءة الجداول…'); paint_();
+      S.busy = T('Reading schedules…', 'جارٍ قراءة الجداول…'); S.pd = 0; S.pt = 0; S.pOk = null; paint_();
       try {
         const tpls = await loadAll_();
         const emps = await W.__jisrBulkOpsEmployees.get(false);
@@ -39234,7 +39268,7 @@ function jlStudioFactory_() {
 
     // ---------------- dry run: build one change per schedule
     async function dryRun_() {
-      S.busy = T('Reading schedules…', 'جارٍ قراءة الجداول…'); S.note = ''; S.noteErr = false; paint_();
+      S.busy = T('Reading schedules…', 'جارٍ قراءة الجداول…'); S.pd = 0; S.pt = 0; S.pOk = null; S.note = ''; S.noteErr = false; paint_();
       try {
         const tpls = await loadAll_();
         const emps = await W.__jisrBulkOpsEmployees.get(false);
@@ -39399,15 +39433,15 @@ function jlStudioFactory_() {
       const n = (k) => todo.filter((x) => x.kind === k).length;
       const moves = todo.reduce((a, x) => a + ((x.p && x.p.moved) ? x.p.moved.length : 0), 0);
       if (!confirm(T('Apply to fixed working hours in ', 'تطبيق على ساعات العمل الثابتة في ') + slug_() + ':\n\n' + T('Create ', 'إنشاء ') + n('create') + '\n' + T('Edit ', 'تعديل ') + n('update') + '\n' + T('Delete ', 'حذف ') + n('delete') + (moves ? '\n\n' + moves + T(' employee(s) are moved from another schedule (Jisr unassigns them there).', ' موظف يُنقلون من جدول آخر (يلغي جسر تعيينهم هناك).') : '') + '\n\n' + T('Deleting cannot be undone from the tool.', 'لا يمكن التراجع عن الحذف من الأداة.'))) return;
-      S.phase = 'running'; S.stop = false; S.busy = ' '; paint_();
+      S.phase = 'running'; S.stop = false; todo.forEach((x) => { x.live = true; }); prog_(T('Saving… ', 'جارٍ الحفظ… ') + '0/' + todo.length, 0, todo.length, 0, 0); paint_();
       let done = 0;
       for (const kind of ['create', 'update', 'delete']) {
         for (const it of todo.filter((x) => x.kind === kind)) {
           if (S.stop) { it.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); continue; }
-          await runOne_(it); done++; S.busy = T('Saving… ', 'جارٍ الحفظ… ') + done + '/' + todo.length; paint_();
+          await runOne_(it); done++; prog_(T('Saving… ', 'جارٍ الحفظ… ') + done + '/' + todo.length, done, todo.length, todo.filter((x) => x.state === 'done').length, todo.filter((x) => x.state === 'failed').length); paint_();
         }
       }
-      S.phase = 'done'; S.busy = ''; S.dryDone = false; S.tpls = null;
+      S.phase = 'done'; S.busy = ''; S.pt = 0; S.dryDone = false; S.tpls = null;
       const ok = todo.filter((x) => x.state === 'done').length;
       S.note = ok + T(' of ', ' من ') + todo.length + T(' change(s) applied. Export again to see the result.', ' تغيير طُبّق. صدّر مجددًا لرؤية النتيجة.'); S.noteErr = ok < todo.length;
       paint_();
