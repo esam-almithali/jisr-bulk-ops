@@ -1,15 +1,13 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.95.0
+// @version      4.106.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
 // @exclude      http://jisr.jisr.net/*
 // @match        https://*.jisr.net.sa/*
 // @require      https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js
-// @require      https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js
-// @require      https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js
 // @grant        unsafeWindow
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
@@ -22,11 +20,13 @@
 // @connect      jisr.zendesk.com
 // @connect      api.anthropic.com
 // @connect      countriesnow.space
+// @connect      cdn.jsdelivr.net
 // @connect      google.com
 // @connect      www.google.com
 // @connect      goo.gl
 // @connect      maps.app.goo.gl
 // @run-at       document-idle
+// @noframes
 // ==/UserScript==
 
 // v4.75.0: this tool must never appear or run on jisr.jisr.net (the @exclude lines above keep it from loading; this stops it even if it is injected by hand)
@@ -41,11 +41,11 @@ if (/^jisr\.jisr\.net$/i.test(location.hostname)) { throw new Error('Jisr Bulk O
 // the Jisr page's) notes each write (PUT / POST / PATCH / DELETE to the Jisr API) made while one of those tools is the open tool and sends
 // it in the same form the older tools use (/api/log: one row per write: status, short redacted message, delay). It never changes a request,
 // never reads a request body, and fails open: no backend set, or any error, means nothing happens.
-const JBO_TRACKED_TOOLS = ['payroll-transactions-bulk', 'leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'shifts-bulk', 'fixed-hours-bulk', 'flight-tickets-bulk', 'shifts-clear', 'family-details-bulk', 'letter-templates', 'approval-cycles', 'performance-templates', 'performance-drafts', 'employee-assets-cleanup', 'company-assets-bulk', 'delete-employees', 'business-trip-cities', 'final-settlement-bulk', 'locations-onboarding', 'probation-bulk', 'employee-photos', 'company-documents'];
+const JBO_TRACKED_TOOLS = ['payroll-transactions-bulk', 'leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'business-trip-requests', 'shifts-bulk', 'fixed-hours-bulk', 'flight-tickets-bulk', 'shifts-clear', 'family-details-bulk', 'letter-templates', 'approval-cycles', 'performance-templates', 'performance-drafts', 'employee-assets-cleanup', 'company-assets-bulk', 'delete-employees', 'business-trip-cities', 'final-settlement-bulk', 'locations-onboarding', 'probation-bulk', 'employee-photos', 'company-documents'];
 const JBO_OPEN_ONLY_TOOLS = ['payroll-reconciliation', 'data-validation', 'data-cleanser', 'activation-checklist', 'letter-converter']; // read-only: the dashboard shows that they were used
 // v4.83: tools that check the result themselves (read it back from Jisr) report ONE row per employee / leave with its real outcome stage, so the
 // wrapper below leaves them alone: "HTTP 200" is not the outcome for them (Jisr can answer OK and not apply the change).
-const JBO_SELF_REPORT_TOOLS = ['employee-photos', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'company-documents'];
+const JBO_SELF_REPORT_TOOLS = ['access-report', 'automations', 'employee-photos', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'business-trip-requests', 'company-documents'];
 // Outcome stages the dashboard understands (keep in step with STAGES in the Worker). cls: ok | warn | err | skip. A stage the dashboard does not know is ignored.
 const JBO_STAGE_CLASS = { ok: 'ok', ok_retry: 'ok', pending: 'warn', unverified: 'warn', skipped: 'skip', no_match: 'skip', rejected: 'err', denied: 'err', not_found: 'err', rate_limited: 'err', server_error: 'err', network: 'err', not_reflected: 'err', mismatch: 'err', rolled_back: 'err', restore_failed: 'err', failed: 'err' };
 /** HTTP status -> stage (0 / no status = no answer) */
@@ -61,9 +61,118 @@ function jboStageOfHttp_(status) {
 }
 /** a Jisr answer {status, ok} that is not ok: a 2xx with success:false is Jisr refusing (rejected), anything else by its HTTP status */
 function jboStageOfRes_(res) { const st = Number(res && res.status) || 0; return st >= 200 && st < 400 ? 'rejected' : jboStageOfHttp_(st); }
+// v4.103: the PDF reading library (pdf.js) is fetched the first time a PDF is opened, not on every Jisr page. As @require lines it was read and run (about 160 ms
+// and 1.4 MB of script) on every single page of Jisr although only two tools open PDFs. The files are the same pinned version and are checked against their SHA-256
+// before they run; a file that does not match is refused.
+const JBO_PDFJS_ = { base: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/', files: [['pdf.min.js', '5b5799e6f8c680663207ac5b42ee14eed2a406fa7af48f50c154f0c0b1566946'], ['pdf.worker.min.js', 'feabdf309770ed24bba31a5467836cdc8cf639c705af27d52b585b041bb8527b']] };
+let jboPdfP_ = null;
+function jboPdfLib_() {
+  const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+  const have = () => (typeof pdfjsLib !== 'undefined' && pdfjsLib) || W.pdfjsLib || window.pdfjsLib;
+  if (have()) return Promise.resolve(have());
+  if (jboPdfP_) return jboPdfP_;
+  const get = (u) => new Promise((res, rej) => {
+    if (typeof GM_xmlhttpRequest !== 'function') { rej(new Error('no download permission')); return; }
+    GM_xmlhttpRequest({ method: 'GET', url: u, responseType: 'arraybuffer', timeout: 90000, onload: (r) => (r.status === 200 && r.response ? res(r.response) : rej(new Error('HTTP ' + r.status))), onerror: () => rej(new Error('no answer')), ontimeout: () => rej(new Error('timed out')) });
+  });
+  const hex = async (buf) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', buf))).map((b) => b.toString(16).padStart(2, '0')).join('');
+  jboPdfP_ = (async () => {
+    const texts = [];
+    for (const [name, sha] of JBO_PDFJS_.files) {
+      const buf = await get(JBO_PDFJS_.base + name);
+      const got = await hex(buf);
+      if (got !== sha) throw new Error('the downloaded ' + name + ' does not match the pinned copy (' + got.slice(0, 12) + '…), so it was not run');
+      texts.push(new TextDecoder('utf-8').decode(buf));
+    }
+    texts.forEach((t) => { (0, eval)(t); });
+    const lib = have();
+    if (!lib) throw new Error('the library did not start');
+    return lib;
+  })().catch((e) => { jboPdfP_ = null; throw e; });
+  return jboPdfP_;
+}
+
+// ###########################################################################
+// ##### DESIGN LAWS FOR EVERY TOOL WINDOW (v4.104)
+// ###########################################################################
+// One look for one job in all tool windows, wherever a tool builds its own footer. Buttons keep their classes (tests and tools find them by class);
+// only how they are painted changes, by copying the look of a real primary / plain / danger button of the current skin onto them.
+//  - Similarity: running for real, in every tool, is the same blue primary look; red is for deleting only (it was red in 25 tools and blue in 10).
+//  - Von Restorff: exactly one filled button in the footer: Run live when it can be used, otherwise Dry Run (the next step). Everything else is plain.
+//  - A button that cannot be used yet is plain, not coloured; Stop is a quiet red outline, and only while it can be used.
+//  - Progressive disclosure: a long intro folds to two lines after the person has opened this tool once (the first time it stays open: new people read it).
+function jboLaws_(modal, tool, T) {
+  const probeLook = () => {
+    const holder = document.createElement('div'); holder.className = 'jbo-modal-foot'; holder.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;left:-9999px';
+    const mkb = (cls) => { const b = document.createElement('button'); b.className = cls; b.textContent = 'x'; holder.appendChild(b); return b; };
+    const pb = mkb('jbo-btn jbo-btn-primary'), nb = mkb('jbo-btn'), db = mkb('jbo-btn jbo-btn-danger');
+    modal.appendChild(holder);
+    const rd = (b) => { const c = getComputedStyle(b); return { 'background-color': c.backgroundColor, 'background-image': c.backgroundImage, color: c.color, 'border-top-color': c.borderTopColor, 'border-right-color': c.borderRightColor, 'border-bottom-color': c.borderBottomColor, 'border-left-color': c.borderLeftColor, 'box-shadow': c.boxShadow }; };
+    const look = { primary: rd(pb), plain: rd(nb), danger: rd(db) };
+    holder.remove(); return look;
+  };
+  const PROPS = ['background-color', 'background-image', 'color', 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color', 'box-shadow'];
+  const paint = (b, role, look) => {
+    if (b.getAttribute('data-jbo-role') === role) return;
+    b.setAttribute('data-jbo-role', role);
+    PROPS.forEach((p) => b.style.removeProperty(p));
+    if (role === 'plain') { if (b.classList.contains('jbo-btn-danger') || b.classList.contains('jbo-btn-primary')) PROPS.forEach((p) => b.style.setProperty(p, look.plain[p], 'important')); return; }
+    if (role === 'stop') { const d = look.danger['background-color']; PROPS.forEach((p) => b.style.setProperty(p, p === 'background-color' ? 'transparent' : p === 'background-image' ? 'none' : p === 'box-shadow' ? 'none' : (p === 'color' || /border/.test(p)) ? d : '', 'important')); return; }
+    const src = role === 'primary' ? look.primary : look.danger;
+    PROPS.forEach((p) => b.style.setProperty(p, src[p], 'important'));
+  };
+  const IS_STOP = /^\s*(stop|إيقاف|أوقف)/i, IS_DRY = /dry\s*run|^\s*(\d\s*[·.)-]\s*)?check\b|فحص|تجربة/i;
+  const IS_DESTROY = /delet|remov|permanent|حذف|إزالة|^\s*cancel\s*\d|^\s*cancel\b[^()]*\(|^\s*إلغاء\s*\d/i;
+  const IS_OTHER = /export|results|download|excel|template|upload filled|close|clear|load|\.xlsx|report|إغلاق|تصدير|تنزيل|مسح|تحميل/i;
+  let look = null, queued = false;
+  const foot = () => modal.querySelector(':scope > .jbo-modal-foot');
+  function roles() {
+    queued = false;
+    const f = foot(); if (!f || !modal.isConnected) return;
+    const bs = Array.from(f.querySelectorAll('button')).filter((b) => !b.closest('.jbo-run') && b.offsetParent !== null);
+    if (!bs.length) return;
+    if (!look) look = probeLook();
+    const kind = (b) => { const t = b.textContent.trim(); if (IS_STOP.test(t)) return 'stop'; if (IS_DRY.test(t)) return 'dry'; if (IS_DESTROY.test(t) && b.classList.contains('jbo-btn-danger')) return 'destroy'; if (IS_OTHER.test(t)) return 'other'; if (b.classList.contains('jbo-btn-danger') || b.classList.contains('jbo-btn-primary')) return 'live'; return 'other'; };
+    const ks = bs.map((b) => [b, kind(b)]);
+    const ready = (b) => !b.disabled && b.getAttribute('aria-disabled') !== 'true';
+    const liveReady = ks.some(([b, k]) => (k === 'live' || k === 'destroy') && ready(b));
+    ks.forEach(([b, k]) => {
+      let role = 'plain';
+      if (k === 'live') role = ready(b) ? 'primary' : 'plain';
+      else if (k === 'destroy') role = ready(b) ? 'danger' : 'plain';
+      else if (k === 'dry') role = ready(b) && !liveReady ? 'primary' : 'plain';
+      else if (k === 'stop') role = ready(b) ? 'stop' : 'plain';
+      paint(b, role, look);
+    });
+  }
+  const soon = () => { if (queued) return; queued = true; requestAnimationFrame(roles); };
+  // the footer may be rebuilt or filled later: watch it (only structure and disabled/class, never our own style changes)
+  const arm = () => { const f = foot(); if (!f || f.__jboLaws) return; f.__jboLaws = true; new MutationObserver(soon).observe(f, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'class', 'hidden', 'aria-disabled'] }); };
+  arm(); soon();
+  new MutationObserver(() => { arm(); soon(); }).observe(modal, { childList: true });
+
+  // ---- intro fold
+  try {
+    const key = 'jisrBulkOps_introSeen'; let seen = {}; try { seen = GM_getValue(key, {}) || {}; } catch (e) { seen = {}; }
+    const body = modal.querySelector('.jbo-modal-body'); const first = body && body.firstElementChild;
+    if (first && !first.__jboIntro && !first.querySelector('input,button,select,textarea,table,img,canvas') && !/jbo-(warn|note-warn|banner)|warn/i.test(first.className) && first.textContent.trim().length > 200) {
+      first.__jboIntro = true;
+      const known = !!seen[tool || '_'];
+      if (!known) { seen[tool || '_'] = 1; try { GM_setValue(key, seen); } catch (e) { /* ignore */ } }
+      else {
+        first.classList.add('jbo-intro-clamp');
+        const more = document.createElement('button'); more.type = 'button'; more.className = 'jbo-intro-more'; more.textContent = T('More', 'المزيد'); more.style.display = 'none';
+        more.addEventListener('click', (e) => { e.stopPropagation(); const open = first.classList.toggle('jbo-intro-clamp'); more.textContent = open ? T('More', 'المزيد') : T('Less', 'أقل'); });
+        first.after(more);
+        // the link is shown only if the fold really hides text (at a wide window two lines may hold everything)
+        requestAnimationFrame(() => requestAnimationFrame(() => { if (first.scrollHeight > first.clientHeight + 2) more.style.display = ''; else first.classList.remove('jbo-intro-clamp'); }));
+      }
+    }
+  } catch (e) { /* ignore */ }
+}
 const jboAct_ = { tool: '', at: 0, buf: [], timer: null, sent: 0, failed: 0, lastError: '', lastOk: 0, warned: false };
 function jboActCfg_() { let u = null, k = null; try { u = jboSecureGet_('backendUrl'); k = jboSecureGet_('backendWriteKey'); } catch (e) { /* ignore */ } return { url: u, key: k }; }
-function jboActSlug_() { try { const o = GM_getValue('jisrBulkOps_slugOverride', ''); return o || location.hostname.split('.')[0]; } catch (e) { return ''; } }
+function jboActSlug_() { try { return location.hostname.split('.')[0]; } catch (e) { return ''; } }
 function jboActToast_(text) {
   try { const d = document.createElement('div'); d.textContent = text; d.setAttribute('style', 'position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:2147483647;background:#202124;color:#fff;padding:10px 16px;border-radius:10px;font:13px system-ui,sans-serif;max-width:min(560px,92vw);box-shadow:0 6px 24px rgba(0,0,0,.3)'); document.body.appendChild(d); setTimeout(() => d.remove(), 9000); } catch (e) { /* ignore */ }
 }
@@ -78,7 +187,18 @@ function jboActFlush_() {
   let settled = false;
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
   // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
-  // v4.95.0: new tool "Manage Requests (Edit / Cancel / Delete)" (Leaves & Attendance group, and a button in Create Leave Requests): loads the requests that show in the employees' files (any request type, leave type for leaves, status, from/to date range by created date or request dates, optional employee IDs), exports them to Excel, and cancels (standard cancellation request, or Jisr's immediate cancel), deletes forever (leave requests, read back from the employee's leave history) or edits (leaves, Excel round trip) the selected ones, each with the choice to follow the approval workflow or bypass it. Dry Run, one row at a time, results file, dashboard stages.
+  // v4.106.0: Access Report (new tool, Employees). One Excel report of every employee: main data, invitation status (invited, accepted, waiting, expired, not delivered, never invited, no email), whether they have ever logged in and when they were last active. Read only; Jisr keeps no log-out times or sign-in history, so 'last active' is the closest it gives.
+  // v4.105.0: Automations (new tool, Requests & approvals). A rule says: when a custom request type is approved, do the next step for that employee: assign a day off (one date or a range) or a shift in the scheduler, or add a payroll transaction (amount and date read from the request's own fields). It acts only on requests approved after the rule's start date, once per request (ledger by request id), with caps per check and on amounts, a pause switch, a 'Review first' mode and a Preview, and it switches a rule off if Jisr records something differently from what was asked. It checks every 5 minutes while a Jisr tab is open and signed in (one tab at a time).
+  // v4.104.0: UI rework by the 20 design laws (charles-design-laws), on the shared layer so all tools follow. One accent per window: the footer shows ONE filled button (Run live when it is ready, otherwise Dry Run), red is kept for deleting only (Run live / Create / Apply were red in 25 tools and blue in 10), Stop is a quiet red outline while it runs, and a button that cannot be used yet is not coloured. Long intro text folds to two lines after the first time a tool is opened ("More" opens it). J panel: the address line is just the site name, the Tools list starts with the 3 tools used last, "new" tags are quiet and disappear once the tool has been opened, and "Load all employees" is a quiet button.
+  // v4.103.0: Speed. The tool made the whole Jisr page slower. (1) The Arabic-translation watcher looked at every change on the page even when Jisr was in English; it now runs only while the page is Arabic. (2) The request sniffers (attendance, loans) copied and parsed every Jisr answer; they now ignore answers they never use, stop once the attendance setup is saved, and read the text only when learning needs it. (3) The PDF reader (1.4 MB, about 150 ms on every page) is fetched the first time a PDF is opened and checked against its SHA-256 before it runs. (4) The tool no longer loads inside frames of the page (@noframes).
+  // v4.102.0: Business Trip Requests: the destinations an employee may use now come from the employee's business trip POLICY (one read of the policies: each lists its employees and its cities; an employee is in one policy only), not from the company-wide city list, which Jisr returns the same for everyone. The template has a Policy column (filled from the employee, with the list of policies) and the Destination drop-down shows only the cities of that policy; the Employee ID and Name lists hold only employees that are in a policy; the Dry Run shows the policy used on every row, blocks an employee with no policy, and blocks a Policy in the file that is not the employee's. A request is no longer built from a city id of another policy. Endpoints for creating and approving are unchanged; the policies are read with GET /v2/business_trip_policies.
+  // v4.101.0: Business Trip Requests template: Employee ID and Name are drop-down lists (the Name list shows "Name · Code"), and the Destination drop-down of each row shows only the destinations in the business trip policy of the employee picked in that row (read once per employee when the template is made, kept on a hidden sheet; an employee that could not be read shows every company destination). The upload reads the Employee ID, or the code at the end of the picked Name, never the name alone; the Dry Run still checks every row against the employee's own policy. Endpoints and request bodies are unchanged.
+  // v4.100.0: new tool "Business Trip Requests (Bulk)" (Leaves & Attendance group): an Excel row creates a business trip request on the employee's file (destination, leave and return dates, require ticket, exit / re-entry visa with entry type and period, additions); the destination is checked against that employee's own business trip policy, the Dry Run reads only (also finds trips already on the file), each request is created one row at a time, then approved at once (or left in the approval workflow, a setting) and read back; refused rows are reported and the run continues, it stops on a sign-in problem, no answer from Jisr, or a request that cannot be approved.
+  // v4.99.0: Data Validation reads the Arabic initial data template (هوية الموظف، الهوية/ الإقامة، الاسم الكامل…) and accepts a file that matches no template: a card asks what the file is (initial sheet, Muqeem or GOSI) and which column holds what (guessed from the headers and the cells, the ID column is also recognised by its content), then the file is used in the comparison; mapped files are read in the browser only.
+  // v4.98.0: Data Validation gets a second tab, "Clean Muqeem files": the English Muqeem file keeps English text only and the Arabic file Arabic text only (wrong-language text is removed), Name and Occupation lose "-", "&" and every other symbol, and gaps are filled by Iqama number from the other-language file, a Muqeem/Absher full sheet, the initial data sheet or GOSI (gender, nationality, occupation also from another employee with the same value). The client's headers stay; downloads: English, Arabic, both in one workbook, and a change log. The tool now reads every sheet of a workbook (merged EN + AR) and recognises the full sheet. Read-only, nothing is sent to Jisr.
+  // v4.97.0: new tool "Manage Requests (Edit / Cancel / Delete)" (Leaves & Attendance group, and a button in Create Leave Requests): loads the requests that show in the employees' files (any request type, leave type for leaves, status, from/to date range by created date or request dates, optional employee IDs), exports them to Excel, and cancels (standard cancellation request, or Jisr's immediate cancel), deletes forever (leave requests, read back from the employee's leave history) or edits (leaves, Excel round trip) the selected ones, each with the choice to follow the approval workflow or bypass it. Dry Run, one row at a time, results file, dashboard stages.
+  // v4.96.0: the older tools (Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI Amount, Locations Manager, Job Titles, Payroll Reconciliation, Employee Contracts, Departments) drop their own copies of the request helper for the shared one: a write is never sent twice (no answer or a 5xx is reported for that row instead of being retried, which could create the same salary change, location, job title or department more than once), and a saved account override can no longer point a tool at another client. Suspend Payrun: the account box is read-only and always the page's own. Endpoints and request bodies are unchanged.
+  // v4.95.0: shared foundation (JBO core + UI kit, between the JBO-SHARED markers; source in shared/). Edit Imported Leaves is the first tool on it: the account comes from the page address only (a saved override for another account stops the tool), every request has a timeout, a write is never sent twice, the old leave's values are saved to the script's storage BEFORE the cancel is sent (rollback log as CSV, and a run that was cut off is announced when the tool opens), the confirm step shows "N records will change on <account>" with the account name typed, and the window shows the steps Load, Dry run, Confirm, Run, Done with a progress bar. Endpoints and request bodies are unchanged.
   // v4.94.0: every tool window gets a Back button (closes the tool and reopens the J panel on the same tab, category and search); the Activation Checklist style line is gone from display settings; clarity pass with no colour changes: tool names, counts and settings labels were white-on-cream in the light looks, Glass+Light panel redrawn from the brand palette, disabled buttons, chevrons and key hints stay readable, and the display-settings rows now fit (Classic no longer clipped).
   // v4.93.0: new tool "Company Assets (Bulk)" (Organization group): loads the company's assets with filters (status, type, brand, location, holder, duplicate or missing serial, warranty), exports them for editing, creates assets from Excel (POST /v2/hr/assets), modifies them from Excel (PUT, only changed fields, read back) and deletes ticked assets (DELETE; allocated ones blocked, backup Excel first). Every Excel run is checked row by row before anything is sent; the first row goes alone.
   // v4.92.0: new tool "Returned Assets Cleanup" (Employees group): scans employees' asset history for RETURNED records, filters by type, brand, location, dates, note, employee and whether the asset is still in the company list, and removes only the ticked records from the history (the company asset is never touched; backup Excel first; read back). Deleting is OFF until Jisr's delete-history call is captured: scan, filters and export work now.
@@ -163,8 +283,29 @@ unsafeWindow.__jisrBulkOpsRun = {
   toolStat: (t) => jboRunStat_(t), failsOf: (t) => jboRunStat_(t).fails,
   on: (f) => { jboRun_.subs.push(f); return () => { const i = jboRun_.subs.indexOf(f); if (i >= 0) jboRun_.subs.splice(i, 1); }; }
 };
+// v4.96: every Jisr API call made by a tool gets a time limit (30 s for a read, 120 s for a write, which may carry a file) unless the caller set its
+// own. Before this about 30 tools had none, so one hung request froze the run with no message. A call that runs out of time fails like a lost
+// connection: the tools already retry a read and report a write as "no answer: check in Jisr" without sending it again.
+const JBO_FETCH_TIMEOUT_MS = { read: 30000, write: 120000 };
+function jboFetchWithTimeout_(input, init) {
+  try {
+    const u = typeof input === 'string' ? input : (input && (input.url || String(input))) || '';
+    if (typeof AbortController !== 'function' || (init && init.signal) || !/^https:\/\/(apis\.jisr\.net|api\.jisr\.net\.sa)\//.test(u)) return self.fetch(input, init);
+    const method = String((init && init.method) || 'GET').toUpperCase();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (e) { /* ignore */ } }, method === 'GET' || method === 'HEAD' ? JBO_FETCH_TIMEOUT_MS.read : JBO_FETCH_TIMEOUT_MS.write);
+    const p = self.fetch(input, Object.assign({}, init || {}, { signal: ctrl.signal }));
+    const clear = () => clearTimeout(timer);
+    // the limit covers the whole answer, body included: the timer stops once the body has been read (if nobody reads it, it just runs out, harmlessly)
+    return p.then((res) => {
+      let done = false; const end = () => { if (!done) { done = true; clear(); } };
+      ['text', 'json', 'blob', 'arrayBuffer'].forEach((k) => { const orig = res[k]; if (typeof orig === 'function') res[k] = function () { return orig.apply(res, arguments).finally(end); }; });
+      return res;
+    }, (e) => { clear(); throw e; });
+  } catch (e) { return self.fetch(input, init); }
+}
 const fetch = function jboFetch_(input, init) {
-  const p = self.fetch.apply(self, arguments);
+  const p = jboFetchWithTimeout_(input, init);
   try {
     const u0 = typeof input === 'string' ? input : (input && (input.url || String(input))) || '';
     if (jboAct_.tool && /^https:\/\/(apis\.jisr\.net|api\.jisr\.net\.sa)\/api\//.test(u0)) jboRunTrack_(jboAct_.tool, p, String((init && init.method) || (input && typeof input === 'object' && input.method) || 'GET').toUpperCase(), u0);
@@ -260,6 +401,12 @@ function jboSafeHtml_(html) {
   });
   return doc.body.innerHTML;
 }
+/** v4.96: HTML -> a <div> holding it in a document that never runs anything (no script, no onerror, no image load). The content is unchanged,
+ *  so it is safe to read text from it or to write it back out. Use this, not a live div, whenever Jisr's or a file's HTML only has to be read. */
+function jboInertDiv_(html) {
+  const doc = document.createElement('template').content.ownerDocument;
+  const d = doc.createElement('div'); d.innerHTML = String(html == null ? '' : html); return d;
+}
 /** Activity-log text -> the same text without ID numbers, IBANs or amount changes. Runs before anything leaves the browser. */
 function jboRedact_(msg) {
   return String(msg == null ? '' : msg)
@@ -268,6 +415,570 @@ function jboRedact_(msg) {
     .replace(/-?\d[\d,]*(?:\.\d+)?\s*(?:→|->)\s*-?\d[\d,]*(?:\.\d+)?/g, '[amount change]')
     .slice(0, 500);
 }
+
+// >>> JBO-SHARED:BEGIN  (generated from shared/jbo-core.js + shared/jbo-ui.js by tools/inject-shared.js: do not edit here)
+/*
+ * JBO core: the shared safety layer for every Jisr Bulk Ops tool.   Source of truth: shared/jbo-core.js
+ * It is copied into new.user.js between the JBO-SHARED markers by `node tools/inject-shared.js`. Edit this file, never the copy.
+ *
+ * What it gives a tool:
+ *   guard()          the tenant comes from the page address only; a saved override that disagrees blocks the tool
+ *   createClient()   one request wrapper: credentials:'include', concurrency limit, timeout, backoff on 429/5xx,
+ *                    and a write is NEVER sent twice. Dry run is ON by default: writes are not sent at all.
+ *   createMachine()  idle -> validated -> dry-run -> confirmed -> running -> done | failed. A live run cannot skip the dry run.
+ *   createRunLog()   before/after values saved to storage BEFORE each write, exported as CSV for rollback, and used to resume.
+ *   runRows()        runs rows with a limit, keeps going on row failures, stops on a lost sign-in.
+ * No DOM here. Everything that touches time, storage or the network can be passed in, so tests run in Node.
+ */
+const JBOCore = (function () {
+  'use strict';
+  const VERSION = '1.0.0';
+
+  class JboError extends Error {
+    constructor(message, props) { super(message); this.name = 'JboError'; Object.assign(this, props || {}); }
+  }
+
+  // ------------------------------------------------------------------ tenant guard
+  /** Page host -> { slug, apiBase, host }. Same rule the tools already used; unknown hosts fail loudly. */
+  function tenantFromHost(hostname) {
+    const host = String(hostname || '').toLowerCase();
+    if (host === 'jisr.jisr.net') throw new JboError('Jisr Bulk Ops is turned off on this site.', { code: 'TENANT_BLOCKED' });
+    const parts = host.split('.');
+    let apiBase = '';
+    if (/(^|\.)jisr\.net\.sa$/.test(host)) apiBase = 'https://api.jisr.net.sa/api';
+    else if (/(^|\.)jisr\.net$/.test(host)) apiBase = 'https://apis.jisr.net/api';
+    else throw new JboError('This is not a Jisr client site (' + host + '). Nothing will be sent.', { code: 'TENANT_UNKNOWN_HOST' });
+    if (parts.length < 3 || !/^[a-z0-9][a-z0-9-]*$/.test(parts[0])) throw new JboError('Could not read the client account from this address (' + host + '). Nothing will be sent.', { code: 'TENANT_NO_SLUG' });
+    return { slug: parts[0], apiBase, host };
+  }
+  /**
+   * The only way a tool learns its tenant. opts: { hostname, override, allowed }
+   *   override  the old global "slugOverride" value, if any. It can no longer redirect a tool: a value that differs from the page blocks it.
+   *   allowed   optional list of slugs this tool may run on (for demo-only tools).
+   */
+  function guard(opts) {
+    opts = opts || {};
+    const t = tenantFromHost(opts.hostname);
+    const o = String(opts.override == null ? '' : opts.override).trim().toLowerCase();
+    if (o && o !== t.slug) {
+      throw new JboError('A saved account override ("' + o + '") does not match this site ("' + t.slug + '"). Nothing will be sent. Remove "jisrBulkOps_slugOverride" from the script storage in Tampermonkey, then reload.', { code: 'TENANT_MISMATCH', expected: t.slug, got: o });
+    }
+    if (Array.isArray(opts.allowed) && opts.allowed.length && !opts.allowed.map((s) => String(s).toLowerCase()).includes(t.slug)) {
+      throw new JboError('This tool is not enabled for the account "' + t.slug + '".', { code: 'TENANT_NOT_ALLOWED' });
+    }
+    return t;
+  }
+  /** Pin the tenant at confirm time; call the returned function before every write. */
+  function pinTenant(tenant, getHostname) {
+    return function assertSameTenant() {
+      const now = tenantFromHost(getHostname());
+      if (now.slug !== tenant.slug || now.apiBase !== tenant.apiBase) throw new JboError('The page changed from "' + tenant.slug + '" to "' + now.slug + '" during the run. Stopped.', { code: 'TENANT_CHANGED' });
+      return true;
+    };
+  }
+
+  // ------------------------------------------------------------------ small helpers
+  const realSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  function semaphore(limit) {
+    let active = 0; const queue = [];
+    const next = () => { if (active >= limit || !queue.length) return; active++; queue.shift()(); };
+    return {
+      acquire: () => new Promise((res) => { queue.push(res); next(); }),
+      release: () => { active = Math.max(0, active - 1); next(); },
+    };
+  }
+  function isWriteMethod(method) { return !/^(GET|HEAD|OPTIONS)$/i.test(String(method || 'GET')); }
+
+  // ------------------------------------------------------------------ request wrapper
+  /**
+   * createClient({ tenant, fetch, dryRun = true, concurrency = 2, timeoutMs = 20000, maxAttempts = 4, locale = 'en', sleep, random, onRequest })
+   * client.request(method, path, { query, body, form, headers, read, allow404, locale, timeoutMs })
+   *   read: true   a POST that only reads (search, validate): treated like GET for dry run and retries.
+   *   form         a FormData body (the browser sets the content type).
+   * Returns { status, ok, json, text } or { dryRun: true, ok: true, status: 0 } for a write in dry run.
+   * Throws JboError with:  auth (401: sign-in ended, stop the run) · unknown (a write got no answer: it may or may not have been applied,
+   *   check in Jisr, never resend blindly) · code 'RATE_LIMITED' / 'TIMEOUT' / 'NETWORK'.
+   * Retry rules: reads retry on network errors, timeouts, 429 and 5xx. Writes retry ONLY on 429 (Jisr refused before doing anything).
+   */
+  function createClient(opts) {
+    opts = opts || {};
+    const tenant = opts.tenant;
+    if (!tenant || !tenant.slug || !tenant.apiBase) throw new JboError('createClient needs the tenant from guard().', { code: 'NO_TENANT' });
+    const doFetch = opts.fetch;
+    if (typeof doFetch !== 'function') throw new JboError('createClient needs a fetch function.', { code: 'NO_FETCH' });
+    const sleep = opts.sleep || realSleep, random = opts.random || Math.random;
+    const sem = semaphore(Math.max(1, Math.min(6, opts.concurrency || 2)));
+    const apiOrigin = new URL(tenant.apiBase).origin;
+    const client = {
+      tenant,
+      dryRun: opts.dryRun !== false, // ON unless a tool turns it off after the confirm step
+      stats: { sent: 0, retried: 0, skippedDry: 0 },
+      url(path, query) {
+        const u = new URL(/^https:\/\//i.test(path) ? path : tenant.apiBase + path);
+        if (u.origin !== apiOrigin) throw new JboError('Refusing to call ' + u.origin + ': only ' + apiOrigin + ' is allowed for this site.', { code: 'ORIGIN_BLOCKED' });
+        const q = Object.assign({}, query || {});
+        Object.keys(q).forEach((k) => { const v = q[k]; (Array.isArray(v) ? v : [v]).forEach((x) => u.searchParams.append(k, x == null ? '' : String(x))); });
+        u.searchParams.set('slug', tenant.slug); // always the page's own tenant, last, so nothing can replace it
+        return u.toString();
+      },
+      async request(method, path, o) {
+        o = o || {}; method = String(method || 'GET').toUpperCase();
+        const write = isWriteMethod(method) && !o.read;
+        const url = client.url(path, o.query);
+        if (write && client.dryRun) { client.stats.skippedDry++; return { dryRun: true, ok: true, status: 0, json: null, text: '' }; }
+        if (write && typeof opts.beforeWrite === 'function') opts.beforeWrite(method, url); // pinTenant() goes here
+        const headers = Object.assign({ accept: 'application/json', slug: tenant.slug, locale: o.locale || opts.locale || 'en' }, o.headers || {});
+        let body;
+        if (o.form) body = o.form; else if (o.body !== undefined && o.body !== null) { headers['content-type'] = 'application/json'; body = JSON.stringify(o.body); }
+        const timeoutMs = o.timeoutMs || opts.timeoutMs || 20000;
+        const maxAttempts = Math.max(1, o.maxAttempts || opts.maxAttempts || 4);
+        await sem.acquire();
+        try {
+          let lastErr = null, retryAfterMs = null;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            if (attempt > 1) {
+              client.stats.retried++;
+              const wait = retryAfterMs != null ? retryAfterMs : Math.min(15000, 500 * Math.pow(2, attempt - 2)) * (0.5 + random() * 0.5);
+              await sleep(wait);
+            }
+            retryAfterMs = null;
+            const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+            let timer = null, res = null;
+            try {
+              client.stats.sent++;
+              if (typeof opts.onRequest === 'function') opts.onRequest({ method, url, attempt, write });
+              res = await Promise.race([
+                doFetch(url, { method, credentials: 'include', headers, body, signal: ctrl ? ctrl.signal : undefined }),
+                new Promise((_, rej) => { timer = setTimeout(() => { try { if (ctrl) ctrl.abort(); } catch (e) { /* ignore */ } rej(new JboError('timeout', { code: 'TIMEOUT' })); }, timeoutMs); }),
+              ]);
+            } catch (e) {
+              const timedOut = (e && (e.code === 'TIMEOUT' || e.name === 'AbortError'));
+              if (write) {
+                throw new JboError((timedOut ? 'No answer from Jisr after ' + Math.round(timeoutMs / 1000) + ' s' : 'No answer from Jisr') + ': the change may or may not have been applied. Check this row in Jisr before sending it again.', { unknown: true, code: timedOut ? 'TIMEOUT' : 'NETWORK', method, path });
+              }
+              lastErr = new JboError(timedOut ? 'Jisr did not answer in ' + Math.round(timeoutMs / 1000) + ' s (' + method + ' ' + path + ')' : 'Could not reach Jisr (' + method + ' ' + path + ')', { code: timedOut ? 'TIMEOUT' : 'NETWORK' });
+              continue;
+            } finally { if (timer) clearTimeout(timer); }
+
+            if (res.status === 401) throw new JboError('Not signed in to Jisr in this tab (HTTP 401). Refresh the page, sign in, then resume.', { auth: true, status: 401, code: 'AUTH' });
+            if (res.status === 429 || (!write && res.status >= 500)) {
+              const ra = parseFloat(res.headers && res.headers.get ? res.headers.get('Retry-After') : '');
+              if (!isNaN(ra)) retryAfterMs = Math.min(60000, Math.max(0, ra * 1000));
+              lastErr = new JboError(res.status === 429 ? 'Jisr is limiting requests (HTTP 429). Slow down and resume.' : 'Jisr answered HTTP ' + res.status + ' (' + method + ' ' + path + ')', { status: res.status, code: res.status === 429 ? 'RATE_LIMITED' : 'SERVER' });
+              continue;
+            }
+            let text = ''; try { text = await res.text(); } catch (e) { text = ''; }
+            let json = null; if (text) { try { json = JSON.parse(text); } catch (e) { json = null; } }
+            const httpOk = res.status >= 200 && res.status < 300;
+            if (res.status === 404 && o.allow404) return { status: 404, ok: false, notFound: true, json, text };
+            return { status: res.status, ok: httpOk && !(json && json.success === false), json, text };
+          }
+          throw lastErr || new JboError('Request failed after retries (' + method + ' ' + path + ')', { code: 'RETRIES' });
+        } finally { sem.release(); }
+      },
+      get: (path, query, o) => client.request('GET', path, Object.assign({ query }, o || {})),
+    };
+    return client;
+  }
+  /** Jisr's error text out of an answer, short. */
+  function jisrMessage(json) {
+    if (!json || typeof json !== 'object') return '';
+    const m = json.message || json.error || (json.data && json.data.message) || (json.errors && (Array.isArray(json.errors) ? json.errors.join('; ') : typeof json.errors === 'object' ? Object.values(json.errors).flat().join('; ') : json.errors));
+    return m ? String(m).slice(0, 240) : '';
+  }
+
+  // ------------------------------------------------------------------ adapter for the older tools
+  /**
+   * The nine older tools (modules 01 to 12) each carried a copy of apiRequest_(method, path, opts) that resent a write after a timeout or a
+   * 5xx. createLegacyRequest() returns a function with the same call shape, the same answers and the same errors, on top of the client above:
+   *   returns { status, json, text }; throws on 4xx/5xx with e.status; 401/403 throw with e.isAuthError; opts: query (arrays allowed), body,
+   *   allow404, timeoutMs, maxAttempts, extraHeaders.
+   * What changes: the tenant is guarded on every call, a write is never sent twice, and a write with no answer throws with e.unknown.
+   * Dry run stays the tool's own job here (these tools decide what to send before they call this), so the client is made with dryRun off.
+   * env: { getHostname(), getOverride(), fetch, sleep }
+   */
+  function createLegacyRequest(env) {
+    let client = null;
+    return async function legacyRequest(method, path, opts) {
+      opts = opts || {};
+      const tenant = guard({ hostname: env.getHostname(), override: env.getOverride ? env.getOverride() : '' });
+      if (!client || client.tenant.slug !== tenant.slug || client.tenant.apiBase !== tenant.apiBase) {
+        client = createClient({ tenant, fetch: env.fetch, dryRun: false, concurrency: 6, sleep: env.sleep, random: env.random, beforeWrite: pinTenant(tenant, env.getHostname) });
+      }
+      let r;
+      try {
+        r = await client.request(method, path, { query: opts.query, body: opts.body || undefined, headers: opts.extraHeaders, allow404: opts.allow404, timeoutMs: opts.timeoutMs || 20000, maxAttempts: opts.maxAttempts || 3 });
+      } catch (e) { if (e && e.auth) e.isAuthError = true; throw e; }
+      if (r.status === 403) throw new JboError('Auth rejected (HTTP 403). Make sure you\'re logged into Jisr in this tab and have permission for this action, then try again.', { isAuthError: true, status: 403 });
+      if (r.status >= 400 && !(r.status === 404 && opts.allow404)) throw new JboError('HTTP ' + r.status + ': ' + String(r.text || '').slice(0, 400), { status: r.status });
+      return { status: r.status, json: r.json, text: r.text };
+    };
+  }
+
+  // ------------------------------------------------------------------ state machine
+  const STATES = ['idle', 'validated', 'dry-run', 'confirmed', 'running', 'done', 'failed'];
+  const NEXT = {
+    'idle': ['validated'],
+    'validated': ['dry-run', 'idle', 'validated'],
+    'dry-run': ['confirmed', 'validated', 'idle', 'dry-run'],
+    'confirmed': ['running', 'dry-run', 'validated', 'idle'],
+    'running': ['done', 'failed'],
+    'done': ['idle', 'validated'],
+    'failed': ['idle', 'validated'], // after a failure the input is checked again (dry run) before anything else is sent
+  };
+  function createMachine(onChange) {
+    const m = {
+      state: 'idle',
+      can: (next) => (NEXT[m.state] || []).includes(next),
+      go(next, info) {
+        if (!STATES.includes(next)) throw new JboError('Unknown state "' + next + '"', { code: 'STATE' });
+        if (!m.can(next)) throw new JboError('Cannot go from "' + m.state + '" to "' + next + '". Order: load, dry run, confirm, run.', { code: 'STATE', from: m.state, to: next });
+        const prev = m.state; m.state = next;
+        if (typeof onChange === 'function') { try { onChange(next, prev, info); } catch (e) { /* a painter must never break the run */ } }
+        return m;
+      },
+      is: (s) => m.state === s,
+    };
+    return m;
+  }
+  /** The one sentence every confirm step shows. */
+  function confirmText(o) {
+    const n = Number(o.count) || 0;
+    return n + ' record' + (n === 1 ? '' : 's') + ' will change on ' + o.tenant + (o.action ? ': ' + o.action : '');
+  }
+
+  // ------------------------------------------------------------------ CSV
+  function csvCell(v) {
+    let s = v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // a cell must never be read as a formula by Excel
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  /** rows: array of arrays. Starts with a BOM so Excel opens Arabic correctly. */
+  function toCsv(header, rows) { return '﻿' + [header].concat(rows).map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n'; }
+
+  // ------------------------------------------------------------------ run log (rollback + resume)
+  function fingerprint(keys) {
+    let h = 5381; const s = JSON.stringify(keys);
+    for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+    return h.toString(36) + '-' + s.length;
+  }
+  const LOG_MAX_AGE_MS = 30 * 24 * 3600 * 1000;
+  /**
+   * createRunLog({ tool, tenant, storage: { get(k, fallback), set(k, v), del(k) }, now })
+   *   start(fp, total)            a new live run (replaces a finished log; keeps an unfinished one with the same fingerprint)
+   *   begin(row, key, action, before)   SAVED BEFORE the write is sent: this is the undo record
+   *   finish(row, status, after, message)   status: ok | failed | unknown | skipped | rolled_back | restore_failed
+   *   resumeInfo(fp)              null, or { nextIndex, done: Set of row numbers, interrupted: [entries still "pending"] }
+   *   toCsv() / entries() / clear()
+   * Entries hold before-values (personal data). They stay in the script's own storage, never the page's, and are dropped after 30 days or on clear().
+   */
+  function createRunLog(opts) {
+    const key = 'jboRunLog_' + opts.tool + '_' + opts.tenant.slug;
+    const st = opts.storage, now = opts.now || (() => Date.now());
+    let data = null;
+    const blank = (fp, total) => ({ v: 1, tool: opts.tool, tenant: opts.tenant.slug, fingerprint: fp || '', total: total || 0, startedAt: now(), updatedAt: now(), finished: false, entries: [] });
+    const save = () => { data.updatedAt = now(); st.set(key, data); };
+    const load = () => {
+      if (data) return data;
+      let d = null; try { d = st.get(key, null); } catch (e) { d = null; }
+      if (d && d.v === 1 && d.tenant === opts.tenant.slug && now() - (d.updatedAt || 0) < LOG_MAX_AGE_MS) data = d; else data = null;
+      return data;
+    };
+    const find = (row) => { for (let i = data.entries.length - 1; i >= 0; i--) if (data.entries[i].row === row) return data.entries[i]; return null; };
+    const log = {
+      key,
+      start(fp, total) { const d = load(); if (!d || d.finished || d.fingerprint !== fp) data = blank(fp, total); data.finished = false; save(); return log; },
+      begin(row, rowKey, action, before) {
+        if (!data) data = blank('', 0);
+        data.entries.push({ row, key: String(rowKey), action, before: before === undefined ? null : before, after: null, status: 'pending', message: '', at: new Date(now()).toISOString() });
+        save();
+      },
+      finish(row, status, after, message) {
+        if (!data) return; const e = find(row); if (!e) return;
+        e.status = status; e.after = after === undefined ? null : after; e.message = String(message || '').slice(0, 300); e.doneAt = new Date(now()).toISOString();
+        save();
+      },
+      end() { if (data) { data.finished = true; save(); } },
+      entries() { const d = load(); return d ? d.entries.slice() : []; },
+      resumeInfo(fp) {
+        const d = load(); if (!d || d.finished || d.fingerprint !== fp || !d.entries.length) return null;
+        const done = new Set(d.entries.filter((e) => e.status === 'ok' || e.status === 'skipped').map((e) => e.row));
+        const interrupted = d.entries.filter((e) => e.status === 'pending');
+        return { done, interrupted, startedAt: d.startedAt, total: d.total };
+      },
+      toCsv() {
+        return toCsv(['Tool', 'Account', 'Row', 'Record', 'Action', 'Status', 'Before', 'After', 'Message', 'Started', 'Finished'],
+          log.entries().map((e) => [opts.tool, opts.tenant.slug, e.row, e.key, e.action, e.status === 'pending' ? 'INTERRUPTED: check in Jisr' : e.status, e.before, e.after, e.message, e.at, e.doneAt || '']));
+      },
+      clear() { data = null; try { st.del(key); } catch (e) { /* ignore */ } },
+    };
+    return log;
+  }
+
+  // ------------------------------------------------------------------ row runner
+  /**
+   * runRows({ rows, worker(row, index), concurrency = 1, skip(row, index), shouldStop(), onRow(result, counts), paceMs, stopOnFailure, sleep })
+   * worker returns { status: 'ok' | 'failed' | 'skipped' | 'unknown', message } or throws.
+   * A row failure does not stop the run (unless stopOnFailure). A lost sign-in (error.auth) always stops it: the rest are 'not_sent'.
+   * Returns { results, counts, aborted: null | 'auth' | 'stopped' | 'failure' }.
+   */
+  async function runRows(o) {
+    const rows = o.rows || [], results = new Array(rows.length).fill(null);
+    const counts = { total: rows.length, done: 0, ok: 0, failed: 0, skipped: 0, unknown: 0, not_sent: 0 };
+    const sleep = o.sleep || realSleep;
+    let next = 0, aborted = null;
+    const put = (i, r) => {
+      results[i] = Object.assign({ index: i }, r); counts.done++; counts[r.status] = (counts[r.status] || 0) + 1;
+      if (typeof o.onRow === 'function') { try { o.onRow(results[i], Object.assign({}, counts)); } catch (e) { /* ignore */ } }
+    };
+    const one = async () => {
+      while (next < rows.length) {
+        const i = next++;
+        if (!aborted && typeof o.shouldStop === 'function' && o.shouldStop()) aborted = 'stopped';
+        if (aborted) { put(i, { status: 'not_sent', message: aborted === 'auth' ? 'not sent: sign-in ended' : aborted === 'failure' ? 'not sent: stopped at the first failure' : 'not sent: stopped' }); continue; }
+        if (typeof o.skip === 'function' && o.skip(rows[i], i)) { put(i, { status: 'skipped', message: 'already done in the earlier run' }); continue; }
+        try {
+          const r = (await o.worker(rows[i], i)) || { status: 'ok' };
+          put(i, { status: r.status || 'ok', message: r.message || '', value: r.value });
+          if (r.status === 'failed' && o.stopOnFailure) aborted = aborted || 'failure';
+        } catch (e) {
+          if (e && e.auth) { aborted = 'auth'; put(i, { status: 'failed', message: e.message }); }
+          else if (e && e.unknown) { put(i, { status: 'unknown', message: e.message }); if (o.stopOnFailure) aborted = aborted || 'failure'; }
+          else { put(i, { status: 'failed', message: (e && e.message) || String(e) }); if (o.stopOnFailure) aborted = aborted || 'failure'; }
+        }
+        if (o.paceMs && !aborted && next < rows.length) await sleep(o.paceMs);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(6, o.concurrency || 1)) }, one));
+    return { results, counts, aborted };
+  }
+
+  return { VERSION, JboError, tenantFromHost, guard, pinTenant, createClient, createLegacyRequest, jisrMessage, STATES, createMachine, confirmText, csvCell, toCsv, fingerprint, createRunLog, runRows, isWriteMethod };
+})();
+
+/*
+ * JBO UI kit: one look and one set of states for every Jisr Bulk Ops tool.   Source of truth: shared/jbo-ui.js
+ * Copied into new.user.js between the JBO-SHARED markers by `node tools/inject-shared.js`. Edit this file, never the copy.
+ *
+ * createPanel({ title, tenant, labels }) returns one block a tool puts at the top of its window:
+ *   steps      Load -> Dry run -> Confirm -> Run -> Done, the current one marked (text + colour, never colour alone)
+ *   status     one line, announced to screen readers; errors show here in red, not in the console
+ *   progress   bar + "12 / 300 · 11 ok · 1 failed"; its space is reserved so the window does not jump when a run starts
+ *   table()    per-row results; cells are written with textContent only, dir="auto" so Arabic and English both read correctly
+ *   confirm()  in-window question: "X records will change on <tenant>", optional "type the account name"
+ * Rules kept here so tools cannot get them wrong: only opacity/transform are animated (150-250 ms), nothing moves under
+ * prefers-reduced-motion, logical CSS properties only (inline-start/end) so RTL needs no second stylesheet, no innerHTML with data.
+ */
+const JBOUI = (function () {
+  'use strict';
+  const CSS = `
+  .jbk { font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Tahoma, Arial, sans-serif; color: #1f2328; text-align: start; }
+  .jbk * { box-sizing: border-box; }
+  .jbk_head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-block-end: 8px; }
+  .jbk_title { font-weight: 600; font-size: 14px; unicode-bidi: plaintext; }
+  .jbk_tenant { font: 600 12px ui-monospace, Menlo, Consolas, monospace; background: #1f2328; color: #fff; border-radius: 6px; padding: 2px 8px; direction: ltr; }
+  .jbk_mode { font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 2px 9px; border: 1px solid #b7c3d0; color: #3b4754; background: #f3f6f9; }
+  .jbk_mode[data-live="1"] { border-color: #c5221f; color: #a50e0e; background: #fdecea; }
+  .jbk_steps { display: flex; gap: 4px; list-style: none; margin: 0 0 8px; padding: 0; }
+  .jbk_step { flex: 1 1 0; min-width: 0; text-align: center; font-size: 11.5px; padding: 5px 4px; border-radius: 6px; background: #f1f3f4; color: #5f6368; opacity: .75; transition: opacity 180ms ease, transform 180ms ease; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .jbk_step[data-on="past"] { opacity: 1; background: #e6f4ea; color: #137333; }
+  .jbk_step[data-on="now"] { opacity: 1; background: #1f2328; color: #fff; font-weight: 600; transform: scale(1.03); }
+  .jbk_step[data-on="bad"] { opacity: 1; background: #c5221f; color: #fff; font-weight: 600; }
+  .jbk_status { min-height: 20px; margin-block: 4px; white-space: pre-line; unicode-bidi: plaintext; color: #3b4754; }
+  .jbk_status[data-kind="err"] { color: #a50e0e; font-weight: 600; }
+  .jbk_status[data-kind="ok"] { color: #137333; }
+  .jbk_prog { height: 34px; opacity: 0; transition: opacity 200ms ease; }
+  .jbk_prog[data-show="1"] { opacity: 1; }
+  .jbk_bar { height: 6px; border-radius: 3px; background: #e8eaed; overflow: hidden; }
+  .jbk_bar i { display: block; height: 100%; width: 100%; background: #1a73e8; transform-origin: 0 50%; transform: scaleX(0); transition: transform 200ms ease; }
+  [dir="rtl"] .jbk_bar i, .jbk[dir="rtl"] .jbk_bar i { transform-origin: 100% 50%; }
+  .jbk_bar[data-bad="1"] i { background: #c5221f; }
+  .jbk_count { font-size: 12px; margin-block-start: 4px; color: #3b4754; font-variant-numeric: tabular-nums; }
+  .jbk_tablewrap { max-height: 38vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; margin-block-start: 8px; }
+  .jbk_tablewrap:empty { display: none; }
+  .jbk_table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .jbk_table th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-block-end: 1px solid #e8eaed; }
+  .jbk_table td { padding: 5px 8px; border-block-end: 1px solid #f1f3f4; vertical-align: top; unicode-bidi: plaintext; white-space: pre-line; }
+  .jbk_table tr[data-st] td:last-child { transition: opacity 180ms ease; }
+  .jbk_table tr[data-st="ok"] td:last-child { color: #137333; }
+  .jbk_table tr[data-st="failed"] td:last-child, .jbk_table tr[data-st="unknown"] td:last-child { color: #a50e0e; font-weight: 600; }
+  .jbk_table tr[data-st="skipped"] td:last-child, .jbk_table tr[data-st="not_sent"] td:last-child { color: #5f6368; }
+  .jbk_table tr[data-st="running"] td:last-child { opacity: .6; }
+  .jbk_veil { position: fixed; inset: 0; z-index: 4; background: rgba(255,255,255,.7); opacity: 0; transition: opacity 180ms ease; }
+  .jbk_veil[data-show="1"] { opacity: 1; }
+  .jbk_ov { position: absolute; inset: 0 0 auto 0; z-index: 5; display: flex; justify-content: center; padding: 4px; opacity: 0; transition: opacity 180ms ease; }
+  .jbk_ov[data-show="1"] { opacity: 1; }
+  .jbk_dlg { width: min(460px, 100%); background: #fff; border: 1px solid #d0d7de; border-radius: 12px; padding: 16px; box-shadow: 0 12px 32px rgba(0,0,0,.18); transform: translateY(6px); transition: transform 180ms ease; }
+  .jbk_ov[data-show="1"] .jbk_dlg { transform: none; }
+  .jbk_dlg h3 { margin: 0 0 6px; font-size: 15px; unicode-bidi: plaintext; }
+  .jbk_dlg p { margin: 0 0 10px; white-space: pre-line; unicode-bidi: plaintext; }
+  .jbk_dlg[data-danger="1"] { border-color: #c5221f; }
+  .jbk_dlg[data-danger="1"] h3 { color: #a50e0e; }
+  .jbk_dlg input { width: 100%; padding: 8px 10px; border: 1px solid #8c959f; border-radius: 6px; font: inherit; direction: ltr; }
+  .jbk_row { display: flex; gap: 8px; justify-content: flex-end; margin-block-start: 12px; }
+  .jbk_btn { border: 1px solid #8c959f; background: #fff; color: #1f2328; border-radius: 6px; padding: 7px 14px; font: inherit; cursor: pointer; }
+  .jbk_btn[data-kind="go"] { background: #1a73e8; border-color: #1a73e8; color: #fff; font-weight: 600; }
+  .jbk_btn[data-kind="danger"] { background: #c5221f; border-color: #c5221f; color: #fff; font-weight: 600; }
+  .jbk_btn:disabled { opacity: .5; cursor: default; }
+  .jbk_btn:focus-visible, .jbk_dlg input:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; }
+  /* Dark windows (Glass / Aurora looks): the kit reads the background behind it and sets data-theme itself. */
+  .jbk[data-theme="dark"] { color: #f0f1f3; }
+  .jbk[data-theme="dark"] .jbk_tenant { background: #f0f1f3; color: #16171a; }
+  .jbk[data-theme="dark"] .jbk_mode { border-color: #6b7380; color: #d5d9df; background: rgba(255,255,255,.06); }
+  .jbk[data-theme="dark"] .jbk_mode[data-live="1"] { border-color: #ff8f8f; color: #ffb3b3; background: rgba(255,90,90,.14); }
+  .jbk[data-theme="dark"] .jbk_step { background: rgba(255,255,255,.07); color: #b6bcc6; }
+  .jbk[data-theme="dark"] .jbk_step[data-on="past"] { background: rgba(60,200,120,.18); color: #7ee2a8; }
+  .jbk[data-theme="dark"] .jbk_step[data-on="now"] { background: #f0f1f3; color: #16171a; }
+  .jbk[data-theme="dark"] .jbk_step[data-on="bad"] { background: #e5484d; color: #fff; }
+  .jbk[data-theme="dark"] .jbk_status { color: #d5d9df; }
+  .jbk[data-theme="dark"] .jbk_status[data-kind="err"] { color: #ff9c9c; }
+  .jbk[data-theme="dark"] .jbk_status[data-kind="ok"] { color: #7ee2a8; }
+  .jbk[data-theme="dark"] .jbk_bar { background: rgba(255,255,255,.14); }
+  .jbk[data-theme="dark"] .jbk_bar i { background: #6ea8ff; }
+  .jbk[data-theme="dark"] .jbk_bar[data-bad="1"] i { background: #ff7b7b; }
+  .jbk[data-theme="dark"] .jbk_count { color: #d5d9df; }
+  .jbk[data-theme="dark"] .jbk_tablewrap { border-color: rgba(255,255,255,.16); }
+  .jbk[data-theme="dark"] .jbk_table th { background: #22242a; color: #f0f1f3; border-color: rgba(255,255,255,.16); }
+  .jbk[data-theme="dark"] .jbk_table td { border-color: rgba(255,255,255,.08); }
+  .jbk[data-theme="dark"] .jbk_table tr[data-st="ok"] td:last-child { color: #7ee2a8; }
+  .jbk[data-theme="dark"] .jbk_table tr[data-st="failed"] td:last-child, .jbk[data-theme="dark"] .jbk_table tr[data-st="unknown"] td:last-child { color: #ff9c9c; }
+  .jbk[data-theme="dark"] .jbk_veil { background: rgba(10,10,14,.75); }
+  .jbk[data-theme="dark"] .jbk_dlg { background: #1d1f24; color: #f0f1f3; border-color: #4a505a; }
+  .jbk[data-theme="dark"] .jbk_dlg[data-danger="1"] { border-color: #ff7b7b; }
+  .jbk[data-theme="dark"] .jbk_dlg[data-danger="1"] h3 { color: #ffb3b3; }
+  .jbk[data-theme="dark"] .jbk_dlg input { background: #121317; color: #f0f1f3; border-color: #6b7380; }
+  .jbk[data-theme="dark"] .jbk_btn { background: #2a2d34; color: #f0f1f3; border-color: #6b7380; }
+  .jbk[data-theme="dark"] .jbk_btn[data-kind="go"] { background: #6ea8ff; border-color: #6ea8ff; color: #0b1220; }
+  .jbk[data-theme="dark"] .jbk_btn[data-kind="danger"] { background: #e5484d; border-color: #e5484d; color: #fff; }
+  @media (prefers-reduced-motion: reduce) { .jbk, .jbk *, .jbk_ov, .jbk_ov * { transition: none !important; animation: none !important; } .jbk_step[data-on="now"] { transform: none; } }
+  `;
+  const STEPS = [['idle', 'Load'], ['validated', 'Loaded'], ['dry-run', 'Dry run'], ['confirmed', 'Confirmed'], ['running', 'Running'], ['done', 'Done']];
+  function h(doc, tag, attrs, kids) {
+    const n = doc.createElement(tag);
+    Object.keys(attrs || {}).forEach((k) => { const v = attrs[k]; if (v == null || v === false) return; if (k === 'text') n.textContent = v; else if (k === 'class') n.className = v; else n.setAttribute(k, v === true ? '' : v); });
+    (kids || []).forEach((c) => { if (c != null) n.appendChild(typeof c === 'string' ? doc.createTextNode(c) : c); });
+    return n;
+  }
+  function injectCss(doc) {
+    if (doc.getElementById('jbk_css')) return;
+    const s = doc.createElement('style'); s.id = 'jbk_css'; s.textContent = CSS; (doc.head || doc.documentElement).appendChild(s);
+  }
+
+  /**
+   * createPanel({ document, title, tenant, t })   t(en, ar) is the tool's own translator; labels fall back to English.
+   * Returns { el, setState(state, failed?), setMode(live), status(text, kind), progress(counts | null), table(columns), confirm(opts), destroy() }
+   */
+  function createPanel(o) {
+    const doc = o.document || document; const t = o.t || ((en) => en);
+    injectCss(doc);
+    const AR = { Load: 'تحميل', Loaded: 'تم التحميل', 'Dry run': 'تشغيل تجريبي', Confirmed: 'تم التأكيد', Running: 'جارٍ التنفيذ', Done: 'انتهى', Failed: 'فشل' };
+    const tenantEl = h(doc, 'span', { class: 'jbk_tenant', text: o.tenant || '?', title: t('The client account this window works on', 'حساب العميل الذي تعمل عليه هذه النافذة') });
+    const modeEl = h(doc, 'span', { class: 'jbk_mode' });
+    const stepEls = STEPS.map(([id, en]) => h(doc, 'li', { class: 'jbk_step', 'data-step': id, text: t(en, AR[en]) }));
+    const statusEl = h(doc, 'div', { class: 'jbk_status', role: 'status', 'aria-live': 'polite' });
+    const barFill = h(doc, 'i'); const bar = h(doc, 'div', { class: 'jbk_bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, [barFill]);
+    const countEl = h(doc, 'div', { class: 'jbk_count' });
+    const prog = h(doc, 'div', { class: 'jbk_prog', 'aria-hidden': 'true' }, [bar, countEl]);
+    const el = h(doc, 'div', { class: 'jbk', style: 'position:relative' }, [
+      h(doc, 'div', { class: 'jbk_head' }, [o.title ? h(doc, 'span', { class: 'jbk_title', dir: 'auto', text: o.title }) : h(doc, 'span'), h(doc, 'span', {}, [modeEl, ' ', tenantEl])]),
+      h(doc, 'ol', { class: 'jbk_steps', 'aria-label': t('Steps', 'الخطوات') }, stepEls), statusEl, prog,
+    ]);
+    /** Light or dark, from the first solid background behind the panel (the tool windows have several looks). */
+    const syncTheme = () => {
+      try {
+        // The windows can be translucent (Glass / Aurora), so the layers behind the panel are blended, outermost first, over white.
+        const layers = []; let n = el, inverted = false;
+        while (n && n.nodeType === 1) { const cs = doc.defaultView.getComputedStyle(n); if (String(cs.filter || '').includes('invert(')) inverted = !inverted; const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/.exec(cs.backgroundColor || ''); if (m) { const al = m[4] === undefined ? 1 : parseFloat(m[4]); if (al > 0) layers.unshift([+m[1], +m[2], +m[3], al]); } n = n.parentNode; }
+        let c = [255, 255, 255]; layers.forEach((l) => { c = c.map((v, i) => v * (1 - l[3]) + l[i] * l[3]); });
+        // The Bulk Ops dark look inverts the whole window body with a CSS filter: content there is drawn light and flipped by the window, so the light palette is right.
+        const dark = !inverted && (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) < 120;
+        el.dataset.theme = dark ? 'dark' : 'light';
+      } catch (e) { /* keep the light palette */ }
+    };
+    const panel = {
+      el, statusEl, syncTheme, state: 'idle',
+      setMode(live) { modeEl.dataset.live = live ? '1' : '0'; modeEl.textContent = live ? t('LIVE: changes are sent', 'مباشر: تُرسل التغييرات') : t('Dry run: nothing is sent', 'تشغيل تجريبي: لا يُرسل شيء'); },
+      /** state is one of JBOCore.STATES. 'failed' marks the Running step red and relabels Done. */
+      setState(state) {
+        panel.state = state; syncTheme();
+        const order = STEPS.map((s) => s[0]); const at = state === 'failed' ? order.indexOf('running') : order.indexOf(state);
+        stepEls.forEach((s, i) => {
+          s.dataset.on = state === 'failed' && i === at ? 'bad' : i < at ? 'past' : i === at ? 'now' : '';
+          if (i === at) s.setAttribute('aria-current', 'step'); else s.removeAttribute('aria-current');
+        });
+        stepEls[stepEls.length - 1].textContent = state === 'failed' ? t('Failed', AR.Failed) : t('Done', AR.Done);
+        if (state === 'failed') stepEls[stepEls.length - 1].dataset.on = 'bad';
+        panel.setMode(state === 'confirmed' || state === 'running');
+      },
+      status(text, kind) { syncTheme(); statusEl.textContent = text || ''; statusEl.dataset.kind = kind || ''; statusEl.setAttribute('role', kind === 'err' ? 'alert' : 'status'); },
+      /** counts: { done, total, ok, failed, skipped, unknown } or null to hide (the space stays reserved). */
+      progress(c) {
+        if (!c) { prog.dataset.show = '0'; prog.setAttribute('aria-hidden', 'true'); return; }
+        const pct = c.total ? Math.min(1, c.done / c.total) : 0;
+        prog.dataset.show = '1'; prog.removeAttribute('aria-hidden');
+        barFill.style.transform = 'scaleX(' + pct.toFixed(4) + ')'; bar.setAttribute('aria-valuenow', String(Math.round(pct * 100)));
+        const bad = (c.failed || 0) + (c.unknown || 0); bar.dataset.bad = bad ? '1' : '0';
+        countEl.textContent = c.done + ' / ' + c.total + ' · ' + (c.ok || 0) + ' ' + t('ok', 'نجح') + (bad ? ' · ' + bad + ' ' + t('failed', 'فشل') : '') + (c.skipped ? ' · ' + c.skipped + ' ' + t('skipped', 'تخطي') : '') + (c.not_sent ? ' · ' + c.not_sent + ' ' + t('not sent', 'لم يُرسل') : '');
+      },
+      /** columns: [{ key, label }]; the last column is the result. rows need a unique `id`. */
+      table(columns) {
+        const wrap = h(doc, 'div', { class: 'jbk_tablewrap' }); el.appendChild(wrap);
+        const byId = new Map();
+        const fill = (tr, row) => { tr.textContent = ''; tr.dataset.st = row.status || ''; columns.forEach((c) => tr.appendChild(h(doc, 'td', { dir: 'auto', text: row[c.key] == null ? '' : String(row[c.key]) }))); };
+        return {
+          el: wrap,
+          render(rows) {
+            wrap.textContent = ''; byId.clear(); if (!rows || !rows.length) return;
+            const tb = h(doc, 'tbody'); const tbl = h(doc, 'table', { class: 'jbk_table' }, [h(doc, 'thead', {}, [h(doc, 'tr', {}, columns.map((c) => h(doc, 'th', { scope: 'col', text: c.label })))]), tb]);
+            rows.forEach((r) => { const tr = h(doc, 'tr'); fill(tr, r); byId.set(String(r.id), tr); tb.appendChild(tr); });
+            wrap.appendChild(tbl);
+          },
+          update(row) { const tr = byId.get(String(row.id)); if (tr) fill(tr, row); },
+        };
+      },
+      /**
+       * confirm({ title, text, count, tenant, action, danger, typeToConfirm, okLabel }) -> Promise<boolean>
+       * The first line is always "<count> records will change on <tenant>". typeToConfirm: the word the person must type (the account name).
+       */
+      confirm(c) {
+        return new Promise((resolve) => {
+          const sentence = c.count + ' ' + t(c.count === 1 ? 'record will change on' : 'records will change on', 'سجل سيتغير في') + ' ';
+          const input = c.typeToConfirm ? h(doc, 'input', { type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-label': t('Type the account name', 'اكتب اسم الحساب') }) : null;
+          const ok = h(doc, 'button', { class: 'jbk_btn', 'data-kind': c.danger ? 'danger' : 'go', type: 'button', text: c.okLabel || t('Send to Jisr', 'إرسال إلى جسر') });
+          const no = h(doc, 'button', { class: 'jbk_btn', type: 'button', text: t('Cancel', 'إلغاء') });
+          const dlg = h(doc, 'div', { class: 'jbk_dlg', role: 'alertdialog', 'aria-modal': 'true', 'data-danger': c.danger ? '1' : '0' }, [
+            h(doc, 'h3', { dir: 'auto' }, [sentence, h(doc, 'span', { class: 'jbk_tenant', text: c.tenant })]),
+            h(doc, 'p', { dir: 'auto', text: (c.action ? c.action + '\n' : '') + (c.text || '') }),
+            input ? h(doc, 'p', { dir: 'auto', text: t('Type the account name to continue:', 'اكتب اسم الحساب للمتابعة:') }) : null, input,
+            h(doc, 'div', { class: 'jbk_row' }, [no, ok]),
+          ]);
+          // the veil blocks the rest of the window; the question sits at the top of the panel, which is scrolled into view
+          const veil = h(doc, 'div', { class: 'jbk_veil' }); const ov = h(doc, 'div', { class: 'jbk_ov' }, [dlg]); el.appendChild(veil); el.appendChild(ov);
+          try { el.scrollIntoView({ block: 'start' }); } catch (e) { /* ignore */ }
+          const match = () => !input || input.value.trim().toLowerCase() === String(c.typeToConfirm).toLowerCase();
+          const sync = () => { ok.disabled = !match(); }; sync();
+          const done = (v) => { ov.remove(); veil.remove(); doc.removeEventListener('keydown', onKey, true); resolve(v); };
+          const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } };
+          if (input) input.addEventListener('input', sync);
+          ok.addEventListener('click', () => { if (match()) done(true); }); no.addEventListener('click', () => done(false));
+          doc.addEventListener('keydown', onKey, true);
+          const show = () => { ov.dataset.show = '1'; veil.dataset.show = '1'; (input || no).focus(); }; // focus starts on the safe choice
+          (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (f) => setTimeout(f, 0))(show);
+        });
+      },
+      destroy() { el.remove(); },
+    };
+    panel.setState('idle'); panel.progress(null);
+    return panel;
+  }
+  /** Save text as a file (CSV rollback log). */
+  function downloadText(doc, filename, text, mime) {
+    const a = doc.createElement('a'); const url = URL.createObjectURL(new Blob([text], { type: mime || 'text/csv;charset=utf-8' }));
+    a.href = url; a.download = filename; (doc.body || doc.documentElement).appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+  return { createPanel, injectCss, downloadText, STEPS };
+})();
+// <<< JBO-SHARED:END
 
 /**
  * JISR BULK OPS - ALL-IN-ONE  v4.44.0
@@ -1123,6 +1834,7 @@ function jboRedact_(msg) {
 "Edit Imported Leaves (Bulk)": "تعديل الإجازات المستوردة (جماعي)",
 "Create Leave Requests (Bulk)": "إنشاء طلبات إجازة (جماعي)",
 "Manage Requests (Edit / Cancel / Delete)": "إدارة الطلبات (تعديل / إلغاء / حذف)",
+"Business Trip Requests (Bulk)": "طلبات رحلات العمل (جماعي)",
 "Data Cleanser": "منظّف البيانات",
 "Salary Comparison": "مقارنة الرواتب",
 "Bulk Payroll Transactions": "حركات الرواتب الجماعية",
@@ -1292,16 +2004,21 @@ function jboRedact_(msg) {
   }
   const mo = new MutationObserver((muts) => {
     for (const m of muts) {
-      if (m.type === 'childList') m.addedNodes.forEach((n) => { if (n.nodeType === 3 || n.nodeType === 1) pending.add(n); });
+      if (m.type === 'childList') m.addedNodes.forEach((n) => { if (n.nodeType === 3 ? inRoot_(n) : (n.nodeType === 1 && (inRoot_(n) || (n.querySelector && n.querySelector(ROOT_SEL))))) pending.add(n); });
       else if (m.type === 'characterData') { if (inRoot_(m.target)) pending.add(m.target); }
       else if (m.type === 'attributes' && inRoot_(m.target)) pending.add(m.target);
     }
     if (pending.size && !scheduled) { scheduled = true; requestAnimationFrame(flush_); }
   });
-  function start_() {
-    mo.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTRS });
-    applyAll_();
+  // v4.103: the page-wide watcher exists only while the page is Arabic. In English there is nothing to translate, and Jisr changes its own screen all the time:
+  // watching every one of those changes (text, titles, new elements) made the whole Jisr page slower for nothing.
+  let watching_ = false;
+  function syncWatch_() {
+    if (!document.body) return;
+    if (lang_ === 'ar' && !watching_) { watching_ = true; mo.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTRS }); applyAll_(); }
+    else if (lang_ !== 'ar' && watching_) { applyAll_(); mo.takeRecords(); mo.disconnect(); pending = new Set(); watching_ = false; }
   }
+  function start_() { syncWatch_(); }
   if (document.body) start_(); else document.addEventListener('DOMContentLoaded', start_);
 
   // RTL layout tweaks for the tools' own CSS (which assumes left-to-right)
@@ -1330,7 +2047,8 @@ function jboRedact_(msg) {
     const now = detectLang_();
     if (now === lang_) return;
     lang_ = now;
-    applyAll_();
+    if (watching_) applyAll_();
+    syncWatch_();
     listeners_.slice().forEach((fn) => { try { fn(lang_); } catch (e) { console.error('[Jisr Bulk Ops] language listener failed', e); } });
   }
   new MutationObserver(recheck_).observe(document.documentElement, { attributes: true, attributeFilter: ['lang', 'dir'] });
@@ -1566,6 +2284,9 @@ function jboRedact_(msg) {
     .jbo-run button { border: 1px solid #dadce0; background: #fff; border-radius: 999px; padding: 2px 10px; font: inherit; font-size: 12px; cursor: pointer; color: #3c4043; }
     .jbo-run button:hover { background: #f1f3f4; }
     .jbo-run-list { flex: none; max-height: 190px; overflow: auto; padding: 8px 18px; border-bottom: 1px solid #e8eaed; background: #fff8f7; font-size: 12px; }
+    .jbo-intro-clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .jbo-intro-more { background: none; border: 0; padding: 2px 0 6px; margin: 0; font: inherit; font-size: 12.5px; color: inherit; opacity: .75; text-decoration: underline; cursor: pointer; }
+    .jbo-intro-more:hover { opacity: 1; }
     .jbo-run-list div { padding: 3px 0; border-bottom: 1px solid #f3e1de; word-break: break-word; } .jbo-run-list div:last-child { border-bottom: 0; }
     .jbo-run-list b { color: #c5221f; } .jbo-run-list small { color: #70757a; }
     .jbo-fail-only tbody tr:not(:has(td.jbo-status-err, td.jlo-st.bad)) { display: none; }
@@ -1606,6 +2327,7 @@ function jboRedact_(msg) {
       }
     }
     const tool = R.tool || '';
+    try { jboLaws_(modal, tool, T); } catch (e) { /* the window works without it */ }
     const strip = mk('div', 'jbo-run'), stEl = mk('span', 'st'), sp = mk('span', 'sp'), dot = mk('span', 'dot'), stT = mk('span');
     stEl.appendChild(sp); stEl.appendChild(dot); stEl.appendChild(stT);
     const bar = mk('span', 'bar'); bar.appendChild(mk('i'));
@@ -1746,8 +2468,7 @@ function jboRedact_(msg) {
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
   function slug_() {
-    const o = gmGet_('slugOverride', '');
-    if (o) return o;
+    // v4.96: a saved override no longer chooses the account; the page address does.
     const p = location.hostname.split('.');
     return p.length >= 3 ? p[0] : '';
   }
@@ -2231,7 +2952,8 @@ function jboRedact_(msg) {
     const listCol = (values) => { const key = JSON.stringify(values); let i = lists.findIndex((l) => l.key === key); if (i < 0) { lists.push({ key, values }); i = lists.length - 1; } return i; };
     let employeeLabels = null;
     for (const p of picks) {
-      if (p.values) {
+      if (p.formula) { /* a custom (e.g. dependent) list: the tool wrote the formula and keeps its own hidden sheet (wb.__hidden) */ }
+      else if (p.values) {
         const vals = p.values.map(String);
         const inline = vals.join(',');
         if (inline.length <= 250 && !vals.some((v) => /[,"]/.test(v))) p.formula = '"' + inline + '"';
@@ -2253,7 +2975,7 @@ function jboRedact_(msg) {
       XLSX.utils.book_append_sheet(wb, ls, PICK_SHEET);
     }
     wb.Workbook = wb.Workbook || {};
-    wb.Workbook.Sheets = wb.SheetNames.map((n, i) => Object.assign({}, (wb.Workbook.Sheets || [])[i] || {}, { name: n, Hidden: n === PICK_SHEET ? 1 : 0 }));
+    wb.Workbook.Sheets = wb.SheetNames.map((n, i) => Object.assign({}, (wb.Workbook.Sheets || [])[i] || {}, { name: n, Hidden: (n === PICK_SHEET || (wb.__hidden || []).includes(n)) ? 1 : 0 }));
     const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
     const CFB = XLSX.CFB;
     const zip = CFB.read(new Uint8Array(out), { type: 'array' });
@@ -2266,10 +2988,10 @@ function jboRedact_(msg) {
       let xml = new TextDecoder('utf-8').decode(zip.FileIndex[idx].content);
       const dvs = bySheet[sheetName].map((p) => {
         const L = colLetter_(p.col);
-        const what = p.values ? 'Pick one of the allowed values from the dropdown.' : 'Pick from the dropdown so the name and ID are always right.';
+        const what = p.prompt || (p.values ? 'Pick one of the allowed values from the dropdown.' : 'Pick from the dropdown so the name and ID are always right.');
         return '<dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" errorStyle="' + (p.strict ? 'stop' : 'warning') + '"' +
-          ' promptTitle="' + xmlEsc_((p.title || (p.values ? 'Pick a value' : 'Pick an employee')).slice(0, 32)) + '" prompt="' + xmlEsc_(what) + '"' +
-          ' errorTitle="Not in the list" error="' + xmlEsc_(p.values ? 'Allowed: ' + p.values.join(' / ').slice(0, 200) : 'Pick a name from the dropdown list.') + '"' +
+          ' promptTitle="' + xmlEsc_((p.title || ((p.values || p.formula) ? 'Pick a value' : 'Pick an employee')).slice(0, 32)) + '" prompt="' + xmlEsc_(what) + '"' +
+          ' errorTitle="Not in the list" error="' + xmlEsc_(p.errorMsg || (p.values ? 'Allowed: ' + p.values.join(' / ').slice(0, 200) : 'Pick a name from the dropdown list.')) + '"' +
           ' sqref="' + L + '2:' + L + (p.rows || 2000) + '"><formula1>' + xmlEsc_(p.formula) + '</formula1></dataValidation>';
       });
       const block = '<dataValidations count="' + dvs.length + '">' + dvs.join('') + '</dataValidations>';
@@ -2329,24 +3051,24 @@ function jboRedact_(msg) {
 
   // ======================================================================= hub menu
   const CATEGORIES = [
-    ['employees', 'Employees', 'الموظفون', ['data-validation', 'data-cleanser', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'employee-assets-cleanup', 'delete-employees']],
+    ['employees', 'Employees', 'الموظفون', ['data-validation', 'data-cleanser', 'access-report', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'employee-assets-cleanup', 'delete-employees']],
     ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'salary-compare', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'gosi-compliance', 'payroll-reconciliation', 'flight-tickets-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk']],
     ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units', 'company-documents', 'company-assets-bulk']],
-    ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear', 'attendance-log-converter']],
+    ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'business-trip-requests', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear', 'attendance-log-converter']],
     ['performance', 'Performance', 'الأداء', ['performance-templates', 'performance-drafts']],
-    ['requests', 'Requests & approvals', 'الطلبات والموافقات', ['approval-cycles']],
+    ['requests', 'Requests & approvals', 'الطلبات والموافقات', ['approval-cycles', 'automations']],
     ['utilities', 'Utilities', 'أدوات مساعدة', ['activation-checklist', 'export-everything', 'letter-templates', 'letter-converter']],
   ];
   // v4.20: the J panel opens on three choices; Tools is split into two colour-coded sections
   const SECTIONS = [
     { key: 'bulk', en: 'Bulk actions', ar: 'العمليات الجماعية', icon: 'layers', color: '#8FA8F7', groups: [
-      ['employees', 'Employees', 'الموظفون', ['employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'employee-assets-cleanup', 'delete-employees']],
+      ['employees', 'Employees', 'الموظفون', ['access-report', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'employee-assets-cleanup', 'delete-employees']],
       ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'salary-compare', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk']],
       ['policies', 'Policies & benefits', 'السياسات والمزايا', ['business-trip-cities', 'flight-tickets-bulk']],
       ['performance', 'Performance', 'الأداء', ['performance-templates', 'performance-drafts']],
-      ['requests', 'Requests & approvals', 'الطلبات والموافقات', ['approval-cycles']],
+      ['requests', 'Requests & approvals', 'الطلبات والموافقات', ['approval-cycles', 'automations']],
       ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units', 'company-documents', 'company-assets-bulk']],
-      ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear']],
+      ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'business-trip-requests', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear']],
     ] },
     { key: 'check', en: 'Validate, convert & reconcile', ar: 'التحقق والتحويل والمطابقة', icon: 'scale', color: '#5FD0B0', groups: [
       ['validate', 'Validate & reconcile', 'التحقق والمطابقة', ['data-validation', 'data-cleanser', 'payroll-reconciliation', 'gosi-compliance']],
@@ -2397,7 +3119,7 @@ function jboRedact_(msg) {
     'employee-id-bulk': ['Change employee IDs from a file', 'تغيير الأرقام الوظيفية من ملف'],
     'roles-permissions-bulk': ['Assign or revoke roles, edit permissions, create or delete roles', 'إسناد الأدوار وسحبها، وتعديل الصلاحيات، وإنشاء الأدوار وحذفها'],
     'employee-contracts-bulk': ['Contract type, period, renewal, joining date', 'نوع العقد ومدته وتجديده وتاريخ الالتحاق'],
-    'data-validation': ['Initial sheet vs Muqeem and GOSI (read-only)', 'الملف الأولي مقابل مقيم والتأمينات (قراءة فقط)'],
+    'data-validation': ['Initial sheet vs Muqeem and GOSI, and clean Muqeem EN / AR files (read-only)', 'الملف الأولي مقابل مقيم والتأمينات، وتنظيف ملفات مقيم بالإنجليزي والعربي (قراءة فقط)'],
     'employee-documents': ['Upload Iqama, passport and any company document type', 'رفع الإقامة والجواز وأي نوع مستند للشركة'],
     'offboarding-bulk': ['Offboard employees in bulk', 'إنهاء خدمات الموظفين جماعيًا'],
     'approval-cycles': ['See, duplicate and bulk edit request approval steps', 'عرض خطوات موافقات الطلبات ونسخها وتعديلها جماعيًا'],
@@ -2429,6 +3151,9 @@ function jboRedact_(msg) {
     'leave-cancel-bulk': ['Clean up imported leaves', 'تنظيف الإجازات المستوردة'],
     'leave-edit-bulk': ['Change dates, leave type or comment of leaves that were imported in bulk: a new approved leave request (with an attachment) replaces each one', 'تغيير التواريخ أو نوع الإجازة أو التعليق للإجازات المستوردة جماعيًا: طلب إجازة جديد معتمد (مع مرفق) يحل محل كل واحدة'],
     'leave-create-bulk': ['Create leave requests from a sheet in Jisr\'s import format, with an attachment per employee (File name Attachment), approved at once', 'إنشاء طلبات إجازة من ملف بصيغة استيراد جسر، مع مرفق لكل موظف (File name Attachment) واعتماد فوري'],
+    'business-trip-requests': ['Create business trip requests for many employees from Excel: the destination is checked against each employee\'s own policy; approved at once or left in the approval workflow', 'إنشاء طلبات رحلات عمل لعدة موظفين من إكسل: تُفحص الوجهة مقابل سياسة كل موظف؛ تُعتمد فورًا أو تُترك في مسار الاعتماد'],
+    'access-report': ['One Excel report of every employee: main data, who was invited, who accepted, who is still waiting, who never logged in, and when each person was last active', 'تقرير Excel واحد لكل موظف: البيانات الأساسية ومن دُعي ومن قبل ومن ما زال ينتظر ومن لم يسجّل الدخول ومتى كان كل شخص نشطًا آخر مرة'],
+    'automations': ['When a custom request is approved, do the next step by itself: assign the day off or shift in the scheduler, or add a payroll transaction', 'عند اعتماد طلب مخصص، نفّذ الخطوة التالية تلقائيًا: تحديد يوم إجازة أو وردية في الجدول أو إضافة معاملة رواتب'],
     'requests-manage': ['Find the requests in the employees\' files (any type, by date range, status, leave type), export them, and cancel, delete forever or edit them: with the approval workflow or bypassing it', 'إيجاد الطلبات في ملفات الموظفين (أي نوع، بنطاق تاريخ والحالة ونوع الإجازة)، وتصديرها، وإلغاؤها أو حذفها نهائيًا أو تعديلها: مع مسار الاعتماد أو بتجاوزه'],
     'fixed-hours-bulk': ['Weekly schedules and assignments', 'الجداول الأسبوعية والتعيينات'],
     'shifts-bulk': ['Create, edit, duplicate and delete shifts; form or Excel', 'إنشاء الورديات وتعديلها ونسخها وحذفها: نموذج أو Excel'],
@@ -2440,7 +3165,7 @@ function jboRedact_(msg) {
     'letter-templates': ['Open, edit and save Jisr\'s letter templates (variables, header, body, footer)', 'فتح قوالب خطابات جسر وتعديلها وحفظها (المتغيرات، الترويسة، النص، التذييل)'],
     'letter-converter': ['Word letters to Jisr templates', 'تحويل خطابات Word إلى قوالب جسر'],
   };
-  const NEW_IDS = ['requests-manage', 'company-assets-bulk', 'employee-assets-cleanup', 'performance-drafts', 'salary-compare', 'data-cleanser', 'leave-create-bulk', 'company-documents', 'leave-edit-bulk', 'employee-photos', 'probation-bulk', 'locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
+  const NEW_IDS = ['access-report', 'automations', 'business-trip-requests', 'requests-manage', 'company-assets-bulk', 'employee-assets-cleanup', 'performance-drafts', 'salary-compare', 'data-cleanser', 'leave-create-bulk', 'company-documents', 'leave-edit-bulk', 'employee-photos', 'probation-bulk', 'locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
   const svg_ = (k, size) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('width', size || 16); s.setAttribute('height', size || 16); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.8'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round'); s.innerHTML = ICONS[k] || ICONS.other; return s; };
   const normQ_ = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[ً-ٰٟـ]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
   function highlight_(text, q) {
@@ -3301,6 +4026,11 @@ function jboRedact_(msg) {
     html .jbo-hub-panel.jbo-ast .jbo-ast-settings label.row > span { flex: 1 1 0; }
     html .jbo-hub-panel.jbo-ast .jbo-ast-settings .jbo-ast-seg { display: flex; flex: 1 1 100%; width: 100%; min-width: 0; }
     html .jbo-hub-panel.jbo-ast .jbo-ast-settings .jbo-ast-seg button { flex: 1 1 auto; min-width: 0; padding-inline: 5px; white-space: nowrap; }
+    /* v4.104 (Von Restorff): the accent belongs to the one thing to do; tags and the employee loader are quiet */
+    :root:root:root:root:root:root:root .jbo-hub-panel.jbo-ast .jbo-ast-new { background: transparent !important; color: inherit !important; border: 1px solid currentColor; opacity: .7; font-weight: 500 !important; text-transform: none !important; letter-spacing: 0 !important; box-shadow: none !important; }
+    :root:root:root:root:root:root:root .jbo-hub-panel.jbo-ast .jbo-hub-emp button { background: transparent !important; color: inherit !important; border: 1px solid currentColor !important; opacity: .8; box-shadow: none !important; font-weight: 500 !important; }
+    :root:root:root:root:root:root:root .jbo-hub-panel.jbo-ast .jbo-hub-emp button:hover { opacity: 1; background: transparent !important; }
+    :root:root:root:root:root:root:root .jbo-hub-panel.jbo-ast .jbo-ast-cats, :root:root:root:root:root:root:root .jbo-hub-panel.jbo-ast .jbo-ast-recent { gap: 6px; margin-bottom: 12px; }
   `;
   function glassPanelLight_(css) {
     const a = css.indexOf('/* ---------- std-l: J panel ---------- */'), b = css.indexOf('/* ---------- std-l: tool windows');
@@ -3375,7 +4105,8 @@ function jboRedact_(msg) {
     return n ? g + (I.isAr() ? ' يا ' : ', ') + n : g;
   }
   const recent_ = () => (gmGet_('hubRecent', []) || []).filter((x) => typeof x === 'string');
-  function pushRecent_(id) { const r = recent_().filter((x) => x !== id); r.unshift(id); gmSet_('hubRecent', r.slice(0, 3)); }
+  function pushRecent_(id) { const r = recent_().filter((x) => x !== id); r.unshift(id); gmSet_('hubRecent', r.slice(0, 3)); const o = opened_(); if (!o.includes(id)) { o.push(id); gmSet_('hubOpened', o.slice(-80)); } }
+  const opened_ = () => (gmGet_('hubOpened', []) || []).filter((x) => typeof x === 'string'); // v4.104: the "new" tag goes away once the tool has been opened
   const title_ = (g, id) => (I.tr ? I.tr(g.modules[id].title) : g.modules[id].title);
   function checklistState_() {
     const C = unsafeWindow.__jisrChecklist; if (!C) return null;
@@ -3812,7 +4543,7 @@ function jboRedact_(msg) {
     closeB.addEventListener('click', (e) => { e.stopPropagation(); g._closeMenu(); });
     menuEl.appendChild(el('div', { class: 'jbo-ast-hd' }, [
       el('div', { class: 'jbo-ast-av', text: 'J' }),
-      el('div', { class: 't' }, [el('h2', { text: greeting_() }), el('div', { class: 'jbo-ast-sub', text: (slug_() ? slug_() + ' · ' : '') + T('Bulk Ops assistant', 'مساعد Bulk Ops') })]),
+      el('div', { class: 't' }, [el('h2', { text: greeting_() }), el('div', { class: 'jbo-ast-sub', text: slug_() || T('Bulk Ops assistant', 'مساعد Bulk Ops') })]),
       closeB,
     ]));
     // v4.0: Google sign-in gate (section 0c) - nothing but the sign-in button until signed in
@@ -3952,7 +4683,7 @@ function jboRedact_(msg) {
     const colorOf = (id) => (id === 'activation-checklist' ? COL.check : secOf[id] ? secOf[id].color : '#8A8A8E');
     function toolRow(id, q, selected) {
       const d = DESC[id] ? T(DESC[id][0], DESC[id][1]) : '';
-      const t = el('div', {}, [highlight_(title_(g, id), q)]); if (NEW_IDS.includes(id)) t.appendChild(el('span', { class: 'jbo-ast-new', text: T('new', 'جديد') }));
+      const t = el('div', {}, [highlight_(title_(g, id), q)]); if (NEW_IDS.includes(id) && !opened_().includes(id)) t.appendChild(el('span', { class: 'jbo-ast-new', text: T('new', 'جديد') }));
       const row = el('div', { class: 'jbo-ast-tool' + (selected ? ' sel' : ''), tabindex: '0', 'data-id': id, style: '--c:' + colorOf(id) }, [el('span', { class: 'jbo-ast-ic' }, [svg_(iconOf(id))]), el('span', { class: 'x' }, [t, el('small', {}, [highlight_(d, q)])]), el('span', { class: 'jbo-ast-ch', text: '›' })]);
       row.addEventListener('click', (e) => { e.stopPropagation(); open(id); });
       row.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(id); });
@@ -4035,6 +4766,13 @@ function jboRedact_(msg) {
       if (q) { paintResults(q); return; }
       results = [];
       if (!['all'].concat(secs.map((x) => x.key)).includes(UIS.cat)) UIS.cat = 'all';
+      { // v4.104: the 3 tools used last come first (recognition over recall): the list below is 35 long
+        const rec = recent_().filter((id) => g.modules[id] && !NOT_A_TOOL.includes(id));
+        if (rec.length) {
+          body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: T('Recent', 'الأخيرة') })]));
+          body.appendChild(el('div', { class: 'jbo-ast-chips jbo-ast-recent' }, rec.map((id) => { const c = el('button', { class: 'jbo-ast-chip', type: 'button', text: title_(g, id) }); c.addEventListener('click', (e) => { e.stopPropagation(); open(id); }); return c; })));
+        }
+      }
       const chipBox = el('div', { class: 'jbo-ast-chips jbo-ast-cats' });
       [['all', T('All', 'الكل'), order, null]].concat(secs.map((sc) => [sc.key, sc.name, sc.ids, sc.color])).forEach(([k, name, list, c]) => {
         const b = el('button', { class: 'jbo-ast-chip' + (UIS.cat === k ? ' on' : ''), type: 'button', 'data-cat': k, 'data-n': String(list.length), style: c ? '--c:' + c : null }, [c ? el('span', { class: 'dot' }) : null, name]);
@@ -4596,8 +5334,7 @@ function jboRedact_(msg) {
 
   /** Tenant slug, auto-derived from the subdomain (e.g. onboardingteam.jisr.net -> "onboardingteam"), overridable in Settings. */
   function currentSlug_() {
-    const override = gmGet_('slugOverride', '');
-    if (override) return override;
+    // v4.96: a saved override no longer chooses the account (it could point a run at another client); the request helper refuses a mismatch.
     const parts = location.hostname.split('.');
     return parts.length >= 3 ? parts[0] : '';
   }
@@ -4627,91 +5364,12 @@ function jboRedact_(msg) {
    * @param {string} path     e.g. '/v2/employees/123'
    * @param {{query?:Object, body?:Object, allow404?:boolean}} [opts]
    */
-  async function apiRequest_(method, path, opts) {
-    opts = opts || {};
-    const slug = currentSlug_();
-    if (!slug) {
-      throw new Error('Could not work out the Jisr tenant slug from this page\'s URL (' +
-        location.hostname + '). Open Settings (gear icon) and set it manually.');
-    }
-    const query = Object.assign({}, opts.query, { slug });
-    // A query value can be an array (repeats the same key, e.g. Jisr's own
-    // "columns[]=full_name&columns[]=status" list-endpoint convention — see
-    // fetchOffboardedEmployees_ below) — everything else stays a single pair,
-    // unchanged from before this was added.
-    const pairs = [];
-    Object.keys(query).forEach((k) => {
-      const raw = query[k];
-      const vals = Array.isArray(raw) ? raw : [raw];
-      vals.forEach((v) => {
-        pairs.push(encodeURIComponent(k) + '=' + encodeURIComponent(v === undefined || v === null ? '' : v));
-      });
-    });
-    const qs = pairs.join('&');
-    const url = apiBase_() + path + (qs ? '?' + qs : '');
-
-    const headers = { accept: 'application/json', slug: slug, locale: 'en' };
-    if (opts.body) headers['content-type'] = 'application/json';
-
-    let lastErr = null;
-    let retryAfterMs = null; // set from a 429/503 Retry-After header, consumed by the next attempt's backoff
-    const timeoutMs = opts.timeoutMs || 20000;
-    const maxAttempts = opts.maxAttempts || 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) {
-        // Retry-After wins when the server told us how long to wait; otherwise full-jitter
-        // exponential backoff, so many rows retrying around the same moment don't all
-        // retry in lockstep and re-trigger the same rate limit.
-        const backoffMs = retryAfterMs != null
-          ? retryAfterMs
-          : Math.min(15000, 500 * Math.pow(2, attempt - 1)) * (0.5 + Math.random() * 0.5);
-        await sleep_(backoffMs);
-      }
-      retryAfterMs = null;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method,
-          headers,
-          credentials: 'include', // reuse the browser's own logged-in Jisr session — no stored token
-          body: opts.body ? JSON.stringify(opts.body) : undefined,
-          signal: controller.signal
-        });
-      } catch (e) {
-        // A hung connection now aborts after timeoutMs instead of stalling this row forever.
-        lastErr = (e && e.name === 'AbortError')
-          ? new Error('Request timed out after ' + timeoutMs + 'ms: ' + method + ' ' + path)
-          : e;
-        continue; // network blip or timeout — retry
-      } finally {
-        clearTimeout(timeoutId);
-      }
-
-      const text = await resp.text();
-      let json = null;
-      try { json = JSON.parse(text); } catch (e) { /* non-JSON body */ }
-
-      if (resp.status === 401 || resp.status === 403) {
-        const e = new Error('Auth rejected (HTTP ' + resp.status + '). Make sure you\'re logged into ' +
-          'Jisr in this tab (reload the page if you just logged in), then try again.');
-        e.isAuthError = true;
-        throw e;
-      }
-      if (resp.status === 429 || resp.status >= 500) {
-        const ra = resp.headers && resp.headers.get ? resp.headers.get('Retry-After') : null;
-        if (ra) { const raNum = Number(ra); if (!isNaN(raNum)) retryAfterMs = raNum * 1000; } // RFC: seconds
-        lastErr = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 300));
-        continue;
-      }
-      if (resp.status >= 400 && !(resp.status === 404 && opts.allow404)) {
-        throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 400));
-      }
-      return { status: resp.status, json, text };
-    }
-    throw lastErr || new Error('Request failed after retries.');
-  }
+  // v4.96 (JBO foundation): this tool's own copy of the request helper is replaced by the shared one (shared/jbo-core.js, createLegacyRequest).
+  // Same call shape, answers and errors. What changed: the account is taken from the page address and a saved override for another account
+  // blocks the request; a write (POST / PUT / PATCH / DELETE) is NEVER sent twice: no answer or a 5xx is reported for that row instead of
+  // being retried (the old copy could create the same record up to three times). Reads still retry; 429 still waits and retries.
+  const jboLegacy_ = JBOCore.createLegacyRequest({ getHostname: () => location.hostname, getOverride: () => gmGet_('slugOverride', ''), fetch, sleep: sleep_ });
+  async function apiRequest_(method, path, opts) { return jboLegacy_(method, path, opts); }
   const apiGet_ = (path, query) => apiRequest_('GET', path, { query });
 
   // ---------------------------------------------------------------------
@@ -6653,8 +7311,7 @@ function jboRedact_(msg) {
   }
 
   function currentSlug_() {
-    const override = gmGet_('slugOverride', '');
-    if (override) return override;
+    // v4.96: a saved override no longer chooses the account (it could point a run at another client); the request helper refuses a mismatch.
     const parts = location.hostname.split('.');
     return parts.length >= 3 ? parts[0] : '';
   }
@@ -6679,83 +7336,12 @@ function jboRedact_(msg) {
 
   function sleep_(ms) { return new Promise((res) => setTimeout(res, ms)); }
 
-  async function apiRequest_(method, path, opts) {
-    opts = opts || {};
-    const slug = currentSlug_();
-    if (!slug) {
-      throw new Error('Could not work out the Jisr tenant slug from this page\'s URL (' +
-        location.hostname + '). Open Settings (gear icon) and set it manually.');
-    }
-    const query = Object.assign({}, opts.query, { slug });
-    const qs = Object.keys(query)
-      .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(query[k] === undefined || query[k] === null ? '' : query[k]))
-      .join('&');
-    const url = apiBase_() + path + (qs ? '?' + qs : '');
-
-    const headers = { accept: 'application/json', slug: slug, locale: 'en' };
-    if (opts.body) headers['content-type'] = 'application/json';
-    if (opts.extraHeaders) Object.assign(headers, opts.extraHeaders);
-
-    let lastErr = null;
-    let retryAfterMs = null; // set from a 429/503 Retry-After header, consumed by the next attempt's backoff
-    const timeoutMs = opts.timeoutMs || 20000;
-    const maxAttempts = opts.maxAttempts || 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) {
-        // Retry-After wins when the server told us how long to wait; otherwise full-jitter
-        // exponential backoff, so many rows retrying around the same moment don't all
-        // retry in lockstep and re-trigger the same rate limit.
-        const backoffMs = retryAfterMs != null
-          ? retryAfterMs
-          : Math.min(15000, 500 * Math.pow(2, attempt - 1)) * (0.5 + Math.random() * 0.5);
-        await sleep_(backoffMs);
-      }
-      retryAfterMs = null;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method,
-          headers,
-          credentials: 'include',
-          body: opts.body ? JSON.stringify(opts.body) : undefined,
-          signal: controller.signal
-        });
-      } catch (e) {
-        // A hung connection now aborts after timeoutMs instead of stalling this row forever.
-        lastErr = (e && e.name === 'AbortError')
-          ? new Error('Request timed out after ' + timeoutMs + 'ms: ' + method + ' ' + path)
-          : e;
-        continue;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      const text = await resp.text();
-      let json = null;
-      try { json = JSON.parse(text); } catch (e) { /* non-JSON body */ }
-
-      if (resp.status === 401 || resp.status === 403) {
-        const e = new Error('Auth rejected (HTTP ' + resp.status + '). Make sure you\'re logged into ' +
-          'Jisr in this tab (reload the page if you just logged in), then try again.');
-        e.isAuthError = true;
-        throw e;
-      }
-      if (resp.status === 429 || resp.status >= 500) {
-        const ra = resp.headers && resp.headers.get ? resp.headers.get('Retry-After') : null;
-        if (ra) { const raNum = Number(ra); if (!isNaN(raNum)) retryAfterMs = raNum * 1000; } // RFC: seconds
-        lastErr = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 300));
-        continue;
-      }
-      if (resp.status >= 400 && !(resp.status === 404 && opts.allow404)) {
-        const e = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 400));
-        e.status = resp.status;
-        throw e;
-      }
-      return { status: resp.status, json, text };
-    }
-    throw lastErr || new Error('Request failed after retries.');
-  }
+  // v4.96 (JBO foundation): this tool's own copy of the request helper is replaced by the shared one (shared/jbo-core.js, createLegacyRequest).
+  // Same call shape, answers and errors. What changed: the account is taken from the page address and a saved override for another account
+  // blocks the request; a write (POST / PUT / PATCH / DELETE) is NEVER sent twice: no answer or a 5xx is reported for that row instead of
+  // being retried (the old copy could create the same record up to three times). Reads still retry; 429 still waits and retries.
+  const jboLegacy_ = JBOCore.createLegacyRequest({ getHostname: () => location.hostname, getOverride: () => gmGet_('slugOverride', ''), fetch, sleep: sleep_ });
+  async function apiRequest_(method, path, opts) { return jboLegacy_(method, path, opts); }
   const apiGet_ = (path, query) => apiRequest_('GET', path, { query });
 
   // ---------------------------------------------------------------------
@@ -9744,8 +10330,7 @@ function jboRedact_(msg) {
   }
 
   function currentSlug_() {
-    const override = gmGet_('slugOverride', '');
-    if (override) return override;
+    // v4.96: a saved override no longer chooses the account (it could point a run at another client); the request helper refuses a mismatch.
     const parts = location.hostname.split('.');
     return parts.length >= 3 ? parts[0] : '';
   }
@@ -9770,82 +10355,12 @@ function jboRedact_(msg) {
 
   function sleep_(ms) { return new Promise((res) => setTimeout(res, ms)); }
 
-  async function apiRequest_(method, path, opts) {
-    opts = opts || {};
-    const slug = currentSlug_();
-    if (!slug) {
-      throw new Error('Could not work out the Jisr tenant slug from this page\'s URL (' +
-        location.hostname + '). Open Settings (gear icon) and set it manually.');
-    }
-    const query = Object.assign({}, opts.query, { slug });
-    const qs = Object.keys(query)
-      .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(query[k] === undefined || query[k] === null ? '' : query[k]))
-      .join('&');
-    const url = apiBase_() + path + (qs ? '?' + qs : '');
-
-    const headers = { accept: 'application/json', slug: slug, locale: 'en' };
-    if (opts.body) headers['content-type'] = 'application/json';
-
-    let lastErr = null;
-    let retryAfterMs = null; // set from a 429/503 Retry-After header, consumed by the next attempt's backoff
-    const timeoutMs = opts.timeoutMs || 20000;
-    const maxAttempts = opts.maxAttempts || 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) {
-        // Retry-After wins when the server told us how long to wait; otherwise full-jitter
-        // exponential backoff, so many rows retrying around the same moment don't all
-        // retry in lockstep and re-trigger the same rate limit.
-        const backoffMs = retryAfterMs != null
-          ? retryAfterMs
-          : Math.min(15000, 500 * Math.pow(2, attempt - 1)) * (0.5 + Math.random() * 0.5);
-        await sleep_(backoffMs);
-      }
-      retryAfterMs = null;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method,
-          headers,
-          credentials: 'include',
-          body: opts.body ? JSON.stringify(opts.body) : undefined,
-          signal: controller.signal
-        });
-      } catch (e) {
-        // A hung connection now aborts after timeoutMs instead of stalling this row forever.
-        lastErr = (e && e.name === 'AbortError')
-          ? new Error('Request timed out after ' + timeoutMs + 'ms: ' + method + ' ' + path)
-          : e;
-        continue;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      const text = await resp.text();
-      let json = null;
-      try { json = JSON.parse(text); } catch (e) { /* non-JSON body */ }
-
-      if (resp.status === 401 || resp.status === 403) {
-        const e = new Error('Auth rejected (HTTP ' + resp.status + '). Make sure you\'re logged into ' +
-          'Jisr in this tab (reload the page if you just logged in), then try again.');
-        e.isAuthError = true;
-        throw e;
-      }
-      if (resp.status === 429 || resp.status >= 500) {
-        const ra = resp.headers && resp.headers.get ? resp.headers.get('Retry-After') : null;
-        if (ra) { const raNum = Number(ra); if (!isNaN(raNum)) retryAfterMs = raNum * 1000; } // RFC: seconds
-        lastErr = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 300));
-        continue;
-      }
-      if (resp.status >= 400 && !(resp.status === 404 && opts.allow404)) {
-        const e = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 400));
-        e.status = resp.status;
-        throw e;
-      }
-      return { status: resp.status, json, text };
-    }
-    throw lastErr || new Error('Request failed after retries.');
-  }
+  // v4.96 (JBO foundation): this tool's own copy of the request helper is replaced by the shared one (shared/jbo-core.js, createLegacyRequest).
+  // Same call shape, answers and errors. What changed: the account is taken from the page address and a saved override for another account
+  // blocks the request; a write (POST / PUT / PATCH / DELETE) is NEVER sent twice: no answer or a 5xx is reported for that row instead of
+  // being retried (the old copy could create the same record up to three times). Reads still retry; 429 still waits and retries.
+  const jboLegacy_ = JBOCore.createLegacyRequest({ getHostname: () => location.hostname, getOverride: () => gmGet_('slugOverride', ''), fetch, sleep: sleep_ });
+  async function apiRequest_(method, path, opts) { return jboLegacy_(method, path, opts); }
   const apiGet_ = (path, query) => apiRequest_('GET', path, { query });
 
   // ---------------------------------------------------------------------
@@ -12045,80 +12560,12 @@ function jboRedact_(msg) {
     throw new Error('Unrecognized Jisr domain (' + host + ') -- API host not confirmed for this domain.');
   }
 
-  async function apiRequest_(method, path, opts) {
-    opts = opts || {};
-    const slug = autoSlug_();
-    if (!slug) {
-      throw new Error('Could not work out the Jisr tenant slug from this page\'s URL (' +
-        location.hostname + ').');
-    }
-    const query = Object.assign({}, opts.query, { slug });
-    const qs = Object.keys(query)
-      .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(query[k] === undefined || query[k] === null ? '' : query[k]))
-      .join('&');
-    const url = apiBase_() + path + (qs ? '?' + qs : '');
-
-    const headers = { accept: 'application/json', slug: slug, locale: 'en' };
-    if (opts.body) headers['content-type'] = 'application/json';
-
-    let lastErr = null;
-    let retryAfterMs = null; // set from a 429/503 Retry-After header, consumed by the next attempt's backoff
-    const timeoutMs = opts.timeoutMs || 20000;
-    const maxAttempts = opts.maxAttempts || 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) {
-        // Retry-After wins when the server told us how long to wait; otherwise full-jitter
-        // exponential backoff, so many rows retrying around the same moment don't all
-        // retry in lockstep and re-trigger the same rate limit.
-        const backoffMs = retryAfterMs != null
-          ? retryAfterMs
-          : Math.min(15000, 500 * Math.pow(2, attempt - 1)) * (0.5 + Math.random() * 0.5);
-        await sleep_(backoffMs);
-      }
-      retryAfterMs = null;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method,
-          headers,
-          credentials: 'include',
-          body: opts.body ? JSON.stringify(opts.body) : undefined,
-          signal: controller.signal
-        });
-      } catch (e) {
-        // A hung connection now aborts after timeoutMs instead of stalling this row forever.
-        lastErr = (e && e.name === 'AbortError')
-          ? new Error('Request timed out after ' + timeoutMs + 'ms: ' + method + ' ' + path)
-          : e;
-        continue;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      const text = await resp.text();
-      let json = null;
-      try { json = JSON.parse(text); } catch (e) { /* non-JSON body */ }
-
-      if (resp.status === 401 || resp.status === 403) {
-        const e = new Error('Auth rejected (HTTP ' + resp.status + '). Make sure you\'re logged into ' +
-          'Jisr in this tab (reload the page if you just logged in), then try again.');
-        e.isAuthError = true;
-        throw e;
-      }
-      if (resp.status === 429 || resp.status >= 500) {
-        const ra = resp.headers && resp.headers.get ? resp.headers.get('Retry-After') : null;
-        if (ra) { const raNum = Number(ra); if (!isNaN(raNum)) retryAfterMs = raNum * 1000; } // RFC: seconds
-        lastErr = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 300));
-        continue;
-      }
-      if (resp.status >= 400 && !(resp.status === 404 && opts.allow404)) {
-        throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 400));
-      }
-      return { status: resp.status, json, text };
-    }
-    throw lastErr || new Error('Request failed after retries.');
-  }
+  // v4.96 (JBO foundation): this tool's own copy of the request helper is replaced by the shared one (shared/jbo-core.js, createLegacyRequest).
+  // Same call shape, answers and errors. What changed: the account is taken from the page address and a saved override for another account
+  // blocks the request; a write (POST / PUT / PATCH / DELETE) is NEVER sent twice: no answer or a 5xx is reported for that row instead of
+  // being retried (the old copy could create the same record up to three times). Reads still retry; 429 still waits and retries.
+  const jboLegacy_ = JBOCore.createLegacyRequest({ getHostname: () => location.hostname, getOverride: () => gmGet_('slugOverride', ''), fetch, sleep: sleep_ });
+  async function apiRequest_(method, path, opts) { return jboLegacy_(method, path, opts); }
   const apiGet_ = (path, query) => apiRequest_('GET', path, { query });
 
   // ---------------------------------------------------------------------
@@ -13207,62 +13654,13 @@ function jboRedact_(msg) {
    * says (persisted, defaults to "onboardingteam"), NOT the auto-detected
    * one used for loading the employee directory — see the file header.
    */
-  async function suspendPayrunSalary_(employeeId, slug) {
-    const url = apiBase_() + '/v2/finance/employees/' + encodeURIComponent(employeeId) +
-      '/suspend_payrun_salary?slug=' + encodeURIComponent(slug);
-    const headers = { accept: 'application/json', locale: 'en', slug: slug };
-
-    let lastErr = null;
-    let retryAfterMs = null; // set from a 429/503 Retry-After header, consumed by the next attempt's backoff
-    const timeoutMs = 20000;
-    const maxAttempts = 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) {
-        const backoffMs = retryAfterMs != null
-          ? retryAfterMs
-          : Math.min(15000, 500 * Math.pow(2, attempt - 1)) * (0.5 + Math.random() * 0.5);
-        await sleep_(backoffMs);
-      }
-      retryAfterMs = null;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      let resp;
-      try {
-        resp = await fetch(url, { method: 'PUT', headers: headers, credentials: 'include', signal: controller.signal });
-      } catch (e) {
-        lastErr = (e && e.name === 'AbortError')
-          ? new Error('Request timed out after ' + timeoutMs + 'ms: PUT ' + url)
-          : e;
-        continue; // network blip or timeout — retry
-      } finally {
-        clearTimeout(timeoutId);
-      }
-
-      const text = await resp.text();
-      let json = null;
-      if (text) { try { json = JSON.parse(text); } catch (e) { /* non-JSON or empty body, fine */ } }
-
-      if (resp.status === 401 || resp.status === 403) {
-        const e = new Error('Auth rejected (HTTP ' + resp.status + '). Make sure you\'re logged into ' +
-          'Jisr in this tab (reload the page if you just logged in), then try again.');
-        e.isAuthError = true;
-        throw e;
-      }
-      if (resp.status === 429 || resp.status >= 500) {
-        const ra = resp.headers && resp.headers.get ? resp.headers.get('Retry-After') : null;
-        if (ra) { const raNum = Number(ra); if (!isNaN(raNum)) retryAfterMs = raNum * 1000; } // RFC: seconds
-        lastErr = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 300));
-        continue;
-      }
-      if (resp.status >= 400) {
-        throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 400));
-      }
-      if (json && json.success === false) {
-        throw new Error('HTTP ' + resp.status + ' but success:false' + (json.message ? (' · ' + json.message) : ''));
-      }
-      return { status: resp.status, json: json, message: (json && json.message) ? json.message : ('HTTP ' + resp.status + ' OK') };
-    }
-    throw lastErr || new Error('Request failed after retries.');
+  // v4.96 (JBO foundation): same request (PUT …/suspend_payrun_salary, no body) through the shared helper. The old copy took the account from a
+  // free-text box and resent the PUT after a timeout or a 5xx; now the account is the page's own and the PUT is sent once.
+  async function suspendPayrunSalary_(employeeId) {
+    const res = await apiRequest_('PUT', '/v2/finance/employees/' + encodeURIComponent(employeeId) + '/suspend_payrun_salary');
+    const json = res.json;
+    if (json && json.success === false) throw new Error('HTTP ' + res.status + ' but success:false' + (json.message ? (' · ' + json.message) : ''));
+    return { status: res.status, json: json, message: (json && json.message) ? json.message : ('HTTP ' + res.status + ' OK') };
   }
 
   function openSuspendModal_() {
@@ -13377,7 +13775,9 @@ function jboRedact_(msg) {
     }
     loadEmpBtn.addEventListener('click', () => loadEmployees(true));
 
-    const slugInput = el('input', { class: 'jbo-input', value: (location.hostname.split('.').length >= 3 ? location.hostname.split('.')[0] : gmGet_('suspendSlug', 'onboardingteam')) });
+    // v4.96: the account is always this page's own and cannot be typed (a typed or remembered value could suspend salaries on another client)
+    const slugInput = el('input', { class: 'jbo-input', value: autoSlug_() });
+    slugInput.readOnly = true; slugInput.title = 'The account of this page. It cannot be changed here.';
 
     const dryRunBtn = el('button', { class: 'jbo-btn', text: 'Dry Run' });
     const runLiveBtn = el('button', { class: 'jbo-btn jbo-btn-danger', text: 'Start Bulk Suspension' });
@@ -13441,9 +13841,8 @@ function jboRedact_(msg) {
       plan.problems.forEach((p) => setStatus(p.r, 'err', p.msg));
       if (!plan.ops.length) { toast_('Nothing to run.', 3000); return; }
 
-      const slug = slugInput.value.trim();
+      const slug = autoSlug_();
       if (!slug) { toast_('Slug is required.', 4000); return; }
-      gmSet_('suspendSlug', slug);
 
       if (!confirm('Suspend ' + plan.ops.length + ' employee(s) from payroll runs on tenant "' + slug + '"?\n\n' +
         'This endpoint\'s response carries nothing to independently verify; every success below means ' +
@@ -13481,7 +13880,7 @@ function jboRedact_(msg) {
         progressEl.textContent = 'Processing ' + (i + 1) + ' of ' + plan.ops.length + '… (' + (op.employeeName || op.employeeId) + ')';
         setStatus(op.r, 'pending', 'sending…');
         try {
-          const res = await suspendPayrunSalary_(op.employeeId, slug);
+          const res = await suspendPayrunSalary_(op.employeeId);
           ok++;
           setStatus(op.r, 'ok', 'accepted (' + res.message + '); unverified, no read-back endpoint');
           rc.recordResult(rowKey, 'ok', res.message);
@@ -13824,8 +14223,7 @@ function jboRedact_(msg) {
   }
 
   function currentSlug_() {
-    const override = gmGet_('slugOverride', '');
-    if (override) return override;
+    // v4.96: a saved override no longer chooses the account (it could point a run at another client); the request helper refuses a mismatch.
     const parts = location.hostname.split('.');
     return parts.length >= 3 ? parts[0] : '';
   }
@@ -13850,80 +14248,12 @@ function jboRedact_(msg) {
 
   function sleep_(ms) { return new Promise((res) => setTimeout(res, ms)); }
 
-  async function apiRequest_(method, path, opts) {
-    opts = opts || {};
-    const slug = currentSlug_();
-    if (!slug) {
-      throw new Error('Could not work out the Jisr tenant slug from this page\'s URL (' +
-        location.hostname + '). Open Settings (gear icon) and set it manually.');
-    }
-    const query = Object.assign({}, opts.query, { slug });
-    const qs = Object.keys(query)
-      .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(query[k] === undefined || query[k] === null ? '' : query[k]))
-      .join('&');
-    const url = apiBase_() + path + (qs ? '?' + qs : '');
-
-    const headers = { accept: 'application/json', slug: slug, locale: 'en' };
-    if (opts.body) headers['content-type'] = 'application/json';
-
-    let lastErr = null;
-    let retryAfterMs = null; // set from a 429/503 Retry-After header, consumed by the next attempt's backoff
-    const timeoutMs = opts.timeoutMs || 20000;
-    const maxAttempts = opts.maxAttempts || 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) {
-        // Retry-After wins when the server told us how long to wait; otherwise full-jitter
-        // exponential backoff, so many rows retrying around the same moment don't all
-        // retry in lockstep and re-trigger the same rate limit.
-        const backoffMs = retryAfterMs != null
-          ? retryAfterMs
-          : Math.min(15000, 500 * Math.pow(2, attempt - 1)) * (0.5 + Math.random() * 0.5);
-        await sleep_(backoffMs);
-      }
-      retryAfterMs = null;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method,
-          headers,
-          credentials: 'include',
-          body: opts.body ? JSON.stringify(opts.body) : undefined,
-          signal: controller.signal
-        });
-      } catch (e) {
-        // A hung connection now aborts after timeoutMs instead of stalling this row forever.
-        lastErr = (e && e.name === 'AbortError')
-          ? new Error('Request timed out after ' + timeoutMs + 'ms: ' + method + ' ' + path)
-          : e;
-        continue;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      const text = await resp.text();
-      let json = null;
-      try { json = JSON.parse(text); } catch (e) { /* non-JSON body */ }
-
-      if (resp.status === 401 || resp.status === 403) {
-        const e = new Error('Auth rejected (HTTP ' + resp.status + '). Make sure you\'re logged into ' +
-          'Jisr in this tab (reload the page if you just logged in), then try again.');
-        e.isAuthError = true;
-        throw e;
-      }
-      if (resp.status === 429 || resp.status >= 500) {
-        const ra = resp.headers && resp.headers.get ? resp.headers.get('Retry-After') : null;
-        if (ra) { const raNum = Number(ra); if (!isNaN(raNum)) retryAfterMs = raNum * 1000; } // RFC: seconds
-        lastErr = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 300));
-        continue;
-      }
-      if (resp.status >= 400 && !(resp.status === 404 && opts.allow404)) {
-        throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 400));
-      }
-      return { status: resp.status, json, text };
-    }
-    throw lastErr || new Error('Request failed after retries.');
-  }
+  // v4.96 (JBO foundation): this tool's own copy of the request helper is replaced by the shared one (shared/jbo-core.js, createLegacyRequest).
+  // Same call shape, answers and errors. What changed: the account is taken from the page address and a saved override for another account
+  // blocks the request; a write (POST / PUT / PATCH / DELETE) is NEVER sent twice: no answer or a 5xx is reported for that row instead of
+  // being retried (the old copy could create the same record up to three times). Reads still retry; 429 still waits and retries.
+  const jboLegacy_ = JBOCore.createLegacyRequest({ getHostname: () => location.hostname, getOverride: () => gmGet_('slugOverride', ''), fetch, sleep: sleep_ });
+  async function apiRequest_(method, path, opts) { return jboLegacy_(method, path, opts); }
   const apiGet_ = (path, query) => apiRequest_('GET', path, { query });
 
   // ---------------------------------------------------------------------
@@ -15560,80 +15890,12 @@ function jboRedact_(msg) {
     throw new Error('Unrecognized Jisr domain (' + host + ') -- API host not confirmed for this domain.');
   }
 
-  async function apiRequest_(method, path, opts) {
-    opts = opts || {};
-    const slug = autoSlug_();
-    if (!slug) {
-      throw new Error('Could not work out the Jisr tenant slug from this page\'s URL (' +
-        location.hostname + ').');
-    }
-    const query = Object.assign({}, opts.query, { slug });
-    const qs = Object.keys(query)
-      .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(query[k] === undefined || query[k] === null ? '' : query[k]))
-      .join('&');
-    const url = apiBase_() + path + (qs ? '?' + qs : '');
-
-    const headers = { accept: 'application/json', slug: slug, locale: 'en' };
-    if (opts.body) headers['content-type'] = 'application/json';
-
-    let lastErr = null;
-    let retryAfterMs = null; // set from a 429/503 Retry-After header, consumed by the next attempt's backoff
-    const timeoutMs = opts.timeoutMs || 20000;
-    const maxAttempts = opts.maxAttempts || 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) {
-        // Retry-After wins when the server told us how long to wait; otherwise full-jitter
-        // exponential backoff, so many rows retrying around the same moment don't all
-        // retry in lockstep and re-trigger the same rate limit.
-        const backoffMs = retryAfterMs != null
-          ? retryAfterMs
-          : Math.min(15000, 500 * Math.pow(2, attempt - 1)) * (0.5 + Math.random() * 0.5);
-        await sleep_(backoffMs);
-      }
-      retryAfterMs = null;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method,
-          headers,
-          credentials: 'include',
-          body: opts.body ? JSON.stringify(opts.body) : undefined,
-          signal: controller.signal
-        });
-      } catch (e) {
-        // A hung connection now aborts after timeoutMs instead of stalling this row forever.
-        lastErr = (e && e.name === 'AbortError')
-          ? new Error('Request timed out after ' + timeoutMs + 'ms: ' + method + ' ' + path)
-          : e;
-        continue;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      const text = await resp.text();
-      let json = null;
-      try { json = JSON.parse(text); } catch (e) { /* non-JSON body */ }
-
-      if (resp.status === 401 || resp.status === 403) {
-        const e = new Error('Auth rejected (HTTP ' + resp.status + '). Make sure you\'re logged into ' +
-          'Jisr in this tab (reload the page if you just logged in), then try again.');
-        e.isAuthError = true;
-        throw e;
-      }
-      if (resp.status === 429 || resp.status >= 500) {
-        const ra = resp.headers && resp.headers.get ? resp.headers.get('Retry-After') : null;
-        if (ra) { const raNum = Number(ra); if (!isNaN(raNum)) retryAfterMs = raNum * 1000; } // RFC: seconds
-        lastErr = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 300));
-        continue;
-      }
-      if (resp.status >= 400 && !(resp.status === 404 && opts.allow404)) {
-        throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 400));
-      }
-      return { status: resp.status, json, text };
-    }
-    throw lastErr || new Error('Request failed after retries.');
-  }
+  // v4.96 (JBO foundation): this tool's own copy of the request helper is replaced by the shared one (shared/jbo-core.js, createLegacyRequest).
+  // Same call shape, answers and errors. What changed: the account is taken from the page address and a saved override for another account
+  // blocks the request; a write (POST / PUT / PATCH / DELETE) is NEVER sent twice: no answer or a 5xx is reported for that row instead of
+  // being retried (the old copy could create the same record up to three times). Reads still retry; 429 still waits and retries.
+  const jboLegacy_ = JBOCore.createLegacyRequest({ getHostname: () => location.hostname, getOverride: () => gmGet_('slugOverride', ''), fetch, sleep: sleep_ });
+  async function apiRequest_(method, path, opts) { return jboLegacy_(method, path, opts); }
   const apiGet_ = (path, query) => apiRequest_('GET', path, { query });
 
   // ---------------------------------------------------------------------
@@ -18463,8 +18725,7 @@ function jboRedact_(msg) {
   }
 
   function currentSlug_() {
-    const override = gmGet_('slugOverride', '');
-    if (override) return override;
+    // v4.96: a saved override no longer chooses the account (it could point a run at another client); the request helper refuses a mismatch.
     const parts = location.hostname.split('.');
     return parts.length >= 3 ? parts[0] : '';
   }
@@ -18489,76 +18750,12 @@ function jboRedact_(msg) {
 
   function sleep_(ms) { return new Promise((res) => setTimeout(res, ms)); }
 
-  async function apiRequest_(method, path, opts) {
-    opts = opts || {};
-    const slug = currentSlug_();
-    if (!slug) {
-      throw new Error('Could not work out the Jisr tenant slug from this page\'s URL (' +
-        location.hostname + '). Open Settings (gear icon) and set it manually.');
-    }
-    const query = Object.assign({}, opts.query, { slug });
-    const qs = Object.keys(query)
-      .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(query[k] === undefined || query[k] === null ? '' : query[k]))
-      .join('&');
-    const url = apiBase_() + path + (qs ? '?' + qs : '');
-
-    const headers = { accept: 'application/json', slug: slug, locale: 'en' };
-    if (opts.body) headers['content-type'] = 'application/json';
-
-    let lastErr = null;
-    let retryAfterMs = null;
-    const timeoutMs = opts.timeoutMs || 20000;
-    const maxAttempts = opts.maxAttempts || 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) {
-        const backoffMs = retryAfterMs != null
-          ? retryAfterMs
-          : Math.min(15000, 500 * Math.pow(2, attempt - 1)) * (0.5 + Math.random() * 0.5);
-        await sleep_(backoffMs);
-      }
-      retryAfterMs = null;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method,
-          headers,
-          credentials: 'include',
-          body: opts.body ? JSON.stringify(opts.body) : undefined,
-          signal: controller.signal
-        });
-      } catch (e) {
-        lastErr = (e && e.name === 'AbortError')
-          ? new Error('Request timed out after ' + timeoutMs + 'ms: ' + method + ' ' + path)
-          : e;
-        continue;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      const text = await resp.text();
-      let json = null;
-      try { json = JSON.parse(text); } catch (e) { /* non-JSON body */ }
-
-      if (resp.status === 401 || resp.status === 403) {
-        const e = new Error('Auth rejected (HTTP ' + resp.status + '). Make sure you\'re logged into ' +
-          'Jisr in this tab (reload the page if you just logged in), then try again.');
-        e.isAuthError = true;
-        throw e;
-      }
-      if (resp.status === 429 || resp.status >= 500) {
-        const ra = resp.headers && resp.headers.get ? resp.headers.get('Retry-After') : null;
-        if (ra) { const raNum = Number(ra); if (!isNaN(raNum)) retryAfterMs = raNum * 1000; }
-        lastErr = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 300));
-        continue;
-      }
-      if (resp.status >= 400 && !(resp.status === 404 && opts.allow404)) {
-        throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 400));
-      }
-      return { status: resp.status, json, text };
-    }
-    throw lastErr || new Error('Request failed after retries.');
-  }
+  // v4.96 (JBO foundation): this tool's own copy of the request helper is replaced by the shared one (shared/jbo-core.js, createLegacyRequest).
+  // Same call shape, answers and errors. What changed: the account is taken from the page address and a saved override for another account
+  // blocks the request; a write (POST / PUT / PATCH / DELETE) is NEVER sent twice: no answer or a 5xx is reported for that row instead of
+  // being retried (the old copy could create the same record up to three times). Reads still retry; 429 still waits and retries.
+  const jboLegacy_ = JBOCore.createLegacyRequest({ getHostname: () => location.hostname, getOverride: () => gmGet_('slugOverride', ''), fetch, sleep: sleep_ });
+  async function apiRequest_(method, path, opts) { return jboLegacy_(method, path, opts); }
   const apiGet_ = (path, query) => apiRequest_('GET', path, { query });
 
   // ---------------------------------------------------------------------
@@ -21022,8 +21219,7 @@ function jboRedact_(msg) {
   }
 
   function currentSlug_() {
-    const override = gmGet_('slugOverride', '');
-    if (override) return override;
+    // v4.96: a saved override no longer chooses the account (it could point a run at another client); the request helper refuses a mismatch.
     const parts = location.hostname.split('.');
     return parts.length >= 3 ? parts[0] : '';
   }
@@ -21048,87 +21244,12 @@ function jboRedact_(msg) {
 
   function sleep_(ms) { return new Promise((res) => setTimeout(res, ms)); }
 
-  async function apiRequest_(method, path, opts) {
-    opts = opts || {};
-    const slug = currentSlug_();
-    if (!slug) {
-      throw new Error('Could not work out the Jisr tenant slug from this page\'s URL (' +
-        location.hostname + ').');
-    }
-    const query = Object.assign({}, opts.query, { slug });
-    // Array-valued params repeat the key once per entry (e.g. columns[]=a&
-    // columns[]=b) — needed for the confirmed additions_deductions endpoint
-    // (v1.3.0), which silently drops columns if they're not each sent this
-    // way. Scalars behave exactly as before.
-    const qsParts = [];
-    Object.keys(query).forEach((k) => {
-      const v = query[k];
-      if (Array.isArray(v)) {
-        v.forEach((item) => qsParts.push(encodeURIComponent(k) + '=' + encodeURIComponent(item === undefined || item === null ? '' : item)));
-      } else {
-        qsParts.push(encodeURIComponent(k) + '=' + encodeURIComponent(v === undefined || v === null ? '' : v));
-      }
-    });
-    const qs = qsParts.join('&');
-    const url = apiBase_() + path + (qs ? '?' + qs : '');
-
-    const headers = { accept: 'application/json', slug: slug, locale: 'en' };
-    if (opts.body) headers['content-type'] = 'application/json';
-
-    let lastErr = null;
-    let retryAfterMs = null;
-    const timeoutMs = opts.timeoutMs || 20000;
-    const maxAttempts = opts.maxAttempts || 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) {
-        const backoffMs = retryAfterMs != null
-          ? retryAfterMs
-          : Math.min(15000, 500 * Math.pow(2, attempt - 1)) * (0.5 + Math.random() * 0.5);
-        await sleep_(backoffMs);
-      }
-      retryAfterMs = null;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method,
-          headers,
-          credentials: 'include',
-          body: opts.body ? JSON.stringify(opts.body) : undefined,
-          signal: controller.signal
-        });
-      } catch (e) {
-        lastErr = (e && e.name === 'AbortError')
-          ? new Error('Request timed out after ' + timeoutMs + 'ms: ' + method + ' ' + path)
-          : e;
-        continue;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      const text = await resp.text();
-      let json = null;
-      try { json = JSON.parse(text); } catch (e) { /* non-JSON body */ }
-
-      if (resp.status === 401 || resp.status === 403) {
-        const e = new Error('Auth rejected (HTTP ' + resp.status + '). Make sure you\'re logged into ' +
-          'Jisr in this tab (reload the page if you just logged in), then try again.');
-        e.isAuthError = true;
-        throw e;
-      }
-      if (resp.status === 429 || resp.status >= 500) {
-        const ra = resp.headers && resp.headers.get ? resp.headers.get('Retry-After') : null;
-        if (ra) { const raNum = Number(ra); if (!isNaN(raNum)) retryAfterMs = raNum * 1000; }
-        lastErr = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 300));
-        continue;
-      }
-      if (resp.status >= 400 && !(resp.status === 404 && opts.allow404)) {
-        throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 400));
-      }
-      return { status: resp.status, json, text };
-    }
-    throw lastErr || new Error('Request failed after retries.');
-  }
+  // v4.96 (JBO foundation): this tool's own copy of the request helper is replaced by the shared one (shared/jbo-core.js, createLegacyRequest).
+  // Same call shape, answers and errors. What changed: the account is taken from the page address and a saved override for another account
+  // blocks the request; a write (POST / PUT / PATCH / DELETE) is NEVER sent twice: no answer or a 5xx is reported for that row instead of
+  // being retried (the old copy could create the same record up to three times). Reads still retry; 429 still waits and retries.
+  const jboLegacy_ = JBOCore.createLegacyRequest({ getHostname: () => location.hostname, getOverride: () => gmGet_('slugOverride', ''), fetch, sleep: sleep_ });
+  async function apiRequest_(method, path, opts) { return jboLegacy_(method, path, opts); }
 
   // ---------------------------------------------------------------------
   // Shared backend (optional) — added in v1.9.0, the first version of this
@@ -23542,8 +23663,7 @@ function jboRedact_(msg) {
   }
 
   function currentSlug_() {
-    const override = gmGet_('slugOverride', '');
-    if (override) return override;
+    // v4.96: a saved override no longer chooses the account (it could point a run at another client); the request helper refuses a mismatch.
     const parts = location.hostname.split('.');
     return parts.length >= 3 ? parts[0] : '';
   }
@@ -23568,76 +23688,12 @@ function jboRedact_(msg) {
 
   function sleep_(ms) { return new Promise((res) => setTimeout(res, ms)); }
 
-  async function apiRequest_(method, path, opts) {
-    opts = opts || {};
-    const slug = currentSlug_();
-    if (!slug) {
-      throw new Error('Could not work out the Jisr tenant slug from this page\'s URL (' +
-        location.hostname + '). Open Settings (gear icon) and set it manually.');
-    }
-    const query = Object.assign({}, opts.query, { slug });
-    const qs = Object.keys(query)
-      .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(query[k] === undefined || query[k] === null ? '' : query[k]))
-      .join('&');
-    const url = apiBase_() + path + (qs ? '?' + qs : '');
-
-    const headers = { accept: 'application/json', slug: slug, locale: 'en' };
-    if (opts.body) headers['content-type'] = 'application/json';
-
-    let lastErr = null;
-    let retryAfterMs = null;
-    const timeoutMs = opts.timeoutMs || 20000;
-    const maxAttempts = opts.maxAttempts || 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) {
-        const backoffMs = retryAfterMs != null
-          ? retryAfterMs
-          : Math.min(15000, 500 * Math.pow(2, attempt - 1)) * (0.5 + Math.random() * 0.5);
-        await sleep_(backoffMs);
-      }
-      retryAfterMs = null;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method,
-          headers,
-          credentials: 'include',
-          body: opts.body ? JSON.stringify(opts.body) : undefined,
-          signal: controller.signal
-        });
-      } catch (e) {
-        lastErr = (e && e.name === 'AbortError')
-          ? new Error('Request timed out after ' + timeoutMs + 'ms: ' + method + ' ' + path)
-          : e;
-        continue;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      const text = await resp.text();
-      let json = null;
-      try { json = JSON.parse(text); } catch (e) { /* non-JSON body */ }
-
-      if (resp.status === 401 || resp.status === 403) {
-        const e = new Error('Auth rejected (HTTP ' + resp.status + '). Make sure you\'re logged into ' +
-          'Jisr in this tab (reload the page if you just logged in), then try again.');
-        e.isAuthError = true;
-        throw e;
-      }
-      if (resp.status === 429 || resp.status >= 500) {
-        const ra = resp.headers && resp.headers.get ? resp.headers.get('Retry-After') : null;
-        if (ra) { const raNum = Number(ra); if (!isNaN(raNum)) retryAfterMs = raNum * 1000; }
-        lastErr = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 300));
-        continue;
-      }
-      if (resp.status >= 400 && !(resp.status === 404 && opts.allow404)) {
-        throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 400));
-      }
-      return { status: resp.status, json, text };
-    }
-    throw lastErr || new Error('Request failed after retries.');
-  }
+  // v4.96 (JBO foundation): this tool's own copy of the request helper is replaced by the shared one (shared/jbo-core.js, createLegacyRequest).
+  // Same call shape, answers and errors. What changed: the account is taken from the page address and a saved override for another account
+  // blocks the request; a write (POST / PUT / PATCH / DELETE) is NEVER sent twice: no answer or a 5xx is reported for that row instead of
+  // being retried (the old copy could create the same record up to three times). Reads still retry; 429 still waits and retries.
+  const jboLegacy_ = JBOCore.createLegacyRequest({ getHostname: () => location.hostname, getOverride: () => gmGet_('slugOverride', ''), fetch, sleep: sleep_ });
+  async function apiRequest_(method, path, opts) { return jboLegacy_(method, path, opts); }
   const apiGet_ = (path, query) => apiRequest_('GET', path, { query });
 
   // ---------------------------------------------------------------------
@@ -26073,8 +26129,7 @@ function jboRedact_(msg) {
   }
 
   function currentSlug_() {
-    const override = gmGet_('slugOverride', '');
-    if (override) return override;
+    // v4.96: a saved override no longer chooses the account (it could point a run at another client); the request helper refuses a mismatch.
     const parts = location.hostname.split('.');
     return parts.length >= 3 ? parts[0] : '';
   }
@@ -26095,76 +26150,12 @@ function jboRedact_(msg) {
 
   function sleep_(ms) { return new Promise((res) => setTimeout(res, ms)); }
 
-  async function apiRequest_(method, path, opts) {
-    opts = opts || {};
-    const slug = currentSlug_();
-    if (!slug) {
-      throw new Error('Could not work out the Jisr tenant slug from this page\'s URL (' +
-        location.hostname + '). Open Settings (gear icon) and set it manually.');
-    }
-    const query = Object.assign({}, opts.query, { slug });
-    const qs = Object.keys(query)
-      .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(query[k] === undefined || query[k] === null ? '' : query[k]))
-      .join('&');
-    const url = apiBase_() + path + (qs ? '?' + qs : '');
-
-    const headers = { accept: 'application/json', slug: slug, locale: 'en' };
-    if (opts.body) headers['content-type'] = 'application/json';
-
-    let lastErr = null;
-    let retryAfterMs = null;
-    const timeoutMs = opts.timeoutMs || 20000;
-    const maxAttempts = opts.maxAttempts || 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) {
-        const backoffMs = retryAfterMs != null
-          ? retryAfterMs
-          : Math.min(15000, 500 * Math.pow(2, attempt - 1)) * (0.5 + Math.random() * 0.5);
-        await sleep_(backoffMs);
-      }
-      retryAfterMs = null;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method,
-          headers,
-          credentials: 'include',
-          body: opts.body ? JSON.stringify(opts.body) : undefined,
-          signal: controller.signal
-        });
-      } catch (e) {
-        lastErr = (e && e.name === 'AbortError')
-          ? new Error('Request timed out after ' + timeoutMs + 'ms: ' + method + ' ' + path)
-          : e;
-        continue;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      const text = await resp.text();
-      let json = null;
-      try { json = JSON.parse(text); } catch (e) { /* non-JSON body */ }
-
-      if (resp.status === 401 || resp.status === 403) {
-        const e = new Error('Auth rejected (HTTP ' + resp.status + '). Make sure you\'re logged into ' +
-          'Jisr in this tab (reload the page if you just logged in), then try again.');
-        e.isAuthError = true;
-        throw e;
-      }
-      if (resp.status === 429 || resp.status >= 500) {
-        const ra = resp.headers && resp.headers.get ? resp.headers.get('Retry-After') : null;
-        if (ra) { const raNum = Number(ra); if (!isNaN(raNum)) retryAfterMs = raNum * 1000; }
-        lastErr = new Error('HTTP ' + resp.status + ': ' + text.slice(0, 300));
-        continue;
-      }
-      if (resp.status >= 400 && !(resp.status === 404 && opts.allow404)) {
-        throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 400));
-      }
-      return { status: resp.status, json, text };
-    }
-    throw lastErr || new Error('Request failed after retries.');
-  }
+  // v4.96 (JBO foundation): this tool's own copy of the request helper is replaced by the shared one (shared/jbo-core.js, createLegacyRequest).
+  // Same call shape, answers and errors. What changed: the account is taken from the page address and a saved override for another account
+  // blocks the request; a write (POST / PUT / PATCH / DELETE) is NEVER sent twice: no answer or a 5xx is reported for that row instead of
+  // being retried (the old copy could create the same record up to three times). Reads still retry; 429 still waits and retries.
+  const jboLegacy_ = JBOCore.createLegacyRequest({ getHostname: () => location.hostname, getOverride: () => gmGet_('slugOverride', ''), fetch, sleep: sleep_ });
+  async function apiRequest_(method, path, opts) { return jboLegacy_(method, path, opts); }
   const apiGet_ = (path, query) => apiRequest_('GET', path, { query });
 
   // ---------------------------------------------------------------------
@@ -28133,8 +28124,7 @@ function jboRedact_(msg) {
 
   // ---------------------------------------------------------------- API
   function currentSlug_() {
-    const override = gmGet_('slugOverride', '');
-    if (override) return override;
+    // v4.96: a saved override no longer chooses the account; the page address does.
     const parts = location.hostname.split('.');
     return parts.length >= 3 ? parts[0] : '';
   }
@@ -29010,8 +29000,7 @@ function jboRedact_(msg) {
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
   function slug_() {
-    const o = gmGet_('slugOverride', '');
-    if (o) return o;
+    // v4.96: a saved override no longer chooses the account; the page address does.
     const p = location.hostname.split('.');
     return p.length >= 3 ? p[0] : '';
   }
@@ -29297,12 +29286,26 @@ function jboRedact_(msg) {
   let lastLearn = null; // { ok, reason, at, report }
   let lastEdit = null; // { recordId, shiftId, ymd, at }
   let learning = null;
-  function remember_(url, json, size) {
-    if (!isApi_(url) || /update_logs/.test(url) || !json || typeof json !== 'object') return;
-    if (size && size > 4e6) return;
+  // v4.103: the sniffer only exists to learn the setup from one real edit. Once the setup is saved it does nothing (checked at most every 5 s), and while it
+  // still learns it keeps the raw text of each answer and reads it (JSON.parse) only when learning actually needs it, instead of parsing every Jisr answer.
+  let cfgSeenAt_ = 0, cfgSeen_ = false;
+  function attConfigured_() {
+    const now = Date.now();
+    if (now - cfgSeenAt_ > 5000) { cfgSeenAt_ = now; try { cfgSeen_ = !!gmGet_(CONFIG_KEY(), null); } catch (e) { cfgSeen_ = false; } }
+    return cfgSeen_;
+  }
+  const KEEP_MAX_ = 1.5e6;
+  function remember_(url, data, size) {
+    if (!isApi_(url) || /update_logs/.test(url) || !data || attConfigured_()) return;
+    if (size && size > KEEP_MAX_) return;
+    const isText = typeof data === 'string';
+    if (!isText && typeof data !== 'object') return;
+    if (isText && !/^\s*[\[{]/.test(data)) return;
     for (let i = recent.length - 1; i >= 0; i--) if (recent[i].url === url) recent.splice(i, 1);
-    recent.unshift({ url, json, at: Date.now() });
-    if (recent.length > 60) recent.length = 60;
+    const e = { url, at: Date.now(), _t: isText ? data : null, _j: isText ? undefined : data };
+    Object.defineProperty(e, 'json', { enumerable: true, get() { if (this._j === undefined) { try { this._j = JSON.parse(this._t); } catch (x) { this._j = null; } this._t = null; } return this._j; } });
+    recent.unshift(e);
+    if (recent.length > 40) recent.length = 40;
   }
   function notify_() { listeners.slice().forEach((fn) => { try { fn(); } catch (e) { /* ignore */ } }); }
   async function onUpdateLogs_(url, bodyText) {
@@ -29317,7 +29320,7 @@ function jboRedact_(msg) {
     await discover_();
   }
   function noteEntry_(e) {
-    if (!e || !isApi_(e.name)) return;
+    if (!e || !isApi_(e.name) || attConfigured_()) return;
     const at = (performance.timeOrigin || 0) + e.startTime;
     if (seenUrls.some((x) => x.url === e.name && Math.abs(x.at - at) < 1)) return;
     seenUrls.push({ url: e.name, at });
@@ -29356,7 +29359,7 @@ function jboRedact_(msg) {
                 const u = xhr.responseURL || xhr.__jboUrl;
                 if (!isApi_(u)) return;
                 if (xhr.responseType === 'json') remember_(u, xhr.response);
-                else if (!xhr.responseType || xhr.responseType === 'text') remember_(u, JSON.parse(xhr.responseText), xhr.responseText.length);
+                else if (!xhr.responseType || xhr.responseType === 'text') remember_(u, xhr.responseText, xhr.responseText.length);
               } catch (e) { /* not JSON */ }
             });
           }
@@ -29374,7 +29377,7 @@ function jboRedact_(msg) {
           p.then((res) => {
             if (!res || !res.ok) return;
             if (method === 'PUT' && /update_logs/.test(url)) onUpdateLogs_(res.url || url, init && init.body);
-            else if (method === 'GET' && isApi_(res.url || url)) res.clone().text().then((t) => remember_(res.url || url, JSON.parse(t), t.length)).catch(() => {});
+            else if (method === 'GET' && isApi_(res.url || url) && !attConfigured_() && /json/i.test((res.headers && res.headers.get('content-type')) || '') && !(Number(res.headers.get('content-length')) > KEEP_MAX_)) res.clone().text().then((t) => remember_(res.url || url, t, t.length)).catch(() => {});
           }).catch(() => {});
         }
         return p;
@@ -29575,8 +29578,7 @@ function jboRedact_(msg) {
     catch (e) { return fallback; }
   }
   function currentSlug_() {
-    const o = gmGet_('slugOverride', '');
-    if (o) return o;
+    // v4.96: a saved override no longer chooses the account; the page address does.
     const p = location.hostname.split('.');
     return p.length >= 3 ? p[0] : '';
   }
@@ -29729,8 +29731,7 @@ function jboRedact_(msg) {
     return { sheets, pdf: false };
   }
   async function readPdf_(file) {
-    const lib = (typeof pdfjsLib !== 'undefined' && pdfjsLib) || unsafeWindow.pdfjsLib;
-    if (!lib) throw new Error(T('PDF support did not load (check that the script\'s @require lines are intact).', 'لم يتم تحميل دعم ملفات PDF (تأكد من سطور ‎@require في السكربت).'));
+    let lib; try { lib = await jboPdfLib_(); } catch (e) { throw new Error(T('PDF support could not be loaded: ', 'تعذّر تحميل دعم ملفات PDF: ') + (e && e.message || e)); }
     const data = new Uint8Array(await file.arrayBuffer());
     const doc = await lib.getDocument({ data, isEvalSupported: false }).promise;
     const rows = [];
@@ -30587,8 +30588,7 @@ function jboRedact_(msg) {
     catch (e) { return fallback; }
   }
   function currentSlug_() {
-    const o = gmGet_('slugOverride', '');
-    if (o) return o;
+    // v4.96: a saved override no longer chooses the account; the page address does.
     const p = location.hostname.split('.');
     return p.length >= 3 ? p[0] : '';
   }
@@ -31237,8 +31237,7 @@ function jboRedact_(msg) {
     const v = jboSecureGet_(key); return v === null || v === undefined ? fallback : v;
   }
   function slug_() {
-    const o = gmGet_('slugOverride', '');
-    if (o) return o;
+    // v4.96: a saved override no longer chooses the account; the page address does.
     const p = location.hostname.split('.');
     return p.length >= 3 ? p[0] : '';
   }
@@ -31468,6 +31467,7 @@ function jboRedact_(msg) {
 
   // ======================================================================= sniffer (Jisr's own traffic only)
   const recentTxnGets = []; // {url, json}
+  const KEEP_GET_RX_ = /\/loans\/?(\?|$)|transaction/i; // v4.103: the only Jisr reads rememberGet_ keeps; any other read is left alone (no copy, no parse)
   const listeners = new Set();
   const emit_ = () => listeners.forEach((f) => { try { f(); } catch (e) { /* ignore */ } });
   function rememberGet_(url, json) {
@@ -31498,7 +31498,7 @@ function jboRedact_(msg) {
           xhr.addEventListener('load', () => {
             if (xhr.status < 200 || xhr.status >= 300) return;
             const u = xhr.responseURL || xhr.__jltU;
-            if (xhr.__jltM === 'GET') { try { rememberGet_(u, JSON.parse(xhr.responseText)); } catch (e) { /* not JSON */ } } else onWrite_(xhr.__jltM, u, body);
+            if (xhr.__jltM === 'GET') { if (KEEP_GET_RX_.test(u)) { try { rememberGet_(u, JSON.parse(xhr.responseText)); } catch (e) { /* not JSON */ } } } else onWrite_(xhr.__jltM, u, body);
           });
         }
         return send.apply(this, arguments);
@@ -31513,7 +31513,7 @@ function jboRedact_(msg) {
         if (/\/finance\//.test(url) && !(init && init.__jboOwn)) {
           p.then((res) => {
             if (!res || !res.ok) return;
-            if (method === 'GET') res.clone().json().then((j) => rememberGet_(res.url || url, j)).catch(() => {});
+            if (method === 'GET') { if (KEEP_GET_RX_.test(res.url || url)) res.clone().json().then((j) => rememberGet_(res.url || url, j)).catch(() => {}); }
             else onWrite_(method, res.url || url, init && init.body);
           }).catch(() => {});
         }
@@ -32118,8 +32118,7 @@ function jboRedact_(msg) {
     throw new Error('Unrecognized Jisr host - refusing to guess an API base for: ' + host);
   }
   function currentSlug_() {
-    const o = gmGet_('slugOverride', '');
-    return o || location.hostname.split('.')[0];
+    return location.hostname.split('.')[0]; // v4.96: the page address only
   }
   const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -33714,8 +33713,7 @@ function jboRedact_(msg) {
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function slug_() {
-    const o = gmGet_('slugOverride', '');
-    if (o) return o;
+    // v4.96: a saved override no longer chooses the account; the page address does.
     const p = location.hostname.split('.');
     return p.length >= 3 ? p[0] : '';
   }
@@ -34201,8 +34199,7 @@ function jboRedact_(msg) {
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
   function slug_() {
-    const o = gmGet_('slugOverride', '');
-    if (o) return o;
+    // v4.96: a saved override no longer chooses the account; the page address does.
     const p = location.hostname.split('.');
     return p.length >= 3 ? p[0] : '';
   }
@@ -35016,8 +35013,7 @@ function jboRedact_(msg) {
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
   function slug_() {
-    const o = gmGet_('slugOverride', '');
-    if (o) return o;
+    // v4.96: a saved override no longer chooses the account; the page address does.
     const p = location.hostname.split('.');
     return p.length >= 3 ? p[0] : '';
   }
@@ -35666,8 +35662,7 @@ function jboRedact_(msg) {
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function slug_() {
-    const o = gmGet_('slugOverride', '');
-    if (o) return o;
+    // v4.96: a saved override no longer chooses the account; the page address does.
     const p = location.hostname.split('.');
     return p.length >= 3 ? p[0] : '';
   }
@@ -36143,7 +36138,7 @@ function jboRedact_(msg) {
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -36811,7 +36806,7 @@ function jboRedact_(msg) {
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -37256,7 +37251,7 @@ function jboRedact_(msg) {
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -37883,7 +37878,7 @@ function jboRedact_(msg) {
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -38563,7 +38558,7 @@ function jboRedact_(msg) {
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -39298,7 +39293,7 @@ function jboRedact_(msg) {
   const MAX_DAYS = 366;
   const IDS_PER_CALL = 100;
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -39735,7 +39730,7 @@ function jboRedact_(msg) {
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -40199,7 +40194,7 @@ function jboRedact_(msg) {
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -40881,7 +40876,7 @@ const CATALOG_SRC = [
     { key: 'compensation_full_package', re: /(?:قدره|قدرها|إجمالي|total\s+salary\s+of|salary\s+of)\s*[()]?\s*(\d[\d,]*(?:\.\d+)?)/gi },
   ];
   function findSamples_(html) {
-    const txt = (() => { const d = document.createElement('div'); d.innerHTML = html; return d.textContent.replace(/ /g, ' '); })();
+    const txt = (() => { const d = jboInertDiv_(html); return d.textContent.replace(/ /g, ' '); })();
     const out = [];
     SAMPLE_RULES.forEach((r) => { r.re.lastIndex = 0; let m; while ((m = r.re.exec(txt))) { const v = m[1].trim(); if (v && !out.some((o) => o.value === v)) out.push({ key: r.key, value: v }); } });
     return out;
@@ -40889,15 +40884,14 @@ const CATALOG_SRC = [
   /** Replace each ticked sample value in the text with its {{{key}}}. */
   function applySamples_(html, list) {
     if (!list || !list.length) return html;
-    const d = document.createElement('div'); d.innerHTML = html;
-    const tw = document.createTreeWalker(d, NodeFilter.SHOW_TEXT); const ts = []; while (tw.nextNode()) ts.push(tw.currentNode);
+    const d = jboInertDiv_(html);
+    const tw = d.ownerDocument.createTreeWalker(d, NodeFilter.SHOW_TEXT); const ts = []; while (tw.nextNode()) ts.push(tw.currentNode);
     ts.forEach((t) => { let v = t.nodeValue; list.forEach((x) => { if (v.includes(x.value)) v = v.split(x.value).join('{{{' + x.key + '}}}'); }); if (v !== t.nodeValue) t.nodeValue = v; });
     return d.innerHTML;
   }
   /** PDF -> { html, pages, firstPagePng } . Text: lines grouped by height on the page, paragraphs by the gaps between them. */
   async function pdfImport_(file, picture) {
-    const lib = (typeof pdfjsLib !== 'undefined' && pdfjsLib) || unsafeWindow.pdfjsLib;
-    if (!lib) throw new Error(T('PDF support did not load (check that the script\'s @require lines are intact).', 'لم يتم تحميل دعم ملفات PDF (تأكد من سطور ‎@require في السكربت).'));
+    let lib; try { lib = await jboPdfLib_(); } catch (e) { throw new Error(T('PDF support could not be loaded: ', 'تعذّر تحميل دعم ملفات PDF: ') + (e && e.message || e)); }
     const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false }).promise;
     if (picture) {
       const page = await doc.getPage(1); const vp = page.getViewport({ scale: 2 });
@@ -41288,7 +41282,7 @@ const CATALOG_SRC = [
     if (a === b) return true;
     // v4.68: Jisr rewrites formatting (attribute order, width/height, entities, style spelling, empty paragraphs). That is not an error:
     // the part counts as saved when its words and its structure (pictures, tables, rows, cells, variables) are the same.
-    const sig = (h) => { const d = document.createElement('div'); d.innerHTML = h;
+    const sig = (h) => { const d = jboInertDiv_(h);
       const txt = d.textContent.replace(/[\s\u00a0\u200b-\u200f]+/g, '').normalize('NFKC');
       const n = (q) => d.querySelectorAll(q).length;
       return [txt, n('img'), n('table'), n('tr'), n('td,th'), n('li')].join('|'); };
@@ -42530,7 +42524,7 @@ async function shrinkPic_(data) {
   const T = (en, ar) => I.t(en, ar);
   const MAX_STEPS = 8;
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -43030,7 +43024,7 @@ async function shrinkPic_(data) {
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function pmBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/pm/api';
@@ -44748,7 +44742,7 @@ async function shrinkPic_(data) {
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function pmBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/pm/api';
@@ -45048,7 +45042,7 @@ async function shrinkPic_(data) {
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -45341,7 +45335,7 @@ async function shrinkPic_(data) {
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -45778,7 +45772,7 @@ async function shrinkPic_(data) {
   const T = (en, ar) => I.t(en, ar);
   const MAX_PER_RUN = 300;
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -46087,7 +46081,7 @@ async function shrinkPic_(data) {
   const T = (en, ar) => I.t(en, ar);
   const MAX_PER_RUN = 500;
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -46494,7 +46488,7 @@ async function shrinkPic_(data) {
   const cfg = { backoffMs: 1000, retries: 3, verifyWaits: [700, 1500, 3000] };   // verifyWaits: after a send, look at the profile again up to this many times (ms between looks)
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -47116,7 +47110,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.91.0';
+  const SECTION_VERSION = '4.95.0';
   const MODULE_ID = 'leave-edit-bulk';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -47124,9 +47118,35 @@ async function shrinkPic_(data) {
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  // v4.95 (JBO foundation): the account comes from the page address only. A saved override for another account stops the tool (JBOCore.guard).
+  const tenant_ = () => JBOCore.guard({ hostname: location.hostname, override: gmGet_('slugOverride', '') });
+  function slug_() { return tenant_().slug; }
   const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
   const LC = () => W.__jisrLeaveCancel || {};
+  // v4.95: this tool's own window sends everything through one JBO client (made in openTool_): dry run ON until the confirm step, a timeout on every
+  // request, backoff on 429, and a write is never sent twice. Section 44 borrows the helpers below WITHOUT the last argument and keeps its old path.
+  let jbo_ = null;
+  /** Same call shape as section 25's request_(method, path, query, body). */
+  async function req_(method, path, query, body) {
+    const r = await jbo_.request(method, path, { query: query || undefined, body: body || undefined, timeoutMs: method === 'GET' ? 20000 : 60000 });
+    if (r.status === 403) { const m = LC().jisrMsg_ ? LC().jisrMsg_(r.json) : ''; const err = new Error(T('Jisr refused (HTTP 403)', 'رفض جسر الطلب (HTTP 403)') + (m ? ': ' + m : '')); err.status = 403; throw err; }
+    return r;
+  }
+  const cancelJbo_ = (empId, ids, reason) => req_('POST', '/v2/employees/' + encodeURIComponent(empId) + '/leave_requests/bulk_cancel', null, { leave_request_ids: ids.map((x) => (/^\d+$/.test(String(x)) ? Number(x) : x)), reason });
+  /** The employee's imported leaves (same request and paging as section 25's history_). */
+  async function historyJbo_(empId) {
+    const out = [];
+    for (let page = 1; page <= 40; page++) {
+      const r = await req_('GET', '/v2/employees/' + encodeURIComponent(empId) + '/leaves/history', { all_years: 'true', rpp: 25, page, imported_leaves: 'true' });
+      if (!r.ok) throw new Error(T('Could not read the leaves (HTTP ', 'تعذّرت قراءة الإجازات (HTTP ') + r.status + ')' + (LC().jisrMsg_ && LC().jisrMsg_(r.json) ? ': ' + LC().jisrMsg_(r.json) : ''));
+      const d = (r.json && r.json.data) || {};
+      const list = Array.isArray(d.leave_history) ? d.leave_history : [];
+      list.forEach((o) => out.push(LC().leaveItem_(o)));
+      const pg = d.pagination || {};
+      if (!list.length || !pg.next_page || (pg.total_pages && page >= pg.total_pages)) break;
+    }
+    return out;
+  }
   const cfg = { paceMs: 300, verifyTries: 5, verifyWaitMs: 1500, approvalPages: 5, approveSteps: 5, maxAttachBytes: 10 * 1024 * 1024 };
 
   // ======================================================================= pure helpers
@@ -47219,8 +47239,14 @@ async function shrinkPic_(data) {
     return base + '/assetmanager/api/v1/bulk_upload?slug=' + encodeURIComponent(slug_());
   }
   /** POST the import. Never retried after Jisr may have processed it; 429 (refused before processing) waits and tries again. */
-  async function importCall_(rows) {
+  async function importCall_(rows, cl) {
     const bytes = importXlsx_(rows);
+    if (cl) { // v4.95: this tool's own window: through the JBO client
+      const fd = new FormData();
+      fd.append('file', new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'leave_requests.xlsx');
+      fd.append('type', 'leave_requests');
+      return cl.request('POST', importUrl_(), { form: fd, locale: I.isAr() ? 'ar' : 'en', timeoutMs: 60000 });
+    }
     for (let a = 0; a < 3; a++) {
       const fd = new FormData();
       fd.append('file', new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'leave_requests.xlsx');
@@ -47270,12 +47296,13 @@ async function shrinkPic_(data) {
   }
   const leaveItems_ = (json) => { const d = (json && json.data) || json || {}; let list = null; (function walk(v, k) { if (list || !v || typeof v !== 'object' || k > 5) return; if (Array.isArray(v)) { if (v.length && v.every((x) => x && typeof x === 'object' && x.request && typeof x.request === 'object')) { list = v; return; } v.forEach((x) => walk(x, k + 1)); return; } Object.values(v).forEach((x) => walk(x, k + 1)); })(d, 0); return list || []; };
   /** The approvals the signed-in user may act on: the pending one that belongs to this leave request, if any. */
-  async function findApproval_(leaveId) {
+  async function findApproval_(leaveId, rq) {
+    rq = rq || LC().request_;
     for (const filtered of [true, false]) {
       let stopped = false;
       for (let page = 1; page <= cfg.approvalPages; page++) {
         const q = { type: 'permitted_requests', page, rpp: 50, search: '' }; if (filtered) q['filter[status][]'] = 'Pending';
-        const r = await LC().request_('GET', '/v2/requests/approvals', q, null);
+        const r = await rq('GET', '/v2/requests/approvals', q, null);
         if (!r.ok) { if (filtered) { stopped = true; break; } return null; }
         const items = leaveItems_(r.json);
         const hit = items.find((it) => String(it.request && it.request.id != null ? it.request.id : it.request_id) === String(leaveId) && (!it.request_type || /leave/i.test(it.request_type)) && !/approved|rejected|cancel/i.test(String(it.status || '')));
@@ -47287,23 +47314,23 @@ async function shrinkPic_(data) {
     return null;
   }
   /** Approve the request as many times as its approval cycle needs (each step shows up as a new pending approval). */
-  async function approveLeave_(leaveId, comment) {
+  async function approveLeave_(leaveId, comment, rq) {
     let steps = 0;
     for (let k = 0; k < cfg.approveSteps; k++) {
       let ap = null;
-      for (let i = 0; i < cfg.verifyTries && !ap; i++) { if (i) await sleep_(cfg.verifyWaitMs); ap = await findApproval_(leaveId); if (!ap && k > 0) break; }
+      for (let i = 0; i < cfg.verifyTries && !ap; i++) { if (i) await sleep_(cfg.verifyWaitMs); ap = await findApproval_(leaveId, rq); if (!ap && k > 0) break; }
       if (!ap) return { steps, why: steps ? '' : 'no pending approval for this request is in your approvals list' };
-      const r = await LC().request_('POST', '/v2/requests/approvals/' + encodeURIComponent(ap.id) + '/approve', null, { request: { comments: comment || 'Approved' } });
+      const r = await (rq || LC().request_)('POST', '/v2/requests/approvals/' + encodeURIComponent(ap.id) + '/approve', null, { request: { comments: comment || 'Approved' } });
       if (!r.ok) return { steps, error: importMsg_(r), status: r.status };
       steps++; await sleep_(cfg.paceMs);
     }
     return { steps };
   }
   /** all of the employee's leaves (not only imported ones): approved requests show here, pending ones do not */
-  async function histAll_(empId) {
+  async function histAll_(empId, rq) {
     const out = [];
     for (let page = 1; page <= 40; page++) {
-      const r = await LC().request_('GET', '/v2/employees/' + encodeURIComponent(empId) + '/leaves/history', { all_years: 'true', rpp: 25, page });
+      const r = await (rq || LC().request_)('GET', '/v2/employees/' + encodeURIComponent(empId) + '/leaves/history', { all_years: 'true', rpp: 25, page });
       if (!r.ok) throw new Error(T('Could not read the leaves (HTTP ', 'تعذّرت قراءة الإجازات (HTTP ') + r.status + ')');
       const d = (r.json && r.json.data) || {}; const list = Array.isArray(d.leave_history) ? d.leave_history : [];
       list.forEach((o) => out.push(LC().leaveItem_(o)));
@@ -47312,32 +47339,32 @@ async function shrinkPic_(data) {
     }
     return out;
   }
-  async function waitApproved_(empId, id, start, end, skipIds) {
+  async function waitApproved_(empId, id, start, end, skipIds, rq) {
     let list = [];
     for (let i = 0; i < cfg.verifyTries; i++) {
       if (i) await sleep_(cfg.verifyWaitMs);
-      list = await histAll_(empId);
+      list = await histAll_(empId, rq);
       const hit = list.find((l) => (id != null && String(l.id) === String(id)) || (l.start === start && l.end === end && !skipIds.has(String(l.id))));
       if (hit && !LC().isGone_(hit.status)) return { hit, list };
     }
     return { hit: null, list };
   }
   /** Jisr's own preview of the new request (reads only): days, a warning, and whether this leave type needs an attachment */
-  async function previewOne_(r) {
+  async function previewOne_(r, rq) {
     const p = r.plan;
     const q = { 'leave_request[leave_type_id]': p.type.id, 'leave_request[toil_balance_deduction_enabled]': 'false', 'leave_request[is_require_vacation_salary]': 'false', 'leave_request[from]': p.start, 'leave_request[to]': p.end };
-    const res = await LC().request_('GET', '/v2/employees/' + encodeURIComponent(r.emp.id) + '/leave_requests/new', q, null);
+    const res = await (rq || LC().request_)('GET', '/v2/employees/' + encodeURIComponent(r.emp.id) + '/leave_requests/new', q, null);
     if (!res.ok) return null;
     const w = deepFind_(res.json, 'warning'), days = deepFind_(res.json, 'applied_days'), req = deepFind_(res.json, 'is_attachment_required');
     return { days: days == null ? '' : days, warn: typeof w === 'string' ? w : '', attachReq: req === true };
   }
 
   /** Read the employee's imported leaves until the wanted one shows (the import may take a moment). */
-  async function waitFor_(empId, start, end, skipIds, wantedType, types) {
+  async function waitFor_(empId, start, end, skipIds, wantedType, types, hist) {
     let list = [];
     for (let i = 0; i < cfg.verifyTries; i++) {
       if (i) await sleep_(cfg.verifyWaitMs);
-      list = await LC().history_(empId);
+      list = await (hist || LC().history_)(empId);
       const hit = list.find((l) => l.start === start && l.end === end && !skipIds.has(String(l.id)) && !LC().isGone_(l.status));
       if (hit) return { hit, list };
     }
@@ -47405,6 +47432,13 @@ async function shrinkPic_(data) {
 
   function openTool_() {
     injectCss_();
+    // v4.95 (JBO foundation): account guard, one client (dry run ON), shared panel, state machine, run log
+    let tenant; try { tenant = tenant_(); } catch (e) { alert(e.message); return; }
+    jbo_ = JBOCore.createClient({ tenant, fetch, dryRun: true, concurrency: 4, locale: I.isAr() ? 'ar' : 'en', beforeWrite: JBOCore.pinTenant(tenant, () => location.hostname) });
+    const panel = JBOUI.createPanel({ tenant: tenant.slug, t: T });
+    const machine = JBOCore.createMachine((s) => panel.setState(s));
+    const runLog = JBOCore.createRunLog({ tool: MODULE_ID, tenant, storage: { get: gmGet_, set: gmSet_, del: (k) => { try { GM_deleteValue(GM_PREFIX + k); } catch (e) { /* ignore */ } } } });
+    const fp_ = () => JBOCore.fingerprint(S.rows.map((r) => [r.no, r.empText, r.leaveId || '', r.start || '', r.end || '']));
     const X = W.__jisrBulkOpsXlsx;
     const S = { rows: [], types: null, raw: null, hist: new Map(), busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false, lang: gmGet_('leaveEditNameLang', 'ar') === 'en' ? 'en' : 'ar', ignored: 0, method: gmGet_('leaveEditMethod', 'request') === 'import' ? 'import' : 'request', files: [], common: null, histAll: new Map() };
     const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
@@ -47433,18 +47467,21 @@ async function shrinkPic_(data) {
     const expB = el('button', { class: 'jbo-btn', text: T('Imported leaves (.xlsx)', 'الإجازات المستوردة (‎.xlsx)') });
     const upB = el('button', { class: 'jbo-btn', text: T('Upload edited file', 'رفع الملف بعد التعديل') });
     const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
-    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const statusEl = panel.statusEl; // v4.95: the status line lives in the shared panel
     const statsEl = el('div', { class: 'jle-stats' }); const wrap = el('div', { class: 'jle-wrap' });
     const dryB = el('button', { class: 'jbo-btn', text: T('Dry Run', 'تشغيل تجريبي') });
     const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
     const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
     const resB = el('button', { class: 'jbo-btn', text: T('Results + undo list (.xlsx)', 'النتائج وقائمة التراجع (‎.xlsx)') });
+    const logB = el('button', { class: 'jbo-btn', text: T('Rollback log (.csv)', 'سجل التراجع (‎.csv)') });
+    logB.addEventListener('click', () => { JBOUI.downloadText(document, 'jisr-leave-edit-rollback-' + tenant.slug + '.csv', runLog.toCsv()); S.cutNote = ''; paint_(); });
     const cancelTabB = el('button', { class: 'jbo-btn', text: T('Cancel leaves →', 'إلغاء الإجازات ←') });
     cancelTabB.addEventListener('click', () => { close(); const m = W.__jisrBulkOps && W.__jisrBulkOps.modules['leave-cancel-bulk']; if (m) m.open(); });
 
     function render_() {
       titleEl.textContent = T('Edit Imported Leaves (Bulk)', 'تعديل الإجازات المستوردة (جماعي)');
       body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(panel.el);
       body.appendChild(el('div', { class: 'jle-bar' }, [el('b', { text: T('Edit', 'تعديل') }), cancelTabB]));
       body.appendChild(el('div', { class: 'jle-bar' }, [el('label', {}, [T('Create the corrected leave as', 'إنشاء الإجازة الصحيحة كـ'), methodSel])].concat(S.method === 'request' ? [attB, commonB, clearAttB, attInfo] : [])));
       if (S.method === 'request') body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
@@ -47458,15 +47495,19 @@ async function shrinkPic_(data) {
         'تُلغى الإجازة القديمة أولًا. إن لم تظهر الإجازة الصحيحة في جسر بعد ذلك فتعيد الأداة استيراد الأصلية وتتوقف. تُحفظ القيم القديمة في ملف النتائج. شغّل التجريبي أولًا وجرّب صفًا أو اثنين قبل الملف كله.')}));
       body.appendChild(el('div', { class: 'jle-bar' }, [el('label', {}, [T('Cancellation reason', 'سبب الإلغاء'), reasonIn]), el('label', {}, [T('Leave type spelling in the import', 'كتابة نوع الإجازة في الاستيراد'), langSel])]));
       body.appendChild(el('div', { class: 'jle-bar' }, [expB, typeSel, el('label', {}, [T('starting from', 'تبدأ من'), fromIn]), el('label', {}, [T('to', 'إلى'), toIn]), el('span', { class: 'jbo-muted', text: '·' }), upB]));
-      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn); body.appendChild(attIn); body.appendChild(commonIn);
-      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
+      body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn); body.appendChild(attIn); body.appendChild(commonIn);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB, logB]));
       foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
       paint_();
     }
     function paint_() {
       attInfo.textContent = (S.files.length ? S.files.length + T(' attachment file(s)', ' ملف مرفق') : T('no attachment files added', 'لم تُضف ملفات مرفقة')) + (S.common ? ' · ' + T('for every row: ', 'لكل الصفوف: ') + S.common.name : '');
-      statusEl.textContent = S.busy || S.note;
-      statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      // v4.95: the state machine follows what the window knows; anything that makes the dry run stale sends it back to "Loaded"
+      if (S.phase !== 'running') {
+        if (S.rows.length && machine.is('idle')) machine.go('validated');
+        else if (!S.dryDone && !machine.is('idle') && !machine.is('validated') && machine.can('validated')) machine.go('validated');
+      }
+      panel.status(S.busy || (S.cutNote ? S.cutNote + (S.note ? '\n' + S.note : '') : S.note), (S.noteErr || S.cutNote) && !S.busy ? 'err' : '');
       statsEl.innerHTML = '';
       const cnt = (st) => S.rows.filter((r) => r.state === st).length;
       if (S.rows.length) [[S.rows.length, T('rows', 'صف')], [cnt('ready'), T('ready', 'جاهز')], [cnt('error'), T('blocked', 'محجوب')], [cnt('skip'), T('skipped', 'تم تخطيه')], [cnt('done'), T('edited ✓', 'عُدّلت ✓')], [cnt('failed'), T('failed', 'فشل')]]
@@ -47490,16 +47531,17 @@ async function shrinkPic_(data) {
       }
       const ready = S.rows.filter((r) => r.state === 'ready').length;
       runB.textContent = T('Edit ', 'تعديل ') + ready + T(' leave(s)', ' إجازة');
-      runB.disabled = !S.dryDone || !ready || !!S.busy;
+      runB.disabled = !S.dryDone || !machine.is('dry-run') || !ready || !!S.busy;
       dryB.disabled = !S.rows.length || !!S.busy;
       stopB.style.display = S.phase === 'running' ? '' : 'none';
       [expB, upB, attB, commonB, clearAttB].forEach((b) => { b.disabled = !!S.busy || S.phase === 'running'; });
       resB.style.display = S.rows.some((r) => ['done', 'failed'].includes(r.state)) ? '' : 'none';
+      logB.style.display = runLog.entries().length ? '' : 'none';
     }
     async function types_() {
       if (!S.types) {
         try {
-          const r = await LC().request_('GET', '/v2/leaves/leave_types/', null);
+          const r = await req_('GET', '/v2/leaves/leave_types/', null);
           if (!r.ok) throw new Error('HTTP ' + r.status);
           S.types = LC().typesFrom_(r.json); S.raw = rawTypes_(r.json);
         } catch (e) { S.types = null; S.raw = null; S.typesErr = e.message; }
@@ -47509,7 +47551,7 @@ async function shrinkPic_(data) {
     types_().then(() => { (S.raw || []).forEach((t) => typeSel.appendChild(el('option', { value: t.id, text: t.name }))); });
     async function hist_(empId, force) {
       const k = String(empId);
-      if (force || !S.hist.has(k)) S.hist.set(k, await LC().history_(empId));
+      if (force || !S.hist.has(k)) S.hist.set(k, await historyJbo_(empId));
       return S.hist.get(k);
     }
 
@@ -47636,7 +47678,7 @@ async function shrinkPic_(data) {
         // a new request is also refused when it overlaps an ordinary (not imported) leave: read the employees' full history for that
         if (S.method === 'request') {
           const ids = Array.from(new Set(todo.filter((r) => r.state === 'ready').map((r) => String(r.emp.id)))); let dn = 0;
-          await LC().pool_(ids, 4, async (id) => { try { S.histAll.set(id, await histAll_(id)); } catch (e) { S.histAll.delete(id); } dn++; statusEl.textContent = T('Reading all leaves… ', 'جارٍ قراءة كل الإجازات… ') + dn + '/' + ids.length; });
+          await LC().pool_(ids, 4, async (id) => { try { S.histAll.set(id, await histAll_(id, req_)); } catch (e) { S.histAll.delete(id); } dn++; statusEl.textContent = T('Reading all leaves… ', 'جارٍ قراءة كل الإجازات… ') + dn + '/' + ids.length; });
         }
         // overlaps: the new range must not touch another leave the employee keeps, or another new range of the same employee in this file
         const byEmp = new Map(); todo.filter((r) => r.state === 'ready').forEach((r) => { const k = String(r.emp.id); if (!byEmp.has(k)) byEmp.set(k, []); byEmp.get(k).push(r); });
@@ -47655,14 +47697,23 @@ async function shrinkPic_(data) {
           const rdy = todo.filter((r) => r.state === 'ready'); let pn = 0;
           await LC().pool_(rdy, 3, async (r) => {
             try {
-              const pv = await previewOne_(r);
+              const pv = await previewOne_(r, req_);
               if (pv) { r.preview = pv; if (pv.attachReq && !r.att) { r.state = 'error'; r.msg = '✗ ' + T('this leave type needs an attachment: name a file in “File name Attachment” or add one for every row', 'نوع الإجازة هذا يتطلب مرفقًا: اكتب اسم ملف في «File name Attachment» أو أضف مرفقًا لكل الصفوف'); }
                 else r.msg += (pv.days !== '' ? ' · ' + pv.days + T(' day(s)', ' يوم') : '') + (pv.warn ? '\n⚠ ' + redact_(pv.warn) : ''); }
             } catch (e) { /* a preview that cannot be read does not block the row */ }
             pn++; statusEl.textContent = T('Asking Jisr to preview the new requests… ', 'جارٍ طلب معاينة الطلبات الجديدة من جسر… ') + pn + '/' + rdy.length;
           });
         }
+        // v4.95: rows an interrupted run already handled are not offered again
+        const ri = runLog.resumeInfo(fp_());
+        if (ri) S.rows.forEach((r) => {
+          if (r.state !== 'ready') return;
+          if (ri.done.has(r.no)) { r.state = 'skip'; r.msg = T('already edited in the run that was cut off: skipped', 'عُدّلت في التشغيل الذي انقطع: تم التخطي'); }
+          else if (ri.interrupted.some((e) => e.row === r.no)) { r.state = 'error'; r.msg = '✗ ' + T('this row was being edited when the last run was cut off. Check the employee in Jisr; the old values are in the rollback log.', 'كان هذا الصف قيد التعديل عند انقطاع التشغيل السابق. تحقّق من الموظف في جسر؛ القيم القديمة في سجل التراجع.'); }
+        });
         S.dryDone = true;
+        if (machine.is('done') || machine.is('failed')) machine.go('validated');
+        if (!machine.is('dry-run')) machine.go('dry-run');
         const rd = S.rows.filter((r) => r.state === 'ready').length;
         S.note = T('Dry Run done: nothing was changed. ', 'انتهى التشغيل التجريبي: لم يتغيّر شيء. ') + rd + T(' leave(s) ready to edit for ', ' إجازة جاهزة للتعديل لـ ') + new Set(S.rows.filter((r) => r.state === 'ready').map((r) => r.emp.id)).size + T(' employee(s).', ' موظف.');
         S.noteErr = false;
@@ -47676,7 +47727,7 @@ async function shrinkPic_(data) {
     /** v4.85: create the corrected leave as a normal request (attachment inside), approve it at once, read it back from the full leave history */
     async function viaRequest_(r, l, p, skip, attDataUrl, restore_) {
       let cr;
-      try { cr = await LC().request_('POST', '/v2/employees/' + encodeURIComponent(r.emp.id) + '/leave_requests', null, createBody_(p, attDataUrl, r)); }
+      try { cr = await req_('POST', '/v2/employees/' + encodeURIComponent(r.emp.id) + '/leave_requests', null, createBody_(p, attDataUrl, r)); }
       catch (e) {
         if (/HTTP 401/.test(e.message)) { r.state = 'failed'; r.stage = 'restore_failed'; r.why = 'the Jisr sign-in ended after the old leave was cancelled: the original leave was NOT put back and must be restored from the results file (undo list)'; r.msg = '✗ ' + e.message + T(' The old leave was cancelled: import it again from the undo list.', ' أُلغيت الإجازة القديمة: استوردها من قائمة التراجع.'); throw e; }
         if (e.unknown) { r.state = 'failed'; r.stage = 'unverified'; r.why = 'no answer from Jisr when creating the new request: the old leave was cancelled and the new request may or may not exist; check the employee in Jisr (the old values are in the results file)'; r.msg = '✗ ' + T('No answer from Jisr when creating the new request. The old leave was cancelled: check the employee in Jisr before doing anything else (old values are in the results file).', 'لا رد من جسر عند إنشاء الطلب الجديد. أُلغيت الإجازة القديمة: تحقّق من الموظف في جسر قبل أي إجراء (القيم القديمة في ملف النتائج).'); return false; }
@@ -47686,8 +47737,8 @@ async function shrinkPic_(data) {
       const lrObj = cr.json && cr.json.data && cr.json.data.leave_request; const newId = lrObj && lrObj.id != null ? lrObj.id : null;
       r.newId = newId;
       if (newId == null) { r.state = 'failed'; r.stage = 'unverified'; r.why = 'Jisr accepted the new request but its number was not in the answer: it could not be approved; find it in Jisr'; r.msg = '✗ ' + T('Jisr accepted the new request but did not give its number, so it could not be approved. Find it in Jisr (Requests → Approvals) and approve it. The old leave was cancelled.', 'قبل جسر الطلب الجديد لكنه لم يعطِ رقمه فلم يمكن اعتماده. ابحث عنه في جسر (الطلبات ← الموافقات) واعتمده. أُلغيت الإجازة القديمة.'); return false; }
-      let ap; try { ap = await approveLeave_(newId, T('Approved with Bulk Ops', 'اعتُمد عبر Bulk Ops')); } catch (e) { ap = { steps: 0, error: redact_(e.message) }; }
-      let w; try { w = await waitApproved_(r.emp.id, newId, p.start, p.end, skip); } catch (e) { w = { hit: null, list: [] }; }
+      let ap; try { ap = await approveLeave_(newId, T('Approved with Bulk Ops', 'اعتُمد عبر Bulk Ops'), req_); } catch (e) { ap = { steps: 0, error: redact_(e.message) }; }
+      let w; try { w = await waitApproved_(r.emp.id, newId, p.start, p.end, skip, req_); } catch (e) { w = { hit: null, list: [] }; }
       const stillPending = w.hit && /pending|under|review|waiting/i.test(String(w.hit.status || ''));
       if (stillPending || (!w.hit && (ap.error || !ap.steps))) {
         r.state = 'failed'; r.stage = 'pending';
@@ -47710,7 +47761,9 @@ async function shrinkPic_(data) {
       let attDataUrl = '';
       if (S.method === 'request' && r.att) { try { attDataUrl = await attUrl_(r.att); } catch (e) { r.state = 'failed'; r.stage = 'failed'; r.why = 'the attachment could not be read: nothing was changed'; r.msg = '✗ ' + T('The attachment could not be read (nothing changed): ', 'تعذّرت قراءة المرفق (لم يتغيّر شيء): ') + redact_(e.message); return false; } }
       // 1) cancel the old one
-      const c = await LC().cancel_(r.emp.id, [l.id], reason);
+      // v4.95: the undo record is saved in the script's storage BEFORE the cancel is sent, so a closed tab or a crash cannot lose it
+      runLog.begin(r.no, 'employee ' + (r.emp.code != null ? r.emp.code : r.emp.id) + ' / leave #' + l.id, 'cancel, then ' + (S.method === 'request' ? 'new approved request' : 'import'), { leaveId: l.id, type: orig.typeName, from: orig.start, to: orig.end, resumption: orig.resumption, comment: orig.comment }); r.logged = true;
+      const c = await cancelJbo_(r.emp.id, [l.id], reason);
       if (!c.ok) { r.state = 'failed'; r.stage = jboStageOfRes_(c); r.why = 'cancelling the old leave failed: nothing was changed'; r.msg = '✗ ' + T('Cancelling the old leave failed (nothing changed): ', 'فشل إلغاء الإجازة القديمة (لم يتغيّر شيء): ') + importMsg_(c); return false; }
       const skip = new Set([String(l.id)]);
       // `why` is what went wrong (shown to the operator), `whyEn` the same in English for the dashboard, `stage` how that is classed when the original DID come back.
@@ -47718,8 +47771,8 @@ async function shrinkPic_(data) {
       const restore_ = async (why, whyEn, stage) => {
         let ok = false, extra = '';
         try {
-          const ri = await importCall_([impRow_(r, orig)]);
-          if (ri.ok) { const w = await waitFor_(r.emp.id, orig.start, orig.end, skip, null, S.types); ok = !!w.hit; }
+          const ri = await importCall_([impRow_(r, orig)], jbo_);
+          if (ri.ok) { const w = await waitFor_(r.emp.id, orig.start, orig.end, skip, null, S.types, historyJbo_); ok = !!w.hit; }
           else extra = ' ' + importMsg_(ri);
         } catch (e) { extra = ' ' + e.message; }
         r.state = 'failed'; r.stage = ok ? stage : 'restore_failed';
@@ -47729,12 +47782,12 @@ async function shrinkPic_(data) {
       if (S.method === 'request') return await viaRequest_(r, l, p, skip, attDataUrl, restore_);
       // 2) import the corrected one
       let imp;
-      try { imp = await importCall_([impRow_(r, { typeName: p.type.imp, start: p.start, end: p.end, comment: p.comment, resumption: p.resumption })]); }
+      try { imp = await importCall_([impRow_(r, { typeName: p.type.imp, start: p.start, end: p.end, comment: p.comment, resumption: p.resumption })], jbo_); }
       catch (e) { if (e.auth) { r.state = 'failed'; r.stage = 'restore_failed'; r.why = 'the Jisr sign-in ended after the old leave was cancelled: the original leave was NOT put back and must be restored from the results file (undo list)'; r.msg = '✗ ' + e.message + T(' The old leave was cancelled: import it again from the undo list.', ' أُلغيت الإجازة القديمة: استوردها من قائمة التراجع.'); throw e; } await restore_(e.message, e.unknown ? 'no answer from Jisr for the import' : 'the import failed', 'rolled_back'); return false; }
       if (!imp.ok) { await restore_(T('Jisr refused the import: ', 'رفض جسر الاستيراد: ') + importMsg_(imp), 'Jisr refused the import (HTTP ' + imp.status + ')', 'rolled_back'); return false; }
       // 3) read back
       let w;
-      try { w = await waitFor_(r.emp.id, p.start, p.end, skip, p.type.id, S.types); }
+      try { w = await waitFor_(r.emp.id, p.start, p.end, skip, p.type.id, S.types, historyJbo_); }
       catch (e) { await restore_(T('Could not read the leaves back: ', 'تعذّرت إعادة قراءة الإجازات: ') + e.message, 'the leaves could not be read back after the import', 'rolled_back'); return false; }
       if (!w.hit) { await restore_(T('Jisr accepted the import but the new leave did not appear', 'قبل جسر الاستيراد لكن الإجازة الجديدة لم تظهر'), 'Jisr accepted the import (OK) but the new leave did not appear', 'not_reflected'); return false; }
       if (!sameType_(w.hit, p.type.id, S.types)) { r.state = 'failed'; r.stage = 'mismatch'; r.why = 'the leave was imported with a different leave type than asked; the old leave was cancelled and needs checking in Jisr'; r.newId = w.hit.id; r.msg = '✗ ' + T('The leave was imported as “', 'استُوردت الإجازة بنوع «') + (w.hit.type || w.hit.typeEn) + T('” instead of “', '» بدل «') + p.type.name + T('”. Check it in Jisr (the old leave was cancelled).', '». تحقق منها في جسر (أُلغيت الإجازة القديمة).'); return false; }
@@ -47749,30 +47802,42 @@ async function shrinkPic_(data) {
       const todo = S.rows.filter((r) => r.state === 'ready');
       if (!todo.length) return;
       const nEmp = new Set(todo.map((r) => r.emp.id)).size;
-      if (!confirm(T('Edit ', 'تعديل ') + todo.length + T(' imported leave(s) of ', ' إجازة مستوردة لـ ') + nEmp + T(' employee(s) in ', ' موظف في ') + slug_() + '?\n\n' + (S.method === 'request' ? T('Each old leave is cancelled, then a new leave request is created (with its attachment) and approved at once.\nIf Jisr refuses the new request the tool imports the original again and stops. If it cannot be approved it stays pending and the run stops.\nThe old values go into the results file.', 'تُلغى كل إجازة قديمة ثم يُنشأ طلب إجازة جديد (مع مرفقه) ويُعتمد فورًا.\nإن رفض جسر الطلب الجديد تعيد الأداة استيراد الأصلية وتتوقف. وإن تعذّر اعتماده يبقى معلّقًا ويتوقف التشغيل.\nتُحفظ القيم القديمة في ملف النتائج.') : T('Each old leave is cancelled, then the corrected one is imported. If a row fails the tool tries to put the original back and stops.\nThe old values go into the results file.', 'تُلغى كل إجازة قديمة ثم تُستورد الصحيحة. إن فشل صف تحاول الأداة إرجاع الأصلية وتتوقف.\nتُحفظ القيم القديمة في ملف النتائج.')))) return;
-      S.phase = 'running'; S.stop = false; S.busy = ' '; paint_();
-      let done = 0;
+      if (!machine.is('dry-run')) { S.note = T('Run the Dry Run first.', 'شغّل التشغيل التجريبي أولًا.'); S.noteErr = true; paint_(); return; }
+      // v4.95: in-window confirm: "N records will change on <account>", the account name typed, focus on Cancel
+      S.busy = T('Waiting for your confirmation…', 'بانتظار تأكيدك…'); paint_(); // the buttons under the question are off while it is open
+      const sure = await panel.confirm({ count: todo.length, tenant: tenant.slug, danger: true, typeToConfirm: tenant.slug, okLabel: T('Edit ', 'تعديل ') + todo.length + T(' leave(s)', ' إجازة'),
+        action: T('Edit ', 'تعديل ') + todo.length + T(' imported leave(s) of ', ' إجازة مستوردة لـ ') + nEmp + T(' employee(s).', ' موظف.'), text: (S.method === 'request' ? T('Each old leave is cancelled, then a new leave request is created (with its attachment) and approved at once.\nIf Jisr refuses the new request the tool imports the original again and stops. If it cannot be approved it stays pending and the run stops.\nThe old values go into the results file.', 'تُلغى كل إجازة قديمة ثم يُنشأ طلب إجازة جديد (مع مرفقه) ويُعتمد فورًا.\nإن رفض جسر الطلب الجديد تعيد الأداة استيراد الأصلية وتتوقف. وإن تعذّر اعتماده يبقى معلّقًا ويتوقف التشغيل.\nتُحفظ القيم القديمة في ملف النتائج.') : T('Each old leave is cancelled, then the corrected one is imported. If a row fails the tool tries to put the original back and stops.\nThe old values go into the results file.', 'تُلغى كل إجازة قديمة ثم تُستورد الصحيحة. إن فشل صف تحاول الأداة إرجاع الأصلية وتتوقف.\nتُحفظ القيم القديمة في ملف النتائج.')) });
+      S.busy = '';
+      if (!sure) { S.note = T('Not confirmed: nothing was sent.', 'لم يتم التأكيد: لم يُرسل شيء.'); S.noteErr = false; paint_(); return; }
+      machine.go('confirmed');
+      S.phase = 'running'; S.stop = false; S.busy = ' '; machine.go('running'); jbo_.dryRun = false;
+      runLog.start(fp_(), todo.length); panel.progress({ done: 0, total: todo.length, ok: 0, failed: 0 }); paint_();
       // v4.83: one outcome row per leave for the Ops dashboard (the generic request log skips this tool: an HTTP 200 is not the outcome here)
       const report_ = (r) => {
         if (r.reported) return; r.reported = true;
         const st = r.state === 'done' ? 'ok' : r.state === 'failed' ? (r.stage || 'failed') : 'skipped';
         try { jboActReport_(MODULE_ID, r.emp ? r.emp.id : 'row' + r.no, st, r.state === 'done' || r.state === 'failed' ? (r.why || st) : 'not sent: the run stopped before this row'); } catch (e) { /* ignore */ }
       };
-      todo.forEach((r) => { r.reported = false; r.stage = ''; r.why = ''; });
-      for (const r of todo) {
-        if (S.stop) { r.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); report_(r); continue; }
-        let ok = false;
-        try { ok = await editOne_(r, reason); } catch (e) { S.stop = true; if (r.state !== 'failed') { r.state = 'failed'; r.stage = e.auth ? 'denied' : 'failed'; r.why = e.auth ? 'Jisr sign-in problem: the run was stopped' : 'the row failed with an error: check it in Jisr'; r.msg = '✗ ' + e.message; } }
-        report_(r);
-        done++; S.busy = T('Editing… ', 'جارٍ التعديل… ') + done + '/' + todo.length; paint_();
-        if (!ok) { S.stop = true; todo.filter((x) => x.state === 'ready').forEach((x) => { x.msg = T('Not sent: the run stopped after a failure', 'لم يُرسل: توقّف التشغيل بعد فشل'); }); break; }
-        if (cfg.paceMs) await sleep_(cfg.paceMs);
-      }
+      todo.forEach((r) => { r.reported = false; r.stage = ''; r.why = ''; r.logged = false; });
+      // v4.95: the shared row runner: one row at a time, stops at the first failure (as before), Stop button, every row gets a result
+      let out = { aborted: null };
+      try {
+        out = await JBOCore.runRows({ rows: todo, concurrency: 1, stopOnFailure: true, paceMs: cfg.paceMs, sleep: sleep_, shouldStop: () => S.stop,
+          worker: async (r) => {
+            let ok = false;
+            try { ok = await editOne_(r, reason); } catch (e) { if (r.state !== 'failed') { r.state = 'failed'; r.stage = e.auth ? 'denied' : e.unknown ? 'unverified' : 'failed'; r.why = e.auth ? 'Jisr sign-in problem: the run was stopped' : e.unknown ? 'no answer from Jisr: the old leave may or may not have been cancelled; check the employee in Jisr' : 'the row failed with an error: check it in Jisr'; r.msg = '✗ ' + e.message; } }
+            if (r.logged) runLog.finish(r.no, r.state === 'done' ? 'ok' : (r.stage || 'failed'), r.state === 'done' ? { leaveId: r.newId, type: r.plan.type.name, from: r.plan.start, to: r.plan.end } : (r.newId ? { leaveId: r.newId } : null), r.why || r.msg);
+            report_(r);
+            return { status: ok ? 'ok' : 'failed', message: r.msg };
+          },
+          onRow: (res, c) => { panel.progress(c); if (res.status !== 'not_sent') { S.busy = T('Editing… ', 'جارٍ التعديل… ') + c.done + '/' + todo.length; paint_(); } } });
+      } finally { jbo_.dryRun = true; runLog.end(); }
+      todo.filter((x) => x.state === 'ready').forEach((x) => { x.msg = out.aborted === 'stopped' ? T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)') : T('Not sent: the run stopped after a failure', 'لم يُرسل: توقّف التشغيل بعد فشل'); });
       S.phase = 'done'; S.busy = '';
       todo.forEach(report_);   // rows never reached (the run stopped before them)
       const okN = todo.filter((r) => r.state === 'done').length;
       S.note = okN + T(' of ', ' من ') + todo.length + T(' leave(s) edited.', ' إجازة عُدّلت.') + (okN < todo.length ? T(' The run stopped: read the Result column, fix the cause, then run the Dry Run again (rows already edited are skipped).', ' توقّف التشغيل: اقرأ عمود النتيجة وأصلح السبب ثم شغّل التجريبي مجددًا (الصفوف المعدّلة تُتخطى).') : '');
-      S.noteErr = okN < todo.length; paint_();
+      S.noteErr = okN < todo.length; machine.go(okN === todo.length ? 'done' : 'failed'); paint_();
     }
     runB.addEventListener('click', runLive_);
     stopB.addEventListener('click', () => { S.stop = true; });
@@ -47786,6 +47851,10 @@ async function shrinkPic_(data) {
       XLSX.writeFile(wb, 'jisr-leave-edit-results-' + slug_() + '.xlsx');
     });
     render_();
+    { // v4.95: a run that was cut off (closed tab, crash) is said out loud, with the records that were in progress
+      const cut = runLog.entries().filter((e) => e.status === 'pending');
+      if (cut.length) { S.cutNote = T('The last run on this account was cut off while editing: ', 'انقطع التشغيل السابق على هذا الحساب أثناء تعديل: ') + cut.map((e) => e.key).join(', ') + T('. Check these in Jisr before anything else. The old values are in the rollback log (button below). This notice stays until you download it.', '. تحقّق منها في جسر قبل أي شيء. القيم القديمة في سجل التراجع (الزر بالأسفل). يبقى هذا التنبيه حتى تنزّله.'); paint_(); }
+    }
   }
 
   function register_() {
@@ -47846,7 +47915,7 @@ async function shrinkPic_(data) {
 
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -48664,7 +48733,7 @@ async function shrinkPic_(data) {
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
-  function slug_() { try { const o = GM_getValue(GM_PREFIX + 'slugOverride', ''); if (o) return o; } catch (e) { /* ignore */ } const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
   const LC = () => W.__jisrLeaveCancel || {};
   const LE = () => W.__jisrLeaveEdit || {};
@@ -49023,7 +49092,7 @@ async function shrinkPic_(data) {
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.95.0';
+  const SECTION_VERSION = '4.97.0';
   const MODULE_ID = 'requests-manage';
   const W = unsafeWindow;
   const GM_PREFIX = 'jisrBulkOps_';
@@ -49406,6 +49475,1327 @@ async function shrinkPic_(data) {
   }
   register_();
 })();
+
+// ###########################################################################
+// ##### SECTION 51 — Business Trip Requests (bulk create, approved at once or left in the approval cycle)  v4.102.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 51 — Business Trip Requests (Bulk)  v4.102
+ * ---------------------------------------------------------------------------
+ * One Excel row = one business trip request on an employee's file (Employee ID | Destination | Leave Date | Return Date | Require Ticket |
+ * Exit / Re-entry Visa | Visa Entry Type | Visa Period | Additions).
+ * CONFIRMED (user's browser captures, onboardingteam, 2026-11-22):
+ *   Cities the employee may travel to : GET  /v2/business_trip_cities?template=public&filters[employee_id]={id}
+ *   Is the request type available     : GET  /v2/employees/{id}/applicable_request_types
+ *   Create                            : POST /v2/finance/employees/{id}/business_trip_requests   -> 201
+ *        { business_trip_request: { additions:[1,2,3], business_trip_city_id, deletedAttachments:[], exit_reentry_info_attributes:{ entry_type:"Single", period:3 },
+ *          is_re_entry_exit:false, leave_date:"YYYY-MM-DD", require_ticket:false, return_date:"YYYY-MM-DD" } }
+ * NOT confirmed (the tool tolerates both answers and says so in the row): the shape of the 201 answer (the request number is looked for under
+ * business_trip_request / request / data.id), what the additions 1, 2, 3 are (taken as Accommodation, Food, Transportation, the three amounts of a business
+ * trip policy), and the request type name in the approvals list (BusinessTripRequest, as the Manage Requests tool lists it).
+ * Flow: Dry Run (reads only: employee, destination in THAT employee's business trip policy, dates, options, trips already on the file) -> live, one row at a time:
+ * create -> optionally approve through the approvals list (several steps if the cycle has them) -> read the request back from the approvals list.
+ * Nothing is cancelled or deleted here. The run stops on 401, no answer from Jisr on create, or a request that could not be approved (not its approver).
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.102.0';
+  const MODULE_ID = 'business-trip-requests';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
+  function slug_() { try { const o = GM_getValue(GM_PREFIX + 'slugOverride', ''); if (o) return o; } catch (e) { /* ignore */ } const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const LC = () => W.__jisrLeaveCancel || {};
+  const LE = () => W.__jisrLeaveEdit || {};
+  const RM = () => W.__jisrRequestsManage || {};
+  const redact_ = (s) => String(s == null ? '' : s).replace(/https?:\/\/\S+/gi, '(link removed)').replace(/Bearer\s+\S+/gi, '').replace(/\s+/g, ' ').slice(0, 240);
+  const dateOk_ = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(s + 'T00:00:00Z'));
+  const txt_ = (v) => String(v == null ? '' : v).trim();
+  const norm_ = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, ' ').trim();
+  const cityKey_ = (s) => String(s == null ? '' : s).toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/ـ/g, '').replace(/[^a-z0-9ء-ي]+/g, ' ').trim();
+  const cfg = { paceMs: 300, readPool: 4 };
+  const HEAD = ['Employee ID', 'Name', 'Policy', 'Destination', 'Leave Date', 'Return Date', 'Require Ticket', 'Exit / Re-entry Visa', 'Visa Entry Type', 'Visa Period (months)', 'Additions'];
+  const ADD = [[1, 'Accommodation', 'السكن'], [2, 'Food', 'الطعام'], [3, 'Transportation', 'المواصلات']];
+  const DEFAULT_PERIOD = 3;
+
+  // ======================================================================= reading the sheet
+  /** Yes / No in English or Arabic. '' = empty, null = not understood. */
+  function yesNo_(v) {
+    const s = norm_(v); if (!s) return '';
+    if (/^(yes|y|true|1|نعم|ايوه|اي)$/.test(s)) return true;
+    if (/^(no|n|false|0|لا|كلا)$/.test(s)) return false;
+    return null;
+  }
+  /** Additions cell -> { ids: [..] | null (empty: use the default), bad: [tokens not understood] }. Numbers or names; "all" / "none". */
+  function additions_(v) {
+    const s = String(v == null ? '' : v).trim(); if (!s) return { ids: null, bad: [] };
+    const ids = new Set(); const bad = [];
+    s.split(/[,;،\/+|&]+|\s+and\s+|\sو(?=\S)/i).map(norm_).filter(Boolean).forEach((t) => {
+      if (/^(all|everything|كل|الكل|جميع)$/.test(t)) ADD.forEach((a) => ids.add(a[0]));
+      else if (/^(none|no|nothing|لا|بدون|-)$/.test(t)) { /* nothing */ }
+      else if (/^\d+$/.test(t) && ADD.some((a) => a[0] === Number(t))) ids.add(Number(t));
+      else if (/accommodation|housing|hotel|lodging|سكن|اقامه|فندق/.test(t)) ids.add(1);
+      else if (/food|meal|meals|per diem|طعام|اكل|وجبات/.test(t)) ids.add(2);
+      else if (/transport|transportation|ground|مواصلات|نقل|تنقل/.test(t)) ids.add(3);
+      else bad.push(t);
+    });
+    return { ids: Array.from(ids).sort((a, b) => a - b), bad };
+  }
+  const codeKey_ = (s) => String(s == null ? '' : s).trim().toLowerCase().replace(/\.0+$/, '').replace(/^0+(?=\d)/, '');
+  const labelOf_ = (e) => (e.name || '') + ' · ' + e.code;
+  /** The employee a Name cell points at: only through the code at the end of the picked label ("Name · Code") or a "#id" (other tools' labels). Never by the name alone. */
+  function whoFromLabel_(text, byCode, byId) {
+    const t = txt_(text); if (!t) return null;
+    const m = /#(\d+)\s*$/.exec(t); if (m && byId.get(m[1])) return byId.get(m[1]);
+    const c = /·\s*([^·]+?)\s*$/.exec(t); return c ? byCode.get(codeKey_(c[1])) || null : null;
+  }
+  /** Reads the sheet (this tool's template) into rows. A date that is not understood is null. */
+  function parseAoa_(aoa) {
+    const D = LC().date_ || ((x) => x);
+    let hi = aoa.findIndex((r) => r.some((x) => /employee|موظف|code/i.test(String(x)))); if (hi < 0) hi = 0;
+    const h = (aoa[hi] || []).map(norm_); const col = (re) => h.findIndex((x) => re.test(x));
+    const c = { emp: col(/^employee id$|employee code|employee number|^code$|رقم الموظف|الرقم الوظيفي/), dest: col(/^(destination|city|business trip city|trip city|الوجهه|المدينه)/),
+      leave: col(/^(leave|departure|start|from)( date)?$|تاريخ المغادره|تاريخ البدايه/), ret: col(/^(return|arrival|end|to)( date)?$|تاريخ العوده|تاريخ النهايه/),
+      name: col(/^(employee )?name$|^employee name|اسم الموظف|^الاسم$/), policy: col(/^(business trip )?polic|^سياسه/), ticket: col(/ticket|تذكره/), visa: col(/re entry|reentry|exit|تاشيره|خروج/), vtype: col(/entry type|visa type|نوع التاشيره/), vper: col(/period|مده/), add: col(/addition|بدلات|allowance/) };
+    if (c.emp < 0) return { error: T('No Employee ID column found.', 'لم يُعثر على عمود Employee ID.') };
+    if (c.dest < 0 || c.leave < 0 || c.ret < 0) return { error: T('The file needs the columns Destination, Leave Date and Return Date.', 'يحتاج الملف أعمدة Destination وLeave Date وReturn Date.') };
+    const get = (r, i) => (i >= 0 ? r[i] : ''); const rows = [];
+    aoa.slice(hi + 1).forEach((r, k) => {
+      const empText = txt_(get(r, c.emp)).replace(/\.0+$/, ''); const dest = txt_(get(r, c.dest));
+      const nameText = txt_(get(r, c.name));
+      if (!empText && !nameText && !dest) return;
+      const nd = (i) => { const v = get(r, i); return v === '' || v == null ? '' : D(v); };   // '' none, null not understood
+      const vt = norm_(get(r, c.vtype)); const per = txt_(get(r, c.vper)).replace(/\.0+$/, '');
+      rows.push({ no: hi + k + 2, empText, nameText, policyText: txt_(get(r, c.policy)), dest, start: nd(c.leave), end: nd(c.ret), ticket: yesNo_(get(r, c.ticket)), visa: yesNo_(get(r, c.visa)),
+        vtype: !vt ? '' : /^(single|مفرده?|مره واحده|one)/.test(vt) ? 'Single' : /^(multiple|multi|متعدده?|عده مرات)/.test(vt) ? 'Multiple' : null,
+        vper: per === '' ? '' : /^\d+$/.test(per) ? Number(per) : null, add: additions_(get(r, c.add)), state: '', msg: '' });
+    });
+    return { rows };
+  }
+
+  // ======================================================================= Jisr
+  async function call_(method, path, query, body) {
+    try { return await LC().request_(method, path, query || null, body || null); }
+    catch (e) { return { thrown: e, ok: false, status: 0, unknown: !!e.unknown, auth: /HTTP 401/.test(e.message) }; }
+  }
+  const jm_ = (res) => redact_((LC().jisrMsg_ && LC().jisrMsg_(res.json)) || '');
+  const nameOf_ = (v) => (v && typeof v === 'object' ? v.name_i18n || v.name || v.name_en || v.name_ar || '' : v || '');
+  /** every { id, names[] } in a Jisr answer (an array of objects with an id and a name, wherever it sits). */
+  function citiesIn_(json) {
+    const out = new Map();
+    (function walk(v, d) {
+      if (d > 6 || !v || typeof v !== 'object') return;
+      if (Array.isArray(v)) {
+        v.forEach((x) => {
+          if (x && typeof x === 'object' && x.id != null && (x.name || x.name_en || x.name_ar || x.name_i18n)) {
+            const names = [nameOf_(x.name_i18n), x.name, x.name_en, x.name_ar].map(txt_).filter(Boolean);
+            if (!out.has(String(x.id))) out.set(String(x.id), { id: x.id, name: names[0] || '', names });
+          } else walk(x, d + 1);
+        });
+        return;
+      }
+      Object.values(v).forEach((x) => walk(x, d + 1));
+    })(json, 0);
+    return Array.from(out.values());
+  }
+  /**
+   * Every business trip policy with its employees and its cities (one read; Jisr answers it with the employees and the city configurations inside each policy).
+   * The destinations call (/v2/business_trip_cities) is the company's whole city list and says nothing about policies, so the cities an employee may use are the cities of
+   * THEIR policy: { id, name, label, active, all, empIds:Set, cities:[{id,name,names}] }. An employee is in one policy only.
+   */
+  async function policies_() {
+    const out = [];
+    for (let page = 1; page <= 50; page++) {
+      const q = { per_page: 1000 }; if (page > 1) q.page = page;
+      const r = await call_('GET', '/v2/business_trip_policies', q);
+      if (r.thrown) throw r.thrown;
+      if (!r.ok) throw new Error(T('Could not read the business trip policies (HTTP ', 'تعذّرت قراءة سياسات رحلات العمل (HTTP ') + r.status + ')' + (jm_(r) ? ': ' + jm_(r) : ''));
+      const d = (r.json && r.json.data) || {}; const list = Array.isArray(d.business_trip_policies) ? d.business_trip_policies : [];
+      list.forEach((x) => {
+        const ids = Array.isArray(x.employee_ids) ? x.employee_ids : (Array.isArray(x.employees) ? x.employees.map((e) => e && e.id) : []);
+        const seen = new Set(); const cities = [];
+        (Array.isArray(x.configurations) ? x.configurations : []).forEach((c) => {
+          const bc = (c && c.business_trip_city) || {}; const id = c && c.business_trip_city_id != null ? c.business_trip_city_id : bc.id; const name = txt_(bc.name || (c && c.name));
+          if (id == null || !name || seen.has(String(id))) return; seen.add(String(id)); cities.push({ id, name, names: [name] });
+        });
+        out.push({ id: x.id, name: txt_(x.name), label: '', active: x.is_active !== false, all: x.is_all_employee_selected === true, empIds: new Set(ids.filter((v) => v != null).map(String)), cities });
+      });
+      const pg = d.pagination || {}; if (!pg.next_page || !list.length) break;
+    }
+    const count = new Map(); out.forEach((x) => count.set(norm_(x.name), (count.get(norm_(x.name)) || 0) + 1));
+    out.forEach((x) => { x.label = (x.name || T('(no name)', '(بلا اسم)')) + (count.get(norm_(x.name)) > 1 || !x.name ? ' · #' + x.id : ''); });   // two policies with the same name stay apart
+    return out;
+  }
+  /** employee id -> policy (an employee is in one policy; the "all employees" policy takes the ones no other policy lists). */
+  function policyMap_(pols) {
+    const m = new Map(); const all = pols.find((x) => x.all) || null;
+    pols.forEach((x) => { if (!x.all) x.empIds.forEach((id) => { if (!m.has(id)) m.set(id, x); }); });
+    return { of: (id) => m.get(String(id)) || all, explicit: m, all };
+  }
+  /** Does the Policy cell of a row name this policy? (its label, its name, or "#id"). */
+  const policyIs_ = (text, pol) => { const t = txt_(text); if (!t) return true; const k = norm_(t); return k === norm_(pol.label) || k === norm_(pol.name) || new RegExp('#\\s*' + pol.id + '\\s*$').test(t); };
+  /** Is "business trip" among the request types this employee can file? true / false / null (the answer could not be read). */
+  async function applicable_(empId) {
+    const r = await call_('GET', '/v2/employees/' + encodeURIComponent(empId) + '/applicable_request_types');
+    if (!r.ok || !r.json) return null;
+    return /business[_ ]?trip/i.test(JSON.stringify(r.json));
+  }
+  /** One approvals-list item -> { reqId, empId, status, from, to }. */
+  function tripOf_(it) {
+    const D = LC().date_ || ((x) => x || ''); const rq = it.request || {}; const emp = it.employee || rq.employee || {};
+    const f = (...ks) => { for (const k of ks) if (rq[k]) return D(rq[k]) || ''; return ''; };
+    return { reqId: rq.id != null ? rq.id : it.request_id, approvalId: it.id == null ? null : it.id, empId: emp.id, cls: String(it.request_type || rq.request_type || ''),
+      status: String(it.status || rq.status || '').toLowerCase(), from: f('leave_date', 'start_date', 'from'), to: f('return_date', 'end_date', 'to') };
+  }
+  /** The employee's business trip requests as the approvals list shows them (any status). */
+  async function listTrips_(emp, opts) {
+    const out = [];
+    for (let page = 1; page <= 5; page++) {
+      const q = { type: 'permitted_requests', page, rpp: 100, search: emp.code != null ? String(emp.code) : '', 'filter[request_type][]': 'BusinessTripRequest' };
+      if (opts && opts.pending) q['filter[status][]'] = 'Pending';
+      const r = await call_('GET', '/v2/requests/approvals', q);
+      if (r.thrown) throw r.thrown;
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const raw = RM().itemsOf_ ? RM().itemsOf_(r.json) : [];
+      const items = raw.map(tripOf_).filter((x) => String(x.empId) === String(emp.id) && (!x.cls || /business/i.test(x.cls)));
+      items.forEach((x) => out.push(x));
+      if (raw.length < 100) break;
+    }
+    return out;
+  }
+  /** The new request's number in Jisr's 201 answer (business_trip_request / request / data.id), or null. */
+  function idOfCreate_(json) {
+    let id = null;
+    (function walk(v, d) {
+      if (id != null || d > 4 || !v || typeof v !== 'object' || Array.isArray(v)) return;
+      for (const k of ['business_trip_request', 'request']) if (v[k] && typeof v[k] === 'object' && v[k].id != null) { id = v[k].id; return; }
+      if (d === 1 && v.id != null) { id = v.id; return; }
+      Object.values(v).forEach((x) => walk(x, d + 1));
+    })(json && typeof json === 'object' ? json : null, 0);
+    return id;
+  }
+  /** Approve as many times as the approval cycle needs; { steps, error?, why? }. */
+  async function approve_(emp, reqId, comment) {
+    const E = LE().cfg || { approveSteps: 5, verifyTries: 5, verifyWaitMs: 1500, paceMs: 300 }; let steps = 0;
+    for (let k = 0; k < E.approveSteps; k++) {
+      let ap = null;
+      for (let i = 0; i < E.verifyTries && !ap; i++) {
+        if (i) await sleep_(E.verifyWaitMs);
+        const list = await listTrips_(emp, { pending: true }).catch(() => []);
+        ap = list.find((x) => String(x.reqId) === String(reqId) && x.approvalId != null && !/approved|rejected|cancel/.test(x.status)) || null;
+        if (!ap && k > 0) break;
+      }
+      if (!ap) return { steps, why: steps ? '' : 'no pending approval for this request is in your approvals list' };
+      const r = await call_('POST', '/v2/requests/approvals/' + encodeURIComponent(ap.approvalId) + '/approve', null, { request: { comments: comment || 'Approved' } });
+      if (!r.ok) return { steps, error: r.thrown ? redact_(r.thrown.message) : 'HTTP ' + r.status + (jm_(r) ? ': ' + jm_(r) : ''), status: r.status };
+      steps++; await sleep_(E.paceMs);
+    }
+    return { steps };
+  }
+  /** The request as the approvals list shows it now (waits a little: Jisr is not instant). */
+  async function readBack_(emp, reqId) {
+    const E = LE().cfg || { verifyTries: 5, verifyWaitMs: 1500 };
+    for (let i = 0; i < E.verifyTries; i++) {
+      if (i) await sleep_(E.verifyWaitMs);
+      const list = await listTrips_(emp).catch(() => null);
+      const hit = list && list.find((x) => String(x.reqId) === String(reqId));
+      if (hit) return hit;
+    }
+    return null;
+  }
+  const bodyOf_ = (p) => ({ business_trip_request: { additions: p.additions, business_trip_city_id: /^\d+$/.test(String(p.cityId)) ? Number(p.cityId) : p.cityId, deletedAttachments: [],
+    exit_reentry_info_attributes: { entry_type: p.entryType, period: p.period }, is_re_entry_exit: p.reentry, leave_date: p.start, require_ticket: p.ticket, return_date: p.end } });
+
+  /** One row against the employee's destinations and the trips already on the file: { errs[], warns[], plan }. */
+  function planRow_(row, cities, defAdd) {
+    const errs = [], warns = []; let city = null;
+    if (!row.dest) errs.push(T('Destination is empty', 'الوجهة فارغة'));
+    else if (!cities) errs.push(T('The destinations of this employee could not be read', 'تعذّرت قراءة وجهات هذا الموظف'));
+    else {
+      const k = cityKey_(row.dest); const hit = cities.filter((c) => c.names.some((n) => cityKey_(n) === k));
+      if (hit.length === 1) city = hit[0];
+      else if (hit.length > 1) errs.push(T('Destination "', 'الوجهة "') + row.dest + T('" matches several cities: write it in full', '" تطابق عدة مدن: اكتبها كاملة'));
+      else errs.push(T('Destination "', 'الوجهة "') + row.dest + T('" is not in this employee\'s business trip policy', '" غير موجودة في سياسة رحلات العمل لهذا الموظف') + (cities.length ? T(' (offered: ', ' (المتاح: ') + cities.slice(0, 6).map((c) => c.name).join(', ') + (cities.length > 6 ? '…' : '') + ')' : T(' (the policy offers no destinations)', ' (السياسة لا تعرض وجهات)')));
+    }
+    if (row.start === null || row.end === null) errs.push(T('A date was not understood (use YYYY-MM-DD or DD/MM/YYYY)', 'لم يُفهم تاريخ (استخدم YYYY-MM-DD أو DD/MM/YYYY)'));
+    else if (!dateOk_(row.start) || !dateOk_(row.end)) errs.push(T('Leave Date or Return Date is missing', 'تاريخ المغادرة أو العودة مفقود'));
+    else if (row.end < row.start) errs.push(T('Return Date is before the Leave Date', 'تاريخ العودة قبل تاريخ المغادرة'));
+    if (row.ticket === null) errs.push(T('Require Ticket: write Yes or No', 'Require Ticket: اكتب Yes أو No'));
+    if (row.visa === null) errs.push(T('Exit / Re-entry Visa: write Yes or No', 'Exit / Re-entry Visa: اكتب Yes أو No'));
+    if (row.vtype === null) errs.push(T('Visa Entry Type: write Single or Multiple', 'Visa Entry Type: اكتب Single أو Multiple'));
+    if (row.vper === null || (row.vper !== '' && (row.vper < 1 || row.vper > 60))) errs.push(T('Visa Period must be a number of months (1 to 60)', 'مدة التأشيرة يجب أن تكون عدد أشهر (1 إلى 60)'));
+    if (row.add.bad.length) errs.push(T('Additions not understood: ', 'بدلات غير مفهومة: ') + row.add.bad.join(', ') + T(' (use Accommodation, Food, Transportation, All or None)', ' (استخدم Accommodation أو Food أو Transportation أو All أو None)'));
+    if (row.visa === false && (row.vtype || row.vper !== '')) warns.push(T('Visa columns are ignored: Exit / Re-entry Visa is No', 'أعمدة التأشيرة متجاهلة: Exit / Re-entry Visa = No'));
+    return { errs, warns, plan: { cityId: city ? city.id : null, cityName: city ? city.name : row.dest, start: row.start, end: row.end, ticket: row.ticket === true, reentry: row.visa === true,
+      entryType: row.vtype || 'Single', period: row.vper === '' || row.vper == null ? DEFAULT_PERIOD : row.vper, additions: row.add.ids === null ? defAdd.slice() : row.add.ids } };
+  }
+  const overlap_ = (a, b) => a.start <= b.end && b.start <= a.end;
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => { if (v === undefined || v === null || v === false) return; if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v; else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v); });
+    (children || []).forEach((c) => c && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-bt-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-bt-css', text: `
+      .jbt-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+      .jbt-scroll { max-height: 42vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jbt-scroll table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jbt-scroll th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jbt-scroll td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jbt-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; }
+      .jbt-stats span { background: #f1f3f4; border-radius: 12px; padding: 3px 10px; }
+      .jbt-warn { background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
+      .jbt-opt { display: flex; gap: 6px; align-items: center; cursor: pointer; font-size: 12.5px; }
+      .jbt-opts { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+    ` }));
+  }
+
+  function openTool_() {
+    injectCss_();
+    const X = W.__jisrBulkOpsXlsx;
+    const S = { rows: [], busy: '', note: '', noteErr: false, dryDone: false, phase: 'idle', stop: false, approve: gmGet_('businessTripApprove', true) !== false,
+      defAdd: (() => { const v = gmGet_('businessTripAdditions', [1, 2, 3]); return Array.isArray(v) ? v.filter((x) => ADD.some((a) => a[0] === x)) : [1, 2, 3]; })(), cities: new Map(), trips: new Map() };
+    const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': 'Close' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1250px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => { if (S.phase === 'running' && !confirm(T('Still creating business trip requests. Close anyway?', 'لا يزال إنشاء الطلبات جاريًا. هل تريد الإغلاق؟'))) return; S.stop = true; backdrop.remove(); };
+    closeBtn.addEventListener('click', close); backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } });
+    const tplB = el('button', { class: 'jbo-btn', text: T('1) Template (.xlsx)', '1) القالب (‎.xlsx)') });
+    const upB = el('button', { class: 'jbo-btn', text: T('2) Upload filled file', '2) رفع الملف بعد التعبئة') });
+    const statusEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const statsEl = el('div', { class: 'jbt-stats' }); const wrap = el('div', { class: 'jbt-scroll' });
+    const dryB = el('button', { class: 'jbo-btn', text: T('Dry Run', 'تشغيل تجريبي') });
+    const runB = el('button', { class: 'jbo-btn jbo-btn-danger', text: '' });
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') });
+    const resB = el('button', { class: 'jbo-btn', text: T('Results (.xlsx)', 'النتائج (‎.xlsx)') });
+    const apChk = el('input', { type: 'checkbox', id: 'jbt-ap' }); apChk.checked = S.approve;
+    apChk.addEventListener('change', () => { S.approve = apChk.checked; gmSet_('businessTripApprove', S.approve); S.dryDone = false; paint_(); });
+    const addChks = ADD.map((a) => { const c = el('input', { type: 'checkbox', id: 'jbt-add' + a[0] }); c.checked = S.defAdd.includes(a[0]); c.addEventListener('change', () => { S.defAdd = ADD.filter((x, i) => addChks[i].checked).map((x) => x[0]); gmSet_('businessTripAdditions', S.defAdd); S.dryDone = false; paint_(); }); return c; });
+
+    function render_() {
+      titleEl.textContent = T('Business Trip Requests (Bulk)', 'طلبات رحلات العمل (جماعي)');
+      body.innerHTML = ''; foot.innerHTML = '';
+      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '10px' }, text: T(
+        'Creates a business trip request on each employee\'s file for every row of a sheet: destination (it must be in that employee\'s business trip policy), leave and return dates, ticket, exit / re-entry visa and the additions. 1) Download the template, 2) fill it and upload it, then run the Dry Run (reads only) and create the requests. The requests can be approved at once or left in the approval workflow.',
+        'ينشئ طلب رحلة عمل في ملف كل موظف لكل صف في الملف: الوجهة (يجب أن تكون ضمن سياسة رحلات العمل لهذا الموظف)، تاريخا المغادرة والعودة، التذكرة، تأشيرة الخروج والعودة والبدلات. 1) نزّل القالب، 2) املأه وارفعه، ثم شغّل التجريبي (قراءة فقط) وأنشئ الطلبات. يمكن اعتماد الطلبات فورًا أو تركها في مسار الاعتماد.') }));
+      body.appendChild(el('div', { class: 'jbt-warn', text: T('Run the Dry Run first and try one or two rows before the whole file. Every row is checked against the destinations of its own employee, so a city that is not in the employee\'s policy is blocked before anything is sent.', 'شغّل التجريبي أولًا وجرّب صفًا أو صفين قبل الملف كاملًا. يُفحص كل صف مقابل وجهات موظفه، فأي مدينة ليست في سياسة الموظف تُحجب قبل إرسال أي شيء.') }));
+      const mgB = el('button', { class: 'jbo-btn', text: T('Find / cancel existing requests…', 'البحث عن الطلبات الحالية / إلغاؤها…') });
+      mgB.addEventListener('click', () => { const m = W.__jisrBulkOps && W.__jisrBulkOps.modules['requests-manage']; if (m && m.open) { if (S.phase === 'running') return; S.stop = true; backdrop.remove(); m.open(); } });
+      body.appendChild(el('div', { class: 'jbt-bar' }, [tplB, upB, mgB]));
+      body.appendChild(el('div', { class: 'jbt-opts' }, [
+        el('label', { for: 'jbt-ap', class: 'jbt-opt' }, [apChk, T('Approve each request at once (otherwise it waits in the approval workflow)', 'اعتماد كل طلب فورًا (وإلا ينتظر في مسار الاعتماد)')]),
+        el('span', { class: 'jbo-muted', text: T('Additions for rows that leave the column empty:', 'البدلات للصفوف التي تترك العمود فارغًا:') }),
+      ].concat(ADD.map((a, i) => el('label', { for: 'jbt-add' + a[0], class: 'jbt-opt' }, [addChks[i], T(a[1], a[2])])))));
+      body.appendChild(statusEl); body.appendChild(statsEl); body.appendChild(wrap); body.appendChild(fileIn);
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [resB]));
+      foot.appendChild(el('div', { style: { display: 'flex', gap: '8px' } }, [dryB, stopB, runB]));
+      paint_();
+    }
+    const addLabel_ = (ids) => ids.length ? ids.map((x) => { const a = ADD.find((y) => y[0] === x); return a ? T(a[1], a[2]) : String(x); }).join(' + ') : T('none', 'بدون');
+    function paint_() {
+      statusEl.textContent = S.busy || S.note; statusEl.className = S.noteErr && !S.busy ? 'jbo-status-err' : 'jbo-muted';
+      statsEl.innerHTML = '';
+      const cnt = (st) => S.rows.filter((r) => r.state === st).length;
+      if (S.rows.length) [[S.rows.length, T('rows', 'صف')], [cnt('ready'), T('ready', 'جاهز')], [cnt('error'), T('blocked', 'محجوب')], [cnt('skip'), T('skipped', 'تم تخطيه')], [cnt('done'), T('created ✓', 'أُنشئت ✓')], [cnt('failed'), T('failed', 'فشل')]]
+        .filter(([v], i) => i < 2 || v).forEach(([v, l]) => statsEl.appendChild(el('span', {}, [el('b', { text: String(v) }), ' ' + l])));
+      wrap.innerHTML = '';
+      if (S.rows.length) {
+        const t = el('table'); t.appendChild(el('tr', {}, ['#', T('Employee', 'الموظف'), T('Policy', 'السياسة'), T('Destination', 'الوجهة'), T('Dates', 'التواريخ'), T('Options', 'الخيارات'), T('Result', 'النتيجة')].map((h) => el('th', { text: h }))));
+        S.rows.slice(0, 3000).forEach((r) => {
+          const col = r.state === 'done' ? '#137333' : (r.state === 'error' || r.state === 'failed') ? '#c5221f' : r.state === 'skip' ? '#b06000' : '#5f6368';
+          const pl = r.plan; const opts = pl ? (pl.ticket ? T('ticket', 'تذكرة') + ' · ' : '') + (pl.reentry ? T('visa ', 'تأشيرة ') + (pl.entryType === 'Single' ? T('single', 'مفردة') : T('multiple', 'متعددة')) + ' ' + pl.period + T(' mo', ' شهر') + ' · ' : '') + addLabel_(pl.additions) : '';
+          t.appendChild(el('tr', {}, [el('td', { text: String(r.no) }), el('td', { text: r.emp ? (r.emp.name || '') + (r.emp.code ? ' · ' + r.emp.code : '') : r.empText }),
+            el('td', { text: r.pol ? r.pol.label : '—' }), el('td', { text: pl && pl.cityName ? pl.cityName : r.dest || '—' }), el('td', { text: (r.start || '?') + ' → ' + (r.end || '?') }), el('td', { text: opts || '—' }),
+            el('td', { text: r.msg || (r.state === 'ready' ? T('ready', 'جاهز') : '—'), style: { color: col, whiteSpace: 'pre-line' } })]));
+        });
+        wrap.appendChild(t);
+      }
+      const ready = S.rows.filter((r) => r.state === 'ready').length;
+      runB.textContent = T('Create ', 'إنشاء ') + ready + T(' business trip request(s)', ' طلب رحلة عمل'); runB.disabled = !S.dryDone || !ready || !!S.busy;
+      dryB.disabled = !S.rows.length || !!S.busy; stopB.style.display = S.phase === 'running' ? '' : 'none';
+      [tplB, upB].forEach((b) => { b.disabled = !!S.busy || S.phase === 'running'; });
+      resB.style.display = S.rows.some((r) => ['done', 'failed'].includes(r.state)) ? '' : 'none';
+    }
+
+    // ---------------- template
+    tplB.addEventListener('click', async () => {
+      S.note = ''; S.noteErr = false; S.busy = T('Preparing the template…', 'جارٍ تجهيز القالب…'); paint_();
+      try {
+        const emps = (await W.__jisrBulkOpsEmployees.get(false)).filter((e) => e && e.code != null && txt_(e.code));
+        if (!emps.length) throw new Error(T('No employees could be loaded. Open the tool again after the employee list has loaded.', 'تعذّر تحميل الموظفين. افتح الأداة مرة أخرى بعد تحميل قائمة الموظفين.'));
+        statusEl.textContent = T('Reading the business trip policies…', 'جارٍ قراءة سياسات رحلات العمل…');
+        const pols = await policies_(); if (!pols.length) throw new Error(T('No business trip policy was found in this account.', 'لا توجد سياسة رحلات عمل في هذا الحساب.'));
+        const pm = policyMap_(pols);
+        const inPolicy = emps.filter((e) => pm.of(e.id)).sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+        if (!inPolicy.length) throw new Error(T('No employee is assigned to a business trip policy.', 'لا يوجد موظف معيّن على سياسة رحلات عمل.'));
+        const byName = (a, b) => a.localeCompare(b);
+        // hidden sheet "Cities": one row per policy (label, how many cities, the cities). Row 2 is what a row with no employee shows.
+        const NONE = T('(pick an employee that is in a business trip policy)', '(اختر موظفًا معيّنًا على سياسة رحلات عمل)');
+        const cityRows = [['(none)', 1, NONE]]; pols.forEach((x) => { const names = Array.from(new Set(x.cities.map((c) => c.name))).sort(byName); cityRows.push([x.label, names.length || 1].concat(names.length ? names : [T('(this policy has no destinations)', '(هذه السياسة بلا وجهات)')])); });
+        const cw = Math.max(...cityRows.map((r) => r.length));
+        const citiesAoa = [['Policy', 'Count', 'Destinations…']].concat(cityRows.map((r) => r.concat(new Array(cw - r.length).fill(''))));
+        // hidden sheet "Staff": who is in which policy (code, "Name · Code", policy). A code with leading zeros gets a bare-number row too: Excel turns a picked 0012 into 12.
+        const staff = []; inPolicy.forEach((e) => { const code = txt_(e.code), lab = labelOf_(e), pl = pm.of(e.id).label; staff.push([code, lab, pl]); const bare = code.replace(/^0+(?=\d)/, ''); if (bare !== code) staff.push([bare, lab, pl]); });
+        const staffAoa = [['Code', 'Label', 'Policy']].concat(staff);
+        const nC = cityRows.length + 1, nS = staff.length + 1;
+        const ROWS = 1000, SH = 'Business trip requests';
+        const ws = XLSX.utils.aoa_to_sheet([HEAD]); ws['!cols'] = HEAD.map((h, i) => ({ wch: i === 1 ? 34 : i === 2 ? 26 : i === 3 ? 28 : Math.max(12, Math.min(48, h.length + 3)) }));
+        // Policy column: filled from the employee (a formula; picking a policy by hand replaces it)
+        const polF = (r) => 'IF(AND($A' + r + '="",$B' + r + '=""),"",IFERROR(INDEX(JBT_PolOf,IFERROR(MATCH($A' + r + '&"",JBT_Key,0),MATCH($B' + r + ',JBT_Label,0))),""))';
+        for (let r = 2; r <= ROWS; r++) ws['C' + r] = { t: 's', v: '', f: polF(r) };
+        ws['!ref'] = 'A1:' + XLSX.utils.encode_col(HEAD.length - 1) + ROWS;
+        const wb = XLSX.utils.book_new(); wb.__noRef = true; wb.__hidden = ['Cities', 'Staff'];
+        const R = (sh, col, n) => sh + '!$' + col + '$2:$' + col + '$' + n;
+        wb.Workbook = { Names: [['JBT_Key', R('Staff', 'A', nS)], ['JBT_Label', R('Staff', 'B', nS)], ['JBT_PolOf', R('Staff', 'C', nS)], ['JBT_PLabel', R('Cities', 'A', nC)], ['JBT_Count', R('Cities', 'B', nC)], ['JBT_Top', 'Cities!$C$2']].map(([Name, Ref]) => ({ Name, Ref })) };
+        XLSX.utils.book_append_sheet(wb, ws, SH); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(citiesAoa), 'Cities'); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(staffAoa), 'Staff');
+        // the Destination list follows the Policy cell of the row; no policy = the "pick an employee" row
+        const at = 'IFERROR(MATCH($C2,JBT_PLabel,0),1)';
+        const formula = 'OFFSET(JBT_Top,' + at + '-1,0,1,INDEX(JBT_Count,' + at + '))';
+        const yn = (col, title, values) => ({ sheet: SH, col, rows: ROWS, strict: false, title, values });
+        await X.saveWithDropdowns(wb, 'jisr-business-trip-requests-template-' + slug_() + '.xlsx', [
+          { sheet: SH, col: 0, rows: ROWS, strict: false, title: 'Employee ID', values: inPolicy.map((e) => txt_(e.code)), prompt: 'Pick the employee ID (only employees in a business trip policy are listed). The Policy and Destination lists follow it.', errorMsg: 'Pick an employee ID from the list.' },
+          { sheet: SH, col: 1, rows: ROWS, strict: false, title: 'Name', values: inPolicy.map(labelOf_), prompt: 'Pick the name (shown as Name · Code) when you do not fill the Employee ID.', errorMsg: 'Pick a name from the list.' },
+          { sheet: SH, col: 2, rows: ROWS, strict: false, title: 'Policy', values: pols.map((x) => x.label), prompt: 'Filled from the employee. An employee is in one policy only; if you pick one here it must be the employee\'s.', errorMsg: 'Pick a policy from the list.' },
+          { sheet: SH, col: 3, rows: ROWS, strict: false, title: 'Destination', formula, prompt: 'Only the destinations of the policy in the Policy column (the employee\'s own policy).', errorMsg: 'Pick a destination from the list (the employee\'s policy).' },
+          yn(6, 'Require Ticket', ['Yes', 'No']), yn(7, 'Exit / Re-entry Visa', ['Yes', 'No']), yn(8, 'Visa Entry Type', ['Single', 'Multiple']),
+        ]);
+        const left = emps.length - inPolicy.length;
+        S.note = T('Template downloaded: pick the Employee ID or the Name; the Policy fills in and the Destination list shows only that policy\'s cities (up to row ', 'نُزّل القالب: اختر Employee ID أو الاسم؛ تظهر السياسة تلقائيًا وتعرض قائمة Destination مدن هذه السياسة فقط (حتى الصف ') + ROWS + '). '
+          + inPolicy.length + T(' employee(s) are in ' + pols.length + ' policies' , ' موظف ضمن ' + pols.length + ' سياسة') + (left > 0 ? T('; ' + left + ' employee(s) with no business trip policy are not listed. ', '؛ ' + left + ' موظف بلا سياسة رحلات عمل غير مدرجين. ') : '. ')
+          + T('Dates as DD-MM-YYYY or YYYY-MM-DD. Additions: Accommodation, Food, Transportation (several with commas), All or None; empty = the default chosen here. Visa columns only matter when Exit / Re-entry Visa is Yes. Open it in desktop Excel; Google Sheets does not keep the dependent list.', 'التواريخ بصيغة DD-MM-YYYY أو YYYY-MM-DD. البدلات: Accommodation وFood وTransportation (عدة قيم بفواصل) أو All أو None؛ الفارغ = الافتراضي المختار هنا. أعمدة التأشيرة تُستخدم فقط عند Exit / Re-entry Visa = Yes. افتحه في Excel على الحاسوب؛ لا يحتفظ Google Sheets بالقائمة المرتبطة.');
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    });
+
+    // ---------------- upload
+    upB.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
+    fileIn.addEventListener('change', async () => {
+      const f = fileIn.files && fileIn.files[0]; if (!f) return;
+      try {
+        const isCsv = /\.csv$/i.test(f.name);
+        const wb = isCsv ? XLSX.read(await f.text(), { type: 'string', raw: true }) : XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array', cellDates: false });
+        const ws = wb.Sheets[wb.SheetNames.find((n) => !/^(lists|_?pick|instructions?|dropdown_list_items)$/i.test(n)) || wb.SheetNames[0]];
+        const p = parseAoa_(XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true }));
+        if (p.error) throw new Error(p.error);
+        S.rows = p.rows; S.dryDone = false; S.note = S.rows.length + T(' row(s) read from the file. Run the Dry Run next.', ' صف قُرئ من الملف. شغّل التجريبي الآن.'); S.noteErr = !S.rows.length;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      paint_();
+    });
+
+    // ---------------- dry run (reads only)
+    async function dryRun_() {
+      S.busy = T('Checking…', 'جارٍ الفحص…'); S.note = ''; S.noteErr = false; paint_();
+      try {
+        const emps = await W.__jisrBulkOpsEmployees.get(false);
+        const byCode = new Map(emps.filter((e) => e.code != null).map((e) => [codeKey_(e.code), e])); const byId = new Map(emps.map((e) => [String(e.id), e]));
+        const todo = S.rows.filter((r) => r.state !== 'done');
+        todo.forEach((r) => {
+          r.state = ''; r.msg = ''; r.plan = null; r.pol = null; r.emp = r.empText ? byCode.get(codeKey_(r.empText)) || null : whoFromLabel_(r.nameText, byCode, byId);
+          if (!r.emp) { r.state = 'error'; r.msg = '✗ ' + (r.empText ? T('Employee not found', 'الموظف غير موجود') : r.nameText ? T('Pick the name from the drop-down list (it ends with the employee code), or fill Employee ID', 'اختر الاسم من القائمة (ينتهي برمز الموظف) أو املأ Employee ID') : T('Employee ID is empty', 'Employee ID فارغ')); }
+        });
+        // the policy of each employee decides the destinations (an employee is in one policy only)
+        statusEl.textContent = T('Reading the business trip policies…', 'جارٍ قراءة سياسات رحلات العمل…');
+        const pm = policyMap_(await policies_());
+        todo.filter((r) => r.emp && !r.state).forEach((r) => {
+          const pol = pm.of(r.emp.id); r.pol = pol || null;
+          if (!pol) { r.state = 'error'; r.msg = '✗ ' + T('This employee is not assigned to any business trip policy', 'هذا الموظف غير معيّن على أي سياسة رحلات عمل'); }
+          else if (!policyIs_(r.policyText, pol)) { r.state = 'error'; r.msg = '✗ ' + T('The Policy in the file (', 'السياسة في الملف (') + r.policyText + T(') is not this employee\'s policy (', ') ليست سياسة هذا الموظف (') + pol.label + T('). An employee is in one policy only.', '). الموظف على سياسة واحدة فقط.'); }
+        });
+        const ids = Array.from(new Set(todo.filter((r) => r.emp && !r.state).map((r) => String(r.emp.id)))); let n = 0; const notApplicable = new Set();
+        await LC().pool_(ids, cfg.readPool, async (id) => {
+          const emp = todo.find((r) => r.emp && String(r.emp.id) === id).emp;
+          S.cities.set(id, (pm.of(id) || {}).cities || null);
+          try { S.trips.set(id, await listTrips_(emp)); } catch (e) { S.trips.set(id, null); }
+          try { if ((await applicable_(id)) === false) notApplicable.add(id); } catch (e) { /* only a hint */ }
+          n++; statusEl.textContent = T('Reading the trips on file… ', 'جارٍ قراءة الرحلات الحالية… ') + n + '/' + ids.length;
+        });
+        todo.filter((r) => !r.state).forEach((r) => {
+          const pr = planRow_(r, S.cities.get(String(r.emp.id)), S.defAdd); r.plan = pr.plan;
+          if (pr.errs.length) { r.state = 'error'; r.msg = '✗ ' + pr.errs.join('\n✗ '); return; }
+          const have = (S.trips.get(String(r.emp.id)) || []).filter((x) => x.from && x.to && !/rejected|cancel|expired/.test(x.status));
+          const same = have.find((x) => x.from === r.plan.start && x.to === r.plan.end);
+          if (same) { r.state = 'skip'; r.msg = T('Already has a business trip on these dates (found in the approvals list): skipped', 'لديه رحلة عمل في هذه التواريخ بالفعل (وُجدت في قائمة الموافقات): تم تخطيها'); return; }
+          r.state = 'ready'; r.msg = T('new request', 'طلب جديد');
+          if (r.empText && r.nameText) { const toks = norm_(r.nameText.replace(/\s*·.*$/, '')).split(' ').filter((x) => x.length >= 3); const en = norm_(r.emp.name); if (toks.length && !toks.some((x) => en.includes(x))) r.msg += '\n⚠ ' + T('the Name in the file does not match the employee of this ID (', 'الاسم في الملف لا يطابق موظف هذا المعرّف (') + (r.emp.name || '') + T('): the ID was used', '): استُخدم المعرّف'); }
+          const hit = have.find((x) => overlap_(r.plan, x)); if (hit) r.msg += '\n⚠ ' + T('overlaps a business trip ', 'يتداخل مع رحلة عمل ') + hit.from + ' → ' + hit.to + T(': Jisr may refuse it', ': قد يرفضه جسر');
+          if (r.pol && !r.pol.active) r.msg += '\n⚠ ' + T('the policy "', 'السياسة "') + r.pol.label + T('" is not active', '" غير مفعّلة');
+          if (notApplicable.has(String(r.emp.id))) r.msg += '\n⚠ ' + T('business trip does not appear among the request types this employee can file', 'رحلة العمل لا تظهر ضمن أنواع الطلبات المتاحة لهذا الموظف');
+          pr.warns.forEach((w) => { r.msg += '\n⚠ ' + w; });
+        });
+        // the same employee twice in the file with overlapping dates
+        const byEmp = new Map(); todo.filter((r) => r.state === 'ready').forEach((r) => { const k = String(r.emp.id); if (!byEmp.has(k)) byEmp.set(k, []); byEmp.get(k).push(r); });
+        byEmp.forEach((rows) => rows.forEach((r, i) => { const o = rows.find((x, j) => j < i && x.state === 'ready' && overlap_(r.plan, x.plan)); if (o) { r.state = 'error'; r.msg = '✗ ' + T('The dates overlap row ', 'التواريخ تتداخل مع الصف ') + o.no; } }));
+        S.dryDone = true; const rd = S.rows.filter((r) => r.state === 'ready').length;
+        S.note = T('Dry Run done: nothing was changed. ', 'انتهى التشغيل التجريبي: لم يتغيّر شيء. ') + rd + T(' business trip request(s) ready for ', ' طلب رحلة عمل جاهز لـ ') + new Set(S.rows.filter((r) => r.state === 'ready').map((r) => r.emp.id)).size + T(' employee(s).', ' موظف.'); S.noteErr = false;
+      } catch (e) { S.note = e.message; S.noteErr = true; }
+      S.busy = ''; paint_();
+    }
+    dryB.addEventListener('click', dryRun_);
+
+    // ---------------- live: create -> approve (optional) -> read back
+    const stage_ = (r, st, why, msg) => { r.state = 'failed'; r.stage = st; r.why = why; r.msg = '✗ ' + msg; };
+    async function createOne_(r) {
+      const p = r.plan;
+      const cr = await call_('POST', '/v2/finance/employees/' + encodeURIComponent(r.emp.id) + '/business_trip_requests', null, bodyOf_(p));
+      if (cr.thrown) {
+        if (cr.auth) { stage_(r, 'denied', 'Jisr sign-in problem: the run was stopped', redact_(cr.thrown.message)); return 'stop'; }
+        if (cr.unknown) { stage_(r, 'unverified', 'no answer from Jisr when creating the request: it may or may not exist; check the employee in Jisr', T('No answer from Jisr: the request may or may not exist. Check the employee in Jisr before running this row again.', 'لا رد من جسر: قد يكون الطلب أُنشئ أو لا. تحقّق من الموظف في جسر قبل إعادة هذا الصف.')); return 'stop'; }
+        stage_(r, 'failed', 'the request could not be created: ' + redact_(cr.thrown.message), redact_(cr.thrown.message)); return 'next';
+      }
+      if (!cr.ok) { r.state = 'failed'; r.stage = jboStageOfRes_(cr); r.why = 'Jisr refused the business trip request (HTTP ' + cr.status + ')'; r.msg = '✗ ' + T('Jisr refused the request: ', 'رفض جسر الطلب: ') + (jm_(cr) || 'HTTP ' + cr.status); return 'next'; }
+      const newId = idOfCreate_(cr.json); r.newId = newId;
+      if (newId == null) { stage_(r, 'unverified', 'Jisr accepted the request but its number was not in the answer: it could not be approved or checked; find it in Jisr', T('Jisr accepted the request but did not give its number, so it could not be approved or checked. Find it in Jisr (Requests).', 'قبل جسر الطلب لكنه لم يعطِ رقمه فلم يمكن اعتماده أو فحصه. ابحث عنه في جسر (الطلبات).')); return 'stop'; }
+      let ap = { steps: 0 };
+      if (S.approve) { try { ap = await approve_(r.emp, newId, T('Approved with Bulk Ops', 'اعتُمد عبر Bulk Ops')); } catch (e) { ap = { steps: 0, error: redact_(e.message) }; } }
+      let back = null; try { back = await readBack_(r.emp, newId); } catch (e) { back = null; }
+      const pending = back && /pending|under|review|waiting/.test(back.status);
+      if (S.approve && (pending || (!back && (ap.error || !ap.steps)))) {
+        const why = ap.error ? 'approving it failed: ' + ap.error : ap.steps ? 'it is still waiting for approval' : (ap.why || 'it was not approved');
+        stage_(r, 'pending', 'the request #' + newId + ' was created but ' + why + '. Approve it in Jisr.', T('Request #', 'الطلب #') + newId + T(' was created, but ', ' أُنشئ لكن ') + why + T('. It is waiting for approval in Jisr (Requests → Approvals).', '. وهو بانتظار الاعتماد في جسر (الطلبات ← الموافقات).'));
+        return 'stop';   // the next rows would end the same way
+      }
+      if (!back) { stage_(r, 'not_reflected', 'Jisr said the request was created (OK) but it does not appear in the approvals list', T('Jisr accepted request #', 'قبل جسر الطلب #') + newId + T(' but it does not appear in the approvals list. Check it in Jisr.', ' لكنه لا يظهر في قائمة الموافقات. تحقق منه في جسر.')); return 'next'; }
+      if (/rejected|cancel/.test(back.status)) { stage_(r, 'rejected', 'the request was created but its status is ' + back.status, T('Request #', 'الطلب #') + newId + T(' was created but its status is “', ' أُنشئ لكن حالته «') + back.status + '”.'); return 'next'; }
+      if (back.from && back.to && (back.from !== p.start || back.to !== p.end)) { stage_(r, 'mismatch', 'the request shows other dates than asked (' + back.from + ' → ' + back.to + ')', T('The request shows ', 'يظهر الطلب بتواريخ ') + back.from + ' → ' + back.to + T(' instead of ', ' بدل ') + p.start + ' → ' + p.end + T('. Check it in Jisr.', '. تحقق منه في جسر.')); return 'next'; }
+      S.trips.delete(String(r.emp.id));
+      r.state = 'done'; r.stage = pending ? 'pending' : 'ok';
+      r.why = pending ? 'business trip request created and left in the approval workflow (pending), confirmed by reading it back' : 'business trip request created' + (S.approve ? ', approved' : '') + ' and confirmed by reading it back from Jisr';
+      r.msg = '✓ ' + (pending ? T('created: waiting in the approval workflow', 'أُنشئ: بانتظار مسار الاعتماد') : S.approve ? T('created and approved', 'أُنشئ واعتُمد') : T('created', 'أُنشئ')) + ' (#' + newId + ')' + (S.approve && !ap.steps && !pending ? '\n' + T('(Jisr approved it by itself: no approval was needed)', '(اعتمده جسر تلقائيًا: لم تلزم موافقة)') : '');
+      return 'next';
+    }
+    async function runLive_() {
+      const todo = S.rows.filter((r) => r.state === 'ready'); if (!todo.length) return;
+      if (!confirm(T('Create ', 'إنشاء ') + todo.length + T(' business trip request(s) for ', ' طلب رحلة عمل لـ ') + new Set(todo.map((r) => r.emp.id)).size + T(' employee(s) in ', ' موظف في ') + slug_() + '?\n\n' + (S.approve ? T('Each request is created and approved at once. If one cannot be approved (you are not its approver) it stays pending and the run stops.', 'يُنشأ كل طلب ويُعتمد فورًا. إن تعذّر اعتماد طلب (لست معتمده) يبقى معلّقًا ويتوقف التشغيل.') : T('The requests are created and left in the approval workflow.', 'تُنشأ الطلبات وتُترك في مسار الاعتماد.')))) return;
+      S.phase = 'running'; S.stop = false; S.busy = ' '; paint_(); let done = 0;
+      const report_ = (r) => { if (r.reported) return; r.reported = true; const st = r.state === 'done' ? (r.stage || 'ok') : r.state === 'failed' ? (r.stage || 'failed') : 'skipped'; try { jboActReport_(MODULE_ID, r.emp ? r.emp.id : 'row' + r.no, st, r.state === 'done' || r.state === 'failed' ? (r.why || st) : 'not sent: the run stopped before this row'); } catch (e) { /* ignore */ } };
+      todo.forEach((r) => { r.reported = false; r.stage = ''; r.why = ''; });
+      for (const r of todo) {
+        if (S.stop) { r.msg = T('Not sent (stopped)', 'لم يُرسل (تم الإيقاف)'); report_(r); continue; }
+        let how = 'next'; try { how = await createOne_(r); } catch (e) { how = 'stop'; if (r.state !== 'failed') { stage_(r, 'failed', 'the row failed with an error: check it in Jisr', redact_(e.message)); } }
+        report_(r); done++; S.busy = T('Creating… ', 'جارٍ الإنشاء… ') + done + '/' + todo.length; paint_();
+        if (how === 'stop') { S.stop = true; todo.filter((x) => x.state === 'ready').forEach((x) => { x.msg = T('Not sent: the run stopped', 'لم يُرسل: توقّف التشغيل'); }); break; }
+        if (cfg.paceMs) await sleep_(cfg.paceMs);
+      }
+      S.phase = 'done'; S.busy = ''; todo.forEach(report_);
+      const okN = todo.filter((r) => r.state === 'done').length;
+      S.note = okN + T(' of ', ' من ') + todo.length + T(' business trip request(s) created.', ' طلب رحلة عمل أُنشئ.') + (okN < todo.length ? T(' Read the Result column and fix the cause. Run the Dry Run again before retrying: trips already created are skipped when Jisr lists them with their dates.', ' اقرأ عمود النتيجة وأصلح السبب. شغّل التجريبي مجددًا قبل إعادة المحاولة: تُتخطى الرحلات المُنشأة عندما يعرضها جسر بتواريخها.') : ''); S.noteErr = okN < todo.length;
+      paint_();
+    }
+    runB.addEventListener('click', runLive_); stopB.addEventListener('click', () => { S.stop = true; });
+    resB.addEventListener('click', () => {
+      const H = ['Row', 'Employee ID', 'Name', 'Policy', 'Destination', 'Leave Date', 'Return Date', 'Require Ticket', 'Exit / Re-entry Visa', 'Visa Entry Type', 'Visa Period (months)', 'Additions', 'New request ID', 'Result'];
+      const aoa = [H].concat(S.rows.map((r) => { const p = r.plan || {}; return [r.no, r.emp ? r.emp.code || r.emp.id : r.empText, r.emp ? r.emp.name : '', r.pol ? r.pol.label : '', p.cityName || r.dest, r.start || '', r.end || '', p.ticket ? 'Yes' : 'No', p.reentry ? 'Yes' : 'No', p.entryType || '', p.period || '', (p.additions || []).map((x) => (ADD.find((a) => a[0] === x) || [x, x])[1]).join(', '), r.newId || '', String(r.msg || '').replace(/\n/g, ' | ')]; }));
+      const wb = XLSX.utils.book_new(); const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = H.map((h) => ({ wch: Math.max(12, h.length + 2) })); XLSX.utils.book_append_sheet(wb, ws, 'Business trip results'); XLSX.writeFile(wb, 'jisr-business-trip-requests-results-' + slug_() + '.xlsx');
+    });
+    render_();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Business Trip Requests (Bulk)', open: openTool_, version: SECTION_VERSION };
+    W.__jisrBusinessTrip = { parseAoa_, whoFromLabel_, codeKey_, policies_, policyMap_, policyIs_, planRow_, additions_, yesNo_, citiesIn_, bodyOf_, idOfCreate_, tripOf_, HEAD, cfg };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 53 — Access Report (who was invited, who accepted, who has signed in)  v4.106.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 53 — Access Report  v4.106
+ * ---------------------------------------------------------------------------
+ * One Excel report: every employee's main data + invitation status + last time they were active in Jisr. Read only.
+ * CONFIRMED (user's browser, onboardingteam, 2026-11-24, read only):
+ *   GET /api/v2/employees/list?page=1&rpp=100&columns[]=full_name&columns[]=email…   -> data.employees[] (each requested column is a key), data.pagination
+ *       (columns[] must be repeated: columns[]=a,b and columns[0]=a are refused. full_name = { id, code, full_name_i18n, main_status }; status = { main_status, main_status_i18n, tags_i18n, joining_date … })
+ *   GET /api/v2/overview/employee_invites?page=1&rpp=100  -> data.employee_invites[] = { id, employee_info{ id, code, email, status … }, invitee_email, status (accepted | pending | expired | not_delivered), status_i18n, description }
+ *   GET /api/v2/overview/employee_invites/statistics        -> { active_employees_count, total_invites, accepted_count, pending_count, expired_count, not_delivered_count, not_invited_employees }
+ *   GET /api/v2/employees/{id}                              -> data.employee.last_active_time = "Never logged in" or "22 Nov 2026 – 9:15 PM" (locale en), is_invited
+ * NOT available in Jisr (looked for, 404 / not in any list): a sign-in history, log-out times, a session list. The report says so; it shows the LAST time each person was active.
+ * Safety: only GET calls; nothing is saved in this browser or sent anywhere; the file is built here and downloaded. 3 reads at a time, a Stop button, and one failed read never stops the rest.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.106.0';
+  const MODULE_ID = 'access-report';
+  const W = unsafeWindow;
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const cfg = { rpp: 100, workers: 3, maxPages: 60 };
+
+  // ======================================================================= network (GET only)
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  /** pairs: [[key, value], …] so a key can repeat (columns[]). -> { status, ok, json }. Throws on 401 / after retries. */
+  async function get_(path, pairs) {
+    const qs = new URLSearchParams(); (pairs || []).forEach(([k, v]) => qs.append(k, v)); qs.append('slug', slug_());
+    const url = apiBase_() + path + '?' + qs.toString();
+    for (let a = 0; a < 4; a++) {
+      let res;
+      try { res = await fetch(url, { method: 'GET', credentials: 'include', headers: { accept: 'application/json', slug: slug_(), locale: 'en' } }); }
+      catch (e) { await sleep_(700 * (a + 1)); continue; }
+      if (res.status === 401) { const err = new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول.')); err.auth = true; throw err; }
+      if (res.status === 429 || res.status >= 500) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
+      const json = await res.json().catch(() => null);
+      if (res.status === 403) { const err = new Error(T('Jisr refused (HTTP 403): your account may not be allowed to read this', 'رفض جسر الطلب (HTTP 403): قد لا يملك حسابك صلاحية القراءة')); err.status = 403; throw err; }
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+    }
+    throw new Error(T('No answer from Jisr', 'لا رد من جسر'));
+  }
+
+  // ======================================================================= reading
+  const COLS = ['full_name', 'status', 'id_iqama_number', 'email', 'telephone', 'job_title', 'department', 'location', 'joining_date', 'line_manager', 'employment_type', 'nationality', 'gender'];
+  const txt_ = (v) => { if (v == null) return ''; if (Array.isArray(v)) return v.map(txt_).filter(Boolean).join(', '); if (typeof v === 'object') return String(v.full_name_i18n || v.name_i18n || v.name || v.main_status_i18n || v.label || ''); return String(v).trim(); };
+  function empOf_(it) {
+    const f = (it && it.full_name) || {}; const s = (it && it.status && typeof it.status === 'object') ? it.status : {};
+    return { id: f.id, code: String(f.code == null ? '' : f.code), name: txt_(f.full_name_i18n || f), state: String(f.main_status || s.main_status || ''), statusText: txt_(s.main_status_i18n || s.main_status || f.main_status), tags: txt_(s.tags_i18n),
+      nid: txt_(it.id_iqama_number), email: txt_(it.email), phone: txt_(it.telephone), job: txt_(it.job_title), dept: txt_(it.department), loc: txt_(it.location), joined: txt_(s.joining_date || it.joining_date),
+      manager: txt_(it.line_manager), empType: txt_(it.employment_type), nationality: txt_(it.nationality), gender: txt_(it.gender) };
+  }
+  /** Jisr's main_status: active | probation_period | inactive (offboarded). Everything except an offboarded state counts as working. */
+  const isOff_ = (st) => /inactive|offboard|terminat|resign/i.test(String(st || ''));
+  async function listEmployees_(onProgress, stopped) {
+    const out = []; const seen = new Set();
+    for (let page = 1; page <= cfg.maxPages; page++) {
+      if (stopped()) break;
+      const r = await get_('/v2/employees/list', [['page', String(page)], ['rpp', String(cfg.rpp)]].concat(COLS.map((c) => ['columns[]', c])));
+      if (!r.ok) throw new Error(T('Could not read the employee list (HTTP ', 'تعذّرت قراءة قائمة الموظفين (HTTP ') + r.status + ')');
+      const d = (r.json && r.json.data) || {}; (d.employees || []).forEach((it) => { const e = empOf_(it); if (e.id != null && !seen.has(e.id)) { seen.add(e.id); out.push(e); } });
+      if (onProgress) onProgress(out.length, (d.pagination && d.pagination.total_entries) || 0);
+      if (!d.pagination || !d.pagination.next_page) break;
+    }
+    return out;
+  }
+  async function listInvites_(stopped) {
+    const out = [];
+    for (let page = 1; page <= cfg.maxPages; page++) {
+      if (stopped()) break;
+      const r = await get_('/v2/overview/employee_invites', [['page', String(page)], ['rpp', String(cfg.rpp)]]);
+      if (!r.ok) throw new Error(T('Could not read the invitations (HTTP ', 'تعذّرت قراءة الدعوات (HTTP ') + r.status + ')');
+      const d = (r.json && r.json.data) || {}; (d.employee_invites || []).forEach((x) => out.push(x));
+      if (!d.pagination || !d.pagination.next_page) break;
+    }
+    return out;
+  }
+  async function readStats_() {
+    try { const r = await get_('/v2/overview/employee_invites/statistics', []); return r.ok && r.json && r.json.data ? r.json.data : null; } catch (e) { if (e.auth) throw e; return null; }
+  }
+
+  // ======================================================================= last active + status
+  const MON = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  const AR_DIG = '٠١٢٣٤٥٦٧٨٩';
+  const latin_ = (s) => String(s == null ? '' : s).replace(/[٠-٩]/g, (c) => String(AR_DIG.indexOf(c)));
+  const pad_ = (n) => String(n).padStart(2, '0');
+  /** Jisr's "last active": "Never logged in" | "22 Nov 2026 – 9:15 PM". -> { never } | { ts, iso } | { raw } (not understood) */
+  function parseActive_(v) {
+    const s = latin_(v).replace(/\s+/g, ' ').trim();
+    if (!s || /never/i.test(s)) return { never: true };
+    const m = /(\d{1,2}) ([A-Za-z]{3})[A-Za-z]* (\d{4})\D+(\d{1,2}):(\d{2}) ?(AM|PM)?/i.exec(s);
+    if (!m || MON[m[2].toLowerCase()] == null) return { raw: s };
+    let h = Number(m[4]); const ap = (m[6] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0;
+    const d = new Date(Number(m[3]), MON[m[2].toLowerCase()], Number(m[1]), h, Number(m[5]));
+    return { ts: d.getTime(), iso: d.getFullYear() + '-' + pad_(d.getMonth() + 1) + '-' + pad_(d.getDate()) + ' ' + pad_(d.getHours()) + ':' + pad_(d.getMinutes()), raw: s };
+  }
+  const RANK = { accepted: 4, pending: 3, expired: 2, not_delivered: 1 };
+  /** invites -> Map(employee id -> { best, count, emails }) */
+  function inviteMap_(invites) {
+    const m = new Map();
+    invites.forEach((x) => {
+      const id = x && x.employee_info && x.employee_info.id; if (id == null) return;
+      const e = m.get(id) || { best: '', count: 0, detail: '' }; e.count++;
+      const st = String(x.status || ''); if ((RANK[st] || 0) > (RANK[e.best] || 0) || !e.best) { e.best = st; e.detail = String(x.description || ''); }
+      m.set(id, e);
+    });
+    return m;
+  }
+  /** One access status per employee. */
+  function classify_(e) {
+    if (e.act === undefined || e.act === null) return 'unknown';
+    if (!e.act.never) return 'signed_in';
+    const st = e.inv && e.inv.best;
+    if (!st) return e.email ? 'not_invited' : 'no_email';
+    return st === 'accepted' ? 'accepted_never' : st === 'pending' ? 'pending' : st === 'expired' ? 'expired' : st === 'not_delivered' ? 'not_delivered' : e.email ? 'not_invited' : 'no_email';
+  }
+  const STATUS = () => ({
+    signed_in: T('Has signed in', 'سجّل الدخول'), accepted_never: T('Accepted, no activity yet', 'قبل الدعوة ولا نشاط بعد'), pending: T('Invited, waiting', 'مدعو، بانتظار القبول'),
+    expired: T('Invitation expired', 'انتهت الدعوة'), not_delivered: T('Invitation not delivered', 'لم تصل الدعوة'), not_invited: T('Never invited', 'لم تُرسل دعوة'),
+    no_email: T('No email: cannot be invited', 'لا بريد: لا يمكن دعوته'), unknown: T('Could not read', 'تعذّرت القراءة') });
+  const ORDER = ['signed_in', 'accepted_never', 'pending', 'expired', 'not_delivered', 'not_invited', 'no_email', 'unknown'];
+  const INV = () => ({ accepted: T('Accepted', 'مقبولة'), pending: T('Pending', 'قيد الانتظار'), expired: T('Expired', 'منتهية'), not_delivered: T('Not delivered', 'لم تصل'), '': T('None', 'لا توجد') });
+  const invText_ = (s) => INV()[s] || s;
+  const dayMs = 86400000;
+  const daysSince_ = (ts, now) => Math.max(0, Math.floor(((now || Date.now()) - ts) / dayMs));
+  const BUCKETS = () => [[7, T('Active in the last 7 days', 'نشط خلال آخر 7 أيام')], [30, T('Last active 8 to 30 days ago', 'آخر نشاط قبل 8 إلى 30 يومًا')], [90, T('Last active 31 to 90 days ago', 'آخر نشاط قبل 31 إلى 90 يومًا')], [Infinity, T('Last active over 90 days ago', 'آخر نشاط قبل أكثر من 90 يومًا')]];
+
+  /** Builds the whole report. opts: { includeOffboarded }; hooks: { progress(text), stopped() }. */
+  async function build_(opts, hooks) {
+    opts = opts || {}; hooks = hooks || {}; const say = hooks.progress || (() => {}); const stopped = hooks.stopped || (() => false);
+    say(T('Reading the invitation totals…', 'جارٍ قراءة إجمالي الدعوات…')); const stats = await readStats_();
+    say(T('Reading the employee list…', 'جارٍ قراءة قائمة الموظفين…'));
+    let emps = await listEmployees_((n, tot) => say(T('Reading the employee list… ', 'جارٍ قراءة قائمة الموظفين… ') + n + (tot ? ' / ' + tot : '')), stopped);
+    if (!opts.includeOffboarded) emps = emps.filter((e) => !isOff_(e.state));
+    say(T('Reading the invitations…', 'جارٍ قراءة الدعوات…')); const invites = await listInvites_(stopped); const im = inviteMap_(invites);
+    // last active: one read per employee, a few at a time
+    let next = 0, done = 0, failed = 0, authErr = null; const total = emps.length; const t0 = Date.now();
+    const worker = async () => {
+      while (!stopped() && !authErr) {
+        const i = next++; if (i >= total) return; const e = emps[i];
+        try { const r = await get_('/v2/employees/' + encodeURIComponent(e.id), []); const x = r.ok && r.json && r.json.data && r.json.data.employee; if (x) { e.act = parseActive_(x.last_active_time); e.invitedFlag = x.is_invited === true; } else { e.act = null; failed++; } }
+        catch (er) { if (er.auth) { authErr = er; return; } e.act = null; failed++; }
+        done++; if (done % 5 === 0 || done === total) { const el = (Date.now() - t0) / 1000; const left = done ? Math.round(el / done * (total - done)) : 0; say(T('Reading when each person was last active… ', 'جارٍ قراءة آخر نشاط لكل شخص… ') + done + ' / ' + total + (left > 4 ? T(' (about ', ' (حوالي ') + left + T(' s left)', ' ث متبقية)') : '')); }
+      }
+    };
+    await Promise.all(Array.from({ length: cfg.workers }, worker));
+    if (authErr) throw authErr;
+    const now = Date.now();
+    emps.forEach((e) => { e.inv = im.get(e.id) || { best: '', count: 0, detail: '' }; e.status = classify_(e); e.days = e.act && e.act.ts ? daysSince_(e.act.ts, now) : null; });
+    return { emps, invites, stats, failed, stoppedEarly: stopped() && done < total, at: new Date(), includeOffboarded: !!opts.includeOffboarded };
+  }
+
+  // ======================================================================= numbers and the file
+  function summarize_(rep) {
+    const by = {}; ORDER.forEach((k) => { by[k] = 0; }); rep.emps.forEach((e) => { by[e.status] = (by[e.status] || 0) + 1; });
+    const act = BUCKETS().map(([lim, label]) => ({ label, lim, n: 0 })); rep.emps.forEach((e) => { if (e.days == null) return; const b = act.find((x) => e.days <= x.lim); if (b) b.n++; });
+    const total = rep.emps.length; const signed = by.signed_in; const never = total - signed - (by.unknown || 0);
+    return { total, signed, never, by, act, pct: total ? Math.round(signed * 1000 / total) / 10 : 0 };
+  }
+  function empRows_(rep) {
+    const ST = STATUS();
+    const head = [T('Code', 'الرقم'), T('Full name', 'الاسم'), T('Employment status', 'حالة الموظف'), T('ID / Iqama number', 'رقم الهوية / الإقامة'), T('Email', 'البريد'), T('Phone', 'الجوال'), T('Job title', 'المسمى الوظيفي'), T('Department', 'القسم'), T('Location', 'الموقع'), T('Line manager', 'المدير المباشر'),
+      T('Employment type', 'نوع التوظيف'), T('Nationality', 'الجنسية'), T('Gender', 'الجنس'), T('Joining date', 'تاريخ الانضمام'), T('Access status', 'حالة الدخول'), T('Invitation', 'الدعوة'), T('Invitations sent', 'عدد الدعوات'), T('Last active (as Jisr shows it)', 'آخر نشاط (كما يعرضه جسر)'), T('Last active (date and time)', 'آخر نشاط (التاريخ والوقت)'), T('Days since last active', 'أيام منذ آخر نشاط')];
+    const rows = rep.emps.map((e) => [e.code, e.name, e.statusText || e.state, e.nid, e.email, e.phone, e.job, e.dept, e.loc, e.manager, e.empType, e.nationality, e.gender, e.joined, ST[e.status] || e.status, invText_(e.inv.best), e.inv.count || '',
+      e.act ? (e.act.never ? T('Never logged in', 'لم يسجّل الدخول') : e.act.raw || '') : '', e.act && e.act.iso ? e.act.iso : '', e.days == null ? '' : e.days]);
+    return { head, rows };
+  }
+  function summaryAoa_(rep) {
+    const s = summarize_(rep); const ST = STATUS(); const a = []; const st = rep.stats;
+    a.push([T('Access report', 'تقرير الدخول والدعوات')]); a.push([T('Company', 'الشركة'), slug_()]); a.push([T('Built on', 'أُعدّ في'), rep.at.getFullYear() + '-' + pad_(rep.at.getMonth() + 1) + '-' + pad_(rep.at.getDate()) + ' ' + pad_(rep.at.getHours()) + ':' + pad_(rep.at.getMinutes())]);
+    a.push([T('Employees included', 'الموظفون المشمولون'), rep.includeOffboarded ? T('Active and offboarded', 'على رأس العمل والمنتهية خدماتهم') : T('Active only', 'على رأس العمل فقط')]); a.push([]);
+    a.push([T('Employees', 'الموظفون'), s.total]); a.push([T('Have signed in', 'سجّلوا الدخول'), s.signed, s.pct + '%']); a.push([T('Never logged in', 'لم يسجّلوا الدخول'), s.never]); a.push([]);
+    a.push([T('By access status', 'حسب حالة الدخول'), T('Employees', 'الموظفون')]); ORDER.forEach((k) => { if (s.by[k] || k !== 'unknown') a.push([ST[k], s.by[k] || 0]); }); a.push([]);
+    a.push([T('By recent activity (those who have signed in)', 'حسب آخر نشاط (من سجّلوا الدخول)'), T('Employees', 'الموظفون')]); s.act.forEach((x) => a.push([x.label, x.n])); a.push([]);
+    if (st) { a.push([T("Jisr's own invitation totals (whole company)", 'إجمالي الدعوات لدى جسر (الشركة كلها)'), '']); [[T('Invitations sent', 'الدعوات المرسلة'), st.total_invites], [T('Accepted', 'مقبولة'), st.accepted_count], [T('Pending', 'قيد الانتظار'), st.pending_count], [T('Expired', 'منتهية'), st.expired_count], [T('Not delivered', 'لم تصل'), st.not_delivered_count], [T('Employees never invited', 'موظفون لم تُرسل لهم دعوة'), st.not_invited_employees]].forEach((r) => a.push(r)); a.push([]); }
+    a.push([T('Note', 'ملاحظة'), T('Jisr does not keep log-out times or a sign-in history that this tool can read. "Last active" is the last time Jisr saw the person use the system.', 'لا يحتفظ جسر بأوقات تسجيل الخروج ولا بسجل دخول يمكن لهذه الأداة قراءته. "آخر نشاط" هو آخر مرة رصد فيها جسر استخدام الشخص للنظام.')]);
+    if (rep.failed) a.push([T('Could not read', 'تعذّرت قراءة'), rep.failed + T(' employee(s): marked "Could not read"', ' موظف: مُعلَّمون "تعذّرت القراءة"')]);
+    if (rep.stoppedEarly) a.push([T('Stopped early', 'أُوقف مبكرًا'), T('Some employees were not read', 'لم تُقرأ بيانات بعض الموظفين')]);
+    return a;
+  }
+  function invRows_(rep) {
+    const byId = new Map(rep.emps.map((e) => [e.id, e])); const head = [T('Code', 'الرقم'), T('Full name', 'الاسم'), T('Email invited', 'البريد المدعو'), T('Invitation', 'الدعوة'), T('Detail', 'التفاصيل')];
+    const rows = rep.invites.filter((x) => x && x.employee_info && byId.has(x.employee_info.id)).map((x) => { const e = byId.get(x.employee_info.id); return [e.code, e.name, String(x.invitee_email || x.employee_info.email || ''), invText_(String(x.status || '')), String(x.description || '')]; });
+    return { head, rows };
+  }
+  function workbook_(rep) {
+    const wb = XLSX.utils.book_new(); const add = (name, aoa, widths, filter) => { const ws = XLSX.utils.aoa_to_sheet(aoa); if (widths) ws['!cols'] = widths.map((w) => ({ wch: w })); if (filter && aoa.length > 1) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: aoa[0].length - 1 } }) }; XLSX.utils.book_append_sheet(wb, ws, name); };
+    add(T('Summary', 'الملخص'), summaryAoa_(rep), [46, 22, 12]);
+    const er = empRows_(rep); add(T('Employees', 'الموظفون'), [er.head].concat(er.rows), [10, 26, 14, 18, 28, 16, 24, 20, 16, 22, 16, 14, 9, 13, 26, 14, 9, 24, 17, 10], true);
+    const ir = invRows_(rep); add(T('Invitations', 'الدعوات'), [ir.head].concat(ir.rows), [10, 26, 30, 14, 60], true);
+    return wb;
+  }
+  function download_(rep) {
+    const wb = workbook_(rep); const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const d = rep.at; const name = 'access-report_' + (slug_() || 'jisr') + '_' + d.getFullYear() + '-' + pad_(d.getMonth() + 1) + '-' + pad_(d.getDate()) + '.xlsx';
+    const url = URL.createObjectURL(new Blob([out], { type: 'application/octet-stream' })); const a = el('a', { href: url, download: name, style: { display: 'none' } });
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000); return name;
+  }
+
+  // ======================================================================= window
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c != null && c !== false && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-ar-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-ar-css', text: `
+      .jar-note { font-size: 12.5px; background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
+      .jar-opts { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 6px 0 10px; font-size: 13px; }
+      .jar-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin: 10px 0; }
+      .jar-card { border: 1px solid #e8eaed; border-radius: 10px; padding: 8px 10px; cursor: pointer; background: #fff; text-align: start; font: inherit; }
+      .jar-card b { display: block; font-size: 20px; } .jar-card span { font-size: 12px; color: #5f6368; }
+      .jar-card.on { border-color: #1a73e8; box-shadow: 0 0 0 1px #1a73e8 inset; }
+      .jar-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jar-tbl th { text-align: start; padding: 6px 8px; background: #f8f9fa; border-bottom: 1px solid #e8eaed; font-weight: 600; position: sticky; top: 0; }
+      .jar-tbl td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jar-scroll { max-height: 40vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jar-bar { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+      .jar-bar input[type=text] { font: inherit; padding: 6px 8px; border: 1px solid #dadce0; border-radius: 6px; min-width: 220px; }
+      .jar-sec { margin: 12px 0 6px; font-weight: 700; font-size: 13px; }
+    ` }));
+  }
+  function openTool_() {
+    injectCss_(); try { jboActOpen_(MODULE_ID); } catch (e) { /* ignore */ }
+    const S = { rep: null, busy: false, stop: false, filter: '', q: '', includeOff: false };
+    const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title', text: T('Access report: invitations and sign-ins', 'تقرير الدخول والدعوات') }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': 'Close' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1100px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => { S.stop = true; backdrop.remove(); };
+    closeBtn.addEventListener('click', close); backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+    const noteEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const setNote = (t, err) => { noteEl.textContent = t; noteEl.style.color = err ? '#a50e0e' : ''; };
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') }); const mainB = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('Build the report', 'أعدّ التقرير') });
+    foot.appendChild(stopB); foot.appendChild(mainB); stopB.style.display = 'none';
+    stopB.addEventListener('click', () => { S.stop = true; setNote(T('Stopping…', 'جارٍ الإيقاف…')); });
+
+    function renderResult(wrap) {
+      const rep = S.rep; const s = summarize_(rep); const ST = STATUS();
+      wrap.appendChild(el('div', { class: 'jar-sec', text: s.total + T(' employees: ', ' موظف: ') + s.signed + T(' have signed in (', ' سجّلوا الدخول (') + s.pct + '%), ' + s.never + T(' never logged in', ' لم يسجّلوا الدخول') }));
+      const cards = el('div', { class: 'jar-cards' });
+      const mk = (key, label, n) => { const c = el('button', { class: 'jar-card' + (S.filter === key ? ' on' : ''), type: 'button' }, [el('b', { text: String(n) }), el('span', { text: label })]); c.addEventListener('click', () => { S.filter = S.filter === key ? '' : key; render(); }); return c; };
+      ORDER.forEach((k) => { if (s.by[k] || (k !== 'unknown' && k !== 'accepted_never')) cards.appendChild(mk(k, ST[k], s.by[k] || 0)); });
+      wrap.appendChild(cards);
+      const act = el('div', { class: 'jbo-muted', text: s.act.map((x) => x.label + ': ' + x.n).join('   ·   ') }); wrap.appendChild(act);
+      const q = el('input', { type: 'text', value: S.q, placeholder: T('Search name, code, email…', 'ابحث بالاسم أو الرقم أو البريد…') }); q.addEventListener('input', () => { S.q = q.value; renderTable(); });
+      wrap.appendChild(el('div', { class: 'jar-bar' }, [q, el('span', { class: 'jbo-muted', text: S.filter ? T('Showing: ', 'المعروض: ') + ST[S.filter] : T('Showing: all (click a box to filter)', 'المعروض: الكل (اضغط مربعًا للتصفية)') })]));
+      const holder = el('div', { class: 'jar-scroll' }); wrap.appendChild(holder);
+      function renderTable() {
+        holder.textContent = ''; const needle = S.q.trim().toLowerCase();
+        const list = rep.emps.filter((e) => (!S.filter || e.status === S.filter) && (!needle || (e.name + ' ' + e.code + ' ' + e.email).toLowerCase().includes(needle)));
+        const tb = el('table', { class: 'jar-tbl' }, [el('tr', {}, [T('Code', 'الرقم'), T('Name', 'الاسم'), T('Email', 'البريد'), T('Access status', 'حالة الدخول'), T('Invitation', 'الدعوة'), T('Last active', 'آخر نشاط'), T('Job title', 'المسمى'), T('Department', 'القسم')].map((h) => el('th', { text: h })))]);
+        list.slice(0, 300).forEach((e) => tb.appendChild(el('tr', {}, [e.code, e.name, e.email, ST[e.status] || e.status, invText_(e.inv.best), e.act ? (e.act.never ? '—' : e.act.iso || e.act.raw || '') : '', e.job, e.dept].map((v) => el('td', { text: String(v == null ? '' : v) })))));
+        holder.appendChild(tb); if (list.length > 300) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px 8px' }, text: T('Showing the first 300 of ', 'يعرض أول 300 من ') + list.length + T('. The Excel file has everyone.', '. ملف Excel يحتوي الجميع.') }));
+        if (!list.length) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '8px' }, text: T('Nobody matches.', 'لا أحد مطابق.') }));
+      }
+      renderTable();
+    }
+    function render() {
+      body.textContent = '';
+      body.appendChild(el('div', { class: 'jar-note', text: T('Read only. It shows each employee\'s main data, who was invited, who accepted, who is still waiting, and when each person was last active in Jisr. Jisr does not keep log-out times or a sign-in history, so "last active" is the closest it gives. About 1 minute for 250 employees.', 'للقراءة فقط. يعرض البيانات الأساسية لكل موظف ومن دُعي ومن قبل ومن ما زال ينتظر ومتى كان كل شخص نشطًا آخر مرة في جسر. لا يحتفظ جسر بأوقات الخروج ولا بسجل دخول، لذا "آخر نشاط" هو الأقرب. حوالي دقيقة لكل 250 موظفًا.') }));
+      const off = el('input', { type: 'checkbox' }); off.checked = S.includeOff; off.disabled = S.busy; off.addEventListener('change', () => { S.includeOff = off.checked; });
+      body.appendChild(el('div', { class: 'jar-opts' }, [el('label', {}, [off, ' ' + T('Include offboarded employees', 'تضمين الموظفين المنتهية خدماتهم')])]));
+      body.appendChild(noteEl);
+      if (S.rep) { const wrap = el('div', {}); renderResult(wrap); body.appendChild(wrap); }
+      mainB.textContent = S.rep && !S.busy ? T('Download Excel', 'نزّل ملف Excel') : T('Build the report', 'أعدّ التقرير');
+    }
+    async function buildNow() {
+      if (S.busy) return; S.busy = true; S.stop = false; S.rep = null; mainB.disabled = true; stopB.style.display = ''; render();
+      try {
+        const rep = await build_({ includeOffboarded: S.includeOff }, { progress: (t) => setNote(t), stopped: () => S.stop });
+        S.rep = rep; setNote(rep.stoppedEarly ? T('Stopped: the report has only the employees read so far.', 'أُوقف: التقرير يحوي الموظفين الذين قُرئوا فقط.') : rep.failed ? T('Done. ', 'تم. ') + rep.failed + T(' employee(s) could not be read (marked in the file).', ' موظف تعذّرت قراءتهم (معلَّمون في الملف).') : T('Done. Click "Download Excel".', 'تم. اضغط "نزّل ملف Excel".'));
+      } catch (e) { setNote(String(e.message || e).slice(0, 240), true); }
+      finally { S.busy = false; mainB.disabled = false; stopB.style.display = 'none'; render(); }
+    }
+    mainB.addEventListener('click', () => {
+      if (S.rep && !S.busy) { try { const name = download_(S.rep); setNote(T('Saved: ', 'حُفظ: ') + name); try { jboActReport_(MODULE_ID, 'report', 'ok', S.rep.emps.length + ' employees'); } catch (e) { /* ignore */ } } catch (e) { setNote(String(e.message || e), true); } return; }
+      buildNow();
+    });
+    render();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Access Report', open: openTool_, version: SECTION_VERSION };
+    W.__jisrAccessReport = { build_, parseActive_, classify_, inviteMap_, summarize_, empRows_, summaryAoa_, invRows_, workbook_, empOf_, cfg };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 52 — Automations (when a request is approved, do the next step)  v4.105.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 52 — Automations  v4.105
+ * ---------------------------------------------------------------------------
+ * A rule says: "when a custom request of type X is approved, do Y for that employee".
+ *   Y = a day off (one date or a range) in the scheduler | a shift in the scheduler | a payroll transaction (addition / deduction).
+ * CONFIRMED (user's browser, onboardingteam, 2026-11-23, read only):
+ *   GET /api/v2/requests/approvals?type=permitted_requests&rpp=100&page=1&filter[request_type][]=Request  -> data.requests[]
+ *   Custom requests have request_type "Request", request_name_i18n = the type's name, status (approved / pending / rejected),
+ *   request.approved_at, request.sequential_id, employee.{id, code} and request.metadata.fields_value[] = {name_en, name_ar, type, value:[..]}
+ *   field types seen: date (["2026-09-01"]), text (["2500"]), multiple_choice, employees_selector, attachment.
+ * Calls re-used from the other tools (all confirmed there): POST /v2/attendance/schedulers (Shifts & Day Offs), POST /v2/finance/payroll_transactions (Bulk Payroll Transactions).
+ * Safety: a rule only acts on requests approved AFTER its "Start from" date (never back-fills); each request is applied once (ledger by request id, kept in this browser);
+ * a send that got no answer is marked "unknown" and is never retried by itself; caps per run and on amounts; a pause switch; one tab at a time works the queue.
+ * It runs only while a Jisr tab is open and signed in (the Jisr web API accepts nothing else).
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.105.0';
+  const MODULE_ID = 'automations';
+  const W = unsafeWindow;
+  const GM_PREFIX = 'jisrBulkOps_';
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
+  function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const LC = () => W.__jisrLeaveCancel || {};
+  const RM = () => W.__jisrRequestsManage || {};
+  const cfg = { pollMs: 5 * 60 * 1000, firstPollMs: 30 * 1000, paceMs: 400, maxPagesPoll: 4, maxPagesManual: 20, rpp: 100, giveUpAfter: 3, ledgerMax: 3000, lockMs: 4 * 60 * 1000 };
+  const norm_ = (s) => String(s == null ? '' : s).toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/[ً-ْـ]/g, '').replace(/\s+/g, ' ').trim();
+  const redact_ = (s) => String(s == null ? '' : s).replace(/https?:\/\/\S+/gi, '(link removed)').replace(/Bearer\s+\S+/gi, '').replace(/\s+/g, ' ').slice(0, 200);
+  const dateOk_ = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(s + 'T00:00:00Z'));
+  const addDays_ = (s, n) => { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const dow_ = (s) => new Date(s + 'T00:00:00Z').getUTCDay();
+  const daysBetween_ = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
+  const todayIso_ = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  const AR_DIG = '٠١٢٣٤٥٦٧٨٩';
+  const latin_ = (s) => String(s == null ? '' : s).replace(/[٠-٩]/g, (c) => String(AR_DIG.indexOf(c)));
+  /** Any date a Jisr form gives (YYYY-MM-DD, DD/MM/YYYY, with a time) -> YYYY-MM-DD, '' when not understood. */
+  function isoOf_(v) {
+    const s = latin_(v).trim(); if (!s) return '';
+    let m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s); if (m) { const o = m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0'); return dateOk_(o) ? o : ''; }
+    m = /^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/.exec(s); if (m) { const o = m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0'); return dateOk_(o) ? o : ''; }
+    return '';
+  }
+  const numOf_ = (v) => { const s = latin_(v).replace(/[٬,\s]/g, '').replace(/٫/g, '.').replace(/[^\d.\-]/g, ''); if (!s || isNaN(Number(s))) return null; return Number(s); };
+
+  // ======================================================================= storage
+  const rulesGet_ = () => { const r = gmGet_('autoRules', []); return Array.isArray(r) ? r : []; };
+  const rulesSet_ = (r) => gmSet_('autoRules', r);
+  const ledgerGet_ = () => { const l = gmGet_('autoLedger', {}); return l && typeof l === 'object' ? l : {}; };
+  function ledgerPut_(key, e) {
+    const l = ledgerGet_(); l[key] = Object.assign({}, l[key] || {}, e, { at: Date.now() });
+    const ks = Object.keys(l); if (ks.length > cfg.ledgerMax) ks.sort((a, b) => (l[a].at || 0) - (l[b].at || 0)).slice(0, ks.length - cfg.ledgerMax).forEach((k) => delete l[k]);
+    gmSet_('autoLedger', l);
+  }
+  const pausedGet_ = () => gmGet_('autoPaused', false) === true;
+  const newId_ = () => 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  function newRule_() {
+    return { id: newId_(), name: '', enabled: true, mode: 'auto', since: new Date().toISOString(), reqName: '',
+      act: { kind: 'dayoff', fromField: '', toField: '', shiftId: null, shiftName: '', notify: true, replaceShift: true, payCategory: 'addition', typeId: null, typeName: '', payType: 'out_of_payrun', amountField: '', fixedAmount: '', effField: '', note: '' },
+      caps: { maxPerRun: 20, maxAmount: 5000, maxDays: 31 } };
+  }
+
+  // ======================================================================= reading the approvals list
+  async function send_(method, path, query, body) {
+    try { return await LC().request_(method, path, query || null, body || null); }
+    catch (e) { return { thrown: e, ok: false, status: 0, unknown: !!e.unknown, auth: /HTTP 401|Not logged in/.test(String(e.message)) }; }
+  }
+  const fieldsOf_ = (it) => (((it || {}).request || {}).metadata || {}).fields_value || [];
+  function fieldVal_(it, name) {
+    const n = norm_(name); if (!n) return '';
+    const f = fieldsOf_(it).find((x) => norm_(x.name_en) === n || norm_(x.name_ar) === n); if (!f) return '';
+    const v = Array.isArray(f.value) ? f.value[0] : f.value;
+    if (v == null) return ''; if (typeof v === 'object') return String(v.name_i18n || v.name || v.id || '').trim();
+    return String(v).trim();
+  }
+  const nameOf_ = (it) => String(it.request_name_i18n || it.request_type_i18n || '').trim();
+  /** Every custom request in Jisr's list (status approved unless all = true). */
+  async function loadCustom_(maxPages, all) {
+    const out = []; const seen = new Set(); let filtered = true;
+    for (let page = 1; page <= maxPages; page++) {
+      const q = { type: 'permitted_requests', page, rpp: cfg.rpp, search: '' }; if (filtered) q['filter[request_type][]'] = 'Request';
+      const r = await send_('GET', '/v2/requests/approvals', q);
+      if (r.thrown) return { err: r.thrown.message, auth: r.auth, items: out };
+      if (!r.ok) { if (page === 1 && filtered) { filtered = false; page--; continue; } return { err: 'HTTP ' + r.status, items: out }; }
+      const list = RM().itemsOf_ ? RM().itemsOf_(r.json) : [];
+      list.forEach((it) => { if (it.request_type !== 'Request') return; const id = it.request && it.request.id; if (id == null || seen.has(id)) return; seen.add(id); if (all || String(it.status).toLowerCase() === 'approved') out.push(it); });
+      const pg = (r.json && r.json.data && r.json.data.pagination) || {};
+      if (list.length < cfg.rpp || (pg.total_pages && page >= pg.total_pages)) break;
+      await sleep_(cfg.paceMs);
+    }
+    return { items: out };
+  }
+  /** The distinct custom request types with the fields each one has (for the rule editor). */
+  function catalogOf_(items) {
+    const m = new Map();
+    items.forEach((it) => { const n = nameOf_(it); if (!n) return; const e = m.get(n) || { name: n, fields: new Map(), count: 0 }; e.count++; fieldsOf_(it).forEach((f) => { const k = f.name_en || f.name_ar; if (k && !e.fields.has(k)) e.fields.set(k, f.type || ''); }); m.set(n, e); });
+    return Array.from(m.values()).map((e) => ({ name: e.name, count: e.count, fields: Array.from(e.fields.entries()).map(([name, type]) => ({ name, type })) }));
+  }
+
+  // ======================================================================= planning one request
+  const bad_ = (why) => ({ ok: false, why });
+  /** What a rule would do for one approved request. { ok, steps[], text } | { ok:false, why } | { ok:false, hold:true, why } (above a cap: waits for a person) */
+  function plan_(rule, it) {
+    const a = rule.act || {}; const caps = rule.caps || {};
+    const emp = it.employee || {}; if (emp.id == null) return bad_(T('The request has no employee', 'الطلب بدون موظف'));
+    if (a.kind === 'dayoff' || a.kind === 'shift') {
+      const from = isoOf_(fieldVal_(it, a.fromField)); if (!from) return bad_(T('The date field "', 'حقل التاريخ "') + a.fromField + T('" is empty or not a date', '" فارغ أو ليس تاريخًا'));
+      let to = a.toField ? isoOf_(fieldVal_(it, a.toField)) : from; if (!to) to = from;
+      if (to < from) return bad_(T('The end date is before the start date', 'تاريخ النهاية قبل البداية'));
+      const n = daysBetween_(from, to) + 1; if (n > (Number(caps.maxDays) || 31)) return { ok: false, hold: true, why: n + T(' days is above the cap of ', ' يومًا أكثر من الحد ') + (Number(caps.maxDays) || 31) };
+      if (a.kind === 'shift' && !a.shiftId) return bad_(T('The rule has no shift chosen', 'لم تُحدَّد وردية للقاعدة'));
+      const base = gmGet_('schedDayBase', 0) === 1 ? 1 : 0; const num = (d) => (base === 1 ? (d + 6) % 7 : d);
+      const weeks = new Map();
+      for (let d = from; d <= to; d = addDays_(d, 1)) { const ws = addDays_(d, -dow_(d)); const w = weeks.get(ws) || { first: d, days: [] }; w.days.push(num(dow_(d))); weeks.set(ws, w); }
+      const steps = Array.from(weeks.values()).map((w) => ({ kind: 'sched', date: w.first, days: w.days }));
+      const text = (a.kind === 'dayoff' ? T('Day off ', 'يوم إجازة ') : T('Shift ', 'وردية ') + (a.shiftName || '') + ' ') + from + (to !== from ? ' → ' + to : '');
+      return { ok: true, steps, text, from, to, emp };
+    }
+    if (a.kind === 'payroll') {
+      let amount = a.amountField ? numOf_(fieldVal_(it, a.amountField)) : numOf_(a.fixedAmount);
+      if (amount == null || !(amount > 0)) return bad_(T('No valid amount (', 'لا يوجد مبلغ صالح (') + (a.amountField ? a.amountField + ': "' + fieldVal_(it, a.amountField) + '"' : T('fixed amount empty', 'المبلغ الثابت فارغ')) + ')');
+      if (!a.typeId) return bad_(T('The rule has no payroll transaction type chosen', 'لم يُحدَّد نوع معاملة الرواتب'));
+      let eff = a.effField ? isoOf_(fieldVal_(it, a.effField)) : ''; if (!eff) eff = String(((it.request || {}).approved_at) || '').slice(0, 10); if (!dateOk_(eff)) eff = todayIso_();
+      const cap = Number(caps.maxAmount); if (cap > 0 && amount > cap) return { ok: false, hold: true, why: T('Amount ', 'المبلغ ') + amount + T(' is above the cap of ', ' أكثر من الحد ') + cap };
+      const note = (a.note || (T('Request #', 'طلب رقم ') + (it.request && it.request.sequential_id != null ? it.request.sequential_id : '') + ' · ' + nameOf_(it))).replace(/\{seq\}/g, String(it.request && it.request.sequential_id != null ? it.request.sequential_id : '')).replace(/\{name\}/g, nameOf_(it));
+      const t = { pay_type: a.payType === 'in_payrun' ? 'in_payrun' : 'out_of_payrun', effective_date: eff, amount: amount.toFixed(2), employee_id: emp.id, payroll_transaction_type_id: a.typeId, additional_data: { body: note } };
+      if (t.pay_type === 'out_of_payrun') t.paid_at = eff;
+      return { ok: true, steps: [{ kind: 'txn', body: { payroll_transaction: t }, amount, eff, typeId: a.typeId, category: a.payCategory }], text: (a.payCategory === 'deduction' ? T('Deduction ', 'خصم ') : T('Addition ', 'إضافة ')) + amount.toFixed(2) + ' · ' + (a.typeName || a.typeId) + ' · ' + eff, emp };
+    }
+    return bad_(T('Unknown action', 'إجراء غير معروف'));
+  }
+
+  // ======================================================================= doing it
+  const shiftCache = new Map();
+  async function shiftObj_(id) {
+    if (shiftCache.has(String(id))) return shiftCache.get(String(id));
+    for (let page = 1; page <= 20; page++) {
+      const r = await send_('GET', '/v2/attendance/shifts', { rpp: 100, 'clock_in_rules[]': 'all', 'clock_out_rules[]': 'all', search: '', sort_by: '', shift_type: 'normal', page });
+      if (!r.ok) return null;
+      const l = (r.json && r.json.data && r.json.data.shifts) || [];
+      l.forEach((x) => shiftCache.set(String(x.id), x));
+      if (shiftCache.has(String(id)) || l.length < 100) break;
+    }
+    return shiftCache.get(String(id)) || null;
+  }
+  const msgOf_ = (r) => { const j = r && r.json; const m = j && (j.message || j.error || (j.errors && (Array.isArray(j.errors) ? j.errors.join('; ') : typeof j.errors === 'object' ? Object.values(j.errors).flat().join('; ') : j.errors))); return m ? redact_(m) : ''; };
+  /** Runs the steps of one plan. -> { st: 'done' | 'failed' | 'unknown' | 'mismatch' | 'auth', msg } */
+  async function execute_(rule, it, plan) {
+    const a = rule.act; const emp = plan.emp;
+    for (const s of plan.steps) {
+      let r;
+      if (s.kind === 'sched') {
+        let shifts = [];
+        if (a.kind === 'shift') { const so = await shiftObj_(a.shiftId); if (!so) return { st: 'failed', msg: T('The shift was not found in Jisr', 'لم تُعثر الوردية في جسر') }; shifts = [so]; }
+        const body = { assigned_location_id: 'default', date: s.date, employee_ids: [Number(emp.id)], employee_shifts: shifts, excluded_employee_ids: [], include_exempted_employees: true, is_day_off: a.kind === 'dayoff',
+          notify_employee: a.notify !== false, repeat_options: { is_repeatable: true, days: s.days, unit: 'week', value: 1 }, shift_status: 'published', skip_days_with_shifts: a.replaceShift === false };
+        r = await send_('POST', '/v2/attendance/schedulers', null, body);
+      } else {
+        // never create the same transaction twice: look for it first
+        const ex = await send_('GET', '/v2/finance/payroll_transactions', { 'filters[employee_ids][]': emp.id, rpp: 100, page: 1 });
+        if (ex.ok) {
+          const list = (ex.json && ex.json.data && ex.json.data.payroll_transactions) || [];
+          const dup = list.find((x) => x && x.payroll_transaction_type && String(x.payroll_transaction_type.id) === String(s.typeId) && Math.abs(Math.abs(numOf_(x.amount) || 0) - s.amount) < 0.005 && String(x.effective_date || '').slice(0, 10) === s.eff);
+          if (dup) return { st: 'done', msg: T('Already in Jisr (same type, amount and date): not added again', 'موجودة في جسر (نفس النوع والمبلغ والتاريخ): لم تُضف مرة أخرى'), ref: dup.id };
+        } else if (ex.auth) return { st: 'auth', msg: T('Not signed in to Jisr', 'غير مسجّل الدخول إلى جسر') };
+        r = await send_('POST', '/v2/finance/payroll_transactions', null, s.body);
+        if (r.ok) {
+          const tx = r.json && r.json.data && (r.json.data.payroll_transaction || (r.json.data.id != null && 'amount' in r.json.data ? r.json.data : null));
+          if (tx) {
+            const am = numOf_(tx.amount);
+            const wrongKind = typeof tx.is_addition === 'boolean' && tx.is_addition !== (s.category !== 'deduction');
+            if (wrongKind || (am != null && Math.abs(Math.abs(am) - s.amount) > 0.005)) return { st: 'mismatch', msg: T('Jisr recorded it differently from what was asked (', 'سجّلها جسر بشكل مختلف عمّا طُلب (') + (wrongKind ? (tx.is_addition ? T('as an addition', 'كإضافة') : T('as a deduction', 'كخصم')) : T('amount ', 'المبلغ ') + am) + ')', ref: tx.id };
+          }
+          return { st: 'done', msg: 'sent', ref: tx && tx.id };
+        }
+      }
+      if (r.thrown) return r.auth ? { st: 'auth', msg: T('Not signed in to Jisr', 'غير مسجّل الدخول إلى جسر') } : r.unknown ? { st: 'unknown', msg: T('No answer from Jisr: check in Jisr before doing anything', 'لا رد من جسر: تحقّق في جسر أولًا') } : { st: 'failed', msg: redact_(r.thrown.message) };
+      if (!r.ok) return { st: 'failed', msg: 'HTTP ' + r.status + (msgOf_(r) ? ': ' + msgOf_(r) : '') };
+      await sleep_(cfg.paceMs);
+    }
+    return { st: 'done', msg: 'sent' };
+  }
+
+  // ======================================================================= one pass over the rules
+  const run_ = { busy: false };
+  /** opts: { dry, apply: Set of keys to apply (review rules / held rows), ruleId, pages }. -> { rows, err } rows: { key, rule, it, plan, state, msg } */
+  async function runOnce_(opts) {
+    opts = opts || {};
+    if (run_.busy) return { rows: [], err: T('A check is already running', 'هناك فحص قيد التنفيذ') };
+    run_.busy = true;
+    try {
+      const rules = rulesGet_().filter((r) => r.enabled && (!opts.ruleId || r.id === opts.ruleId));
+      if (!rules.length) return { rows: [] };
+      const got = await loadCustom_(opts.pages || cfg.maxPagesPoll, false);
+      if (got.err && !got.items.length) return { rows: [], err: got.err, auth: got.auth };
+      const ledger = ledgerGet_(); const rows = [];
+      for (const rule of rules) {
+        const since = Date.parse(rule.since) || 0; const want = norm_(rule.reqName);
+        for (const it of got.items) {
+          if (norm_(nameOf_(it)) !== want) continue;
+          const ap = Date.parse((it.request || {}).approved_at || it.received_at || '') || 0; if (ap < since) continue;
+          const key = rule.id + ':' + it.request.id; const led = ledger[key];
+          if (led && (led.st === 'done' || led.st === 'unknown' || led.st === 'mismatch' || led.st === 'skipped' || (led.st === 'failed' && (led.n || 1) >= cfg.giveUpAfter))) continue;
+          const plan = plan_(rule, it);
+          rows.push({ key, rule, it, plan, state: plan.ok ? 'ready' : plan.hold ? 'hold' : 'bad', msg: plan.ok ? plan.text : plan.why });
+        }
+      }
+      if (opts.dry) return { rows };
+      const perRule = new Map(); let stopAll = false;
+      for (const row of rows) {
+        if (stopAll) break;
+        const rule = row.rule; const label = (row.it.employee && row.it.employee.code) || row.it.employee && row.it.employee.id || '';
+        if (row.state === 'bad') { ledgerPut_(row.key, { st: 'skipped', msg: row.msg, rule: rule.name, req: row.it.request.id, seq: row.it.request.sequential_id, emp: label }); row.state = 'skipped'; report_(row, 'skipped', row.msg); continue; }
+        const forced = opts.apply && opts.apply.has(row.key);
+        if (row.state === 'hold' && !forced) continue;
+        if (rule.mode !== 'auto' && !forced) { row.state = 'queued'; continue; }
+        const done = perRule.get(rule.id) || 0; if (!forced && done >= (Number(rule.caps && rule.caps.maxPerRun) || 20)) { row.state = 'later'; continue; }
+        perRule.set(rule.id, done + 1);
+        let plan = row.plan; if (!plan.ok) { const lifted = JSON.parse(JSON.stringify(rule)); lifted.caps = { maxPerRun: 1e9, maxAmount: 0, maxDays: 366 }; plan = plan_(lifted, row.it); if (!plan.ok) { row.state = 'bad'; row.msg = plan.why; continue; } row.plan = plan; }
+        const prev = ledgerGet_()[row.key]; const n = ((prev && prev.n) || 0) + 1;
+        ledgerPut_(row.key, { st: 'sending', n, rule: rule.name, req: row.it.request.id, seq: row.it.request.sequential_id, emp: label, what: plan.text });
+        const res = await execute_(rule, row.it, plan);
+        ledgerPut_(row.key, { st: res.st, n, msg: res.msg, ref: res.ref, rule: rule.name, req: row.it.request.id, seq: row.it.request.sequential_id, emp: label, what: plan.text });
+        row.state = res.st; row.msg = res.msg; report_(row, res.st, res.msg);
+        if (res.st === 'mismatch') { const all = rulesGet_(); const rr = all.find((x) => x.id === rule.id); if (rr) { rr.enabled = false; rr.note = res.msg; rulesSet_(all); } }
+        if (res.st === 'auth') { stopAll = true; gmSet_('autoAuthBlock', Date.now() + 30 * 60 * 1000); }
+        await sleep_(cfg.paceMs);
+      }
+      const summary = { at: Date.now(), done: rows.filter((r) => r.state === 'done').length, failed: rows.filter((r) => ['failed', 'unknown', 'mismatch', 'auth'].includes(r.state)).length, held: rows.filter((r) => r.state === 'hold' || r.state === 'queued').length };
+      gmSet_('autoLast', summary);
+      if (summary.done || summary.failed) { try { jboActToast_(T('Automations: ', 'الأتمتة: ') + summary.done + T(' applied', ' نُفّذ') + (summary.failed ? ', ' + summary.failed + T(' need a look', ' تحتاج مراجعة') : '')); } catch (e) { /* ignore */ } }
+      return { rows };
+    } finally { run_.busy = false; }
+  }
+  function report_(row, st, msg) {
+    try { const stage = st === 'done' ? 'ok' : st === 'skipped' ? 'skipped' : st === 'unknown' ? 'network' : st === 'mismatch' ? 'mismatch' : st === 'auth' ? 'denied' : 'failed'; jboActReport_(MODULE_ID, (row.it.employee && row.it.employee.id) || 'row', stage, (row.rule.name || 'rule') + ' · #' + (row.it.request.sequential_id || row.it.request.id) + ' · ' + redact_(msg)); } catch (e) { /* ignore */ }
+  }
+
+  // ======================================================================= the background check
+  let timer = null; const TAB = newId_();
+  function authOk_() { try { const A = W.__jisrBulkOpsAuth; if (A && A.enabled && A.enabled() && !(A.session && A.session())) return false; } catch (e) { /* ignore */ } return true; }
+  function takeLock_() {
+    const l = gmGet_('autoLock', null); const now = Date.now();
+    if (l && l.until > now && l.id !== TAB) return false;
+    gmSet_('autoLock', { id: TAB, until: now + cfg.lockMs }); const l2 = gmGet_('autoLock', null);
+    return !l2 || l2.id === TAB;
+  }
+  const releaseLock_ = () => { const l = gmGet_('autoLock', null); if (l && l.id === TAB) gmSet_('autoLock', { id: TAB, until: 0 }); };
+  async function poll_() {
+    if (pausedGet_() || !rulesGet_().some((r) => r.enabled)) return;
+    if (!/\.jisr\.net$/.test(location.hostname) || location.hostname === 'jisr.jisr.net') return;
+    if (!authOk_()) return; if (Number(gmGet_('autoAuthBlock', 0)) > Date.now()) return;
+    if (!takeLock_()) return;
+    try { const r = await runOnce_({ pages: cfg.maxPagesPoll }); if (r && r.auth) gmSet_('autoAuthBlock', Date.now() + 30 * 60 * 1000); }
+    finally { releaseLock_(); }
+  }
+  function tick_() { poll_().catch(() => {}).finally(() => { timer = setTimeout(tick_, cfg.pollMs); }); }
+  function start_() { if (timer) return; timer = setTimeout(tick_, cfg.firstPollMs); }
+
+  // ======================================================================= UI
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c != null && c !== false && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-au-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-au-css', text: `
+      .jau-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 0 0 10px; }
+      .jau-state { font-size: 12.5px; padding: 6px 10px; border-radius: 8px; background: #e6f4ea; color: #0d652d; }
+      .jau-state.off { background: #fef7e0; color: #7a4f01; }
+      .jau-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jau-tbl th { text-align: start; padding: 6px 8px; background: #f8f9fa; border-bottom: 1px solid #e8eaed; font-weight: 600; }
+      .jau-tbl td { padding: 6px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jau-sec { margin: 14px 0 6px; font-weight: 700; font-size: 13px; }
+      .jau-form { border: 1px solid #e8eaed; border-radius: 10px; padding: 12px; margin: 10px 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+      .jau-form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #5f6368; }
+      .jau-form label.wide { grid-column: 1 / -1; }
+      .jau-form input, .jau-form select { font: inherit; padding: 6px 8px; border: 1px solid #dadce0; border-radius: 6px; color: #202124; background: #fff; }
+      .jau-form .chk { flex-direction: row; align-items: center; gap: 6px; color: #202124; }
+      .jau-form .chk input { width: auto; }
+      .jau-note { font-size: 12.5px; background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
+      .jau-tag { display: inline-block; border-radius: 10px; padding: 1px 8px; font-size: 11.5px; background: #f1f3f4; }
+      .jau-tag.done { background: #e6f4ea; color: #0d652d; } .jau-tag.bad { background: #fce8e6; color: #a50e0e; } .jau-tag.warn { background: #fef7e0; color: #7a4f01; }
+      .jau-scroll { max-height: 30vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+    ` }));
+  }
+  const ACTS = () => [['dayoff', T('Assign a day off', 'تحديد يوم إجازة')], ['shift', T('Assign a shift', 'إسناد وردية')], ['payroll', T('Add a payroll transaction', 'إضافة معاملة رواتب')]];
+  const tagOf_ = (st) => ['done'].includes(st) ? 'done' : ['failed', 'unknown', 'mismatch', 'auth', 'bad'].includes(st) ? 'bad' : ['hold', 'queued', 'later', 'skipped', 'sending'].includes(st) ? 'warn' : '';
+  const ST_TEXT = () => ({ done: T('Done', 'تم'), failed: T('Failed', 'فشل'), unknown: T('No answer: check in Jisr', 'لا رد: تحقّق في جسر'), mismatch: T('Recorded differently: rule switched off', 'سُجّلت بشكل مختلف: أُوقفت القاعدة'), auth: T('Not signed in', 'غير مسجّل'), skipped: T('Skipped', 'تم التخطي'), hold: T('Waiting for you (above a cap)', 'بانتظارك (فوق الحد)'), queued: T('Waiting for you (review mode)', 'بانتظارك (وضع المراجعة)'), later: T('Next check (per-run cap)', 'الفحص القادم (حد الدفعة)'), ready: T('Would be sent', 'سيُرسل'), bad: T('Cannot be applied', 'لا يمكن التنفيذ'), sending: T('Sending…', 'جارٍ الإرسال…') });
+
+  function openTool_() {
+    injectCss_(); try { jboActOpen_(MODULE_ID); } catch (e) { /* ignore */ }
+    const S = { editing: null, catalog: [], shifts: [], types: { addition: null, deduction: null }, rows: [], busy: '', note: '', noteErr: false, selected: new Set(), auto: {} };
+    const auto = (k, f) => { if (S.auto[k]) return; S.auto[k] = true; f(); };
+    const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title' }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': 'Close' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1100px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => backdrop.remove();
+    closeBtn.addEventListener('click', close); backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+    titleEl.textContent = T('Automations: when a request is approved, do the next step', 'الأتمتة: عند اعتماد طلب، نفّذ الخطوة التالية');
+    const checkB = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('Check now', 'افحص الآن') }); const dryB = el('button', { class: 'jbo-btn', text: T('Preview (changes nothing)', 'معاينة (بدون تغيير)') });
+    const noteEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    foot.appendChild(dryB); foot.appendChild(checkB);
+    const setNote = (t, err) => { S.note = t; S.noteErr = !!err; noteEl.textContent = t; noteEl.style.color = err ? '#a50e0e' : ''; };
+
+    async function loadCatalog() {
+      setNote(T('Reading your custom requests…', 'جارٍ قراءة طلباتك المخصصة…'));
+      const g = await loadCustom_(cfg.maxPagesManual, true);
+      if (g.err && !g.items.length) { setNote(T('Could not read the requests: ', 'تعذّرت قراءة الطلبات: ') + g.err, true); return; }
+      S.catalog = catalogOf_(g.items); setNote(S.catalog.length + T(' custom request type(s) found.', ' نوع طلب مخصص.')); render();
+    }
+    async function loadShifts() {
+      setNote(T('Reading the shifts…', 'جارٍ قراءة الورديات…')); shiftCache.clear();
+      const r = await send_('GET', '/v2/attendance/shifts', { rpp: 100, 'clock_in_rules[]': 'all', 'clock_out_rules[]': 'all', search: '', sort_by: '', shift_type: 'normal', page: 1 });
+      if (!r.ok) { setNote(T('Could not read the shifts', 'تعذّرت قراءة الورديات'), true); return; }
+      S.shifts = ((r.json && r.json.data && r.json.data.shifts) || []).map((x) => ({ id: x.id, name: String(x.name_i18n || x.name || x.id) })); setNote(''); render();
+    }
+    async function loadTypes(cat) {
+      setNote(T('Reading the payroll transaction types…', 'جارٍ قراءة أنواع معاملات الرواتب…'));
+      const r = await send_('GET', '/v2/finance/payroll_transaction_types', { template: 'public', 'filters[category_in][]': cat === 'deduction' ? 'ManualDeductionType' : 'ManualAdditionType', 'filters[configuration_filters][scoping_rules][paygroup_id]': '', per_page: 500 });
+      if (!r.ok) { setNote(T('Could not read the types', 'تعذّرت قراءة الأنواع'), true); return; }
+      S.types[cat] = ((r.json && r.json.data && r.json.data.payroll_transaction_types) || []).map((t) => ({ id: t.id, name: String(t.name_i18n || t.name || '').trim() })); setNote(''); render();
+    }
+    function ruleText(r) {
+      const a = r.act || {};
+      if (a.kind === 'dayoff') return T('Day off on ', 'يوم إجازة في ') + '"' + (a.fromField || '?') + '"' + (a.toField ? ' → "' + a.toField + '"' : '');
+      if (a.kind === 'shift') return T('Shift ', 'وردية ') + (a.shiftName || '?') + ' ' + T('on ', 'في ') + '"' + (a.fromField || '?') + '"' + (a.toField ? ' → "' + a.toField + '"' : '');
+      return (a.payCategory === 'deduction' ? T('Deduction ', 'خصم ') : T('Addition ', 'إضافة ')) + (a.typeName || '?') + ' · ' + (a.amountField ? '"' + a.amountField + '"' : a.fixedAmount || '?');
+    }
+    function renderStatus() {
+      const last = gmGet_('autoLast', null); const paused = pausedGet_(); const on = rulesGet_().filter((r) => r.enabled).length;
+      const st = el('div', { class: 'jau-state' + (paused || !on ? ' off' : ''), text: paused ? T('Paused: nothing is applied', 'متوقف: لا يُنفَّذ شيء') : !on ? T('No rule is switched on', 'لا توجد قاعدة مفعّلة') : T('On: checks every 5 minutes while a Jisr tab is open', 'يعمل: فحص كل 5 دقائق ما دام تبويب جسر مفتوحًا') + (last ? ' · ' + T('last check ', 'آخر فحص ') + new Date(last.at).toLocaleTimeString() : '') });
+      const pb = el('button', { class: 'jbo-btn', text: paused ? T('Resume', 'استئناف') : T('Pause all', 'إيقاف الكل') }); pb.addEventListener('click', () => { gmSet_('autoPaused', !paused); render(); });
+      return el('div', { class: 'jau-bar' }, [st, pb]);
+    }
+    function renderRules() {
+      const rules = rulesGet_(); const led = ledgerGet_(); const wrap = el('div', {});
+      wrap.appendChild(el('div', { class: 'jau-sec', text: T('Rules', 'القواعد') }));
+      if (!rules.length) wrap.appendChild(el('div', { class: 'jbo-muted', text: T('No rules yet. A rule says: when a custom request of one type is approved, do a step for that employee.', 'لا توجد قواعد بعد. القاعدة: عند اعتماد طلب مخصص من نوع معيّن، نفّذ خطوة للموظف.') }));
+      else {
+        const tb = el('table', { class: 'jau-tbl' }, [el('tr', {}, ['', T('Rule', 'القاعدة'), T('When approved', 'عند اعتماد'), T('Then', 'ثم'), T('From', 'من'), T('Mode', 'الوضع'), T('Applied / problems', 'نُفّذ / مشاكل'), ''].map((h) => el('th', { text: h })))]);
+        rules.forEach((r) => {
+          const mine = Object.entries(led).filter(([k]) => k.startsWith(r.id + ':')).map(([, v]) => v); const ok = mine.filter((v) => v.st === 'done').length; const pr = mine.filter((v) => ['failed', 'unknown', 'mismatch', 'skipped'].includes(v.st)).length;
+          const on = el('input', { type: 'checkbox' }); on.checked = !!r.enabled; on.addEventListener('change', () => { const all = rulesGet_(); const x = all.find((y) => y.id === r.id); if (x) { x.enabled = on.checked; if (on.checked) { delete x.note; if (!x.since) x.since = new Date().toISOString(); } rulesSet_(all); } render(); });
+          const ed = el('button', { class: 'jbo-btn', text: T('Edit', 'تعديل') }); ed.addEventListener('click', () => { S.editing = JSON.parse(JSON.stringify(r)); if (!S.catalog.length) loadCatalog(); render(); });
+          const del = el('button', { class: 'jbo-btn', text: T('Delete', 'حذف') }); del.addEventListener('click', () => { if (!confirm(T('Delete this rule? What it already applied stays in Jisr.', 'حذف القاعدة؟ ما نفّذته يبقى في جسر.'))) return; rulesSet_(rulesGet_().filter((y) => y.id !== r.id)); render(); });
+          tb.appendChild(el('tr', {}, [el('td', {}, [on]), el('td', { text: r.name || '—' }, r.note ? [el('div', { class: 'jau-tag bad', text: r.note })] : []), el('td', { text: r.reqName }), el('td', { text: ruleText(r) }), el('td', { text: String(r.since || '').slice(0, 10) }),
+            el('td', { text: r.mode === 'auto' ? T('Automatic', 'تلقائي') : T('Review first', 'مراجعة أولًا') }), el('td', { text: ok + ' / ' + pr }), el('td', {}, [ed, ' ', del])]));
+        });
+        wrap.appendChild(el('div', { class: 'jau-scroll' }, [tb]));
+      }
+      const nb = el('button', { class: 'jbo-btn', text: T('＋ New rule', '＋ قاعدة جديدة'), style: { marginTop: '8px' } }); nb.addEventListener('click', () => { S.editing = newRule_(); if (!S.catalog.length) loadCatalog(); render(); });
+      wrap.appendChild(nb); return wrap;
+    }
+    function sel(opts, val, on) { const s = el('select', {}, opts.map(([v, t]) => el('option', { value: String(v), text: t }))); s.value = String(val == null ? '' : val); if (s.value !== String(val == null ? '' : val)) s.value = ''; s.addEventListener('change', () => on(s.value)); return s; }
+    function renderEditor() {
+      const r = S.editing; const a = r.act; const wrap = el('div', {});
+      wrap.appendChild(el('div', { class: 'jau-sec', text: r.name ? T('Edit rule: ', 'تعديل القاعدة: ') + r.name : T('New rule', 'قاعدة جديدة') }));
+      const cat = S.catalog.find((c) => c.name === r.reqName); const fields = cat ? cat.fields : [];
+      const dateF = [['', T('— choose —', '— اختر —')]].concat(fields.filter((f) => f.type === 'date').map((f) => [f.name, f.name]));
+      const anyF = [['', T('— none —', '— لا شيء —')]].concat(fields.filter((f) => f.type !== 'attachment' && f.type !== 'employees_selector').map((f) => [f.name, f.name + ' (' + f.type + ')']));
+      if (a.kind === 'payroll') auto('t' + a.payCategory, () => loadTypes(a.payCategory)); if (a.kind === 'shift') auto('shifts', loadShifts);
+      const effF = [['', T('— the approval date —', '— تاريخ الاعتماد —')]].concat(fields.filter((f) => f.type === 'date').map((f) => [f.name, f.name]));
+      const L = (txt, node, wide) => el('label', { class: wide ? 'wide' : '' }, [txt, node]);
+      const nameIn = el('input', { type: 'text', value: r.name || '', placeholder: T('e.g. Day-off request to schedule', 'مثال: طلب يوم إجازة إلى الجدول') }); nameIn.addEventListener('input', () => { r.name = nameIn.value; });
+      const lb = el('button', { class: 'jbo-btn', text: T('Load my custom requests', 'حمّل طلباتي المخصصة') }); lb.addEventListener('click', loadCatalog);
+      const typeSel = S.catalog.length ? sel([['', T('— choose —', '— اختر —')]].concat(S.catalog.map((c) => [c.name, c.name + ' (' + c.count + ')'])).concat(r.reqName && !S.catalog.some((c) => c.name === r.reqName) ? [[r.reqName, r.reqName]] : []), r.reqName, (v) => { r.reqName = v; render(); }) : el('input', { type: 'text', value: r.reqName || '', placeholder: T('Exact name of the request type', 'الاسم الدقيق لنوع الطلب') });
+      if (!S.catalog.length) typeSel.addEventListener('input', () => { r.reqName = typeSel.value; });
+      const actSel = sel(ACTS(), a.kind, (v) => { a.kind = v; render(); });
+      const form = el('div', { class: 'jau-form' }, [L(T('Rule name', 'اسم القاعدة'), nameIn, true), L(T('When this request type is approved', 'عند اعتماد هذا النوع من الطلبات'), el('div', { style: { display: 'flex', gap: '8px' } }, [typeSel, lb]), true), L(T('Then', 'ثم'), actSel)]);
+      if (a.kind === 'dayoff' || a.kind === 'shift') {
+        form.appendChild(L(T('Start date comes from the field', 'تاريخ البداية من الحقل'), sel(dateF, a.fromField, (v) => { a.fromField = v; })));
+        form.appendChild(L(T('End date comes from (optional: empty = one day)', 'تاريخ النهاية من (اختياري)'), sel(dateF, a.toField, (v) => { a.toField = v; })));
+        if (a.kind === 'shift') { const sb = el('button', { class: 'jbo-btn', text: T('Load shifts', 'حمّل الورديات') }); sb.addEventListener('click', loadShifts);
+          form.appendChild(L(T('Shift', 'الوردية'), el('div', { style: { display: 'flex', gap: '8px' } }, [S.shifts.length ? sel([['', T('— choose —', '— اختر —')]].concat(S.shifts.map((x) => [x.id, x.name])), a.shiftId, (v) => { a.shiftId = v ? Number(v) : null; const x = S.shifts.find((y) => String(y.id) === v); a.shiftName = x ? x.name : ''; }) : el('span', { class: 'jbo-muted', text: a.shiftName || '' }), sb]))); }
+        { const rs = el('input', { type: 'checkbox' }); rs.checked = a.replaceShift !== false; rs.addEventListener('change', () => { a.replaceShift = rs.checked; }); form.appendChild(el('label', { class: 'chk' }, [rs, T('Replace what is already on that day', 'استبدل ما هو موجود في ذلك اليوم')])); }
+        const nt = el('input', { type: 'checkbox' }); nt.checked = a.notify !== false; nt.addEventListener('change', () => { a.notify = nt.checked; }); form.appendChild(el('label', { class: 'chk' }, [nt, T('Notify the employee', 'أبلغ الموظف')]));
+      } else {
+        form.appendChild(L(T('Kind', 'النوع'), sel([['addition', T('Addition (pay the employee)', 'إضافة (استحقاق)')], ['deduction', T('Deduction', 'خصم')]], a.payCategory, (v) => { a.payCategory = v; a.typeId = null; a.typeName = ''; render(); })));
+        const tl = S.types[a.payCategory]; const tb = el('button', { class: 'jbo-btn', text: T('Load types', 'حمّل الأنواع') }); tb.addEventListener('click', () => loadTypes(a.payCategory));
+        form.appendChild(L(T('Payroll transaction type', 'نوع معاملة الرواتب'), el('div', { style: { display: 'flex', gap: '8px' } }, [tl ? sel([['', T('— choose —', '— اختر —')]].concat(tl.map((x) => [x.id, x.name])), a.typeId, (v) => { a.typeId = v ? Number(v) : null; const x = tl.find((y) => String(y.id) === v); a.typeName = x ? x.name : ''; }) : el('span', { class: 'jbo-muted', text: a.typeName || '' }), tb])));
+        form.appendChild(L(T('Amount comes from the field', 'المبلغ من الحقل'), sel(anyF, a.amountField, (v) => { a.amountField = v; })));
+        const fx = el('input', { type: 'number', min: '0', step: '0.01', value: a.fixedAmount || '' }); fx.addEventListener('input', () => { a.fixedAmount = fx.value; });
+        form.appendChild(L(T('…or a fixed amount (used when no field is chosen)', '…أو مبلغ ثابت'), fx));
+        form.appendChild(L(T('Effective date comes from (empty = the approval date)', 'تاريخ السريان من (فارغ = تاريخ الاعتماد)'), sel(effF, a.effField, (v) => { a.effField = v; })));
+        form.appendChild(L(T('Paid', 'الدفع'), sel([['out_of_payrun', T('Out of payroll', 'خارج مسير الرواتب')], ['in_payrun', T('In payroll (not yet confirmed against Jisr: the first one is checked)', 'ضمن المسير (لم يؤكَّد بعد)')]], a.payType, (v) => { a.payType = v; })));
+        const nin = el('input', { type: 'text', value: a.note || '', placeholder: T('Note on the transaction (empty = request number and name)', 'ملاحظة (فارغ = رقم الطلب واسمه)') }); nin.addEventListener('input', () => { a.note = nin.value; }); form.appendChild(L(T('Note', 'ملاحظة'), nin, true));
+      }
+      const since = el('input', { type: 'date', value: String(r.since || '').slice(0, 10) }); since.addEventListener('change', () => { if (since.value) r.since = new Date(since.value + 'T00:00:00').toISOString(); });
+      form.appendChild(L(T('Only requests approved on or after', 'فقط الطلبات المعتمدة في أو بعد'), since));
+      form.appendChild(L(T('Mode', 'الوضع'), sel([['auto', T('Automatic: apply as soon as it is approved', 'تلقائي: نفّذ فور الاعتماد')], ['review', T('Review first: wait for my click', 'مراجعة أولًا: انتظر ضغطتي')]], r.mode, (v) => { r.mode = v; })));
+      const mp = el('input', { type: 'number', min: '1', value: r.caps.maxPerRun }); mp.addEventListener('input', () => { r.caps.maxPerRun = Number(mp.value) || 20; });
+      form.appendChild(L(T('At most this many per check', 'الحد الأقصى لكل فحص'), mp));
+      if (a.kind === 'payroll') { const ma = el('input', { type: 'number', min: '0', value: r.caps.maxAmount }); ma.addEventListener('input', () => { r.caps.maxAmount = Number(ma.value) || 0; }); form.appendChild(L(T('Hold anything above this amount for me (0 = no limit)', 'احتفظ بما فوق هذا المبلغ لمراجعتي'), ma)); }
+      else { const md = el('input', { type: 'number', min: '1', value: r.caps.maxDays }); md.addEventListener('input', () => { r.caps.maxDays = Number(md.value) || 31; }); form.appendChild(L(T('Hold a request longer than this many days for me', 'احتفظ بالطلب الأطول من هذا العدد من الأيام'), md)); }
+      wrap.appendChild(form);
+      const save = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('Save rule', 'حفظ القاعدة') }); const cancel = el('button', { class: 'jbo-btn', text: T('Cancel', 'إلغاء') });
+      cancel.addEventListener('click', () => { S.editing = null; render(); });
+      save.addEventListener('click', () => {
+        const prob = !r.name.trim() ? T('Give the rule a name.', 'أعطِ القاعدة اسمًا.') : !r.reqName ? T('Choose the request type.', 'اختر نوع الطلب.')
+          : (a.kind !== 'payroll' && !a.fromField) ? T('Choose the field that holds the date.', 'اختر حقل التاريخ.') : (a.kind === 'shift' && !a.shiftId) ? T('Choose the shift.', 'اختر الوردية.')
+            : (a.kind === 'payroll' && !a.typeId) ? T('Choose the payroll transaction type.', 'اختر نوع المعاملة.') : (a.kind === 'payroll' && !a.amountField && !(numOf_(a.fixedAmount) > 0)) ? T('Choose the amount field or type a fixed amount.', 'اختر حقل المبلغ أو اكتب مبلغًا ثابتًا.') : '';
+        if (prob) { setNote(prob, true); return; }
+        const all = rulesGet_(); const i = all.findIndex((x) => x.id === r.id); if (i >= 0) all[i] = r; else all.push(r); rulesSet_(all); S.editing = null;
+        setNote(T('Saved. It will act only on requests approved on or after ', 'حُفظت. ستعمل فقط على الطلبات المعتمدة في أو بعد ') + String(r.since).slice(0, 10) + '.'); start_(); render();
+      });
+      wrap.appendChild(el('div', { class: 'jau-bar' }, [save, cancel])); return wrap;
+    }
+    function renderRows() {
+      const wrap = el('div', {}); if (!S.rows.length) return wrap;
+      wrap.appendChild(el('div', { class: 'jau-sec', text: T('Requests found', 'الطلبات التي وُجدت') }));
+      const tb = el('table', { class: 'jau-tbl' }, [el('tr', {}, ['', T('Rule', 'القاعدة'), T('Request', 'الطلب'), T('Employee', 'الموظف'), T('What', 'ماذا'), T('Result', 'النتيجة')].map((h) => el('th', { text: h })))]);
+      S.rows.forEach((x) => {
+        const can = ['hold', 'queued', 'later', 'ready'].includes(x.state); const cb = el('input', { type: 'checkbox' }); cb.checked = S.selected.has(x.key); cb.disabled = !can; cb.addEventListener('change', () => { if (cb.checked) S.selected.add(x.key); else S.selected.delete(x.key); applyB.disabled = !S.selected.size; });
+        tb.appendChild(el('tr', {}, [el('td', {}, [cb]), el('td', { text: x.rule.name }), el('td', { text: '#' + (x.it.request.sequential_id || x.it.request.id) }), el('td', { text: String((x.it.employee && (x.it.employee.code || x.it.employee.id)) || '') }), el('td', { text: x.plan && x.plan.text ? x.plan.text : '' }),
+          el('td', {}, [el('span', { class: 'jau-tag ' + tagOf_(x.state), text: ST_TEXT()[x.state] || x.state }), x.msg && x.state !== 'ready' ? el('div', { class: 'jbo-muted', text: x.msg }) : null])]));
+      });
+      const applyB = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('Apply the ticked ones now', 'نفّذ المحدد الآن'), style: { marginTop: '8px' } }); applyB.disabled = !S.selected.size;
+      applyB.addEventListener('click', async () => { if (!confirm(T('Apply ', 'تنفيذ ') + S.selected.size + T(' item(s) in Jisr now?', ' عنصر في جسر الآن؟'))) return; await go({ apply: new Set(S.selected) }); S.selected.clear(); });
+      wrap.appendChild(el('div', { class: 'jau-scroll' }, [tb])); wrap.appendChild(applyB); return wrap;
+    }
+    function renderLog() {
+      const led = ledgerGet_(); const items = Object.entries(led).sort((a, b) => (b[1].at || 0) - (a[1].at || 0)).slice(0, 40); const wrap = el('div', {});
+      wrap.appendChild(el('div', { class: 'jau-sec', text: T('What it did (last 40)', 'ما نفّذته (آخر 40)') }));
+      if (!items.length) { wrap.appendChild(el('div', { class: 'jbo-muted', text: T('Nothing yet.', 'لا شيء بعد.') })); return wrap; }
+      const tb = el('table', { class: 'jau-tbl' }, [el('tr', {}, [T('Time', 'الوقت'), T('Rule', 'القاعدة'), T('Request', 'الطلب'), T('Employee', 'الموظف'), T('What', 'ماذا'), T('Result', 'النتيجة')].map((h) => el('th', { text: h })))]);
+      items.forEach(([, v]) => tb.appendChild(el('tr', {}, [el('td', { text: new Date(v.at).toLocaleString() }), el('td', { text: v.rule || '' }), el('td', { text: '#' + (v.seq || v.req || '') }), el('td', { text: String(v.emp || '') }), el('td', { text: v.what || '' }),
+        el('td', {}, [el('span', { class: 'jau-tag ' + tagOf_(v.st), text: ST_TEXT()[v.st] || v.st }), v.msg && v.msg !== 'sent' ? el('div', { class: 'jbo-muted', text: v.msg }) : null])])));
+      wrap.appendChild(el('div', { class: 'jau-scroll' }, [tb])); return wrap;
+    }
+    function render() {
+      body.textContent = '';
+      body.appendChild(el('div', { class: 'jau-note', text: T('Works while a Jisr tab is open and signed in. A rule acts only on requests approved after its start date, applies each request once, and stops itself if Jisr records something differently from what was asked. Try a rule in "Review first" mode, or with Preview, before leaving it automatic.', 'يعمل ما دام تبويب جسر مفتوحًا ومسجّلًا. القاعدة تعمل فقط على الطلبات المعتمدة بعد تاريخ بدايتها وتنفّذ كل طلب مرة واحدة وتتوقف إن سجّل جسر شيئًا مختلفًا عمّا طُلب. جرّب القاعدة بوضع المراجعة أو المعاينة قبل جعلها تلقائية.') }));
+      body.appendChild(renderStatus()); body.appendChild(S.editing ? renderEditor() : renderRules()); body.appendChild(noteEl); body.appendChild(renderRows()); body.appendChild(renderLog());
+    }
+    async function go(o) {
+      if (S.busy) return; S.busy = 'run'; checkB.disabled = dryB.disabled = true; setNote(o.dry ? T('Reading the approved requests…', 'جارٍ قراءة الطلبات المعتمدة…') : T('Checking and applying…', 'جارٍ الفحص والتنفيذ…'));
+      try { const r = await runOnce_(Object.assign({ pages: cfg.maxPagesManual }, o)); S.rows = r.rows || [];
+        if (r.err) setNote(r.err, true); else setNote(!(r.rows || []).length ? T('Nothing waiting: no approved request is new for any rule that is on.', 'لا شيء بانتظار التنفيذ.') : o.dry ? (r.rows.length + T(' request(s) would be handled. Nothing was sent.', ' طلب سيُعالج. لم يُرسل شيء.')) : T('Done. See the results below.', 'تم. انظر النتائج أدناه.')); }
+      catch (e) { setNote(redact_(e.message), true); } finally { S.busy = ''; checkB.disabled = dryB.disabled = false; render(); }
+    }
+    checkB.addEventListener('click', () => go({})); dryB.addEventListener('click', () => go({ dry: true }));
+    render();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Automations', open: openTool_, version: SECTION_VERSION };
+    W.__jisrAutomations = { plan_, runOnce_, execute_, loadCustom_, catalogOf_, fieldVal_, isoOf_, numOf_, rulesGet_, rulesSet_, ledgerGet_, newRule_, poll_, cfg };
+    if (g._rerender) g._rerender();
+    start_();
+  }
+  register_();
+})();
+
 
 // ###########################################################################
 // ##### SECTION 45 — Data Cleanser (client employee sheet: fix what is safe, list what is not)  v4.91.0
@@ -51443,7 +52833,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
-  function slug_() { try { const o = GM_getValue(GM_PREFIX + 'slugOverride', ''); if (o) return o; } catch (e) { /* ignore */ } const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   const API = () => W.__jisrSalaryApi || {};
   const DC = () => W.__jisrDataCleanser || {};
   const redact_ = (s) => String(s == null ? '' : s).replace(/https?:\/\/\S+/gi, '(link removed)').replace(/Bearer\s+\S+/gi, '').replace(/\s+/g, ' ').slice(0, 240);
@@ -51868,7 +53258,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -52391,11 +53781,19 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
  *     every other allowance ↔ GOSI "Other allowances", and the totals.
  * Nothing is sent anywhere; the files are read in this browser only. Export = Excel with Summary, Employees,
  * Salary and Log sheets.
+ *
+ * v4.99.0: the Arabic initial data template is read; a file that matches no template is accepted through a small mapping card
+ * (what the file is + which column holds what; guessed from headers and cells).
+ *
+ * v4.98.0: second tab "Clean Muqeem files" (see buildMuqeem_): English file keeps English only, Arabic file Arabic only,
+ * Name / Occupation lose "-", "&" and other symbols, gaps are filled by Iqama number from the other files.
+ * Every sheet of a workbook is now read (a merged EN + AR workbook gives both), and a Muqeem/Absher "full" sheet
+ * (name parts + translated name parts) is recognised and used like a Muqeem file.
  * ===========================================================================
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.19.0';
+  const SECTION_VERSION = '4.20.0';
   const MODULE_ID = 'data-validation';
   const W = unsafeWindow;
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
@@ -52474,18 +53872,18 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   }
 
   // ---- recognising the files
-  const KIND = { initial: 'initial', muqeem: 'muqeem', gosi: 'gosi' };
+  const KIND = { initial: 'initial', muqeem: 'muqeem', gosi: 'gosi', full: 'full' };
   const FIELD_RES = {
     initial: {
-      id: /^(id iqama border no|id iqama|iqama|national id|id number|رقم الهويه|رقم الاقامه|الهويه الاقامه)\b/,
-      emp: /^(emp id|employee id|employee code|emp code|الرقم الوظيفي)\b/,
-      nameEn: /^(full name en|name en|english name|full name english|الاسم بالانجليزي)/,
-      nameAr: /^(full name ar|name ar|arabic name|full name arabic|الاسم بالعربي)/,
+      id: /^(id iqama border no|id iqama|iqama|national id|id number|رقم الهويه|رقم الاقامه|الهويه الاقامه|الهويه)(?![a-z0-9ء-ي])/,
+      emp: /^(emp id|employee id|employee code|emp code|الرقم الوظيفي|هويه الموظف|رقم الموظف)(?![a-z0-9ء-ي])/,
+      nameEn: /^(full name en|name en|english name|full name english|الاسم بالانجليزي|الاسم الكامل en|الاسم الكامل بالانجليزي)/,
+      nameAr: /^(full name ar|name ar|arabic name|full name arabic|الاسم بالعربي|الاسم الكامل عربي|الاسم الكامل بالعربي)/,
       nat: /^(nationality|الجنسيه)/, dob: /^(date of birth|birth date|تاريخ الميلاد)/, gender: /^(gender|الجنس)/,
-      passport: /^(passport number|passport no|رقم الجواز)/, joining: /^(joining date|تاريخ الالتحاق|تاريخ المباشره)/,
-      basic: /^(basic salary|basic|الراتب الاساسي)/, housing: /^(housing|السكن|بدل السكن)/, transport: /^(transportation|transport|بدل النقل|النقل)/,
-      commission: /^(commission|العمولات|عموله)/, education: /^(educational|education|بدل التعليم)/, food: /^(food|بدل الطعام)/,
-      mobile: /^(mobile allowance|بدل الجوال)/, col: /^(cost of living|بدل غلاء)/, remote: /^(remote work|بدل العمل عن بعد)/, other: /^(other allowances|other allowance|بدلات اخري)/,
+      passport: /^(passport number|passport no|رقم الجواز|رقم جواز السفر)/, joining: /^(joining date|تاريخ الالتحاق|تاريخ المباشره|تاريخ الانضمام)/,
+      basic: /^(basic salary|basic|الراتب الاساسي)/, housing: /^(housing|السكن|بدل السكن|بدل سكن)/, transport: /^(transportation|transport|بدل النقل|النقل|بدل مواصلات|بدل المواصلات)/,
+      commission: /^(commission|العمولات|عموله)/, education: /^(educational|education|بدل التعليم|بدل تعليم)/, food: /^(food|بدل الطعام|بدل طعام)/,
+      mobile: /^(mobile allowance|بدل الجوال|بدل هاتف|بدل الهاتف)/, col: /^(cost of living|بدل غلاء)/, remote: /^(remote work|بدل العمل عن بعد)/, other: /^(other allowances|other allowance|بدلات اخري)/,
     },
     muqeem: {
       id: /^(iqama number|iqama no|رقم الاقامه)$/, name: /^(name|الاسم)$/, nat: /^(nationality|الجنسيه)$/, dob: /^(birth date|date of birth|تاريخ الميلاد)$/,
@@ -52498,14 +53896,26 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       other: /^(البدلات الاخري|other allowances)$/, total: /^(اجمالي الاجر|total wage|total salary|total)$/, contrib: /^(الاجر الخاضع للاشتراك|contributory wage|wage subject to contribution)$/,
       joining: /^(تاريخ الالتحاق|joining date)$/,
     },
+    // Muqeem / Absher detailed export: one row per resident, name in parts (original + translated), most fields in both languages
+    full: {
+      id: /^(رقم الهويه|رقم الاقامه|id number|iqama number)$/,
+      first: /^(الاسم الاول|first name)$/, father: /^(اسم الاب|father name)$/, grand: /^(اسم الجد|grandfather name)$/, family: /^(اسم العائله|family name|last name)$/,
+      firstT: /^(الاسم الاول مترجم|first name translated)$/, fatherT: /^(اسم الاب مترجم|father name translated)$/, grandT: /^(اسم الجد مترجم|grandfather name translated)$/, familyT: /^(اسم العائله مترجم|family name translated|last name translated)$/,
+      natAr: /^(الجنسيه بالعربيه|nationality arabic|nationality ar)$/, natEn: /^(الجنسيه بالانجليزيه|nationality english|nationality en)$/,
+      occAr: /^(المهنه بالعربيه|occupation arabic|occupation ar)$/, occEn: /^(المهنه بالانجليزيه|occupation english|occupation en)$/,
+      genAr: /^(الجنس بالعربيه|gender arabic|gender ar)$/, genEn: /^(الجنس بالانجليزيه|gender english|gender en)$/,
+      iqamaExpiry: /^(تاريخ انتهاء الهويه|تاريخ انتهاء الاقامه|id expiry date|iqama expiry date)$/, iqamaIssue: /^(تاريخ اصدار الهويه|تاريخ اصدار الاقامه|id issue date|iqama issue date)$/,
+      dob: /^(تاريخ الميلاد|birth date|date of birth)$/, passport: /^(رقم الجواز|passport number)$/,
+    },
   };
   function scoreRow_(row) {
     const h = row.map(normH_).filter(Boolean);
     const has = (re) => h.some((x) => re.test(x));
     return {
-      initial: (has(/^emp id\b|^employee id$/) ? 2 : 0) + (has(/^full name en|^full name ar/) ? 2 : 0) + (has(/^id iqama/) ? 2 : 0) + (has(/employement type|employment type|joining date/) ? 1 : 0),
+      initial: (has(/^emp id\b|^employee id$|^هويه الموظف$/) ? 2 : 0) + (has(/^full name en|^full name ar|^الاسم الكامل (en|عربي)/) ? 2 : 0) + (has(/^id iqama|^الهويه الاقامه/) ? 2 : 0) + (has(/employement type|employment type|joining date|^نوع التوظيف$|^تاريخ الانضمام$/) ? 1 : 0),
       muqeem: (has(/^iqama number$|^رقم الاقامه$/) ? 3 : 0) + (has(/^employer number$|^رقم صاحب العمل$/) ? 2 : 0) + (has(/^outside the kingdom$|^خارج المملكه$/) ? 1 : 0) + (has(/^passport number$|^رقم الجواز$/) ? 1 : 0),
       gosi: (has(/^اسم المشترك$|^contributor name$/) ? 3 : 0) + (has(/^الاجر الخاضع للاشتراك$|contributory wage/) ? 2 : 0) + (has(/^اجمالي الاجر$|^total wage$/) ? 1 : 0) + (has(/^رقم الهويه$/) ? 1 : 0),
+      full: (has(/^الاسم الاول مترجم$|^first name translated$/) ? 3 : 0) + (has(/^اسم العائله$|^family name$/) ? 1 : 0) + (has(/^المهنه بالانجليزيه$|^occupation english$/) ? 1 : 0) + (has(/^رقم الهويه$|^id number$/) ? 1 : 0),
     };
   }
   /** aoa of one sheet -> { kind, headerRow, cols, rows } or null. */
@@ -52540,9 +53950,93 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       seen.add(id);
       const rec = { id, row: det.headerRow + i + 2 };
       Object.keys(c).forEach((f) => { if (f !== 'id') rec[f] = g(r, f); });
+      if (det.kind === 'full') {
+        const nm = (ks) => ks.map((k) => String(rec[k] == null ? '' : rec[k]).trim()).filter((x) => x && x !== '-').join(' ');
+        rec.name = nm(['first', 'father', 'grand', 'family']);
+        rec.nat = rec.natAr || rec.natEn || '';
+        rec.occupation = rec.occEn || rec.occAr || '';
+      }
       out.push(rec);
     });
     return { recs: out, dupes };
+  }
+
+  // ---- v4.99.0: a file that matches no known template can still be used: the specialist says what it is and which column holds what
+  const MAP_FIELDS = {
+    initial: ['id', 'emp', 'nameEn', 'nameAr', 'nat', 'dob', 'gender', 'passport', 'joining', 'basic', 'housing', 'transport', 'commission', 'education', 'food', 'mobile', 'col', 'remote', 'other'],
+    muqeem: ['id', 'name', 'nat', 'dob', 'passport', 'iqamaExpiry', 'occupation', 'outside'],
+    gosi: ['id', 'name', 'nat', 'dob', 'basic', 'housing', 'commission', 'other', 'total', 'contrib', 'joining'],
+  };
+  const MAP_LABEL = {
+    id: ['ID / Iqama number', 'الهوية / الإقامة'], emp: ['Emp ID', 'الرقم الوظيفي'], nameEn: ['Name (English)', 'الاسم (إنجليزي)'], nameAr: ['Name (Arabic)', 'الاسم (عربي)'], name: ['Name', 'الاسم'],
+    nat: ['Nationality', 'الجنسية'], dob: ['Birth date', 'تاريخ الميلاد'], gender: ['Gender', 'الجنس'], passport: ['Passport number', 'رقم الجواز'], joining: ['Joining date', 'تاريخ الالتحاق'],
+    basic: ['Basic salary', 'الراتب الأساسي'], housing: ['Housing', 'السكن'], transport: ['Transportation', 'النقل'], commission: ['Commission', 'العمولات'], education: ['Education', 'التعليم'],
+    food: ['Food', 'الطعام'], mobile: ['Mobile allowance', 'بدل الجوال'], col: ['Cost of living', 'غلاء المعيشة'], remote: ['Remote work', 'العمل عن بعد'], other: ['Other allowances', 'بدلات أخرى'],
+    total: ['Total wage', 'إجمالي الأجر'], contrib: ['Contributory wage', 'الأجر الخاضع للاشتراك'], iqamaExpiry: ['Iqama expiry date', 'تاريخ انتهاء الإقامة'], occupation: ['Occupation', 'المهنة'], outside: ['Outside the Kingdom', 'خارج المملكة'],
+  };
+  const NOT_A_DATE = (h) => !/date|تاريخ|expir|انتهاء|issue|اصدار|hijri|هجري/.test(h);
+  // loose header tests (on the normalised header): any language, any word order
+  const LOOSE = {
+    emp: (h) => /emp(loyee)? ?(id|code|no|number)|staff (id|no)|الرقم الوظيفي|هويه الموظف|رقم الموظف/.test(h),
+    id: (h) => NOT_A_DATE(h) && /iqama|national id|id (number|no)|identity|border|^id$|الاقامه|الهويه|^هويه/.test(h),
+    nameEn: (h) => /(name|اسم).*(\ben\b|english|انجليز)|(\ben\b|english|انجليز).*(name|اسم)/.test(h),
+    nameAr: (h) => /(name|اسم).*(\bar\b|arabic|عربي)|(\bar\b|arabic|عربي).*(name|اسم)/.test(h),
+    name: (h) => (/name|اسم|^(worker|employee|staff|person|resident|عامل|موظف)$/.test(h)) && !/father|grand|family|اب$|الاب|الجد|العايله|العائله|company|employer|صاحب/.test(h),
+    nat: (h) => /nationalit|country|جنسيه/.test(h), dob: (h) => /birth|dob|ميلاد/.test(h), gender: (h) => /gender|^sex$|الجنس/.test(h),
+    passport: (h) => NOT_A_DATE(h) && /passport|جواز/.test(h), joining: (h) => /join|hire|start date|انضمام|التحاق|مباشره/.test(h),
+    basic: (h) => /basic|اساسي/.test(h), housing: (h) => /housing|سكن/.test(h), transport: (h) => /transport|نقل|مواصلات/.test(h), commission: (h) => /commission|عمول/.test(h),
+    education: (h) => /educat|تعليم/.test(h), food: (h) => /food|طعام/.test(h), mobile: (h) => /(mobile|phone).*allow|allow.*(mobile|phone)|بدل (ال)?(جوال|هاتف)/.test(h),
+    col: (h) => /cost of living|غلاء/.test(h), remote: (h) => /remote|عن بعد/.test(h), other: (h) => /other allow|بدلات اخري|اخري/.test(h),
+    total: (h) => /total|اجمالي/.test(h), contrib: (h) => /contribut|خاضع|اشتراك/.test(h),
+    iqamaExpiry: (h) => /(iqama|residen|id|اقامه|هويه).*(expir|انتهاء)|(expir|انتهاء).*(iqama|residen|اقامه|هويه)/.test(h) && !/hijri|هجري/.test(h),
+    occupation: (h) => /occupation|profession|\bjob\b|مهنه|المسمي الوظيفي/.test(h), outside: (h) => /outside|خارج/.test(h),
+  };
+  /** Header row of a sheet nobody has a template for: the first of the top rows with the most text cells. */
+  function guessHeaderRow_(aoa) {
+    let best = 0, bestN = 0;
+    for (let r = 0; r < Math.min(aoa.length, 15); r++) {
+      const n = (aoa[r] || []).filter((v) => typeof v === 'string' && v.trim() && !/^[\d\s.,\-\/:]+$/.test(v.trim())).length;
+      if (n > bestN) { best = r; bestN = n; }
+    }
+    return best;
+  }
+  /** Share of the filled cells of a column that look like a Saudi ID / Iqama number (10 digits, starting 1 or 2). */
+  function idShare_(aoa, headerRow, c) {
+    let n = 0, hit = 0;
+    for (let r = headerRow + 1; r < aoa.length && n < 300; r++) {
+      const v = (aoa[r] || [])[c];
+      if (v === '' || v == null) continue;
+      n++;
+      if (/^[12]\d{9}$/.test(idKey_(v))) hit++;
+    }
+    return n ? hit / n : 0;
+  }
+  function guessKind_(aoa, headerRow) {
+    const h = (aoa[headerRow] || []).map(normH_).filter(Boolean);
+    const any = (re) => h.some((x) => re.test(x));
+    if (any(/contribut|مشترك|اشتراك|اجمالي الاجر|total wage/)) return KIND.gosi;
+    if (any(/emp(loyee)? ?(id|code|no|number)|الرقم الوظيفي|هويه الموظف|basic|اساسي|housing|سكن/)) return KIND.initial;
+    return KIND.muqeem;
+  }
+  /** { field: column index } for the chosen kind: headers first, then the cells (the ID column is recognised by its content). */
+  function guessCols_(aoa, headerRow, kind) {
+    const hdr = (aoa[headerRow] || []).map(normH_);
+    const cols = {}, used = new Set();
+    const order = kind === KIND.initial ? ['emp'].concat(MAP_FIELDS.initial.filter((f) => f !== 'emp')) : MAP_FIELDS[kind];
+    order.forEach((f) => {
+      const i = hdr.findIndex((x, k) => x && !used.has(k) && LOOSE[f](x));
+      if (i >= 0) { cols[f] = i; used.add(i); }
+    });
+    const width = Math.max(hdr.length, ...aoa.slice(headerRow + 1, headerRow + 60).map((r) => (r || []).length));
+    let bestC = -1, bestS = 0;
+    for (let c = 0; c < width; c++) { const sh = idShare_(aoa, headerRow, c); if (sh > bestS) { bestS = sh; bestC = c; } }
+    const cur = cols.id !== undefined ? idShare_(aoa, headerRow, cols.id) : 0;
+    if (bestC >= 0 && bestS >= 0.5 && cur < 0.5 && !(kind === KIND.initial && cols.emp === bestC)) {
+      if (cols.id !== undefined) used.delete(cols.id);
+      Object.keys(cols).forEach((f) => { if (cols[f] === bestC) delete cols[f]; });
+      cols.id = bestC; used.add(bestC);
+    }
+    return cols;
   }
 
   const SAL_INIT = ['basic', 'housing', 'transport', 'commission', 'education', 'food', 'mobile', 'col', 'remote', 'other'];
@@ -52723,6 +54217,348 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     return (sal.state === 'split' ? t('Total matches; split differs: ', 'الإجمالي مطابق؛ التوزيع مختلف: ') : t('Total differs by ', 'الإجمالي مختلف بـ ') + (sal.lines[4].diff > 0 ? '+' : '') + sal.lines[4].diff + ' · ') + bad.join(', ');
   }
 
+  // ======================================================================= Muqeem clean-up (v4.98.0)
+  /*
+   * Builds clean Muqeem files from whatever the client sent (English file, Arabic file, both sheets in one
+   * workbook, one sheet holding both languages, or an empty template + a Muqeem/Absher "full" sheet):
+   *   - the English file keeps English text only, the Arabic file Arabic text only (wrong-language text is removed);
+   *   - Name and Occupation keep letters and spaces only: "-", "&", dots and every other symbol go (names also lose digits);
+   *   - a gap is filled by Iqama number from, in order: the other language's Muqeem file, a full sheet, the initial
+   *     data sheet, GOSI (names only), then another employee who has the same value in both languages
+   *     (gender, nationality, occupation). Hijri Iqama expiry is calculated (Umm al-Qura) when it is empty;
+   *   - the client's own header row (and title rows above it) is kept; only the data under it changes.
+   * Every change is logged. Read-only: nothing is sent to Jisr.
+   */
+  const MQ_FIELDS = ['id', 'name', 'gender', 'nat', 'occupation', 'passport', 'passportExpiry', 'iqamaIssue', 'iqamaExpiry', 'dob', 'outside', 'hijriExpiry', 'employer'];
+  const MQ_HDR = {
+    en: ['Iqama Number', 'Name', 'Gender', 'Nationality', 'Occupation', 'Passport Number', 'Passport Expiry Date', 'Iqama Issue Date', 'Iqama Expiry Date', 'Birth Date', 'Outside The Kingdom', 'Hijri Iqama Expiry Date', 'Employer Number'],
+    ar: ['رقم الاقامة', 'الاسم', 'الجنس', 'الجنسية', 'المهنة', 'رقم الجواز', 'تاريخ انتهاء الجواز', 'تاريخ اصدار الاقامة', 'تاريخ انتهاء الاقامة', 'تاريخ الميلاد', 'خارج المملكه', 'تاريخ انتهاء الاقامة بالهجري', 'رقم صاحب العمل'],
+  };
+  const MQ_SHEET = { en: 'Residents Report', ar: 'المقيمين النشطين' };
+  const MQ_RES = {
+    en: { id: /^iqama (number|no)$/, name: /^(name|full name|resident name)$/, gender: /^(gender|sex)$/, nat: /^nationality$/, occupation: /^(occupation|profession)$/,
+      passport: /^passport (number|no)$/, passportExpiry: /^passport expiry( date)?$/, iqamaIssue: /^iqama issue( date)?$/, iqamaExpiry: /^iqama expiry( date)?$/,
+      dob: /^(birth date|date of birth)$/, outside: /^outside (the )?kingdom$/, hijriExpiry: /^(hijri iqama expiry( date)?|iqama expiry date hijri)$/, employer: /^employer (number|no)$/ },
+    ar: { id: /^رقم الاقامه$/, name: /^الاسم$/, gender: /^الجنس$/, nat: /^الجنسيه$/, occupation: /^المهنه$/, passport: /^رقم الجواز$/, passportExpiry: /^تاريخ انتهاء الجواز$/,
+      iqamaIssue: /^تاريخ اصدار الاقامه$/, iqamaExpiry: /^تاريخ انتهاء الاقامه$/, dob: /^تاريخ الميلاد$/, outside: /^خارج المملكه$/, hijriExpiry: /^تاريخ انتهاء الاقامه (بالهجري|هجري)$/, employer: /^رقم صاحب العمل$/ },
+  };
+  const MQ_TEXT = { name: 'name', occupation: 'occ', gender: '', nat: '', outside: '' }; // text fields -> symbol rule
+  const MQ_REQUIRED = ['name', 'gender', 'nat', 'occupation', 'iqamaExpiry'];
+  const MQ_DATES = ['passportExpiry', 'iqamaIssue', 'iqamaExpiry', 'dob'];
+  const MQ_BUILTIN = { gender: [['male', 'ذكر'], ['female', 'أنثى']], outside: [['no', 'لا'], ['yes', 'نعم']] };
+
+  /** Column of each Muqeem field, per language, in one header row. */
+  function mqCols_(hdrRow) {
+    const hn = (hdrRow || []).map(normH_);
+    const out = { en: {}, ar: {} };
+    ['en', 'ar'].forEach((L) => Object.keys(MQ_RES[L]).forEach((f) => { const i = hn.findIndex((x) => x && MQ_RES[L][f].test(x)); if (i >= 0) out[L][f] = i; }));
+    return out;
+  }
+  const mqWrongScript_ = (s, L) => (L === 'en' ? /[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/ : /[A-Za-zÀ-ɏ]/).test(s);
+  const mqHasLetters_ = (s, L) => (L === 'en' ? /[A-Za-z]/ : /[ء-غف-يٱ-ۓ]/).test(s);
+  /** Keep only the language's script; for names / occupations also drop every symbol. */
+  function mqClean_(v, L, rule) {
+    let s = toLatinDigits_(v == null ? '' : v);
+    if (L === 'en') {
+      s = s.normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]+/g, ' ');
+    } else {
+      s = s.replace(/[A-Za-zÀ-ɏ]+/g, ' ').replace(/[ً-ٰٟـ]/g, '');
+    }
+    if (rule) {
+      s = s.replace(/['’‘`ʼ]/g, ''); // O'BRIEN -> OBRIEN
+      const keep = L === 'en' ? (rule === 'occ' ? /[^A-Za-z0-9\s]+/g : /[^A-Za-z\s]+/g) : (rule === 'occ' ? /[^ء-غف-يٱ-ۓ0-9\s]+/g : /[^ء-غف-يٱ-ۓ\s]+/g);
+      s = s.replace(keep, ' ');
+    }
+    s = s.replace(/\s+/g, ' ').trim();
+    return mqHasLetters_(s, L) ? s : '';
+  }
+  const mqKey_ = (s) => String(s || '').toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/\s+/g, ' ').trim();
+  function mqHijri_(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+    if (!m) return '';
+    try {
+      const parts = new Intl.DateTimeFormat('en-US-u-ca-islamic-umalqura-nu-latn', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'UTC' }).formatToParts(new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 12)));
+      const g = (t) => (parts.find((p) => p.type === t) || {}).value || '';
+      const y = g('year').replace(/\D/g, ''), mo = g('month'), d = g('day');
+      return y && mo && d ? y + '-' + mo + '-' + d : '';
+    } catch (e) { return ''; }
+  }
+  /** The date layout used in a column ("2027-05-01", "01/05/2027" ...), from its existing values. */
+  function mqDatePat_(vals) {
+    for (const v of vals) {
+      const s = toLatinDigits_(v == null ? '' : v).trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return 'y-m-d';
+      if (/^\d{4}\/\d{2}\/\d{2}$/.test(s)) return 'y/m/d';
+      if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) return 'd/m/y';
+      if (/^\d{2}-\d{2}-\d{4}$/.test(s)) return 'd-m-y';
+    }
+    return '';
+  }
+  function mqFmtDate_(iso, pat) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+    if (!m || !pat) return iso;
+    return { 'y-m-d': iso, 'y/m/d': m[1] + '/' + m[2] + '/' + m[3], 'd/m/y': m[3] + '/' + m[2] + '/' + m[1], 'd-m-y': m[3] + '-' + m[2] + '-' + m[1] }[pat] || iso;
+  }
+  /** One cell as text: real date cells as yyyy-mm-dd, everything else as the client sees it. */
+  function mqCell_(file, r, c) {
+    if (c === undefined || c < 0) return '';
+    const raw = (file.aoa[r] || [])[c];
+    if (raw instanceof Date) return fmtDate_(raw);
+    const d = file.disp ? (file.disp[r] || [])[c] : undefined;
+    const v = d !== undefined && d !== null && d !== '' ? d : raw;
+    return v === undefined || v === null ? '' : String(v).trim();
+  }
+  const MQ_SRC = { mqen: ['Muqeem (EN)', 'مقيم (إنجليزي)'], mqar: ['Muqeem (AR)', 'مقيم (عربي)'], full: ['Full sheet', 'الملف الكامل'], initial: ['Initial data sheet', 'ملف البيانات الأولي'], gosi: ['GOSI', 'التأمينات'], dict: ['another employee with the same value', 'موظف آخر بنفس القيمة'], calc: ['Iqama expiry (Umm al-Qura)', 'تاريخ انتهاء الإقامة (أم القرى)'] };
+  const mqSrcLabel_ = (k, lang) => { const L = MQ_SRC[k] || [k, k]; return lang === 'en' ? L[0] : lang === 'ar' ? L[1] : T(L[0], L[1]); };
+
+  /**
+   * files: the recognised files (kind muqeem / full / initial / gosi, each with aoa, disp, headerRow).
+   * -> { outs: [{ lang, sheetName, aoa, headerRow, meta: Map('r:c' -> entry), rows }], log: [...], sum: {...} }
+   */
+  function buildMuqeem_(files) {
+    const mqFiles = files.filter((f) => f.kind === 'muqeem' && f.aoa);
+    const fullFiles = files.filter((f) => f.kind === 'full' && f.aoa);
+    if (!mqFiles.length && !fullFiles.length) return null;
+    const E = new Map(); // id -> entry
+    const order = [];
+    const entry_ = (id) => { let e = E.get(id); if (!e) { e = { id, mq: { en: null, ar: null }, full: null, ini: null, gs: null }; E.set(id, e); order.push(id); } return e; };
+    // ---- Muqeem sheets (a sheet may hold English columns, Arabic columns or both)
+    const sheetInfo = mqFiles.map((f) => {
+      const cols = mqCols_(f.aoa[f.headerRow]);
+      const langs = ['en', 'ar'].filter((L) => cols[L].id !== undefined || cols[L].name !== undefined);
+      return { f, cols, langs, both: langs.length === 2 };
+    });
+    sheetInfo.forEach((si) => {
+      const { f, cols } = si;
+      for (let r = f.headerRow + 1; r < f.aoa.length; r++) {
+        const idc = cols.en.id !== undefined ? cols.en.id : cols.ar.id;
+        const id = idKey_(mqCell_(f, r, idc));
+        if (!id) continue;
+        const e = entry_(id);
+        si.langs.forEach((L) => {
+          const vals = {};
+          MQ_FIELDS.forEach((fl) => { const c = cols[L][fl] !== undefined ? cols[L][fl] : (MQ_TEXT[fl] === undefined ? cols[L === 'en' ? 'ar' : 'en'][fl] : undefined); vals[fl] = c === undefined ? undefined : mqCell_(f, r, c); });
+          vals.__id = mqCell_(f, r, cols[L].id !== undefined ? cols[L].id : idc);
+          if (!e.mq[L]) e.mq[L] = { vals, si, r };
+          else MQ_FIELDS.forEach((fl) => { if (!e.mq[L].vals[fl] && vals[fl]) e.mq[L].vals[fl] = vals[fl]; });
+        });
+      }
+    });
+    // ---- full sheets (Muqeem / Absher detailed export: name parts + translated name parts, both languages per field)
+    fullFiles.forEach((f) => {
+      const c = f.cols;
+      for (let r = f.headerRow + 1; r < f.aoa.length; r++) {
+        const id = idKey_(mqCell_(f, r, c.id));
+        if (!id) continue;
+        const g = (k) => mqCell_(f, r, c[k]);
+        const join = (ks) => ks.map(g).filter((x) => x && x !== '-').join(' ');
+        const rec = { nameO: join(['first', 'father', 'grand', 'family']), nameT: join(['firstT', 'fatherT', 'grandT', 'familyT']), natAr: g('natAr'), natEn: g('natEn'), occAr: g('occAr'), occEn: g('occEn'),
+          genAr: g('genAr'), genEn: g('genEn'), iqamaExpiry: g('iqamaExpiry'), iqamaIssue: g('iqamaIssue'), dob: g('dob'), passport: g('passport') };
+        const e = entry_(id);
+        if (!e.full) e.full = rec;
+      }
+    });
+    // ---- support only (never add rows)
+    files.filter((f) => f.kind === 'initial').forEach((f) => f.recs.forEach((x) => { const e = E.get(x.id); if (e && !e.ini) e.ini = x; }));
+    files.filter((f) => f.kind === 'gosi').forEach((f) => f.recs.forEach((x) => { const e = E.get(x.id); if (e && !e.gs) e.gs = x; }));
+
+    const fullVal_ = (e, L, fl) => {
+      const x = e.full;
+      if (!x) return '';
+      if (fl === 'name') { const a = isArabic_(x.nameO) ? x.nameO : x.nameT, b = isArabic_(x.nameO) ? x.nameT : x.nameO; return L === 'ar' ? a : b; }
+      if (fl === 'nat') return L === 'ar' ? x.natAr : x.natEn;
+      if (fl === 'occupation') return L === 'ar' ? x.occAr : x.occEn;
+      if (fl === 'gender') return L === 'ar' ? x.genAr : x.genEn;
+      return x[fl] || '';
+    };
+    const supportVal_ = (e, L, fl) => {
+      const out = [];
+      if (e.ini) {
+        if (fl === 'name') out.push(['initial', L === 'ar' ? e.ini.nameAr : e.ini.nameEn]);
+        else if (fl === 'nat' || fl === 'gender' || fl === 'passport') out.push(['initial', e.ini[fl]]);
+        else if (fl === 'dob') out.push(['initial', e.ini.dob instanceof Date ? fmtDate_(e.ini.dob) : e.ini.dob]);
+      }
+      if (e.gs) {
+        if (fl === 'name' || fl === 'nat') out.push(['gosi', e.gs[fl]]);
+        else if (fl === 'dob') out.push(['gosi', e.gs.dob instanceof Date ? fmtDate_(e.gs.dob) : e.gs.dob]);
+      }
+      return out;
+    };
+
+    // ---- learned EN <-> AR pairs for gender, nationality, occupation (same employee, both languages known)
+    const dict = { gender: { en: new Map(), ar: new Map() }, nat: { en: new Map(), ar: new Map() }, occupation: { en: new Map(), ar: new Map() }, outside: { en: new Map(), ar: new Map() } };
+    const learn_ = (fl, en, ar) => {
+      const ce = mqClean_(en, 'en', MQ_TEXT[fl]), ca = mqClean_(ar, 'ar', MQ_TEXT[fl]);
+      if (!ce || !ca) return;
+      const add = (m, k, v) => { const b = m.get(k) || new Map(); b.set(v, (b.get(v) || 0) + 1); m.set(k, b); };
+      add(dict[fl].en, mqKey_(ca), ce); // AR value -> EN translation
+      add(dict[fl].ar, mqKey_(ce), ca); // EN value -> AR translation
+    };
+    Object.keys(MQ_BUILTIN).forEach((fl) => MQ_BUILTIN[fl].forEach(([en, ar]) => { learn_(fl, en.replace(/^./, (c) => c.toUpperCase()), ar); }));
+    E.forEach((e) => {
+      ['gender', 'nat', 'occupation', 'outside'].forEach((fl) => {
+        if (e.mq.en && e.mq.ar) learn_(fl, e.mq.en.vals[fl], e.mq.ar.vals[fl]);
+        if (e.full && fl !== 'outside') learn_(fl, fullVal_(e, 'en', fl), fullVal_(e, 'ar', fl));
+      });
+    });
+    const translate_ = (fl, L, fromVal) => {
+      const m = dict[fl] && dict[fl][L].get(mqKey_(fromVal));
+      if (!m) return '';
+      let best = '', n = 0; m.forEach((c, v) => { if (c > n) { best = v; n = c; } });
+      return best;
+    };
+
+    const log = [];
+    const outs = [];
+    const langsWanted = ['en', 'ar'];
+    langsWanted.forEach((L) => {
+      const O = L === 'en' ? 'ar' : 'en';
+      if (!sheetInfo.some((si) => si.langs.includes(L)) && !fullFiles.length) return; // nothing in this language to build from
+      const own = sheetInfo.find((si) => si.langs.includes(L) && !si.both) || null;
+      const useOwnHeader = !!own;
+      const header = useOwnHeader ? (own.f.aoa[own.f.headerRow] || []).map((h, c) => mqCell_(own.f, own.f.headerRow, c) || (h == null ? '' : String(h))) : MQ_HDR[L].slice();
+      const colField = useOwnHeader ? header.map((_, c) => { const k = Object.keys(own.cols[L]).find((fl) => own.cols[L][fl] === c); return k || null; }) : MQ_FIELDS.slice();
+      const top = useOwnHeader ? own.f.aoa.slice(0, own.f.headerRow).map((row, r) => (row || []).map((_, c) => mqCell_(own.f, r, c))) : [];
+      const headerRow = top.length;
+      const aoa = top.concat([header]);
+      const meta = new Map();
+      // date layout per field, from the client's own values in this language
+      const pats = {};
+      MQ_DATES.concat(['hijriExpiry']).forEach((fl) => { const vals = []; E.forEach((e) => { if (e.mq[L] && e.mq[L].vals[fl]) vals.push(e.mq[L].vals[fl]); }); pats[fl] = mqDatePat_(vals); });
+      if (!pats.hijriExpiry) pats.hijriExpiry = pats.iqamaExpiry; // no Hijri values yet: follow the Iqama expiry layout
+      const ownRows = own ? E.size && Array.from(E.values()).some((e) => e.mq[L] && e.mq[L].si === own) : false;
+      const note = (r, c, fl, kind, before, after, src) => {
+        const item = { lang: L, id: null, field: fl, col: header[c] || MQ_HDR[L][MQ_FIELDS.indexOf(fl)] || fl, before: before == null ? '' : String(before), after: after == null ? '' : String(after), kind, src: src || '' };
+        meta.set(r + ':' + c, item);
+        return item;
+      };
+      let rows = 0;
+      order.forEach((id) => {
+        const e = E.get(id);
+        const mine = e.mq[L];
+        const other = e.mq[O];
+        const r = aoa.length;
+        const row = header.map(() => '');
+        const items = [];
+        if (!mine && ownRows) items.push({ lang: L, id, field: 'id', col: header[colField.indexOf('id')] || '', before: '', after: '', kind: 'added', src: other ? (O === 'en' ? 'mqen' : 'mqar') : 'full' });
+        colField.forEach((fl, c) => {
+          if (!fl) { // a column we do not know: keep the client's value as it is
+            if (mine && mine.si === own) row[c] = mqCell_(own.f, mine.r, c);
+            return;
+          }
+          const ownVal = mine ? (fl === 'id' ? mine.vals.__id : mine.vals[fl]) : '';
+          let val = '', kind = '', src = '', before = ownVal || '';
+          if (fl === 'id') {
+            val = id;
+            if (ownVal && ownVal !== id) kind = 'format';
+          } else if (MQ_TEXT[fl] !== undefined) {
+            const rule = MQ_TEXT[fl];
+            const c0 = ownVal ? mqClean_(ownVal, L, rule) : '';
+            if (c0) {
+              val = c0;
+              const o = String(ownVal);
+              if (c0 !== o.trim()) kind = mqWrongScript_(o, L) ? 'wrongLang' : (o.replace(/\s+/g, ' ').trim() === c0 ? 'spaces' : 'symbols');
+            } else {
+              const cands = [];
+              if (other) cands.push([O === 'en' ? 'mqen' : 'mqar', other.vals[fl]]);
+              if (fl !== 'outside') cands.push(['full', fullVal_(e, L, fl)]);
+              supportVal_(e, L, fl).forEach((x) => cands.push(x));
+              for (const [k, v] of cands) { const cv = v ? mqClean_(v, L, rule) : ''; if (cv) { val = cv; src = k; break; } }
+              if (!val && dict[fl]) {
+                const froms = [other && other.vals[fl], fullVal_(e, O, fl), ownVal].filter(Boolean);
+                for (const fv of froms) { const tv = translate_(fl, L, mqClean_(fv, O, rule)); if (tv) { val = tv; src = 'dict'; break; } }
+                if (val) kind = ownVal ? 'replacedT' : 'translated';
+              }
+              if (val && !kind) kind = ownVal ? 'replaced' : 'filled';
+              if (!val) kind = ownVal ? 'removed' : (MQ_REQUIRED.includes(fl) ? 'missing' : '');
+            }
+          } else {
+            // neutral fields: numbers and dates
+            const isDate = MQ_DATES.includes(fl) || fl === 'hijriExpiry';
+            if (ownVal) {
+              val = toLatinDigits_(ownVal).trim();
+              if (mqWrongScript_(val, L)) { val = ''; kind = 'removed'; } else if (val !== String(ownVal).trim()) kind = 'format';
+            }
+            if (!val) {
+              const cands = [];
+              if (other && other.vals[fl]) cands.push([O === 'en' ? 'mqen' : 'mqar', other.vals[fl]]);
+              if (['iqamaExpiry', 'iqamaIssue', 'dob', 'passport'].includes(fl)) cands.push(['full', fullVal_(e, L, fl)]);
+              if (fl === 'passport' || fl === 'dob') supportVal_(e, L, fl).forEach((x) => cands.push(x));
+              for (const [k, v] of cands) { if (v) { val = isDate ? mqFmtDate_(fmtDate_(v), pats[fl]) : String(v).trim(); src = k; break; } }
+              if (val) kind = kind === 'removed' ? 'replaced' : 'filled';
+            }
+            if (!val && fl === 'hijriExpiry') {
+              const exp = row[colField.indexOf('iqamaExpiry')] || (mine && mine.vals.iqamaExpiry) || (other && other.vals.iqamaExpiry) || fullVal_(e, L, 'iqamaExpiry');
+              const h = mqHijri_(fmtDate_(exp));
+              if (h) { val = mqFmtDate_(h, pats.hijriExpiry); src = 'calc'; kind = 'calculated'; }
+            }
+            if (!val && !kind && MQ_REQUIRED.includes(fl)) kind = 'missing';
+          }
+          row[c] = val;
+          if (kind) items.push(Object.assign(note(r, c, fl, kind, before, val, src), { id }));
+        });
+        aoa.push(row);
+        rows++;
+        items.forEach((it) => { it.id = id; log.push(it); });
+      });
+      if (rows || own) outs.push({ lang: L, sheetName: own ? own.f.sheet : MQ_SHEET[L], fileName: own ? own.f.name : '', aoa, headerRow, meta, rows, ownHeader: useOwnHeader });
+    });
+    const cnt = (ks) => log.filter((x) => ks.includes(x.kind)).length;
+    const sum = {
+      en: (outs.find((o) => o.lang === 'en') || {}).rows || 0, ar: (outs.find((o) => o.lang === 'ar') || {}).rows || 0,
+      cleaned: cnt(['symbols', 'wrongLang', 'format', 'spaces']), wrongLang: cnt(['wrongLang', 'replaced', 'replacedT', 'removed']), symbols: cnt(['symbols']),
+      filled: cnt(['filled', 'replaced', 'translated', 'replacedT', 'calculated']), missing: cnt(['missing', 'removed']), added: cnt(['added']),
+      sources: { mq: mqFiles.length, full: fullFiles.length, initial: files.some((f) => f.kind === 'initial'), gosi: files.some((f) => f.kind === 'gosi') },
+    };
+    return { outs, log, sum };
+  }
+  const MQ_KIND = {
+    symbols: ['Symbols removed', 'أزيلت الرموز'], spaces: ['Extra spaces removed', 'أزيلت المسافات الزائدة'], wrongLang: ['Other-language text removed', 'أزيل نص بلغة أخرى'],
+    format: ['Number tidied', 'رُتّب الرقم'], filled: ['Filled from ', 'أُكمل من '], replaced: ['Wrong language replaced from ', 'استُبدلت اللغة الخاطئة من '],
+    translated: ['Filled from ', 'أُكمل من '], replacedT: ['Wrong language replaced from ', 'استُبدلت اللغة الخاطئة من '], calculated: ['Calculated from ', 'حُسب من '],
+    removed: ['Wrong language removed, nothing to refill it: ask the client', 'أزيلت اللغة الخاطئة ولا يوجد مصدر بديل: اطلبه من العميل'],
+    missing: ['Empty, not in any file: ask the client', 'فارغ وغير موجود في أي ملف: اطلبه من العميل'], added: ['Employee added (only in ', 'أُضيف الموظف (موجود فقط في '],
+  };
+  function mqKindText_(it, lang) {
+    const t = (en, ar) => (lang === 'en' ? en : lang === 'ar' ? ar : T(en, ar));
+    const k = MQ_KIND[it.kind] || [it.kind, it.kind];
+    const base = t(k[0], k[1]);
+    if (it.kind === 'added') return base + mqSrcLabel_(it.src, lang) + ')';
+    return it.src ? base + mqSrcLabel_(it.src, lang) : base;
+  }
+  const mqCellClass_ = (k) => (['missing', 'removed'].includes(k) ? 'jdv-c-miss' : ['filled', 'replaced', 'translated', 'replacedT', 'calculated'].includes(k) ? 'jdv-c-fill' : k ? 'jdv-c-fix' : '');
+  function mqWorkbook_(outs) {
+    const wb = XLSX.utils.book_new();
+    wb.__noRef = true; // client Muqeem files, not Jisr employees
+    outs.forEach((o) => {
+      const ws = XLSX.utils.aoa_to_sheet(o.aoa.map((r) => r.map((v) => (v === '' || v == null ? null : String(v)))));
+      const hdr = o.aoa[o.headerRow] || [];
+      ws['!cols'] = hdr.map((h, c) => ({ wch: Math.min(48, Math.max(12, String(h || '').length + 2, ...o.aoa.slice(o.headerRow + 1, o.headerRow + 200).map((r) => String(r[c] || '').length + 2))) }));
+      XLSX.utils.book_append_sheet(wb, ws, String(o.sheetName || MQ_SHEET[o.lang]).slice(0, 31));
+    });
+    if (outs.length === 1 && outs[0].lang === 'ar') wb.Workbook = { Views: [{ RTL: true }] };
+    return wb;
+  }
+  function mqLogWorkbook_(C) {
+    const wb = XLSX.utils.book_new();
+    wb.__noRef = true;
+    const s = C.sum;
+    const sumA = [['Muqeem clean-up: ' + slug_()], ['Run at', new Date().toISOString().replace('T', ' ').slice(0, 16)], ['Read-only', 'Nothing was sent to Jisr; the files were read in the browser only.'], [],
+      ['English file rows', s.en], ['Arabic file rows', s.ar], ['Cells tidied (symbols, spaces, numbers)', s.cleaned], ['Wrong-language values found', s.wrongLang], ['Cells filled from other files', s.filled], ['Employees added to one language', s.added], ['Still empty: ask the client', s.missing], [],
+      ['Rules'], ['Language', 'English file: English text only. Arabic file: Arabic text only.'], ['Name, Occupation', 'Letters and spaces only; "-", "&", dots and other symbols removed (names also lose digits).'],
+      ['Filling gaps', 'By Iqama number: other-language Muqeem file, then full sheet, then initial data sheet, then GOSI (names); gender, nationality and occupation can also come from another employee with the same value in the other language.'],
+      ['Hijri expiry', 'Calculated from the Iqama expiry date with the Umm al-Qura calendar when empty.']];
+    const s1 = XLSX.utils.aoa_to_sheet(sumA); s1['!cols'] = [{ wch: 40 }, { wch: 90 }];
+    XLSX.utils.book_append_sheet(wb, s1, 'Summary');
+    const la = [['File', 'Iqama', 'Column', 'Before', 'After', 'What happened']].concat(C.log.map((x) => [x.lang === 'en' ? 'English' : 'Arabic', x.id, x.col, x.before, x.after, mqKindText_(x, 'en')]));
+    const s2 = XLSX.utils.aoa_to_sheet(la.map((r) => r.map((v) => (v === '' || v == null ? null : String(v)))));
+    s2['!cols'] = [{ wch: 9 }, { wch: 13 }, { wch: 26 }, { wch: 34 }, { wch: 34 }, { wch: 60 }];
+    s2['!autofilter'] = { ref: 'A1:F' + la.length };
+    XLSX.utils.book_append_sheet(wb, s2, 'Changes');
+    return wb;
+  }
+  const mqBase_ = (C) => { const o = C.outs.find((x) => x.fileName) || {}; return String(o.fileName || 'muqeem').replace(/\.[^.]+$/, ''); };
+
   // ======================================================================= UI
   function el(tag, attrs, children) {
     const n = document.createElement(tag);
@@ -52757,6 +54593,10 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       .jdv-chip { border: 1px solid #dadce0; background: #fff; border-radius: 14px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
       .jdv-chip.on { background: #1E3A8A; border-color: #1E3A8A; color: #fff; }
       .jdv-chips input { margin-inline-start: auto; border: 1px solid #dadce0; border-radius: 14px; padding: 4px 10px; font-size: 12px; min-width: 200px; }
+      .jdv-scroll { max-height: 46vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jdv-scroll table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jdv-scroll th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
+      .jdv-scroll td { padding: 6px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
       .jdv-wrap { max-height: 46vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
       .jdv-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
       .jdv-wrap th { position: sticky; top: 0; background: #f8f9fa; text-align: start; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid #e8eaed; z-index: 1; }
@@ -52770,13 +54610,26 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       .jdv-det table { width: auto; min-width: 420px; margin: 4px 0; border: 1px solid #e8eaed; }
       .jdv-det th, .jdv-det td td { position: static; padding: 4px 10px; }
       .jdv-note { font-size: 12px; color: #5f6368; margin: 4px 0; }
-      @media (max-width: 860px) { .jdv-slots, .jdv-tiles { grid-template-columns: 1fr 1fr; } }
+      .jdv-tabs { display: flex; gap: 6px; margin: 0 0 10px; }
+      .jdv-map { border: 1px solid #dadce0; border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+      .jdv-maprow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 6px 0; }
+      .jdv-mapgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; margin: 8px 0; }
+      .jdv-mapf { display: flex; flex-direction: column; gap: 2px; font-size: 12px; min-width: 0; }
+      .jdv-mapf select { max-width: 100%; }
+      .jdv-tab { border: 1px solid #dadce0; background: #fff; border-radius: 16px; padding: 5px 14px; font-size: 12.5px; cursor: pointer; }
+      .jdv-tab.on { background: #1E3A8A; border-color: #1E3A8A; color: #fff; }
+      .jdv-c-fix { background: #fef7e0; } .jdv-c-fill { background: #e8f0fe; } .jdv-c-miss { background: #fce8e6; }
+      .jdv-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: #5f6368; margin: 2px 0 6px; }
+      .jdv-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-inline-end: 5px; vertical-align: -1px; border: 1px solid #dadce0; }
+      .jdv-mqlog summary { cursor: pointer; font-size: 12.5px; font-weight: 600; margin: 10px 0 6px; }
+      @media (prefers-reduced-motion: reduce) { .jdv-drop { transition: none; } }
+      @media (max-width: 860px) { .jdv-slots, .jdv-tiles, .jdv-mapgrid { grid-template-columns: 1fr 1fr; } }
     ` }));
   }
 
   function openTool_() {
     injectCss_();
-    const S = { files: [], result: null, filter: 'all', q: '', open: new Set(), note: '', noteErr: false };
+    const S = { files: [], pending: [], result: null, clean: null, mode: 'compare', mqLang: 'en', mqFilter: 'all', mqQ: '', filter: 'all', q: '', open: new Set(), note: '', noteErr: false };
     const body = el('div', { class: 'jbo-modal-body' });
     const foot = el('div', { class: 'jbo-modal-foot' });
     const titleEl = el('div', { class: 'jbo-modal-title' });
@@ -52796,39 +54649,115 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       for (const f of Array.from(list || [])) {
         try {
           const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array', cellDates: true });
-          let got = null;
+          // v4.98.0: every sheet is read (a merged workbook gives its English and Arabic sheets); an empty Muqeem template is kept for its headers
+          const got = [];
+          const unknown = [];
           for (const sn of wb.SheetNames) {
             const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, defval: '', raw: true });
             const det = detect_(aoa);
-            if (det) { const rd = readSource_(aoa, det); if (rd.recs.length) { got = Object.assign({ name: f.name, sheet: sn }, det, rd); break; } }
+            if (!det) {
+              // v4.99.0: no template matches this sheet; keep it so the specialist can say what it is
+              const filled = aoa.filter((r) => (r || []).some((v) => v !== '' && v != null)).length;
+              if (filled >= 2 && Math.max(0, ...aoa.slice(0, 30).map((r) => (r || []).length)) >= 2) unknown.push({ sn, aoa, filled });
+              continue;
+            }
+            const rd = readSource_(aoa, det);
+            if (!rd.recs.length && det.kind !== 'muqeem') continue;
+            const keep = det.kind === 'muqeem' || det.kind === 'full';
+            const disp = keep ? XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, defval: '', raw: false }) : null;
+            got.push(Object.assign({ name: f.name, sheet: sn, label: wb.SheetNames.length > 1 ? f.name + ' › ' + sn : f.name, aoa: keep ? aoa : null, disp }, det, rd));
           }
-          if (!got) { bad.push(f.name); continue; }
-          // the same kind again replaces it, except Muqeem where EN + AR files are combined
-          S.files = S.files.filter((x) => x.name !== f.name && (got.kind === 'muqeem' || x.kind !== got.kind));
-          S.files.push(got);
+          if (!got.length) {
+            if (!unknown.length) { bad.push(f.name); continue; }
+            unknown.sort((x, y) => y.filled - x.filled);
+            const hr = guessHeaderRow_(unknown[0].aoa);
+            const kind = guessKind_(unknown[0].aoa, hr);
+            S.pending = S.pending.filter((x) => x.name !== f.name);
+            S.pending.push({ name: f.name, sheets: unknown, si: 0, headerRow: hr, kind, cols: guessCols_(unknown[0].aoa, hr, kind), status: '' });
+            continue;
+          }
+          // the same kind again replaces it, except Muqeem and full sheets (English + Arabic files are combined)
+          const multi = (k) => k === 'muqeem' || k === 'full';
+          S.files = S.files.filter((x) => x.name !== f.name && !got.some((g) => !multi(g.kind) && g.kind === x.kind));
+          got.forEach((g) => S.files.push(g));
         } catch (e) { bad.push(f.name + ' (' + e.message + ')'); }
       }
-      S.note = bad.length ? T('Not recognised as an initial data sheet, Muqeem or GOSI file: ', 'لم يُتعرَّف عليه كملف بيانات أولي أو مقيم أو التأمينات: ') + bad.join(', ') : '';
+      S.note = bad.length ? T('Nothing to read in: ', 'لا توجد بيانات للقراءة في: ') + bad.join(', ') : '';
       S.noteErr = !!bad.length;
       run_();
     }
     function run_() {
-      const pick = (k) => { const fs = S.files.filter((f) => f.kind === k); if (!fs.length) return null; const m = new Map(); fs.forEach((f) => f.recs.forEach((r) => { if (!m.has(r.id)) m.set(r.id, r); })); return Array.from(m.values()); };
-      const src = { initial: pick('initial'), muqeem: pick('muqeem'), gosi: pick('gosi') };
-      S.result = S.files.length ? compare_(src) : null;
+      const pick = (ks) => { const fs = S.files.filter((f) => ks.includes(f.kind) && f.recs.length); if (!fs.length) return null; const m = new Map(); fs.forEach((f) => f.recs.forEach((r) => { if (!m.has(r.id)) m.set(r.id, r); })); return Array.from(m.values()); };
+      const src = { initial: pick(['initial']), muqeem: pick(['muqeem', 'full']), gosi: pick(['gosi']) };
+      S.result = S.files.some((f) => f.recs.length) ? compare_(src) : null;
+      try { S.clean = buildMuqeem_(S.files); } catch (e) { S.clean = null; S.note = T('Muqeem clean-up failed: ', 'تعذّر تنظيف ملفات مقيم: ') + e.message; S.noteErr = true; }
+      if (S.clean) { const ls = S.clean.outs.map((o) => o.lang); if (!ls.includes(S.mqLang) && ls.length) S.mqLang = ls[0]; }
       S.open.clear();
       paint_();
     }
 
+
+    /** v4.99.0: card for a file that matches no template: what is it, and which column holds what. */
+    function colLabel_(aoa, hr, c) {
+      let letter = '', n = c + 1;
+      while (n > 0) { letter = String.fromCharCode(65 + ((n - 1) % 26)) + letter; n = Math.floor((n - 1) / 26); }
+      const h = String((aoa[hr] || [])[c] == null ? '' : (aoa[hr] || [])[c]).trim().slice(0, 28);
+      let sample = '';
+      for (let r = hr + 1; r < Math.min(aoa.length, hr + 40) && !sample; r++) { const v = (aoa[r] || [])[c]; if (v !== '' && v != null) sample = String(v instanceof Date ? fmtDate_(v) : v).trim().slice(0, 18); }
+      return letter + ' · ' + (h || T('(no header)', '(بدون عنوان)')) + (sample ? ' · ' + sample : '');
+    }
+    function pendingCard_(p) {
+      const sh = p.sheets[p.si], aoa = sh.aoa;
+      const refresh = () => { p.cols = guessCols_(aoa, p.headerRow, p.kind); p.status = ''; paint_(); };
+      const sel = (opts, val, on) => { const s = el('select', {}, opts.map(([v, l]) => el('option', { value: String(v), text: l }))); s.value = String(val); s.addEventListener('change', () => on(s.value)); return s; };
+      const kindSel = sel([[KIND.initial, kindLabel_(KIND.initial)], [KIND.muqeem, kindLabel_(KIND.muqeem)], [KIND.gosi, kindLabel_(KIND.gosi)]], p.kind, (v) => { p.kind = v; refresh(); });
+      const head = [el('label', {}, [T('This file is', 'هذا الملف هو'), ' ', kindSel])];
+      if (p.sheets.length > 1) head.push(el('label', {}, [T('Sheet', 'الورقة'), ' ', sel(p.sheets.map((x, i) => [i, x.sn]), p.si, (v) => { p.si = +v; p.headerRow = guessHeaderRow_(p.sheets[p.si].aoa); p.kind = guessKind_(p.sheets[p.si].aoa, p.headerRow); p.cols = guessCols_(p.sheets[p.si].aoa, p.headerRow, p.kind); p.status = ''; paint_(); })]));
+      const hrIn = el('input', { type: 'number', min: '1', max: '30', value: String(p.headerRow + 1), style: { width: '64px' } });
+      hrIn.addEventListener('change', () => { p.headerRow = Math.max(0, Math.min(29, (parseInt(hrIn.value, 10) || 1) - 1)); refresh(); });
+      head.push(el('label', {}, [T('Header row', 'صف العناوين'), ' ', hrIn]));
+      const width = Math.max((aoa[p.headerRow] || []).length, ...aoa.slice(p.headerRow + 1, p.headerRow + 60).map((r) => (r || []).length));
+      const colOpts = [['', T('none', 'لا شيء')]].concat(Array.from({ length: Math.min(width, 80) }, (_, c) => [c, colLabel_(aoa, p.headerRow, c)]));
+      const grid = el('div', { class: 'jdv-mapgrid' }, MAP_FIELDS[p.kind].map((f) => {
+        const s2 = sel(colOpts, p.cols[f] === undefined ? '' : p.cols[f], (v) => { if (v === '') delete p.cols[f]; else p.cols[f] = +v; p.status = ''; });
+        if (f === 'id') s2.setAttribute('data-required', '1');
+        return el('label', { class: 'jdv-mapf' }, [el('span', { text: T(MAP_LABEL[f][0], MAP_LABEL[f][1]) + (f === 'id' ? ' *' : '') }), s2]);
+      }));
+      const use = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('Use this file', 'استخدم هذا الملف') });
+      use.addEventListener('click', () => {
+        if (p.cols.id === undefined) { p.status = T('Pick the column that holds the ID / Iqama number.', 'اختر العمود الذي يحوي رقم الهوية / الإقامة.'); paint_(); return; }
+        const det = { kind: p.kind, headerRow: p.headerRow, cols: Object.assign({}, p.cols), lang: '' };
+        const rd = readSource_(aoa, det);
+        if (!rd.recs.length) { p.status = T('No ID / Iqama numbers found in that column below the header row. Check the column and the header row.', 'لم يُعثر على أرقام هوية / إقامة في هذا العمود تحت صف العناوين. تحقق من العمود وصف العناوين.'); paint_(); return; }
+        const multi = (k) => k === 'muqeem' || k === 'full';
+        S.files = S.files.filter((x) => x.name !== p.name && !(!multi(p.kind) && p.kind === x.kind));
+        S.files.push(Object.assign({ name: p.name, sheet: sh.sn, label: p.sheets.length > 1 ? p.name + ' › ' + sh.sn : p.name, aoa: null, disp: null, manual: true }, det, rd));
+        S.pending = S.pending.filter((x) => x !== p);
+        run_();
+      });
+      const skip = el('button', { class: 'jbo-btn', text: T('Skip this file', 'تخطَّ هذا الملف') });
+      skip.addEventListener('click', () => { S.pending = S.pending.filter((x) => x !== p); paint_(); });
+      return el('div', { class: 'jdv-map', role: 'group' }, [
+        el('b', {}, [T('No matching template: ', 'لا يوجد قالب مطابق: '), el('bdi', { text: p.name + (p.sheets.length > 1 ? ' › ' + sh.sn : '') })]),
+        el('div', { class: 'jbo-muted', style: { fontSize: '12px', margin: '2px 0 8px' }, text: T(
+          'Say what this file is and which column holds what. The columns are guessed from the headers and the cells; fix any that are wrong. * is required. The file is read in this browser only.',
+          'حدّد نوع هذا الملف وما يحويه كل عمود. تم تخمين الأعمدة من العناوين والخلايا؛ صحّح ما كان خاطئًا. * مطلوب. يُقرأ الملف في هذا المتصفح فقط.') }),
+        el('div', { class: 'jdv-maprow' }, head),
+        grid,
+        el('div', { class: 'jdv-maprow' }, [use, skip, p.status ? el('span', { class: 'jbo-status-err', text: p.status }) : null]),
+      ]);
+    }
+
     function slot_(kind, hint) {
-      const fs = S.files.filter((f) => f.kind === kind);
+      const fs = S.files.filter((f) => f.kind === kind || (kind === 'muqeem' && f.kind === 'full'));
       return el('div', { class: 'jdv-slot' + (fs.length ? ' on' : ''), 'data-kind': kind }, [
         el('b', { text: (fs.length ? '✓ ' : '') + kindLabel_(kind) }),
         fs.length ? null : el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: hint }),
       ].concat(fs.map((f) => {
         const x = el('button', { class: 'x', title: T('Remove', 'إزالة'), text: '✕' });
         x.addEventListener('click', (e) => { e.stopPropagation(); S.files = S.files.filter((y) => y !== f); run_(); });
-        return el('div', { class: 'f' }, [el('span', { title: f.name, text: f.name }), el('span', { text: f.recs.length + (f.lang ? ' · ' + f.lang.toUpperCase() : '') }), x]);
+        const tag = f.manual ? ' · ' + T('mapped', 'معيَّن') : f.kind === 'full' ? ' · ' + T('full', 'كامل') : f.kind === 'muqeem' ? ' · ' + ['en', 'ar'].filter((L) => { const c = mqCols_((f.aoa || [])[f.headerRow]); return c[L].id !== undefined || c[L].name !== undefined; }).join('+').toUpperCase() : '';
+        return el('div', { class: 'f' }, [el('span', { title: f.label || f.name, text: f.label || f.name }), el('span', { text: f.recs.length + tag }), x]);
       })));
     }
     function tile_(label, big, sub, pct) {
@@ -52839,22 +54768,34 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     function paint_() {
       titleEl.textContent = T('Data Validation', 'التحقق من البيانات');
       body.innerHTML = ''; foot.innerHTML = '';
-      body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '8px' }, text: T(
+      const tabs = el('div', { class: 'jdv-tabs', role: 'tablist' });
+      [['compare', T('Compare files', 'مقارنة الملفات')], ['clean', T('Clean Muqeem files', 'تنظيف ملفات مقيم')]].forEach(([k, l]) => {
+        const b = el('button', { class: 'jdv-tab' + (S.mode === k ? ' on' : ''), role: 'tab', 'aria-selected': S.mode === k ? 'true' : 'false', 'data-mode': k, text: l });
+        b.addEventListener('click', () => { S.mode = k; paint_(); });
+        tabs.appendChild(b);
+      });
+      body.appendChild(tabs);
+      if (S.mode === 'clean') body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '8px' }, text: T(
+        'Drop the client\'s Muqeem files (English, Arabic, both in one workbook, or an empty template with a Muqeem/Absher full sheet). The English file keeps English only and the Arabic file Arabic only; Name and Occupation lose "-", "&" and other symbols. Gaps are filled by Iqama number from the other files you add (full sheet, initial data sheet, GOSI). Your headers stay as they are. Nothing is sent to Jisr.',
+        'أفلت ملفات مقيم الخاصة بالعميل (إنجليزي أو عربي أو كلاهما في ملف واحد، أو قالب فارغ مع الملف الكامل من مقيم/أبشر). يبقى في الملف الإنجليزي النص الإنجليزي فقط وفي العربي النص العربي فقط، وتُزال من الاسم والمهنة الشرطة "-" و"&" وبقية الرموز. تُكمَل الخانات الفارغة برقم الإقامة من الملفات الأخرى التي تضيفها (الملف الكامل، ملف البيانات الأولي، التأمينات). تبقى العناوين كما هي. لا يُرسل شيء إلى جسر.') }));
+      else body.appendChild(el('div', { class: 'jbo-muted', style: { marginBottom: '8px' }, text: T(
         'Read-only check of the client\'s files before upload: the initial data sheet against Muqeem (English and/or Arabic) and the GOSI active contributors list. Employees are matched by ID / Iqama number. The files are read in this browser only; nothing is sent to Jisr.',
         'فحص للقراءة فقط لملفات العميل قبل الرفع: ملف البيانات الأولي مقابل مقيم (إنجليزي و/أو عربي) وقائمة المشتركين النشطين في التأمينات. يُطابَق الموظفون برقم الهوية / الإقامة. تُقرأ الملفات في هذا المتصفح فقط؛ ولا يُرسل شيء إلى جسر.') }));
-      const drop = el('div', { class: 'jdv-drop', tabindex: '0' }, [el('b', { text: T('Drop the files here', 'أفلت الملفات هنا') }), ' ', T('or click to choose: each file is recognised from its headers.', 'أو اضغط للاختيار: يُتعرَّف على كل ملف من عناوين أعمدته.')]);
+      const drop = el('div', { class: 'jdv-drop', tabindex: '0' }, [el('b', { text: T('Drop the files here', 'أفلت الملفات هنا') }), ' ', T('or click to choose: each file is recognised from its headers; any other layout you map yourself.', 'أو اضغط للاختيار: يُتعرَّف على كل ملف من عناوين أعمدته، وأي تنسيق آخر تحدّده بنفسك.')]);
       drop.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
       drop.addEventListener('keydown', (e) => { if (e.key === 'Enter') { fileIn.value = ''; fileIn.click(); } });
       drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
       drop.addEventListener('dragleave', () => drop.classList.remove('over'));
       drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); addFiles_(e.dataTransfer.files); });
       body.appendChild(drop); body.appendChild(fileIn);
+      S.pending.forEach((p) => body.appendChild(pendingCard_(p)));
       body.appendChild(el('div', { class: 'jdv-slots' }, [
         slot_('initial', T('Jisr upload sheet (Emp Id, names, ID / Iqama, salary…)', 'ملف الرفع في جسر (الرقم الوظيفي، الأسماء، الهوية، الراتب…)')),
         slot_('muqeem', T('Active residents: EN, AR or both', 'المقيمون النشطون: إنجليزي أو عربي أو كلاهما')),
         slot_('gosi', T('Active contributors list', 'قائمة المشتركين النشطين')),
       ]));
       if (S.note) body.appendChild(el('div', { class: S.noteErr ? 'jbo-status-err' : 'jbo-muted', style: { margin: '4px 0' }, text: S.note }));
+      if (S.mode === 'clean') { paintClean_(); return; }
       const R = S.result;
       if (!R) { body.appendChild(el('div', { class: 'jdv-note', text: T('Add at least two files to compare. The initial data sheet is the reference; percentages are out of its employees.', 'أضف ملفين على الأقل للمقارنة. ملف البيانات الأولي هو المرجع، والنسب من موظفيه.') })); return; }
       const s = R.sum;
@@ -52910,6 +54851,79 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       foot.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Click a row for the names side by side and the salary breakdown.', 'اضغط على صف لعرض الأسماء جنبًا إلى جنب وتفاصيل الراتب.') }));
       foot.appendChild(exB);
     }
+    function paintClean_() {
+      const C = S.clean;
+      if (!C || !C.outs.length) {
+        body.appendChild(el('div', { class: 'jdv-note', text: T('Add the Muqeem file(s) to start. The initial data sheet and GOSI only fill gaps; they never add employees.', 'أضف ملف (ملفات) مقيم للبدء. ملف البيانات الأولي والتأمينات يكملان الخانات الفارغة فقط ولا يضيفان موظفين.') }));
+        return;
+      }
+      const s = C.sum;
+      const tiles = el('div', { class: 'jdv-tiles' });
+      tiles.appendChild(tile_(T('Employees', 'الموظفون'), String(Math.max(s.en, s.ar)), T('English ', 'إنجليزي ') + s.en + ' · ' + T('Arabic ', 'عربي ') + s.ar + (s.added ? ' · ' + s.added + T(' added to one file', ' أُضيفوا لملف واحد') : ''), null));
+      tiles.appendChild(tile_(T('Tidied', 'رُتّب'), String(s.cleaned), s.wrongLang + T(' in the wrong language · ', ' بلغة خاطئة · ') + s.symbols + T(' with symbols', ' بها رموز'), null));
+      tiles.appendChild(tile_(T('Filled', 'أُكمل'), String(s.filled), T('from the other files', 'من الملفات الأخرى'), null));
+      tiles.appendChild(tile_(T('Ask the client', 'اطلب من العميل'), String(s.missing), s.missing ? T('cells still empty (red)', 'خانات ما زالت فارغة (بالأحمر)') : T('nothing missing', 'لا شيء ناقص'), null));
+      body.appendChild(tiles);
+      const out = C.outs.find((o) => o.lang === S.mqLang) || C.outs[0];
+      const chips = el('div', { class: 'jdv-chips' });
+      C.outs.forEach((o) => { const b = el('button', { class: 'jdv-chip' + (o === out ? ' on' : ''), 'data-lang': o.lang, text: (o.lang === 'en' ? T('English file', 'الملف الإنجليزي') : T('Arabic file', 'الملف العربي')) + ' · ' + o.rows }); b.addEventListener('click', () => { S.mqLang = o.lang; paint_(); }); chips.appendChild(b); });
+      chips.appendChild(el('span', { style: { width: '10px' } }));
+      const rowKinds = (r) => { const ks = []; out.meta.forEach((v, k) => { if (+k.split(':')[0] === r) ks.push(v.kind); }); return ks; };
+      [['all', T('All rows', 'كل الصفوف')], ['changed', T('Changed', 'تغيّر')], ['missing', T('Ask the client', 'اطلب من العميل')]].forEach(([k, l]) => { const b = el('button', { class: 'jdv-chip' + (S.mqFilter === k ? ' on' : ''), 'data-mqf': k, text: l }); b.addEventListener('click', () => { S.mqFilter = k; paint_(); }); chips.appendChild(b); });
+      const qIn = el('input', { type: 'search', placeholder: T('Search Iqama or name', 'ابحث برقم الإقامة أو الاسم'), value: S.mqQ });
+      chips.appendChild(qIn);
+      body.appendChild(chips);
+      body.appendChild(el('div', { class: 'jdv-legend' }, [
+        el('span', {}, [el('i', { class: 'jdv-c-fix' }), T('tidied (symbols, other language, spaces)', 'رُتّب (رموز، لغة أخرى، مسافات)')]),
+        el('span', {}, [el('i', { class: 'jdv-c-fill' }), T('filled from another file', 'أُكمل من ملف آخر')]),
+        el('span', {}, [el('i', { class: 'jdv-c-miss' }), T('still empty: ask the client', 'ما زال فارغًا: اطلبه من العميل')]),
+        el('span', {}, [T('Hover a coloured cell for before / after.', 'مرّر على الخانة الملونة لترى القيمة قبل وبعد.')]),
+      ]));
+      const wrap = el('div', { class: 'jdv-scroll', dir: out.lang === 'ar' ? 'rtl' : 'ltr' });
+      body.appendChild(wrap);
+      const paintRows_ = () => {
+        wrap.innerHTML = '';
+        const q = S.mqQ.trim().toLowerCase();
+        const t = el('table');
+        const hdr = out.aoa[out.headerRow] || [];
+        t.appendChild(el('tr', {}, ['#'].concat(hdr.map((h) => String(h || ''))).map((h) => el('th', { text: h }))));
+        let shown = 0;
+        for (let r = out.headerRow + 1; r < out.aoa.length && shown < 3000; r++) {
+          const ks = rowKinds(r);
+          if (S.mqFilter === 'changed' && !ks.length) continue;
+          if (S.mqFilter === 'missing' && !ks.some((k) => k === 'missing' || k === 'removed')) continue;
+          if (q && !out.aoa[r].some((v) => String(v).toLowerCase().includes(q))) continue;
+          shown++;
+          t.appendChild(el('tr', {}, [el('td', { text: String(r - out.headerRow) })].concat(out.aoa[r].map((v, c) => {
+            const m = out.meta.get(r + ':' + c);
+            return el('td', { class: m ? mqCellClass_(m.kind) : null, dir: 'auto', title: m ? mqKindText_(m) + (m.before && m.before !== m.after ? '\n' + T('Before: ', 'قبل: ') + m.before : '') : null, text: v === '' ? (m ? '—' : '') : String(v) });
+          }))));
+        }
+        if (!shown) t.appendChild(el('tr', {}, [el('td', { colspan: String(hdr.length + 1), class: 'jbo-muted', text: T('Nothing here.', 'لا شيء هنا.') })]));
+        wrap.appendChild(t);
+      };
+      qIn.addEventListener('input', () => { S.mqQ = qIn.value; paintRows_(); });
+      paintRows_();
+      // the change list
+      const logs = C.log.filter((x) => x.lang === out.lang);
+      const det = el('details', { class: 'jdv-mqlog' }, [el('summary', { text: T('Every change in this file', 'كل التغييرات في هذا الملف') + ' · ' + logs.length })]);
+      const lt = el('table');
+      lt.appendChild(el('tr', {}, [T('Iqama', 'الإقامة'), T('Column', 'العمود'), T('Before', 'قبل'), T('After', 'بعد'), T('What happened', 'ما الذي حدث')].map((h) => el('th', { text: h }))));
+      logs.slice(0, 2000).forEach((x) => lt.appendChild(el('tr', {}, [el('td', { text: x.id }), el('td', { text: x.col }), el('td', { dir: 'auto', text: x.before || '—' }), el('td', { dir: 'auto', class: mqCellClass_(x.kind) || null, text: x.after || '—' }), el('td', { text: mqKindText_(x) })])));
+      det.appendChild(el('div', { class: 'jdv-scroll' }, [lt]));
+      body.appendChild(det);
+      // downloads
+      const base = mqBase_(C);
+      const dl = (label, outs, fname, primary) => { const b = el('button', { class: 'jbo-btn' + (primary ? ' jbo-btn-primary' : ''), text: label }); b.addEventListener('click', () => { XLSX.writeFile(mqWorkbook_(outs), fname); S.note = T('Downloaded ', 'تم التنزيل: ') + fname; S.noteErr = false; paint_(); }); return b; };
+      foot.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Cells are saved as text, so Iqama numbers and dates keep their form.', 'تُحفظ الخانات كنص لتبقى أرقام الإقامة والتواريخ كما هي.') }));
+      const en = C.outs.find((o) => o.lang === 'en'), ar = C.outs.find((o) => o.lang === 'ar');
+      if (en) foot.appendChild(dl(T('Download English', 'تنزيل الإنجليزي'), [en], base + ' - EN clean.xlsx', true));
+      if (ar) foot.appendChild(dl(T('Download Arabic', 'تنزيل العربي'), [ar], base + ' - AR clean.xlsx', true));
+      if (en && ar) foot.appendChild(dl(T('Both in one workbook', 'كلاهما في ملف واحد'), [en, ar], base + ' - EN+AR clean.xlsx', false));
+      const lb = el('button', { class: 'jbo-btn', text: T('Change log (.xlsx)', 'سجل التغييرات (‎.xlsx)') });
+      lb.addEventListener('click', () => { const fn = base + ' - clean-up log.xlsx'; XLSX.writeFile(mqLogWorkbook_(C), fn); S.note = T('Downloaded ', 'تم التنزيل: ') + fn; S.noteErr = false; paint_(); });
+      foot.appendChild(lb);
+    }
     function detailRow_(r, span) {
       const box = el('div');
       const names = el('table', {}, [el('tr', {}, [el('th', { text: T('File', 'الملف') }), el('th', { text: T('Name', 'الاسم') })])]);
@@ -52934,7 +54948,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'Data Validation (Initial · Muqeem · GOSI)', open: openTool_, version: SECTION_VERSION };
-    W.__jisrDataValidation = { idKey_, num_, nameTokens_, nameScore_, detect_, readSource_, compare_, statusText_, salText_ };
+    W.__jisrDataValidation = { idKey_, num_, nameTokens_, nameScore_, detect_, readSource_, compare_, guessHeaderRow_, guessKind_, guessCols_, MAP_FIELDS, statusText_, salText_, mqCols_, mqClean_, mqHijri_, buildMuqeem_, mqWorkbook_, mqLogWorkbook_, mqKindText_ };
     if (g._rerender) g._rerender();
   }
   register_();
@@ -52975,7 +54989,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
   function gmSet_(k, v) { try { GM_setValue(GM_PREFIX + k, v); } catch (e) { /* ignore */ } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
@@ -53424,7 +55438,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en };
   const T = (en, ar) => I.t(en, ar);
   const HTML = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Jisr Letter Converter</title>\n<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n<link href=\"https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap\" rel=\"stylesheet\">\n<script src=\"https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js\"></script>\n<style>\n  :root { --ink:#111113; --muted:#5f6368; --line:#e3e6ea; --bg:#f6f7f9; --ok:#137333; --okbg:#e6f4ea; --bad:#c5221f; --badbg:#fce8e6; --warn:#8a5a00; --warnbg:#fef7e0; --acc:#1a5d57; }\n  * { box-sizing: border-box; }\n  body { margin:0; font: 13.5px/1.45 system-ui, -apple-system, \"Segoe UI\", Roboto, Arial, \"Tajawal\", sans-serif; color:var(--ink); background:var(--bg); }\n  header.top { display:flex; align-items:center; gap:12px; padding:10px 16px; background:#fff; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }\n  header.top h1 { font-size:16px; margin:0; font-weight:650; }\n  header.top .sub { color:var(--muted); font-size:12.5px; }\n  .banner { margin:0; padding:7px 16px; background:var(--warnbg); color:var(--warn); border-bottom:1px solid #f3dfa6; font-size:12.5px; }\n  .banner.hide { display:none; }\n  main { display:grid; grid-template-columns: minmax(380px, 46%) 1fr; gap:0; height: calc(100vh - 92px); }\n  .left { overflow:auto; border-right:1px solid var(--line); background:#fff; }\n  .right { overflow:auto; position:relative; }\n  nav.tabs { display:flex; flex-wrap:wrap; gap:2px; padding:8px 10px 0; border-bottom:1px solid var(--line); position:sticky; top:0; background:#fff; z-index:3; }\n  nav.tabs button { border:0; background:none; padding:8px 10px; font:inherit; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; }\n  nav.tabs button.on { color:var(--ink); border-bottom-color:var(--ink); font-weight:600; }\n  section.pane { display:none; padding:14px 16px 40px; }\n  section.pane.on { display:block; }\n  h2 { font-size:14px; margin:14px 0 6px; }\n  h2:first-child { margin-top:0; }\n  p.hint, .hint { color:var(--muted); font-size:12.5px; margin:4px 0 8px; }\n  label.f { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }\n  input[type=text], input[type=number], select, textarea { font:inherit; border:1px solid #cfd4da; border-radius:6px; padding:5px 7px; background:#fff; color:var(--ink); }\n  textarea { width:100%; min-height:90px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }\n  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }\n  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; }\n  .grid4 { display:grid; grid-template-columns:repeat(4,1fr); gap:6px 10px; }\n  .btn { font:inherit; border:1px solid #c9ced4; background:#fff; border-radius:6px; padding:6px 11px; cursor:pointer; color:var(--ink); }\n  .btn:hover { background:#f2f3f5; }\n  .btn.pri { background:var(--ink); color:#fff; border-color:var(--ink); }\n  .btn.pri:hover { background:#2b2b2f; }\n  .btn.sm { padding:3px 8px; font-size:12px; }\n  a.btn { text-decoration:none; display:inline-block; }\n  .btn:disabled { opacity:.45; cursor:default; }\n  .card { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:8px 0; background:#fff; }\n  .drop { border:1.5px dashed #c3c8ce; border-radius:8px; padding:16px; text-align:center; color:var(--muted); cursor:pointer; background:#fbfbfc; }\n  .drop.over { border-color:var(--acc); background:#eef6f5; }\n  table.t { width:100%; border-collapse:collapse; font-size:12.5px; }\n  table.t th { text-align:start; font-weight:600; color:var(--muted); border-bottom:1px solid var(--ink); padding:4px 6px 4px 0; }\n  table.t td { border-bottom:1px solid var(--line); padding:5px 6px 5px 0; vertical-align:top; }\n  table.t select { max-width:230px; }\n  .tag { display:inline-block; font-size:11px; padding:1px 6px; border-radius:10px; background:#eef0f2; color:#3c4043; white-space:nowrap; }\n  .tag.ok { background:var(--okbg); color:var(--ok); } .tag.bad { background:var(--badbg); color:var(--bad); } .tag.warn { background:var(--warnbg); color:var(--warn); }\n  .msg { padding:7px 10px; border-radius:6px; font-size:12.5px; margin:6px 0; }\n  .msg.err { background:var(--badbg); color:var(--bad); } .msg.ok { background:var(--okbg); color:var(--ok); } .msg.warn { background:var(--warnbg); color:var(--warn); } .msg.info { background:#eef3f8; color:#1d3d5c; }\n  .assign { border:1px solid var(--line); border-radius:8px; padding:12px 14px; max-height:340px; overflow:auto; background:#fff; font-family: Arial, \"Tajawal\", sans-serif; }\n  .assign [data-jv] { background:#fff1b8; outline:1px solid #e8c547; border-radius:3px; cursor:pointer; }\n  .assign [data-jv].keep { background:#f1f3f4; outline-color:#c8ccd0; }\n  .assign [data-jv].sel { outline:2px solid var(--acc); }\n  .assign img, .assign .imgph { max-width:100%; }\n  .assign .chip { background:#fff1b8; border:1px solid #e8c547; border-radius:4px; padding:0 3px; white-space:nowrap; font-size:.92em; }\n  .assign .chip.keep { background:#f1f3f4; border-color:#c8ccd0; }\n  .assign { cursor:pointer; }\n  /* Word-like letter editor */\n  .ed { position:fixed; inset:0; z-index:50; background:#e9ebee; display:flex; flex-direction:column; }\n  .ed[hidden] { display:none; }\n  .edbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:7px 12px; background:#fff; border-bottom:1px solid var(--line); }\n  .edgrp { display:inline-flex; gap:2px; border-left:1px solid var(--line); padding-left:8px; }\n  .edgrp button { border:1px solid transparent; background:none; border-radius:5px; min-width:30px; padding:3px 7px; cursor:pointer; font:inherit; color:var(--ink); }\n  .edgrp button:hover { background:#f2f3f5; border-color:#d5d9de; }\n  .edgrp button:disabled { opacity:.35; cursor:default; }\n  .edmain { flex:1; display:grid; grid-template-columns: 1fr 310px; min-height:0; }\n  .edcanvas { overflow:auto; padding:24px 16px 60px; }\n  .edpage { margin:0 auto; background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.22); box-sizing:content-box; }\n  .edlbl { font:600 10.5px system-ui, sans-serif; color:#8a9199; text-transform:uppercase; letter-spacing:.06em; margin:8px 0 2px; user-select:none; }\n  .edlbl:first-child { margin-top:0; }\n  .edpart { outline:1px dashed #d5d9de; min-height:26px; display:flow-root; }\n  .edpart:focus { outline:1px solid var(--acc); }\n  .edpart:empty::before { content:'Empty: type here or drop a variable'; color:#b0b5bb; font:12px system-ui, sans-serif; }\n  .edpart td, .edpart th { box-shadow: inset 0 0 0 1px #eef0f2; min-width:20px; }\n  .edpart img:not([src]) { outline:1.5px dashed #8a9199; background:#f6f7f8; }\n  .edpart .chip { background:#fff1b8; border:1px solid #e8c547; border-radius:4px; padding:0 3px; cursor:grab; white-space:nowrap; font-size:.92em; }\n  .edpart .chip.keep { background:#f1f3f4; border-color:#c8ccd0; }\n  .edpart .chip.sel { outline:2px solid var(--acc); outline-offset:1px; }\n  .edpart .dropt { background:#e3f2ef !important; box-shadow: inset 0 0 0 2px var(--acc) !important; }\n  .edpal { border-left:1px solid var(--line); background:#fff; overflow:auto; padding:10px 12px 30px; }\n  .pv { padding:5px 8px; border:1px solid var(--line); border-radius:6px; margin:4px 0; cursor:grab; font-size:12.5px; background:#fff; user-select:none; }\n  .pv:hover { border-color:var(--acc); background:#f4faf9; }\n  .pv small { color:var(--muted); display:block; }\n  .pv code { display:block; font-size:10.5px; color:#8a9199; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }\n  .edpalhead { position:sticky; top:-10px; background:#fff; z-index:2; padding:10px 0 4px; margin-top:-10px; border-bottom:1px solid var(--line); }\n  .pvg { font-size:11px; font-weight:600; color:var(--muted); margin:12px 0 2px; text-transform:uppercase; }\n  @media (max-width: 900px) { .edmain { grid-template-columns:1fr; grid-template-rows: 1fr 40vh; } .edpal { border-left:0; border-top:1px solid var(--line); } }\n  .code { width:100%; min-height:120px; }\n  /* fit status */\n  .fitbar { position:sticky; top:0; z-index:4; background:#fff; border-bottom:1px solid var(--line); padding:9px 14px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }\n  .fitbig { font-weight:650; padding:4px 10px; border-radius:6px; }\n  .fitbig.ok { background:var(--okbg); color:var(--ok); } .fitbig.bad { background:var(--badbg); color:var(--bad); } .fitbig.idle { background:#eef0f2; color:var(--muted); }\n  .fitbar .meta { color:var(--muted); font-size:12.5px; }\n  .fixes { display:flex; flex-wrap:wrap; gap:6px; padding:8px 14px; border-bottom:1px solid var(--line); background:#fcfcfd; }\n  .pages { padding:18px; display:flex; flex-direction:column; align-items:center; gap:16px; }\n  .pagewrap { position:relative; }\n  .page { position:absolute; top:0; left:0; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.18); transform-origin:0 0; overflow:hidden; }\n  .page .pa { position:absolute; border:1px dashed #b9c3cc; pointer-events:none; }\n  .page .vp { position:absolute; overflow:hidden; }\n  .page .lbl { position:absolute; right:6px; bottom:4px; font:11px system-ui, sans-serif; color:#9aa0a6; }\n  .pagewrap.over .page { box-shadow:0 0 0 2px var(--bad); }\n  .pagewrap.over .lbl { color:var(--bad); font-weight:600; }\n  .pagewrap .cut { position:absolute; left:0; right:0; border-top:1px dashed var(--bad); }\n  .stream { font-family: Arial, \"Tajawal\", sans-serif; font-size:12pt; color:#000; }\n  .stream > div { display:flow-root; }\n  .stream img, #measure img { max-width:100%; }\n  .imgph { display:inline-flex; align-items:center; justify-content:center; border:1.5px dashed #8a9199; color:#5f6368; font:11px system-ui, sans-serif; background:#f6f7f8; vertical-align:middle; text-align:center; overflow:hidden; }\n  .vhl { background:#fff4c2; }\n  #measure { position:absolute; left:-100000px; top:0; visibility:hidden; }\n  .kbd { font-family: ui-monospace, Menlo, Consolas, monospace; font-size:12px; background:#f1f3f4; padding:1px 4px; border-radius:4px; }\n  details { margin:6px 0; } summary { cursor:pointer; font-weight:600; }\n  ul.tight { margin:4px 0 8px 18px; padding:0; } ul.tight li { margin:2px 0; }\n  .imgrow { display:grid; grid-template-columns: 90px 1fr; gap:10px; align-items:start; border-bottom:1px solid var(--line); padding:8px 0; }\n  .imgrow .thumb { width:90px; height:60px; object-fit:contain; border:1px solid var(--line); border-radius:4px; background:#fafafa; }\n  .srow { display:grid; grid-template-columns: 116px 1fr auto; gap:8px; align-items:center; padding:5px 8px; border-left:4px solid #c8ccd0; border-bottom:1px solid var(--line); background:#fff; }\n  .srow.r-header { border-left-color:#1a5d57; background:#f2f8f7; } .srow.r-body { border-left-color:#9aa0a6; } .srow.r-footer { border-left-color:#8a5a00; background:#fdf8ee; } .srow.r-skip { opacity:.5; text-decoration: line-through; }\n  .srow .txt { font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }\n  .srow .txt.muted { color:#9aa0a6; font-style:italic; }\n  .srow .org { font-size:10.5px; color:var(--muted); display:block; }\n  .srow .acts { display:flex; gap:4px; }\n  .srow .acts button { font-size:11px; padding:2px 6px; }\n  .fixstate { font-size:12px; color:var(--muted); }\n  .tabsep { width:1px; background:var(--line); margin:6px 6px 8px; }\n  .nextrow { margin-top:16px; padding-top:10px; border-top:1px solid var(--line); justify-content:flex-end; }\n  @media (max-width: 900px) { main { grid-template-columns: 1fr; height:auto; } .left { border-right:0; } }\n</style>\n</head>\n<body>\n<header class=\"top\">\n  <h1>Jisr Letter Converter</h1>\n  <span class=\"sub\">Word (.docx) → Jisr letter template HTML (header · body · footer), with fit-to-page check. Runs fully in your browser.</span>\n</header>\n<p class=\"banner\" id=\"calBanner\">Using assumed A4 geometry (20 mm margins, header and footer flow with the body), results are estimates. Calibrate to Jisr once to make them exact.</p>\n<main>\n  <div class=\"left\">\n    <nav class=\"tabs\" id=\"tabs\">\n      <button data-p=\"import\" class=\"on\">1 · Import</button>\n      <button data-p=\"struct\">2 · Structure</button>\n      <button data-p=\"vars\">3 · Variables</button>\n      <button data-p=\"images\">4 · Images</button>\n      <button data-p=\"fit\">5 · Page &amp; fit</button>\n      <button data-p=\"out\">6 · Output</button>\n      <span class=\"tabsep\"></span>\n      <button data-p=\"jisr\">Jisr templates</button>\n      <button data-p=\"cal\">Calibrate</button>\n      <button data-p=\"reverse\">Fix existing template</button>\n      <button data-p=\"help\">Help</button>\n    </nav>\n\n    <!-- 1 IMPORT -->\n    <section class=\"pane on\" id=\"p-import\">\n      <h2>Word letter (.docx)</h2>\n      <div class=\"drop\" id=\"docxDrop\">Drop a .docx here or click to choose<input type=\"file\" id=\"docxIn\" accept=\".docx\" hidden></div>\n      <div id=\"importMsg\"></div>\n      <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn sm\" id=\"sampleBtn\">Load a built-in sample letter</button></div>\n\n      <h2>Header / footer as images (optional)</h2>\n      <p class=\"hint\">Use this when the Word file has an empty footer or a full-page letterhead background. The image replaces that part and becomes a <span class=\"kbd\">{{{letter_attachment_ID}}}</span> placeholder (set the ID in step 3).</p>\n      <div class=\"grid2\">\n        <div><label class=\"f\">Header image</label><input type=\"file\" id=\"hdrImgIn\" accept=\"image/*\"></div>\n        <div><label class=\"f\">Footer image</label><input type=\"file\" id=\"ftrImgIn\" accept=\"image/*\"></div>\n        <div><label class=\"f\">Header image height (mm)</label><input type=\"number\" id=\"hdrImgH\" value=\"25\" min=\"5\" max=\"80\" step=\"1\"></div>\n        <div><label class=\"f\">Footer image height (mm)</label><input type=\"number\" id=\"ftrImgH\" value=\"15\" min=\"5\" max=\"60\" step=\"1\"></div>\n      </div>\n\n      <p class=\"hint\" style=\"margin-top:14px\">Already have a template in Jisr that breaks? Use the <b>Fix existing template</b> tab instead.</p>\n      <div class=\"row nextrow\"><button class=\"btn sm pri\" data-goto=\"struct\">Next: 2 · Structure →</button></div>\n    </section>\n\n    <!-- 2 STRUCTURE -->\n    <section class=\"pane\" id=\"p-struct\">\n      <h2>Header, body and footer</h2>\n      <p class=\"hint\">Each line below is one paragraph, table or image from the Word file, in order. Choose where each one goes in Jisr. Word's own header and footer are pre-selected; \"Leave out\" removes a line from all three parts.</p>\n      <div class=\"row\" style=\"margin-bottom:8px\"><button class=\"btn sm\" id=\"structReset\">Reset to the Word structure</button><span class=\"hint\" id=\"structSummary\" style=\"margin:0\"></span></div>\n      <div id=\"structList\"><p class=\"hint\">Import a letter first.</p></div>\n      <div class=\"row nextrow\"><button class=\"btn sm pri\" data-goto=\"vars\">Next: 3 · Variables →</button></div>\n    </section>\n\n    <!-- 3 VARIABLES -->\n    <section class=\"pane\" id=\"p-vars\">\n      <h2>Detected placeholders</h2>\n      <p class=\"hint\">Found from <span class=\"kbd\">[Employee Name]</span>, <span class=\"kbd\">{{name}}</span>, <span class=\"kbd\">&lt;&lt;name&gt;&gt;</span>, highlighted text and ALL-CAPS tokens. Confirm or change each one. Output uses three braces: <span class=\"kbd\">{{{key}}}</span>.</p>\n      <div id=\"varsMsg\"></div>\n      <table class=\"t\" id=\"varTable\"><thead><tr><th>Placeholder</th><th>Where</th><th>Jisr variable</th><th>Match</th></tr></thead><tbody></tbody></table>\n      <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn sm\" id=\"confirmAll\">Confirm all proposed</button></div>\n\n      <h2>Edit the letter and place variables</h2>\n      <p class=\"hint\">Opens the letter as an editable page, like Word. Drag a variable from the list into any open space (an empty table cell, after a label, mid-sentence), or click in the letter and then click a variable. Labels and titles stay as they are. You can also type, delete and format text.</p>\n      <div class=\"row\" style=\"margin-bottom:6px\"><button class=\"btn pri\" id=\"edOpen\">Open the letter editor</button><span class=\"hint\" id=\"edSummary\" style=\"margin:0\"></span></div>\n      <div class=\"assign\" id=\"assignView\" dir=\"auto\" title=\"Click to open the letter editor\"></div>\n      <datalist id=\"keyList\"></datalist>\n\n      <h2>Sample values for the preview</h2>\n      <p class=\"hint\">One <span class=\"kbd\">key = value</span> per line. Arabic names are included to test right-to-left text. These never leave your browser.</p>\n      <div class=\"row\"><button class=\"btn sm\" id=\"sampleEn\">English names</button><button class=\"btn sm\" id=\"sampleAr\">Arabic names</button><label class=\"hint\" style=\"margin:0\"><input type=\"checkbox\" id=\"hlVars\" checked> highlight variables in preview</label></div>\n      <textarea id=\"samples\" spellcheck=\"false\" style=\"min-height:160px\"></textarea>\n\n      <h2>Variable catalog</h2>\n      <details><summary>Edit catalog / add client-specific allowances</summary>\n        <p class=\"hint\">Tenant-specific keys (e.g. <span class=\"kbd\">benefit_type_62740</span>) differ per client. Paste <span class=\"kbd\">Label, key</span> lines to add them.</p>\n        <textarea id=\"extraKeys\" spellcheck=\"false\" placeholder=\"Housing allowance, benefit_type_62740&#10;بدل السكن, benefit_type_62740\"></textarea>\n        <div class=\"row\" style=\"margin:6px 0\"><button class=\"btn sm\" id=\"addKeys\">Add these keys</button></div>\n        <label class=\"f\">Full catalog (JSON)</label>\n        <textarea id=\"catalogJson\" spellcheck=\"false\" style=\"min-height:200px\"></textarea>\n        <div class=\"row\" style=\"margin-top:6px\"><button class=\"btn sm\" id=\"saveCatalog\">Save catalog</button><button class=\"btn sm\" id=\"resetCatalog\">Reset to default</button></div>\n      </details>\n      <div class=\"row nextrow\"><button class=\"btn sm pri\" data-goto=\"images\">Next: 4 · Images →</button></div>\n    </section>\n\n    <!-- 3 IMAGES -->\n    <section class=\"pane\" id=\"p-images\">\n      <h2>Images in this letter</h2>\n      <p class=\"hint\">By default each image is <b>embedded in the source code</b>, so you only paste the code. If the image is already uploaded in Jisr, choose \"Jisr attachment ID\" and type its number to use <span class=\"kbd\">{{{letter_attachment_ID}}}</span> instead.</p>\n      <div id=\"imgList\"></div>\n      <h2>Convert an image to source code</h2>\n      <p class=\"hint\">A logo, stamp, signature or letterhead strip as PNG / JPG. Get its source code to paste anywhere, or add it to the letter.</p>\n      <div class=\"grid2\">\n        <div><label class=\"f\">Image file</label><input type=\"file\" id=\"convImg\" accept=\"image/*\"></div>\n        <div><label class=\"f\">Width (mm)</label><input type=\"number\" id=\"convW\" value=\"50\" min=\"5\" max=\"190\" step=\"1\"></div>\n        <div><label class=\"f\">Alignment</label><select id=\"convAlign\"><option value=\"center\">Center</option><option value=\"left\">Left</option><option value=\"right\">Right</option></select></div>\n        <div><label class=\"f\">Add to the letter</label><select id=\"convTo\"><option value=\"\">No, only give me the code</option><option value=\"header\">Add to the end of the Header</option><option value=\"body\">Add to the end of the Body</option><option value=\"footer\">Add to the end of the Footer</option></select></div>\n      </div>\n      <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn pri\" id=\"convBtn\">Convert</button><button class=\"btn sm\" id=\"convCopy\" disabled>Copy code</button><span class=\"hint\" id=\"convInfo\" style=\"margin:0\"></span></div>\n      <textarea id=\"convOut\" class=\"code\" readonly spellcheck=\"false\" style=\"min-height:80px;margin-top:6px\"></textarea>\n      <div class=\"row nextrow\"><button class=\"btn sm pri\" data-goto=\"fit\">Next: 5 · Page &amp; fit →</button></div>\n    </section>\n\n    <!-- 4 FIT -->\n    <section class=\"pane\" id=\"p-fit\">\n      <h2>Page geometry</h2>\n      <div class=\"row\"><select id=\"profileSel\" style=\"flex:1\"></select><button class=\"btn sm\" id=\"delProfile\">Delete profile</button></div>\n      <div id=\"profileInfo\" class=\"hint\"></div>\n      <div class=\"grid2\">\n        <div><label class=\"f\">Intended pages</label><input type=\"number\" id=\"targetPages\" value=\"1\" min=\"1\" max=\"10\"></div>\n        <div><label class=\"f\">Base font size when none is set (pt)</label><input type=\"number\" id=\"baseFont\" value=\"12\" min=\"6\" max=\"20\" step=\"0.5\"></div>\n      </div>\n      <h2>Adjustments (never change wording)</h2>\n      <div class=\"grid2\">\n        <div><label class=\"f\">Empty spacer paragraphs</label><select id=\"spacerMode\"><option value=\"collapse\">Collapse into one margin (same space)</option><option value=\"keep\">Keep as is</option><option value=\"remove\">Remove</option></select></div>\n        <div><label class=\"f\">Paragraph &amp; table spacing</label><select id=\"spacingScale\"><option value=\"1\">100%</option><option value=\"0.75\">75%</option><option value=\"0.5\">50%</option><option value=\"0.25\">25%</option><option value=\"0\">None</option></select></div>\n        <div><label class=\"f\">Font size</label><select id=\"fontScale\"></select></div>\n        <div><label class=\"f\">Images / logo size</label><select id=\"imgScale\"><option value=\"1\">100%</option><option value=\"0.9\">90%</option><option value=\"0.8\">80%</option><option value=\"0.7\">70%</option><option value=\"0.6\">60%</option><option value=\"0.5\">50%</option></select></div>\n      </div>\n      <div class=\"row\" style=\"margin-top:10px\"><button class=\"btn pri\" id=\"autoFit\">Auto-fit to intended pages</button><button class=\"btn\" id=\"undoFixB\">↶ Undo last</button><button class=\"btn\" id=\"resetFix\">Reset adjustments</button></div>\n      <div id=\"autoFitMsg\"></div>\n      <h2>Fit report</h2>\n      <div id=\"fitReport\" class=\"card hint\">Import a letter to see the report.</div>\n      <div class=\"row nextrow\"><button class=\"btn sm pri\" data-goto=\"out\">Next: 6 · Output →</button></div>\n    </section>\n\n    <!-- 5 OUTPUT -->\n    <section class=\"pane\" id=\"p-out\">\n      <h2>Paste into Jisr</h2>\n      <p class=\"hint\">Settings › Requests &amp; tasks › Letter templates › open the template. Paste each part into its own editor: Header box → Header editor, Body box → Body editor, Footer box → Footer editor (View › Source code, select all, paste, Save). Pasting replaces only that editor's content.</p>\n      <div id=\"outWarn\"></div>\n      <div class=\"card\" id=\"rfBox\">\n        <div class=\"row\"><b>Reflect in Jisr</b><span class=\"hint\" style=\"margin:0\">Writes the code straight into a letter template, no copy and paste.</span></div>\n        <div id=\"rfOff\" class=\"hint\">Available when this tool is opened from Bulk Ops (Utilities › Jisr Letter Converter) while you are logged in to the company in Jisr.</div>\n        <div id=\"rfOn\" style=\"display:none\">\n          <div class=\"row\" style=\"margin-top:6px\"><label class=\"hint\" style=\"margin:0\" for=\"rfTarget\">Template</label><select id=\"rfTarget\" style=\"flex:1;min-width:200px\"></select></div>\n          <div class=\"grid2\" id=\"rfNew\" style=\"display:none\"><div><label class=\"f\">New template name (English)</label><input type=\"text\" id=\"rfName\" style=\"width:100%\"></div><div><label class=\"f\">New template name (Arabic)</label><input type=\"text\" id=\"rfNameAr\" dir=\"rtl\" style=\"width:100%\"></div></div>\n          <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn pri\" id=\"rfAll\">Reflect all three parts in Jisr</button><span class=\"hint\" id=\"rfInfo\" style=\"margin:0\"></span></div>\n        </div>\n        <div id=\"rfMsg\"></div>\n      </div>\n      <div class=\"row\"><b>Header HTML</b><button class=\"btn sm\" data-copy=\"header\">Copy</button><button class=\"btn sm\" data-reflect=\"header\">Reflect in Jisr</button></div>\n      <textarea class=\"code\" id=\"outH\" readonly spellcheck=\"false\"></textarea>\n      <div class=\"row\" style=\"margin-top:8px\"><b>Body HTML</b><button class=\"btn sm\" data-copy=\"body\">Copy</button><button class=\"btn sm\" data-reflect=\"body\">Reflect in Jisr</button></div>\n      <textarea class=\"code\" id=\"outB\" readonly spellcheck=\"false\" style=\"min-height:200px\"></textarea>\n      <div class=\"row\" style=\"margin-top:8px\"><b>Footer HTML</b><button class=\"btn sm\" data-copy=\"footer\">Copy</button><button class=\"btn sm\" data-reflect=\"footer\">Reflect in Jisr</button></div>\n      <textarea class=\"code\" id=\"outF\" readonly spellcheck=\"false\"></textarea>\n      <div class=\"row\" style=\"margin-top:10px\"><button class=\"btn pri\" id=\"dlZip\">Download .zip</button><span class=\"hint\">header.html, body.html, footer.html, variables-used.csv, fit-report.json</span></div>\n    </section>\n\n    <!-- JISR TEMPLATES -->\n    <section class=\"pane\" id=\"p-jisr\">\n      <div id=\"jisrOff\" class=\"msg info\">To create and edit templates directly in Jisr, open this tool from Bulk Ops (the J button › Utilities › Jisr Letter Converter) while you are logged in to the company in Jisr. Opened as a file, it can only convert and copy.</div>\n      <div id=\"jisrOn\" style=\"display:none\">\n        <h2>Connected to <span id=\"jisrSlug\"></span></h2>\n        <div class=\"row\"><button class=\"btn sm\" id=\"jisrRefresh\">Load templates</button><span class=\"hint\" id=\"jisrInfo\" style=\"margin:0\"></span></div>\n        <h2>Templates in Jisr</h2>\n        <table class=\"t\" id=\"tplTable\"><thead><tr><th style=\"width:24px\"><input type=\"checkbox\" id=\"tplAll\"></th><th>Name</th><th>Arabic name</th><th>Check</th><th></th></tr></thead><tbody></tbody></table>\n        <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn sm\" id=\"tplCheck\">Check fit of ticked</button><button class=\"btn sm\" id=\"tplAutofix\">Auto-fit &amp; save ticked…</button><button class=\"btn sm\" id=\"tplDupSel\">Duplicate ticked</button></div>\n        <div id=\"tplMsg\"></div>\n        <details style=\"margin-top:10px\"><summary>Copy templates to another company</summary>\n          <p class=\"hint\">1. Here, tick the templates and download them. 2. Open this tool from Bulk Ops in the other company and import the file. Images are copied when Jisr allows reading them; otherwise add the logo again. Names that already exist get a number.</p>\n          <div class=\"row\"><button class=\"btn sm\" id=\"tplExport\">Download ticked for another company</button><button class=\"btn sm\" id=\"tplImportBtn\">Import templates from a file…</button><input type=\"file\" id=\"tplImport\" accept=\".json,application/json\" hidden></div>\n        </details>\n        <h2>Current letter</h2>\n        <div id=\"curInfo\"></div>\n        <div class=\"grid2\"><div><label class=\"f\">Template name (English)</label><input type=\"text\" id=\"tplName\" style=\"width:100%\"></div><div><label class=\"f\">Template name (Arabic)</label><input type=\"text\" id=\"tplNameAr\" dir=\"rtl\" style=\"width:100%\"></div></div>\n        <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn pri\" id=\"tplCreate\">Create as new template</button><button class=\"btn\" id=\"tplSave\" style=\"display:none\">Save changes</button><button class=\"btn\" id=\"tplRestore\" style=\"display:none\">Restore original</button></div>\n        <div id=\"saveMsg\"></div>\n        <h2>Bulk create from Word files</h2>\n        <p class=\"hint\">Each Word file becomes one template. Fill the English and Arabic names; use Review to open a file in steps 2 to 6 (structure, variables, images, fit) before creating.</p>\n        <div class=\"drop\" id=\"bulkDrop\">Drop several .docx files here or click to choose<input type=\"file\" id=\"bulkIn\" accept=\".docx\" multiple hidden></div>\n        <table class=\"t\" id=\"bulkTable\" style=\"margin-top:8px\"><thead><tr><th>File</th><th>English name</th><th>Arabic name</th><th>Check</th><th></th></tr></thead><tbody></tbody></table>\n        <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn pri\" id=\"bulkCreate\">Create all in Jisr</button></div>\n        <div id=\"bulkMsg\"></div>\n      </div>\n    </section>\n\n    <!-- FIX EXISTING (reverse) -->\n    <section class=\"pane\" id=\"p-reverse\">\n      <h2>Fix an existing Jisr template</h2>\n      <p class=\"hint\">Use this only for a template that is already in Jisr. Copy the Source code of each Jisr editor (View › Source code) into the matching box, then Load. The letter opens in steps 2 to 5 to fix it, and the cleaned code to paste back is in <b>6 · Output</b>.</p>\n      <div class=\"msg info\" id=\"revHint\">Tip: when this tool is opened from Bulk Ops, the <b>Jisr templates</b> tab opens and saves templates directly, without copying.</div>\n      <label class=\"f\">1. Header editor's source code</label><textarea id=\"revH\" spellcheck=\"false\"></textarea>\n      <label class=\"f\">2. Body editor's source code</label><textarea id=\"revB\" spellcheck=\"false\" style=\"min-height:140px\"></textarea>\n      <label class=\"f\">3. Footer editor's source code</label><textarea id=\"revF\" spellcheck=\"false\"></textarea>\n      <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn pri\" id=\"revBtn\">Load pasted template</button></div>\n      <div id=\"revMsg\"></div>\n    </section>\n\n    <!-- CALIBRATE -->\n    <section class=\"pane\" id=\"p-cal\">\n      <h2>Calibrate to Jisr</h2>\n      <p class=\"hint\">Jisr's preview / PDF renderer could not be observed, so measure it once with this test template and save the result as a profile.</p>\n      <ol class=\"tight\">\n        <li>Create a test letter template in Jisr. Paste the three parts below into Header, Body and Footer (View › Source code).</li>\n        <li>Click Preview (or generate the letter for any employee).</li>\n        <li>Fill in what you see and save the profile.</li>\n      </ol>\n      <div class=\"row\"><button class=\"btn sm\" data-calcopy=\"header\">Copy header</button><button class=\"btn sm\" data-calcopy=\"body\">Copy body</button><button class=\"btn sm\" data-calcopy=\"footer\">Copy footer</button><button class=\"btn sm\" id=\"calDl\">Download test template</button></div>\n      <div class=\"grid2\" style=\"margin-top:8px\">\n        <div><label class=\"f\">Profile name</label><input type=\"text\" id=\"calName\" value=\"Jisr default A4\"></div>\n        <div><label class=\"f\">Paper size</label><select id=\"calPaper\"><option value=\"A4\">A4 (210 × 297 mm)</option><option value=\"Letter\">Letter (216 × 279 mm)</option></select></div>\n        <div><label class=\"f\">Last body line fully on page 1 (number)</label><input type=\"number\" id=\"calLines\" min=\"1\" max=\"80\" placeholder=\"e.g. 41\"></div>\n        <div><label class=\"f\">Do header and footer repeat on every page?</label><select id=\"calRepeat\"><option value=\"flow\">No: header on page 1, footer after the body</option><option value=\"repeat\">Yes: on every page</option></select></div>\n      </div>\n      <label class=\"f\">Visible margins (mm): top, bottom, left, right</label>\n      <div class=\"grid4\"><input type=\"number\" id=\"calMT\" value=\"20\"><input type=\"number\" id=\"calMB\" value=\"20\"><input type=\"number\" id=\"calML\" value=\"20\"><input type=\"number\" id=\"calMR\" value=\"20\"></div>\n      <div class=\"grid2\">\n        <div><label class=\"f\">Did the page break marker start page 2 at \"PAGE BREAK TEST\"?</label><select id=\"calPB\"><option value=\"unknown\">Not tested</option><option value=\"yes\">Yes</option><option value=\"no\">No</option></select></div>\n      </div>\n      <div class=\"row\" style=\"margin-top:10px\"><button class=\"btn pri\" id=\"calSave\">Save profile</button></div>\n      <div id=\"calMsg\"></div>\n    </section>\n\n    <!-- HELP -->\n    <section class=\"pane\" id=\"p-help\">\n      <h2>How to use</h2>\n      <ol class=\"tight\">\n        <li><b>Import</b> the Word letter. The Word header and footer become the Jisr Header and Footer; everything else is the Body.</li>\n        <li><b>Variables</b>: confirm each detected placeholder, or open the letter editor and drag variables into any open space (empty table cells included). Arabic and English labels both match.</li>\n        <li><b>Images</b>: images are embedded in the source code by default; or use an image already uploaded in Jisr by its attachment ID. You can also convert any image file to source code here.</li>\n        <li><b>Page &amp; fit</b>: set the intended number of pages. Red means it does not fit; use Auto-fit or the individual adjustments. Wording is never changed.</li>\n        <li><b>Output</b>: copy each part into the matching Jisr editor's Source code view, or download the .zip.</li>\n        <li>Run <b>Calibrate</b> once per Jisr environment so the fit numbers match Jisr's real preview.</li>\n        <li><b>Jisr templates</b> (when opened from Bulk Ops on a Jisr page): create the current letter as a template, create many from Word files at once, open an existing template to fix it and save it back, or check and auto-fit several templates. Images are uploaded for you and their IDs filled in. Every save is read back and compared; editing downloads a backup first and can be restored.</li>\n      </ol>\n      <h2>Known unknowns</h2>\n      <ul class=\"tight\">\n        <li><b>Jisr's preview / PDF renderer</b>: which engine, default font, default paragraph margins and any shrink-to-fit scaling are not known. Until calibrated, heights are browser estimates at 96 dpi. Horizontal scaling (how many words fit per line) is not calibrated.</li>\n        <li><b>Exact margins</b>: assumed 20 mm on A4 until you calibrate.</li>\n        <li><b>Header/footer behaviour</b>: assumed to flow with the body (header at the top of page 1, footer after the last line), which matches \"the footer spills onto page 2\". Calibration confirms it.</li>\n        <li><b>Embedded images</b>: your capture shows Jisr's editor uploading pasted images itself (letter_attachments); that it does the same for images embedded in pasted source code is expected but not yet confirmed. The attachment-ID option remains as a fallback.</li>\n        <li><b>Source code sanitizing</b>: whether TinyMCE's Source code view strips tags or attributes (colgroup, page break comments, certain styles) is not verified. Re-open Source code after saving to check.</li>\n        <li><b>Template API</b>: creating a template and uploading images are confirmed from your captures. The names of the body and footer fields are read from an existing template, and editing uses PUT (PATCH as fallback); both are verified by reading the template back after each save.</li>\n        <li><b>Page break marker</b>: <span class=\"kbd\">&lt;!-- pagebreak --&gt;</span> is TinyMCE's default; the calibration template tests it.</li>\n      </ul>\n    </section>\n  </div>\n\n  <div class=\"right\">\n    <div class=\"fitbar\"><span class=\"fitbig idle\" id=\"fitBig\">No letter yet</span><span class=\"meta\" id=\"fitMeta\"></span></div>\n    <div class=\"fixes\"><span class=\"hint\" style=\"margin:0\">Quick fixes:</span>\n      <button class=\"btn sm\" data-fix=\"spacers\">Remove spacer paragraphs</button>\n      <button class=\"btn sm\" data-fix=\"spacing\">Tighten spacing</button>\n      <button class=\"btn sm\" data-fix=\"font\">Font −5%</button>\n      <button class=\"btn sm\" data-fix=\"logo\">Logo −10%</button>\n      <button class=\"btn sm pri\" data-fix=\"auto\">Auto-fit</button>\n      <button class=\"btn sm\" id=\"undoFix\" title=\"Undo the last adjustment\">↶ Undo</button>\n      <button class=\"btn sm\" id=\"resetFix2\" title=\"Back to how the letter was imported\">Reset</button>\n      <span class=\"fixstate\" id=\"fixState\"></span>\n      <span style=\"flex:1\"></span>\n      <label class=\"hint\" style=\"margin:0\">Zoom <select id=\"zoom\"><option value=\"0.5\">50%</option><option value=\"0.65\" selected>65%</option><option value=\"0.8\">80%</option><option value=\"1\">100%</option></select></label>\n    </div>\n    <div class=\"pages\" id=\"pages\"><p class=\"hint\">Import a .docx, load the sample, or paste Jisr HTML to start.</p></div>\n  </div>\n</main>\n\n<div class=\"ed\" id=\"ed\" hidden>\n  <div class=\"edbar\">\n    <b>Letter editor</b>\n    <span class=\"edgrp\"><button data-cmd=\"bold\" title=\"Bold (Ctrl+B)\"><b>B</b></button><button data-cmd=\"italic\" title=\"Italic (Ctrl+I)\"><i>I</i></button><button data-cmd=\"underline\" title=\"Underline (Ctrl+U)\"><u>U</u></button></span>\n    <span class=\"edgrp\"><button data-cmd=\"justifyLeft\" title=\"Align left\">⇤</button><button data-cmd=\"justifyCenter\" title=\"Center\">≡</button><button data-cmd=\"justifyRight\" title=\"Align right\">⇥</button><button id=\"edDir\" title=\"Switch the paragraph between right-to-left and left-to-right\">⇄ RTL/LTR</button></span>\n    <span class=\"edgrp\"><button id=\"edUndo\" title=\"Undo (Ctrl+Z)\">↶ Undo</button><button id=\"edRedo\" title=\"Redo (Ctrl+Y)\">↷ Redo</button><button id=\"edRevert\" title=\"Back to the letter as it was when you opened the editor\">Revert all</button></span>\n    <span class=\"tag\" id=\"edFit\"></span>\n    <span style=\"flex:1\"></span>\n    <button class=\"btn sm pri\" id=\"edDone\">Done</button>\n  </div>\n  <div class=\"edmain\">\n    <div class=\"edcanvas\"><div class=\"edpage stream\" id=\"edPage\">\n      <div class=\"edlbl\">Header</div><div class=\"edpart\" data-part=\"header\" contenteditable=\"true\" spellcheck=\"false\"></div>\n      <div class=\"edlbl\">Body</div><div class=\"edpart\" data-part=\"body\" contenteditable=\"true\" spellcheck=\"false\"></div>\n      <div class=\"edlbl\">Footer</div><div class=\"edpart\" data-part=\"footer\" contenteditable=\"true\" spellcheck=\"false\"></div>\n    </div></div>\n    <aside class=\"edpal\">\n      <div class=\"edpalhead\">\n        <div id=\"edSelBar\"></div>\n        <input type=\"text\" id=\"edSearch\" placeholder=\"Search variables (English or Arabic)…\" style=\"width:100%;box-sizing:border-box\">\n        <p class=\"hint\">Drag a variable into the letter, or click in the letter and then click a variable. Selected text is replaced by the variable.</p>\n        <div id=\"edMsg\"></div>\n      </div>\n      <div id=\"edList\"></div>\n      <div class=\"pvg\">Other key</div>\n      <div class=\"row\"><input type=\"text\" id=\"edCustom\" placeholder=\"e.g. benefit_type_12345\" style=\"flex:1;min-width:0\"><button class=\"btn sm\" id=\"edCustomBtn\">Insert</button></div>\n    </aside>\n  </div>\n</div>\n<div id=\"measure\"></div>\n\n<script>\n'use strict';\n/* =====================================================================================\n * Jisr Letter Converter, v1.0.0\n * Single self-contained file. External: JSZip 3.10.1 (cdnjs), Tajawal font (preview only).\n * No backend. Nothing is uploaded anywhere.\n * ===================================================================================== */\nconst VERSION = '1.5.0';\nconst MM = 96 / 25.4; // px per mm at 96 dpi\nconst LS = { get(k, f) { try { const v = localStorage.getItem(k); return v == null ? f : JSON.parse(v); } catch (e) { return f; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } } };\nconst $ = (s, r) => (r || document).querySelector(s);\nconst $$ = (s, r) => Array.from((r || document).querySelectorAll(s));\nconst esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');\nconst round = (n, d) => { const f = Math.pow(10, d == null ? 2 : d); return Math.round(n * f) / f; };\nconst AR_RE = /[\\u0600-\\u06FF\\u0750-\\u077F\\uFB50-\\uFDFF\\uFE70-\\uFEFF]/g;\nconst LAT_RE = /[A-Za-z]/g;\nconst isArabicText = (s) => { const a = (String(s).match(AR_RE) || []).length; const l = (String(s).match(LAT_RE) || []).length; return a > 0 && a >= l; };\n\n/* ===================================================================== VARIABLE CATALOG */\n// [key, English label, Arabic label, aliases...]\nconst CATALOG_SRC = [\n  ['request', [\n    ['request_reason', 'Request reason', 'سبب الطلب'], ['request_date', 'Request date', 'تاريخ الطلب', 'date', 'letter date', 'issue date', 'التاريخ'], ['request_date_hijri', 'Request date (Hijri)', 'تاريخ الطلب هجري', 'hijri date', 'التاريخ الهجري'],\n    ['request_type', 'Request type', 'نوع الطلب'], ['directed_to_ar', 'Directed to (Arabic)', 'موجه إلى', 'الى من يهمه الامر', 'الجهة'], ['directed_to_en', 'Directed to', 'موجه إلى (إنجليزي)', 'to', 'addressed to', 'to whom it may concern', 'recipient']]],\n  ['employee', [\n    ['employee_code', 'Employee ID', 'الرقم الوظيفي', 'employee number', 'employee no', 'emp no', 'staff id', 'employee code'],\n    ['employee_first_name', 'First name', 'الاسم الأول'], ['employee_middle_name', 'Middle name', 'اسم الأب', 'father name'], ['employee_last_name', 'Last name', 'اسم العائلة', 'family name', 'surname'],\n    ['employee_first_name_ar', 'First name (Arabic)', 'الاسم الأول'], ['employee_middle_name_ar', 'Middle name (Arabic)', 'اسم الأب'], ['employee_last_name_ar', 'Last name (Arabic)', 'اسم العائلة'],\n    ['employee_email', 'Work email', 'البريد الإلكتروني', 'email'], ['employee_personal_email', 'Personal email', 'البريد الشخصي'],\n    ['employee_date_of_birth', 'Date of birth', 'تاريخ الميلاد', 'dob', 'birth date'],\n    ['employee_joining_date', 'Joining date', 'تاريخ الالتحاق', 'hire date', 'date of joining', 'start date', 'joined on', 'employment date', 'تاريخ المباشرة', 'تاريخ التعيين'],\n    ['employee_joining_date_hijri', 'Joining date (Hijri)', 'تاريخ الالتحاق هجري'], ['employee_last_working_day', 'Last working day', 'آخر يوم عمل', 'end date', 'leaving date'],\n    ['employee_gender_en', 'Gender', 'الجنس (إنجليزي)'], ['employee_gender_ar', 'Gender (Arabic)', 'الجنس'],\n    ['employee_marital_status_en', 'Marital status', 'الحالة الاجتماعية (إنجليزي)'], ['employee_marital_status_ar', 'Marital status (Arabic)', 'الحالة الاجتماعية'],\n    ['employee_mobile_number', 'Mobile number', 'رقم الجوال', 'phone', 'mobile'],\n    ['employee_iqama_profession_en', 'Iqama profession', 'المهنة في الإقامة (إنجليزي)', 'profession'], ['employee_iqama_profession_ar', 'Iqama profession (Arabic)', 'المهنة في الإقامة', 'المهنة'],\n    ['employee_payment_type', 'Payment type', 'طريقة الدفع'], ['employee_cr_name_en', 'CR name', 'اسم السجل التجاري (إنجليزي)'], ['employee_cr_name_ar', 'CR name (Arabic)', 'اسم السجل التجاري'],\n    ['employee_mol_no', 'MOL number', 'رقم مكتب العمل'], ['commercial_registration_number', 'Commercial registration number', 'رقم السجل التجاري', 'cr number']]],\n  ['insurance', [\n    ['employee_insurance_number', 'Insurance number', 'رقم التأمين'], ['employee_insurance_policy_number', 'Insurance policy number', 'رقم وثيقة التأمين'],\n    ['employee_insurance_effective_date', 'Insurance effective date', 'تاريخ سريان التأمين'], ['employee_insurance_category', 'Insurance category', 'فئة التأمين', 'insurance class'],\n    ['employee_insurance_cost', 'Insurance cost', 'تكلفة التأمين'], ['employee_insurance_availability_in_cchi', 'Available in CCHI', 'متوفر في مجلس الضمان'], ['employee_insurance_cchi_effective_date', 'CCHI effective date', 'تاريخ سريان مجلس الضمان']]],\n  ['identification', [\n    ['identification_nationality', 'Nationality', 'الجنسية (إنجليزي)'], ['identification_nationality_ar', 'Nationality (Arabic)', 'الجنسية'],\n    ['identification_religion_en', 'Religion', 'الديانة (إنجليزي)'], ['identification_religion_ar', 'Religion (Arabic)', 'الديانة'],\n    ['identification_document_type', 'ID document type', 'نوع الهوية'],\n    ['identification_document_number', 'ID number', 'رقم الهوية', 'iqama number', 'iqama no', 'id no', 'national id', 'national id number', 'iqama', 'رقم الإقامة', 'رقم الهوية الوطنية', 'السجل المدني', 'رقم الاقامة'],\n    ['identification_passport_number', 'Passport number', 'رقم الجواز', 'passport no', 'passport'],\n    ['identification_iqama_issue_date', 'Iqama issue date', 'تاريخ إصدار الإقامة'], ['identification_iqama_issue_date_hijri', 'Iqama issue date (Hijri)', 'تاريخ إصدار الإقامة هجري'], ['identification_iqama_issue_place', 'Iqama issue place', 'مكان إصدار الإقامة'],\n    ['identification_iqama_expiry_date', 'Iqama expiry date', 'تاريخ انتهاء الإقامة (ميلادي)', 'id expiry date'], ['identification_iqama_expiry_date_ar', 'Iqama expiry date (Hijri)', 'تاريخ انتهاء الإقامة', 'تاريخ انتهاء الهوية'],\n    ['identification_passport_issue_place', 'Passport issue place', 'مكان إصدار الجواز'], ['identification_passport_issue_date', 'Passport issue date', 'تاريخ إصدار الجواز'], ['identification_passport_expiry_date', 'Passport expiry date', 'تاريخ انتهاء الجواز'],\n    ['identification_employer_number', 'Employer number', 'رقم صاحب العمل'], ['identification_outside_kingdom', 'Outside the Kingdom', 'خارج المملكة']]],\n  ['bank', [\n    ['bank_account_type', 'Bank account type', 'نوع الحساب'], ['bank_account_name', 'Bank account name', 'اسم صاحب الحساب (إنجليزي)'], ['bank_account_name_ar', 'Bank account name (Arabic)', 'اسم صاحب الحساب'],\n    ['bank_name', 'Bank name', 'اسم البنك'], ['bank_branch_name', 'Bank branch', 'الفرع (إنجليزي)'], ['bank_branch_name_ar', 'Bank branch (Arabic)', 'اسم الفرع'],\n    ['bank_swift_code', 'SWIFT code', 'رمز السويفت'], ['bank_sort_code', 'Sort code', 'رمز الفرز'], ['bank_account_number', 'Account number', 'رقم الحساب'], ['bank_iban', 'IBAN', 'رقم الآيبان', 'ايبان']]],\n  ['gosi', [\n    ['registered_in_gosi', 'Registered in GOSI', 'مسجل في التأمينات'], ['gosi_subscription', 'GOSI subscription', 'اشتراك التأمينات'],\n    ['company_contribution_percentage', 'Company GOSI contribution %', 'نسبة مساهمة الشركة'], ['employe_contribution_percentage', 'Employee GOSI contribution %', 'نسبة مساهمة الموظف'],\n    ['company_contribution_value', 'Company GOSI contribution', 'قيمة مساهمة الشركة'], ['employe_contribution_value', 'Employee GOSI contribution', 'قيمة مساهمة الموظف'],\n    ['gosi_employee_number', 'GOSI employee number', 'رقم المشترك في التأمينات'], ['amount_registered_in_gosi', 'Amount registered in GOSI', 'الأجر المسجل في التأمينات', 'gosi salary'], ['gosi_effective_date', 'GOSI effective date', 'تاريخ التسجيل في التأمينات']]],\n  ['organization', [\n    ['organization_job_title', 'Job title', 'المسمى الوظيفي (إنجليزي)', 'position', 'designation', 'title', 'occupation', 'job'], ['organization_job_title_ar', 'Job title (Arabic)', 'المسمى الوظيفي', 'الوظيفة'],\n    ['organization_department', 'Department', 'القسم (إنجليزي)', 'dept'], ['organization_department_ar', 'Department (Arabic)', 'القسم', 'الإدارة'],\n    ['organization_parent_department', 'Parent department', 'الإدارة الأم (إنجليزي)'], ['organization_parent_department_ar', 'Parent department (Arabic)', 'الإدارة الأم'],\n    ['organization_location', 'Location', 'الموقع (إنجليزي)', 'branch', 'work location'], ['organization_location_ar', 'Location (Arabic)', 'الموقع', 'مقر العمل'],\n    ['organization_home_address', 'Home address', 'عنوان السكن', 'address'], ['organization_area', 'Area', 'المنطقة (إنجليزي)'], ['organization_area_ar', 'Area (Arabic)', 'المنطقة'],\n    ['organization_line_manager', 'Line manager', 'المدير المباشر', 'manager', 'direct manager'],\n    ['organization_employment_type', 'Employment type', 'نوع التوظيف (إنجليزي)'], ['organization_employment_type_ar', 'Employment type (Arabic)', 'نوع التوظيف'],\n    ['organization_business_unit_en', 'Business unit', 'وحدة الأعمال (إنجليزي)'], ['organization_business_unit_ar', 'Business unit (Arabic)', 'وحدة الأعمال'],\n    ['organization_contract_type_en', 'Contract type', 'نوع العقد (إنجليزي)'], ['organization_contract_type_ar', 'Contract type (Arabic)', 'نوع العقد'],\n    ['organization_contract_period_en', 'Contract period', 'مدة العقد (إنجليزي)'], ['organization_contract_period_ar', 'Contract period (Arabic)', 'مدة العقد'],\n    ['organization_contract_start', 'Contract start date', 'تاريخ بداية العقد'], ['organization_contract_start_hijri', 'Contract start date (Hijri)', 'تاريخ بداية العقد هجري'],\n    ['organization_contract_end', 'Contract end date', 'تاريخ نهاية العقد'], ['organization_contract_end_hijri', 'Contract end date (Hijri)', 'تاريخ نهاية العقد هجري'],\n    ['organization_probation_start', 'Probation start', 'بداية فترة التجربة'], ['organization_probation_end', 'Probation end', 'نهاية فترة التجربة']]],\n  ['compensation', [\n    ['compensation_basic_salary', 'Basic salary', 'الراتب الأساسي', 'basic'], ['compensation_full_package', 'Total salary (full package)', 'إجمالي الراتب', 'total salary', 'gross salary', 'total package', 'monthly salary', 'salary', 'الراتب الإجمالي', 'الراتب'],\n    ['compensation_grade', 'Grade', 'الدرجة'], ['compensation_currency_symbol_en', 'Currency symbol', 'رمز العملة (إنجليزي)'], ['compensation_currency_symbol_ar', 'Currency symbol (Arabic)', 'رمز العملة'],\n    ['compensation_currency_name_en', 'Currency', 'العملة (إنجليزي)', 'currency name'], ['compensation_currency_name_ar', 'Currency (Arabic)', 'العملة']]],\n  ['company', [\n    ['company_name', 'Company name', 'اسم الشركة (إنجليزي)', 'company', 'employer', 'organization name'], ['company_name_ar', 'Company name (Arabic)', 'اسم الشركة', 'المنشأة', 'الشركة'],\n    ['company_address_1', 'Company address', 'عنوان الشركة (إنجليزي)'], ['company_address_1_ar', 'Company address (Arabic)', 'عنوان الشركة'],\n    ['company_city', 'City', 'المدينة (إنجليزي)'], ['company_city_ar', 'City (Arabic)', 'المدينة'], ['company_country', 'Country', 'الدولة (إنجليزي)'], ['company_country_ar', 'Country (Arabic)', 'الدولة'],\n    ['company_po_box', 'P.O. Box', 'صندوق البريد', 'po box'], ['company_postal_code', 'Postal code', 'الرمز البريدي', 'zip'], ['company_fax_number', 'Fax number', 'رقم الفاكس', 'fax'], ['company_website', 'Website', 'الموقع الإلكتروني', 'web']]],\n  ['benefits (tenant-specific, example IDs)', [\n    ['benefit_type_62740', 'Housing allowance', 'بدل السكن', 'housing'], ['benefit_type_62780', 'Transportation allowance', 'بدل النقل', 'transport', 'transportation'], ['benefit_type_62783', 'Food allowance', 'بدل الطعام', 'food']]],\n  ['composite', [\n    ['@employee_full_name', 'Employee full name', 'اسم الموظف (إنجليزي)', 'employee name', 'name', 'full name', 'employee full name'],\n    ['@employee_full_name_ar', 'Employee full name (Arabic)', 'اسم الموظف', 'الاسم', 'الاسم الكامل', 'اسم الموظف الكامل']]],\n];\nconst COMPOSITE = {\n  '@employee_full_name': '{{{employee_first_name}}} {{{employee_middle_name}}} {{{employee_last_name}}}',\n  '@employee_full_name_ar': '{{{employee_first_name_ar}}} {{{employee_middle_name_ar}}} {{{employee_last_name_ar}}}',\n};\nfunction defaultCatalog_() {\n  const out = [];\n  CATALOG_SRC.forEach(([group, items]) => items.forEach(([key, en, ar, ...aliases]) => out.push({ key, en, ar, group, aliases })));\n  return out;\n}\nlet CATALOG = LS.get('jlc_catalog_v1', null) || defaultCatalog_();\nconst catByKey = () => new Map(CATALOG.map((c) => [c.key, c]));\n\n/* ===================================================================== FUZZY MATCHING */\nconst SYN = { dob: 'birth', iqama: 'id', 'هويه': 'id', 'اقامه': 'id', 'الاقامه': 'id', phone: 'mobile', 'جوال': 'mobile', position: 'title', designation: 'title', occupation: 'title', dept: 'department', mgr: 'manager', emp: 'employee', staff: 'employee', no: 'number', num: 'number', nbr: 'number', 'رقم': 'number', gross: 'total', fullname: 'full name' };\nconst STOP = new Set(['the', 'of', 'a', 'an', 'mr', 'mrs', 'ms', 'his', 'her', 'and', 'in']);\nfunction normTxt(s) {\n  return String(s || '').toLowerCase()\n    .replace(/[\\u064B-\\u065F\\u0670\\u0640]/g, '').replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي')\n    .replace(/[_\\-.\\/:()\\[\\]{}<>«»'\"،,]+/g, ' ').replace(/[^a-z0-9\\u0600-\\u06ff ]+/g, ' ').replace(/\\s+/g, ' ').trim();\n}\nfunction toks(s) {\n  return normTxt(s).split(' ').map((t) => (t.length > 3 && /^ال/.test(t) ? t.slice(2) : t)).filter((t) => t && !STOP.has(t)).map((t) => SYN[t] || t).join(' ').split(' ').filter(Boolean);\n}\nfunction lev(a, b) {\n  if (a === b) return 0; const m = a.length, n = b.length; if (!m || !n) return m || n;\n  let prev = Array.from({ length: n + 1 }, (_, j) => j);\n  for (let i = 1; i <= m; i++) { const cur = [i]; for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = cur; }\n  return prev[n];\n}\nconst tokEq = (a, b) => a === b || (a.length >= 4 && b.length >= 4 && lev(a, b) <= (Math.min(a.length, b.length) >= 7 ? 2 : 1));\nfunction dice(A, B) {\n  if (!A.length || !B.length) return 0;\n  const used = new Array(B.length).fill(false); let m = 0;\n  A.forEach((a) => { const j = B.findIndex((b, k) => !used[k] && tokEq(a, b)); if (j >= 0) { used[j] = true; m++; } });\n  return (2 * m) / (A.length + B.length);\n}\nfunction matchVar(label) {\n  const A = toks(label); const n = normTxt(label).replace(/ /g, '_');\n  const ar = isArabicText(label);\n  let best = null, score = 0;\n  CATALOG.forEach((c) => {\n    let s = 0;\n    if (n === c.key || n === c.key.replace(/^@/, '')) s = 1;\n    else {\n      const texts = [c.en, c.ar, c.key.replace(/^@/, '').replace(/_/g, ' ')].concat(c.aliases || []);\n      texts.forEach((t) => { if (!t) return; const v = normTxt(t) === normTxt(label) ? 0.98 : dice(A, toks(t)); if (v > s) s = v; });\n    }\n    if (s > 0) {\n      const isAr = /_ar$/.test(c.key);\n      if (ar && isAr) s += 0.04; else if (ar && !isAr && c.key.replace(/^@/, '') + '_ar' && CATALOG.some((x) => x.key === c.key + '_ar')) s -= 0.06;\n      if (!ar && isAr) s -= 0.08;\n    }\n    if (s > score) { score = s; best = c; }\n  });\n  return { key: best ? best.key : null, score: round(Math.max(0, Math.min(1, score)), 2) };\n}\n\n/* ===================================================================== STATE */\nconst S = {\n  source: null, // 'docx' | 'html' | 'sample'\n  fileName: '',\n  parts: { header: '', body: '', footer: '' }, // internal HTML with data-jv / data-jimg markers\n  vars: new Map(), // id -> { id, label, raw, kind, key, score, status, parts:Set, count }\n  images: [], // { n, name, dataUrl, w, h, attId, part, background }\n  notes: [],\n  wordGeom: null,\n  fix: { spacerMode: 'collapse', spacingScale: 1, fontScale: 1, imgScale: 1 },\n  target: 1,\n  baseFont: 12,\n  lastFit: null,\n  blocks: [], // [{ id, html, origin, role }] top-level blocks; role decides header / body / footer / skip\n  fixHistory: [],\n  fixBase: null,\n};\n\n/* ===================================================================== DOCX READER (OOXML walker) */\nconst W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';\nconst kids = (el, n) => (el ? Array.from(el.children).filter((c) => c.localName === n) : []);\nconst kid = (el, n) => (el ? Array.from(el.children).find((c) => c.localName === n) || null : null);\nconst desc = (el, n) => (el ? Array.from(el.getElementsByTagNameNS('*', n)) : []);\nconst wv = (el, a) => { if (!el) return null; const v = el.getAttribute('w:' + (a || 'val')); return v != null ? v : el.getAttributeNS(W_NS, a || 'val'); };\nconst onOff = (el) => { if (!el) return undefined; const v = wv(el); return !(v === '0' || v === 'false' || v === 'off'); };\nconst twPt = (tw) => (tw == null || isNaN(tw) ? null : tw / 20);\n\nfunction readPPr(pPr) {\n  const o = {}; if (!pPr) return o;\n  const jc = kid(pPr, 'jc'); if (jc) o.jc = wv(jc);\n  const bidi = kid(pPr, 'bidi'); if (bidi) o.bidi = onOff(bidi);\n  const sp = kid(pPr, 'spacing');\n  if (sp) { ['before', 'after', 'line'].forEach((k) => { const v = wv(sp, k); if (v != null) o[k] = +v; }); const lr = wv(sp, 'lineRule'); if (lr) o.lineRule = lr; if (onOff(sp) && (wv(sp, 'beforeAutospacing') === '1')) o.before = 280; if (wv(sp, 'afterAutospacing') === '1') o.after = 280; }\n  const ind = kid(pPr, 'ind');\n  if (ind) { const g = (k) => { const v = wv(ind, k); return v == null ? null : +v; }; const l = g('left') != null ? g('left') : g('start'); const r = g('right') != null ? g('right') : g('end'); if (l != null) o.indL = l; if (r != null) o.indR = r; if (g('firstLine') != null) o.first = g('firstLine'); if (g('hanging') != null) o.hang = g('hanging'); }\n  const num = kid(pPr, 'numPr'); if (num) { o.numId = wv(kid(num, 'numId')); o.ilvl = +(wv(kid(num, 'ilvl')) || 0); }\n  if (onOff(kid(pPr, 'pageBreakBefore'))) o.pbb = true;\n  const ps = kid(pPr, 'pStyle'); if (ps) o.style = wv(ps);\n  return o;\n}\nfunction readRPr(rPr) {\n  const o = {}; if (!rPr) return o;\n  ['b', 'bCs', 'i', 'iCs', 'strike', 'dstrike', 'caps', 'vanish'].forEach((k) => { const e = kid(rPr, k); if (e) o[k] = onOff(e); });\n  const u = kid(rPr, 'u'); if (u) o.u = wv(u) !== 'none';\n  const sz = kid(rPr, 'sz'); if (sz) o.sz = +wv(sz) / 2;\n  const szc = kid(rPr, 'szCs'); if (szc) o.szCs = +wv(szc) / 2;\n  const c = kid(rPr, 'color'); if (c) { const v = wv(c); if (v && v !== 'auto' && !/^0{6}$/.test(v)) o.color = '#' + v; else o.color = null; }\n  const hl = kid(rPr, 'highlight'); if (hl) { const v = wv(hl); if (v && v !== 'none') o.hl = v; }\n  const shd = kid(rPr, 'shd'); if (shd) { const f = wv(shd, 'fill'); if (f && f !== 'auto' && !/^f{6}$/i.test(f)) o.shd = '#' + f; }\n  const rtl = kid(rPr, 'rtl'); if (rtl) o.rtl = onOff(rtl);\n  const rs = kid(rPr, 'rStyle'); if (rs) o.style = wv(rs);\n  const va = kid(rPr, 'vertAlign'); if (va) o.va = wv(va);\n  return o;\n}\nconst merge = (...objs) => Object.assign({}, ...objs.filter(Boolean));\n\nasync function readDocx(file) {\n  if (typeof JSZip === 'undefined') throw new Error('JSZip did not load (check the internet connection, it comes from cdnjs).');\n  const zip = await JSZip.loadAsync(file);\n  const parse = async (p) => { const f = zip.file(p); if (!f) return null; return new DOMParser().parseFromString(await f.async('string'), 'application/xml'); };\n  const doc = await parse('word/document.xml');\n  if (!doc) throw new Error('This is not a Word .docx file (word/document.xml is missing).');\n  const relsOf = async (partPath) => {\n    const dir = partPath.replace(/[^/]+$/, ''); const name = partPath.split('/').pop();\n    const x = await parse(dir + '_rels/' + name + '.rels'); const m = {};\n    if (x) Array.from(x.getElementsByTagName('Relationship')).forEach((r) => { let t = r.getAttribute('Target'); if (r.getAttribute('TargetMode') === 'External') { m[r.getAttribute('Id')] = { ext: t }; return; } t = t.startsWith('/') ? t.slice(1) : (dir + t).replace(/[^/]+\\/\\.\\.\\//g, ''); m[r.getAttribute('Id')] = { path: t, type: r.getAttribute('Type') }; });\n    return m;\n  };\n  // styles\n  const stylesX = await parse('word/styles.xml');\n  const styles = {}; let defPara = null; let docDefP = {}, docDefR = {};\n  if (stylesX) {\n    const dd = desc(stylesX, 'docDefaults')[0];\n    if (dd) { docDefP = readPPr(desc(dd, 'pPr')[0]); docDefR = readRPr(desc(dd, 'rPr')[0]); }\n    desc(stylesX, 'style').forEach((s) => {\n      const id = wv(s, 'styleId'); const type = wv(s, 'type');\n      const tblPr = kid(s, 'tblPr');\n      styles[id] = { type, basedOn: wv(kid(s, 'basedOn')), pPr: readPPr(kid(s, 'pPr')), rPr: readRPr(kid(s, 'rPr')), tblBorders: tblPr ? kid(tblPr, 'tblBorders') : null, name: wv(kid(s, 'name')) };\n      if (type === 'paragraph' && (s.getAttribute('w:default') === '1' || s.getAttributeNS(W_NS, 'default') === '1')) defPara = id;\n    });\n  }\n  const chain = (id, field, seen) => { const st = styles[id]; if (!st || (seen = seen || new Set()).has(id)) return {}; seen.add(id); return merge(chain(st.basedOn, field, seen), st[field]); };\n  const styleBorders = (id) => { let st = styles[id], n = 0; while (st && n++ < 10) { if (st.tblBorders) return st.tblBorders; st = styles[st.basedOn]; } return null; };\n  // numbering\n  const numX = await parse('word/numbering.xml');\n  const numFmt = (numId, ilvl) => {\n    if (!numX) return 'bullet';\n    const num = desc(numX, 'num').find((n) => wv(n, 'numId') === String(numId)); if (!num) return 'bullet';\n    const absId = wv(kid(num, 'abstractNumId'));\n    const abs = desc(numX, 'abstractNum').find((a) => wv(a, 'abstractNumId') === absId); if (!abs) return 'bullet';\n    const lvl = kids(abs, 'lvl').find((l) => wv(l, 'ilvl') === String(ilvl)) || kids(abs, 'lvl')[0];\n    return (lvl && wv(kid(lvl, 'numFmt'))) || 'bullet';\n  };\n  // section / geometry\n  const body = desc(doc, 'body')[0];\n  const sect = kids(body, 'sectPr').pop() || desc(body, 'sectPr').pop();\n  const geom = { pageW: 210, pageH: 297, mT: 25.4, mB: 25.4, mL: 25.4, mR: 25.4 };\n  if (sect) {\n    const pg = kid(sect, 'pgSz'); if (pg) { geom.pageW = round(+wv(pg, 'w') / 1440 * 25.4, 1); geom.pageH = round(+wv(pg, 'h') / 1440 * 25.4, 1); }\n    const mg = kid(sect, 'pgMar'); if (mg) { geom.mT = round(Math.abs(+wv(mg, 'top')) / 1440 * 25.4, 1); geom.mB = round(Math.abs(+wv(mg, 'bottom')) / 1440 * 25.4, 1); geom.mL = round(+wv(mg, 'left') / 1440 * 25.4, 1); geom.mR = round(+wv(mg, 'right') / 1440 * 25.4, 1); }\n  }\n  const textWidthTw = (geom.pageW - geom.mL - geom.mR) / 25.4 * 1440;\n  const images = []; const notes = [];\n  const mediaCache = {};\n  const mediaUrl = async (path) => {\n    if (mediaCache[path] !== undefined) return mediaCache[path];\n    const f = zip.file(path); if (!f) return (mediaCache[path] = null);\n    const ext = path.split('.').pop().toLowerCase();\n    const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp', svg: 'image/svg+xml', webp: 'image/webp' }[ext];\n    if (!mime) { notes.push('Image ' + path.split('/').pop() + ' is in a format browsers cannot show (' + ext + '); a placeholder box is used.'); return (mediaCache[path] = null); }\n    return (mediaCache[path] = 'data:' + mime + ';base64,' + (await f.async('base64')));\n  };\n\n  // ---- block walker for one part (body, header or footer)\n  async function walkPart(rootEl, partName, rels) {\n    const out = [];\n    const listStack = []; // [{tag, numId, ilvl}]\n    const closeLists = (toDepth) => { while (listStack.length > toDepth) out.push('</' + listStack.pop().tag + '>'); };\n    async function blocks(container, ctx) {\n      const children = Array.from(container.children);\n      for (const el of children) {\n        const ln = el.localName;\n        if (ln === 'p') {\n          const r = await para(el, ctx);\n          if (r.pageBreakBefore && !ctx.inTable) { closeLists(0); out.push('<!-- pagebreak -->'); }\n          if (r.list && !ctx.inTable) {\n            const fmt = numFmt(r.list.numId, r.list.ilvl);\n            const tag = fmt === 'bullet' || fmt === 'none' ? 'ul' : 'ol';\n            const depth = r.list.ilvl + 1;\n            if (listStack.length >= depth && (listStack[depth - 1].numId !== r.list.numId || listStack[depth - 1].tag !== tag)) closeLists(depth - 1);\n            closeLists(depth);\n            while (listStack.length < depth) {\n              const lst = { decimal: 'decimal', lowerLetter: 'lower-alpha', upperLetter: 'upper-alpha', lowerRoman: 'lower-roman', upperRoman: 'upper-roman' }[fmt];\n              out.push('<' + tag + ' style=\"margin: 0 0 ' + (r.marginBottom || 0) + 'pt 0; ' + (r.rtl ? 'padding-right' : 'padding-left') + ': 24pt;' + (lst ? ' list-style-type: ' + lst + ';' : '') + '\"' + (r.rtl ? ' dir=\"rtl\"' : '') + '>');\n              listStack.push({ tag, numId: r.list.numId });\n            }\n            out.push('<li style=\"' + r.liStyle + '\">' + (r.inner || '&nbsp;') + '</li>');\n          } else {\n            if (!ctx.inTable) closeLists(0);\n            out.push(r.html);\n          }\n          r.after.forEach((h) => out.push(h));\n          if (r.pageBreakAfter && !ctx.inTable) { closeLists(0); out.push('<!-- pagebreak -->'); }\n        } else if (ln === 'tbl') { closeLists(0); out.push(await table(el, ctx)); }\n        else if (ln === 'sdt') { await blocks(kid(el, 'sdtContent') || el, ctx); }\n        else if (ln === 'customXml' || ln === 'ins' || ln === 'smartTag') { await blocks(el, ctx); }\n      }\n    }\n    async function para(p, ctx) {\n      const direct = readPPr(kid(p, 'pPr'));\n      const stId = direct.style || defPara;\n      const pp = merge(docDefP, ctx.tblStyle ? chain(ctx.tblStyle, 'pPr') : null, chain(stId, 'pPr'), direct);\n      const baseR = merge(docDefR, ctx.tblStyle ? chain(ctx.tblStyle, 'rPr') : null, chain(stId, 'rPr'));\n      const segs = []; const after = []; let pageBreakAfter = false;\n      const fld = { instr: false };\n      async function walkRuns(node) {\n        for (const c of Array.from(node.children)) {\n          const ln = c.localName;\n          if (ln === 'r') await run(c);\n          else if (['hyperlink', 'ins', 'smartTag', 'customXml', 'fldSimple', 'moveTo', 'sdtContent', 'dir', 'bdo'].includes(ln)) await walkRuns(c);\n          else if (ln === 'sdt') await walkRuns(kid(c, 'sdtContent') || c);\n        }\n      }\n      async function run(r) {\n        const rd = readRPr(kid(r, 'rPr'));\n        const rp = merge(baseR, rd.style ? chain(rd.style, 'rPr') : null, rd);\n        if (rp.vanish) return;\n        for (const c of Array.from(r.children)) {\n          const ln = c.localName;\n          if (ln === 'fldChar') { const t = wv(c, 'fldCharType'); fld.instr = t === 'begin'; continue; }\n          if (ln === 'instrText' || fld.instr) continue;\n          if (ln === 't') segs.push({ t: c.textContent, p: rp });\n          else if (ln === 'tab' || ln === 'ptab') segs.push({ t: '\\u00a0\\u00a0\\u00a0\\u00a0', p: rp });\n          else if (ln === 'br' || ln === 'cr') { if (wv(c, 'type') === 'page') { if (segs.length) pageBreakAfter = true; else pageBreakAfter = pageBreakAfter || false, segs.push({ pb: true }); } else segs.push({ br: true }); }\n          else if (ln === 'noBreakHyphen') segs.push({ t: '-', p: rp });\n          else if (ln === 'sym') { const ch = parseInt(wv(c, 'char') || '20', 16); segs.push({ t: ch >= 0xF000 ? '\\u2022' : String.fromCharCode(ch), p: rp }); }\n          else if (ln === 'drawing' || ln === 'pict' || ln === 'object') await drawing(c, rp);\n        }\n      }\n      async function drawing(d, rp) {\n        const anchor = desc(d, 'anchor')[0];\n        const ext = desc(d, 'extent')[0];\n        let w = ext ? Math.round(+ext.getAttribute('cx') / 9525) : 0, h = ext ? Math.round(+ext.getAttribute('cy') / 9525) : 0;\n        const blip = desc(d, 'blip')[0] || desc(d, 'imagedata')[0];\n        const rid = blip ? (blip.getAttribute('r:embed') || blip.getAttribute('r:id') || blip.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'embed')) : null;\n        const tx = desc(d, 'txbxContent')[0];\n        if (tx) { const sub = await walkPartInner(tx, ctx); after.push(...sub); }\n        if (!rid) return;\n        if (!w || !h) { const shape = desc(d, 'shape')[0]; const st = shape ? shape.getAttribute('style') || '' : ''; const mw = st.match(/width:([\\d.]+)pt/), mh = st.match(/height:([\\d.]+)pt/); if (mw) w = Math.round(+mw[1] * 96 / 72); if (mh) h = Math.round(+mh[1] * 96 / 72); }\n        const rel = rels[rid]; const path = rel && rel.path;\n        const dataUrl = path ? await mediaUrl(path) : null;\n        const pageWpx = geom.pageW * MM, pageHpx = geom.pageH * MM;\n        const behind = anchor && (anchor.getAttribute('behindDoc') === '1');\n        const background = !!anchor && ((w >= pageWpx * 0.7 && h >= pageHpx * 0.5) || (behind && w >= pageWpx * 0.6));\n        const n = images.length;\n        images.push({ n, name: (path || 'image').split('/').pop(), dataUrl, w: w || 120, h: h || 60, attId: '', part: partName, background });\n        if (background) { notes.push('“' + images[n].name + '” is a full-page background / letterhead image in the Word ' + partName + '. Jisr letters have no page background: upload the letterhead top and bottom as Header / Footer images instead. It was left out of the HTML.'); return; }\n        segs.push({ img: n, p: rp });\n      }\n      await walkRuns(p);\n      // paragraph direction + font size\n      const text = segs.map((s) => s.t || '').join('');\n      const rtl = pp.bidi !== undefined ? !!pp.bidi : ((text.match(AR_RE) || []).length > 0 && !(text.match(LAT_RE) || []).length); // Word's own direction; purely Arabic text falls back to RTL\n      const sizeOf = (rp) => { const cs = (rp.rtl || isArabicText(text)) && rp.szCs; return cs || rp.sz || 10; };\n      const tally = {}; segs.forEach((s) => { if (s.t && s.p) { const k = sizeOf(s.p); tally[k] = (tally[k] || 0) + s.t.length; } });\n      let pSize = sizeOf(baseR); let best = -1; Object.keys(tally).forEach((k) => { if (tally[k] > best) { best = tally[k]; pSize = +k; } });\n      // runs -> html\n      let inner = ''; let curKey = null; let buf = ''; let curP = null;\n      const fmtKey = (rp) => { const cs = rp.rtl || isArabicText(text); return JSON.stringify({ b: cs && rp.bCs !== undefined ? rp.bCs : rp.b, i: cs && rp.iCs !== undefined ? rp.iCs : rp.i, u: rp.u, s: rp.strike || rp.dstrike, sz: sizeOf(rp), c: rp.color || null, hl: rp.hl || rp.shd || null, va: rp.va || null, caps: rp.caps || false }); };\n      const flush = () => {\n        if (!buf) return;\n        const k = JSON.parse(curKey); let h = esc(k.caps ? buf.toUpperCase() : buf).replace(/ {2}/g, ' &nbsp;').replace(/^ /, '&nbsp;');\n        const st = [];\n        if (k.sz && k.sz !== pSize) st.push('font-size: ' + k.sz + 'pt;');\n        if (k.c) st.push('color: ' + k.c + ';');\n        if (k.s) st.push('text-decoration: line-through;');\n        if (st.length) h = '<span style=\"' + st.join(' ') + '\">' + h + '</span>';\n        if (k.u) h = '<span style=\"text-decoration: underline;\">' + h + '</span>';\n        if (k.i) h = '<em>' + h + '</em>';\n        if (k.b) h = '<strong>' + h + '</strong>';\n        if (k.va === 'superscript') h = '<sup>' + h + '</sup>'; else if (k.va === 'subscript') h = '<sub>' + h + '</sub>';\n        if (k.hl) h = '<span data-hl=\"1\">' + h + '</span>';\n        inner += h; buf = '';\n      };\n      let lead = false;\n      segs.forEach((s) => {\n        if (s.pb) { lead = true; return; }\n        if (s.br) { flush(); curKey = null; inner += '<br>'; return; }\n        if (s.img != null) {\n          flush(); curKey = null; const im = images[s.img];\n          inner += '<img data-jimg=\"' + s.img + '\" width=\"' + im.w + '\" height=\"' + im.h + '\" alt=\"\">'; return;\n        }\n        const k = fmtKey(s.p);\n        if (k !== curKey) { flush(); curKey = k; curP = s.p; }\n        buf += s.t;\n      });\n      flush();\n      const empty = !text.replace(/[\\s\\u00a0]/g, '') && !/<img /.test(inner);\n      // paragraph style\n      const st = [];\n      const logical = { left: 'start', start: 'start', right: 'end', end: 'end', center: 'center', both: 'justify', distribute: 'justify', lowKashida: 'justify', mediumKashida: 'justify', highKashida: 'justify', thaiDistribute: 'justify' }[pp.jc];\n      let align = null;\n      if (logical === 'center' || logical === 'justify') align = logical;\n      else if (logical === 'end') align = rtl ? 'left' : 'right';\n      else if (logical === 'start' && rtl) align = 'right';\n      if (align) st.push('text-align: ' + align + ';');\n      const mt = twPt(pp.before) || 0, mb = twPt(pp.after) || 0;\n      const iL = twPt(pp.indL) || 0, iR = twPt(pp.indR) || 0;\n      const ms = rtl ? [mt, iL, mb, iR] : [mt, iR, mb, iL];\n      st.push('margin: ' + ms.map((v) => (v ? round(v, 1) + 'pt' : '0')).join(' ') + ';');\n      if (pp.first) st.push('text-indent: ' + round(twPt(pp.first), 1) + 'pt;'); else if (pp.hang) st.push('text-indent: -' + round(twPt(pp.hang), 1) + 'pt;');\n      if (pp.line) { if (!pp.lineRule || pp.lineRule === 'auto') { const lh = round(pp.line / 240, 2); if (lh !== 1) st.push('line-height: ' + lh + ';'); } else st.push('line-height: ' + round(twPt(pp.line), 1) + 'pt;'); }\n      st.push('font-size: ' + pSize + 'pt;');\n      const dirA = ' dir=\"' + (rtl ? 'rtl' : 'ltr') + '\"';\n      const emptyA = empty ? ' data-empty=\"1\"' : '';\n      const html = '<p' + dirA + emptyA + ' style=\"' + st.join(' ') + '\">' + (empty ? '&nbsp;' : inner) + '</p>';\n      const liStyle = st.filter((x) => !/^margin|^text-indent/.test(x)).join(' ') + ' margin: 0 0 ' + round(mb, 1) + 'pt 0;';\n      const list = pp.numId && pp.numId !== '0' && !ctx.inTable ? { numId: pp.numId, ilvl: pp.ilvl || 0 } : null;\n      return { html, inner: empty ? '' : inner, empty, rtl, list, liStyle, marginBottom: round(mb, 1), pageBreakBefore: !!pp.pbb || lead, pageBreakAfter, after };\n    }\n    async function walkPartInner(el, ctx) {\n      const save = out.length; await blocks(el, Object.assign({}, ctx, { inTable: true }));\n      return out.splice(save);\n    }\n    function borderCss(b) {\n      if (!b) return null; const v = wv(b); if (!v || v === 'nil' || v === 'none') return 'none';\n      const sz = +(wv(b, 'sz') || 4) / 8; const col = wv(b, 'color'); const px = Math.max(1, Math.round(sz * 96 / 72));\n      return px + 'px ' + (v === 'double' ? 'double' : v === 'dotted' ? 'dotted' : v === 'dashed' ? 'dashed' : 'solid') + ' ' + (col && col !== 'auto' ? '#' + col : '#000');\n    }\n    async function table(tbl, ctx) {\n      const tblPr = kid(tbl, 'tblPr');\n      const tStyle = tblPr && wv(kid(tblPr, 'tblStyle'));\n      const grid = kids(kid(tbl, 'tblGrid'), 'gridCol').map((g) => +wv(g, 'w') || 0);\n      const total = grid.reduce((a, b) => a + b, 0) || 1;\n      let widthPct = 100;\n      const tw = tblPr && kid(tblPr, 'tblW');\n      if (tw) { const type = wv(tw, 'type'), w = +wv(tw, 'w'); if (type === 'pct') widthPct = w > 100 ? w / 50 : w; else if (type === 'dxa' && w) widthPct = (w / textWidthTw) * 100; else widthPct = Math.min(100, (total / textWidthTw) * 100); }\n      else widthPct = Math.min(100, (total / textWidthTw) * 100);\n      widthPct = Math.max(10, Math.min(100, round(widthPct, 1)));\n      const jc = tblPr && wv(kid(tblPr, 'jc'));\n      const rtl = !!(tblPr && onOff(kid(tblPr, 'bidiVisual')));\n      const tb = (tblPr && kid(tblPr, 'tblBorders')) || (tStyle && styleBorders(tStyle));\n      const tbs = {}; if (tb) ['top', 'left', 'bottom', 'right', 'insideH', 'insideV', 'start', 'end'].forEach((k) => { const b = kid(tb, k); if (b) tbs[k] = borderCss(b); });\n      const rows = kids(tbl, 'tr');\n      // grid matrix for vertical merges\n      const matrix = rows.map((tr) => { let col = 0; return kids(tr, 'tc').map((tc) => { const tcPr = kid(tc, 'tcPr'); const span = +(wv(kid(tcPr, 'gridSpan')) || 1); const vmEl = kid(tcPr, 'vMerge'); const vm = vmEl ? (wv(vmEl) === 'restart' ? 'restart' : 'continue') : null; const c = { tc, tcPr, col, span, vm }; col += span; return c; }); });\n      const ctxT = Object.assign({}, ctx, { inTable: true, tblStyle: tStyle || null });\n      let html = '<table' + (rtl ? ' dir=\"rtl\"' : '') + ' style=\"width: ' + widthPct + '%; border-collapse: collapse;' + (jc === 'center' ? ' margin-left: auto; margin-right: auto;' : '') + '\">';\n      if (grid.length > 1) html += '<colgroup>' + grid.map((g) => '<col style=\"width: ' + round((g / total) * 100, 1) + '%;\">').join('') + '</colgroup>';\n      html += '<tbody>';\n      for (let ri = 0; ri < rows.length; ri++) {\n        html += '<tr>';\n        for (const c of matrix[ri]) {\n          if (c.vm === 'continue') continue;\n          let rowspan = 1;\n          if (c.vm === 'restart') { for (let k = ri + 1; k < rows.length; k++) { const d = matrix[k].find((x) => x.col === c.col); if (d && d.vm === 'continue') rowspan++; else break; } }\n          const pct = round((grid.slice(c.col, c.col + c.span).reduce((a, b) => a + b, 0) / total) * 100, 1);\n          const st = ['width: ' + pct + '%;', 'padding: 2pt 5pt;'];\n          const va = wv(kid(c.tcPr, 'vAlign')); if (va) st.push('vertical-align: ' + (va === 'center' ? 'middle' : va) + ';'); else st.push('vertical-align: top;');\n          const shd = kid(c.tcPr, 'shd'); if (shd) { const f = wv(shd, 'fill'); if (f && f !== 'auto' && !/^f{6}$/i.test(f)) st.push('background-color: #' + f + ';'); }\n          const cb = kid(c.tcPr, 'tcBorders');\n          const side = (name, fallback) => { const own = cb && kid(cb, name); return own ? borderCss(own) : fallback; };\n          const top = side('top', ri === 0 ? tbs.top : tbs.insideH), bottom = side('bottom', ri === rows.length - 1 ? tbs.bottom : tbs.insideH);\n          const first = c.col === 0, last = c.col + c.span >= grid.length;\n          const left = side('left', side('start', first ? (tbs.left || tbs.start) : tbs.insideV)), right = side('right', side('end', last ? (tbs.right || tbs.end) : tbs.insideV));\n          [['top', top], ['right', right], ['bottom', bottom], ['left', left]].forEach(([k, v]) => { if (v && v !== 'none') st.push('border-' + k + ': ' + v + ';'); });\n          const saveLen = out.length; await blocks(c.tc, ctxT); const inner = out.splice(saveLen).join('');\n          html += '<td' + (c.span > 1 ? ' colspan=\"' + c.span + '\"' : '') + (rowspan > 1 ? ' rowspan=\"' + rowspan + '\"' : '') + ' style=\"' + st.join(' ') + '\">' + (inner || '&nbsp;') + '</td>';\n        }\n        html += '</tr>';\n      }\n      return html + '</tbody></table>';\n    }\n    await blocks(rootEl, { inTable: false, tblStyle: null });\n    closeLists(0);\n    return out.join('\\n');\n  }\n\n  const bodyRels = await relsOf('word/document.xml');\n  const parts = { header: '', body: '', footer: '' };\n  parts.body = await walkPart(body, 'body', bodyRels);\n  if (sect) {\n    const titlePg = !!onOff(kid(sect, 'titlePg'));\n    for (const [tag, key] of [['headerReference', 'header'], ['footerReference', 'footer']]) {\n      const refs = kids(sect, tag);\n      const ref = (titlePg && refs.find((r) => wv(r, 'type') === 'first')) || refs.find((r) => wv(r, 'type') === 'default') || refs[0];\n      if (!ref) continue;\n      const rid = ref.getAttribute('r:id') || ref.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');\n      const rel = bodyRels[rid]; if (!rel || !rel.path) continue;\n      const x = await parse(rel.path); if (!x) continue;\n      const pr = await relsOf(rel.path);\n      parts[key] = await walkPart(x.documentElement, key, pr);\n    }\n  }\n  return { parts, images, notes, geom };\n}\n\n/* ===================================================================== SANITIZER (both directions) */\nconst KEEP_TAGS = new Set(['P', 'BR', 'STRONG', 'EM', 'SPAN', 'TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TD', 'TH', 'COLGROUP', 'COL', 'UL', 'OL', 'LI', 'IMG', 'A', 'SUP', 'SUB', 'HR']);\nconst KEEP_STYLE = /^(text-align|font-size|font-weight|font-style|text-decoration|color|background-color|margin(-top|-bottom|-left|-right)?|padding(-top|-bottom|-left|-right)?|width|height|border(-top|-bottom|-left|-right)?(-width|-style|-color)?|border-collapse|vertical-align|line-height|text-indent|list-style-type|display|direction)$/i;\nfunction parseStyle(s) { const m = new Map(); String(s || '').split(';').forEach((d) => { const i = d.indexOf(':'); if (i < 0) return; const k = d.slice(0, i).trim().toLowerCase(), v = d.slice(i + 1).trim(); if (k && v) m.set(k, v); }); return m; }\nconst styleStr = (m) => Array.from(m.entries()).map(([k, v]) => k + ': ' + v + ';').join(' ');\nfunction sanitizeInto(root, printWmm) {\n  const printWpx = (printWmm || 170) * MM;\n  const walk = (node) => {\n    Array.from(node.childNodes).forEach((n) => {\n      if (n.nodeType === 8) { if (!/pagebreak/i.test(n.nodeValue)) n.remove(); return; }\n      if (n.nodeType !== 1) return;\n      let el = n; const tag = el.tagName;\n      if (['SCRIPT', 'STYLE', 'LINK', 'META', 'TITLE', 'HEAD', 'XML', 'O:P', 'NOSCRIPT', 'IFRAME', 'OBJECT', 'SVG'].includes(tag) || /^O:|^V:|^W:/.test(tag)) { el.remove(); return; }\n      // page-break styles -> marker\n      const pst = parseStyle(el.getAttribute('style'));\n      if (/always|page/.test(pst.get('page-break-before') || pst.get('break-before') || '')) el.parentNode.insertBefore(document.createComment(' pagebreak '), el);\n      if (/^H[1-6]$/.test(tag)) { const p = document.createElement('p'); const sz = { H1: 18, H2: 16, H3: 14, H4: 13, H5: 12, H6: 12 }[tag]; const m = parseStyle(el.getAttribute('style')); if (!m.has('font-size')) m.set('font-size', sz + 'pt'); m.set('font-weight', 'bold'); p.setAttribute('style', styleStr(m)); if (el.getAttribute('dir')) p.setAttribute('dir', el.getAttribute('dir')); while (el.firstChild) p.appendChild(el.firstChild); el.replaceWith(p); el = p; }\n      else if (tag === 'B') { el = rename(el, 'strong'); }\n      else if (tag === 'I') { el = rename(el, 'em'); }\n      else if (tag === 'U') { el = rename(el, 'span'); const m = parseStyle(el.getAttribute('style')); m.set('text-decoration', 'underline'); el.setAttribute('style', styleStr(m)); }\n      else if (tag === 'FONT') { const s = document.createElement('span'); const m = new Map(); if (el.getAttribute('color')) m.set('color', el.getAttribute('color')); s.setAttribute('style', styleStr(m)); while (el.firstChild) s.appendChild(el.firstChild); el.replaceWith(s); el = s; }\n      else if (tag === 'DIV' || tag === 'SECTION' || tag === 'ARTICLE' || tag === 'CENTER' || tag === 'BLOCKQUOTE') {\n        const hasBlock = Array.from(el.children).some((c) => /^(P|DIV|TABLE|UL|OL|H[1-6]|SECTION|BLOCKQUOTE)$/.test(c.tagName));\n        if (hasBlock) { walk(el); const parent = el.parentNode; while (el.firstChild) parent.insertBefore(el.firstChild, el); el.remove(); return; }\n        const p = rename(el, 'p'); if (tag === 'CENTER') { const m = parseStyle(p.getAttribute('style')); m.set('text-align', 'center'); p.setAttribute('style', styleStr(m)); } el = p;\n      } else if (!KEEP_TAGS.has(tag)) { walk(el); const parent = el.parentNode; while (el.firstChild) parent.insertBefore(el.firstChild, el); el.remove(); return; }\n      // attributes\n      Array.from(el.attributes).forEach((a) => {\n        const nm = a.name.toLowerCase();\n        if (nm === 'style' || nm === 'dir' || nm === 'colspan' || nm === 'rowspan' || nm === 'data-jv' || nm === 'data-jimg' || nm === 'data-empty' || nm === 'data-hl') return;\n        if (el.tagName === 'IMG' && (nm === 'src' || nm === 'alt' || nm === 'width' || nm === 'height')) return;\n        if (el.tagName === 'A' && nm === 'href') return;\n        if ((el.tagName === 'TD' || el.tagName === 'TH' || el.tagName === 'TABLE' || el.tagName === 'COL') && nm === 'width') { const m = parseStyle(el.getAttribute('style')); if (!m.has('width')) m.set('width', /%$/.test(a.value) ? a.value : a.value + 'px'); el.setAttribute('style', styleStr(m)); }\n        if (el.tagName === 'TABLE' && nm === 'border' && +a.value > 0) el.setAttribute('data-border', '1');\n        el.removeAttribute(a.name);\n      });\n      const m = parseStyle(el.getAttribute('style'));\n      Array.from(m.keys()).forEach((k) => { if (/^mso-/.test(k) || !KEEP_STYLE.test(k)) m.delete(k); });\n      if (m.has('display') && !/^(block|inline-block|inline|table|none)$/.test(m.get('display'))) m.delete('display');\n      if (pst.get('float') && el.tagName === 'IMG') { m.set('display', 'block'); if (pst.get('float') === 'right') m.set('margin-left', 'auto'); else m.set('margin-right', 'auto'); }\n      if (el.tagName === 'TABLE') {\n        const w = m.get('width'); const px = w && /px$/.test(w) ? parseFloat(w) : null;\n        if (!w || (px && px > printWpx)) m.set('width', '100%'); else if (px) m.set('width', round((px / printWpx) * 100, 1) + '%');\n        if (!m.has('border-collapse')) m.set('border-collapse', 'collapse');\n      }\n      if ((el.tagName === 'TD' || el.tagName === 'TH') && el.closest('table') && el.closest('table').getAttribute('data-border') && !Array.from(m.keys()).some((k) => /^border/.test(k))) m.set('border', '1px solid #000');\n      if (el.tagName === 'IMG') { const w = +el.getAttribute('width') || parseFloat(m.get('width')) || 0; if (w > printWpx) { const h = +el.getAttribute('height') || 0; el.setAttribute('width', Math.round(printWpx)); if (h) el.setAttribute('height', Math.round((h * printWpx) / w)); } m.delete('width'); m.delete('height'); }\n      if (m.size) el.setAttribute('style', styleStr(m)); else el.removeAttribute('style');\n      walk(el);\n      if (el.tagName === 'SPAN' && !el.attributes.length) { const parent = el.parentNode; while (el.firstChild) parent.insertBefore(el.firstChild, el); el.remove(); }\n      else if ((el.tagName === 'SPAN' || el.tagName === 'STRONG' || el.tagName === 'EM') && !el.textContent && !el.querySelector('img,br') && !el.getAttribute('data-jv')) el.remove();\n    });\n  };\n  walk(root);\n  root.querySelectorAll('table[data-border]').forEach((t) => t.removeAttribute('data-border'));\n  // mark empty paragraphs\n  root.querySelectorAll('p').forEach((p) => { if (!p.textContent.replace(/[\\s\\u00a0]/g, '') && !p.querySelector('img,[data-jv]')) p.setAttribute('data-empty', '1'); });\n  return root;\n}\nfunction rename(el, tag) { const n = document.createElement(tag); Array.from(el.attributes).forEach((a) => n.setAttribute(a.name, a.value)); while (el.firstChild) n.appendChild(el.firstChild); el.replaceWith(n); return n; }\n\n/* ===================================================================== VARIABLE DETECTION */\nconst RX = [\n  { kind: 'jisr', re: /\\{\\{\\{\\s*([A-Za-z0-9_@]+)\\s*\\}\\}\\}/ },\n  { kind: 'curly', re: /\\{\\{\\s*([^{}]{1,60}?)\\s*\\}\\}/ },\n  { kind: 'angle', re: /(?:<<|«)\\s*([^<>«»]{1,60}?)\\s*(?:>>|»)/ },\n  { kind: 'square', re: /\\[\\s*([^\\[\\]\\n]{2,60}?)\\s*\\]/ },\n  { kind: 'caps', re: /(?<![A-Za-z0-9])(?:[A-Z][A-Z0-9]+(?:[_ ][A-Z0-9]+)+|[A-Z][A-Z0-9]*_[A-Z0-9_]+)(?![A-Za-z0-9])/ },\n];\nconst varId = (label) => 'v_' + normTxt(label).replace(/ /g, '_').slice(0, 60);\nfunction registerVar(label, raw, kind, part) {\n  let id = varId(label); if (id === 'v_') id = 'v_' + Math.random().toString(36).slice(2, 7);\n  let v = S.vars.get(id);\n  if (!v) {\n    let key = null, score = 0, status = 'auto';\n    const cat = catByKey();\n    if (kind === 'jisr') { key = label; score = 1; status = cat.has(label) ? 'confirmed' : 'unknown'; }\n    else if (kind === 'curly' && cat.has(label.trim())) { key = label.trim(); score = 1; status = 'auto'; }\n    else { const m = matchVar(label); key = m.key; score = m.score; if (score < 0.5) { key = null; status = 'unmapped'; } }\n    v = { id, label, raw, kind, key, score, status, parts: new Set(), count: 0 };\n    S.vars.set(id, v);\n  }\n  v.parts.add(part); v.count++;\n  return v;\n}\nfunction detectVars(root, part) {\n  // 1) highlighted spans as whole candidates (unless they contain a bracket pattern)\n  root.querySelectorAll('span[data-hl]').forEach((sp) => {\n    const t = sp.textContent.trim();\n    if (!t || RX.slice(0, 4).some((r) => r.re.test(t)) || t.length > 60) { unwrap(sp); return; }\n    const v = registerVar(t, sp.textContent, 'highlight', part);\n    sp.removeAttribute('data-hl'); sp.setAttribute('data-jv', v.id);\n  });\n  // 2) text patterns\n  const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (n.parentElement && n.parentElement.closest('[data-jv]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT) });\n  const nodes = []; while (tw.nextNode()) nodes.push(tw.currentNode);\n  nodes.forEach((node) => {\n    let txt = node.nodeValue; let cur = node;\n    for (let guard = 0; guard < 200; guard++) {\n      let best = null;\n      RX.forEach((r) => { const m = r.re.exec(txt); if (m && (!best || m.index < best.m.index)) best = { r, m }; });\n      if (!best) break;\n      const { r, m } = best; const label = (m[1] || m[0]).trim();\n      let accept = true;\n      if (r.kind === 'square' && (/^\\d+$/.test(label) || /^[\\s.\\-_]+$/.test(label))) accept = false;\n      if (r.kind === 'caps') { const mv = matchVar(m[0]); accept = m[0].length >= 5 && mv.score >= 0.75; }\n      if (!accept) { // skip this match, continue after it\n        const before = txt.slice(0, m.index + m[0].length); const rest = txt.slice(m.index + m[0].length);\n        // move past by splitting text node\n        const tail = cur.splitText(before.length); cur = tail; txt = rest; continue;\n      }\n      const startNode = m.index ? cur.splitText(m.index) : cur;\n      const after = startNode.splitText(m[0].length);\n      const v = registerVar(r.kind === 'caps' ? m[0] : label, m[0], r.kind, part);\n      const sp = document.createElement('span'); sp.setAttribute('data-jv', v.id); sp.textContent = m[0];\n      startNode.replaceWith(sp); cur = after; txt = after.nodeValue;\n    }\n  });\n  root.querySelectorAll('span[data-hl]').forEach(unwrap);\n}\nfunction unwrap(el) { const p = el.parentNode; if (!p) return; while (el.firstChild) p.insertBefore(el.firstChild, el); el.remove(); }\n\n/* ===================================================================== LOAD INTO STATE */\nfunction partDom(html) { const d = document.createElement('div'); d.innerHTML = html || ''; return d; }\nlet blockSeq = 0;\nfunction splitBlocks(html, origin) {\n  const d = partDom(html); const out = [];\n  Array.from(d.childNodes).forEach((n) => {\n    if (n.nodeType === 8) { if (/pagebreak/i.test(n.nodeValue)) out.push('<!-- pagebreak -->'); return; }\n    if (n.nodeType === 3) { if (n.nodeValue.trim()) out.push('<p>' + esc(n.nodeValue.trim()) + '</p>'); return; }\n    if (n.nodeType === 1) out.push(n.outerHTML);\n  });\n  return out.map((h) => ({ id: ++blockSeq, html: h, origin, role: origin }));\n}\nfunction recomputeParts() { ['header', 'body', 'footer'].forEach((p) => { S.parts[p] = S.blocks.filter((b) => b.role === p).map((b) => b.html).join('\\n'); }); }\n/** Replace the blocks currently in one part (keeps their place and origin when the count is unchanged). */\nfunction setPartHtml(part, html, origin) {\n  const old = S.blocks.filter((b) => b.role === part);\n  const nb = splitBlocks(html, origin || part);\n  if (!origin && nb.length === old.length) nb.forEach((b, i) => { b.id = old[i].id; b.origin = old[i].origin; });\n  nb.forEach((b) => { b.role = part; });\n  const firstIdx = S.blocks.findIndex((b) => b.role === part);\n  const keep = S.blocks.filter((b) => b.role !== part);\n  let at;\n  if (firstIdx >= 0) at = S.blocks.slice(0, firstIdx).filter((b) => b.role !== part).length;\n  else if (part === 'header') at = 0;\n  else if (part === 'footer') at = keep.length;\n  else { at = keep.findIndex((b) => b.role === 'footer'); if (at < 0) at = keep.length; }\n  keep.splice(at, 0, ...nb); S.blocks = keep; recomputeParts();\n}\nfunction loadParts(parts, images, opts) {\n  S.vars = new Map(); S.images = images || []; S.notes = (opts && opts.notes) || []; S.blocks = [];\n  const prof = activeProfile();\n  ['header', 'body', 'footer'].forEach((k) => {\n    const d = partDom(parts[k]);\n    sanitizeInto(d, prof.pageW - prof.mL - prof.mR);\n    // images coming from pasted HTML\n    d.querySelectorAll('img:not([data-jimg])').forEach((img) => {\n      const src = img.getAttribute('src') || ''; const m = src.match(/\\{\\{\\{\\s*letter_attachment_(\\w+)\\s*\\}\\}\\}/);\n      const n = S.images.length;\n      S.images.push({ n, name: m ? 'letter_attachment_' + m[1] : (src.slice(0, 40) || 'image'), dataUrl: /^data:image\\//.test(src) ? src : null, w: +img.getAttribute('width') || 120, h: +img.getAttribute('height') || 60, attId: m ? m[1] : '', part: k, background: false, styleKeep: img.getAttribute('style') || '' });\n      img.setAttribute('data-jimg', n); img.removeAttribute('src');\n      if (!img.getAttribute('width')) img.setAttribute('width', S.images[n].w); if (!img.getAttribute('height')) img.setAttribute('height', S.images[n].h);\n    });\n    detectVars(d, k);\n    S.blocks.push(...splitBlocks(d.innerHTML, k));\n  });\n  recomputeParts();\n  S.fixBase = Object.assign({}, S.fix); S.fixHistory = [];\n  if (opts && opts.wordGeom) S.wordGeom = opts.wordGeom;\n  renderAll(true);\n}\n\n/* ===================================================================== BUILD (output / preview) */\nfunction sampleMap() {\n  const m = new Map();\n  String($('#samples').value || '').split('\\n').forEach((l) => { const i = l.indexOf('='); if (i > 0) m.set(l.slice(0, i).trim(), l.slice(i + 1).trim()); });\n  return m;\n}\nconst varText = (v) => (!v || !v.key || v.status === 'keep' || v.status === 'unmapped') ? null : (COMPOSITE[v.key] || '{{{' + v.key + '}}}');\nfunction build(mode) {\n  const out = {}; const prof = activeProfile();\n  const samples = mode === 'preview' ? sampleMap() : null;\n  const hl = $('#hlVars') ? $('#hlVars').checked : true;\n  const used = new Map(); const warn = []; const embedded = [];\n  ['header', 'body', 'footer'].forEach((part) => {\n    const d = partDom(S.parts[part]);\n    // variables\n    d.querySelectorAll('[data-jv]').forEach((sp) => {\n      const v = S.vars.get(sp.getAttribute('data-jv'));\n      const t = varText(v);\n      if (!t) { unwrap(sp); sp.removeAttribute && sp.removeAttribute('data-jv'); return; }\n      (t.match(/\\{\\{\\{\\s*([A-Za-z0-9_]+)\\s*\\}\\}\\}/g) || []).forEach((tok) => { const k = tok.replace(/[{}\\s]/g, ''); const u = used.get(k) || { key: k, count: 0, parts: new Set() }; u.count++; u.parts.add(part); used.set(k, u); });\n      if (mode === 'preview') {\n        const txt = t.replace(/\\{\\{\\{\\s*([A-Za-z0-9_]+)\\s*\\}\\}\\}/g, (_, k) => (samples.has(k) ? samples.get(k) : '[' + ((catByKey().get(k) || {}).en || k) + ']'));\n        const s = document.createElement('span'); if (hl) s.className = 'vhl'; s.textContent = txt; sp.replaceWith(s);\n        if (isArabicText(txt)) { s.setAttribute('dir', 'auto'); }\n      } else { sp.replaceWith(document.createTextNode(t)); }\n    });\n    // images\n    d.querySelectorAll('img[data-jimg]').forEach((img) => {\n      const im = S.images[+img.getAttribute('data-jimg')]; if (!im) { img.remove(); return; }\n      const w = Math.round(im.w * S.fix.imgScale), h = Math.round(im.h * S.fix.imgScale);\n      const p = img.parentElement; const block = p && p.tagName === 'P' && p.textContent.replace(/[\\s\\u00a0]/g, '') === '' && p.querySelectorAll('img').length === 1;\n      if (mode === 'preview') {\n        if (im.dataUrl || im.url) { img.setAttribute('src', im.dataUrl || im.url); img.setAttribute('width', w); img.setAttribute('height', h); img.removeAttribute('data-jimg'); }\n        else { const box = document.createElement('span'); box.className = 'imgph'; box.style.width = w + 'px'; box.style.height = h + 'px'; box.textContent = '{{{letter_attachment_' + (im.attId || '?') + '}}}'; img.replaceWith(box); }\n      } else {\n        const id = String(im.attId || '').trim();\n        const mode = imgMode(im);\n        if (mode === 'embed' && (im.embedUrl || im.dataUrl)) { img.setAttribute('src', im.embedUrl || im.dataUrl); embedded.push(im); }\n        else if (id) img.setAttribute('src', '{{{letter_attachment_' + id + '}}}');\n        else {\n          warn.push('Image “' + im.name + '” (' + part + ') is left out: ' + (im.dataUrl ? 'type its Jisr attachment ID in step 4, or switch it to \"Embed in the source code\".' : 'it has no picture to embed; type its Jisr attachment ID in step 4.'));\n          const holder = block ? p : null; img.remove(); if (holder && !holder.textContent.replace(/[\\s\\u00a0]/g, '') && !holder.querySelector('img')) holder.remove();\n          return;\n        }\n        img.setAttribute('width', w); img.setAttribute('height', h); img.removeAttribute('data-jimg'); img.removeAttribute('alt');\n        const m = parseStyle(im.styleKeep || '');\n        if (block && p) { const ps = parseStyle(p.getAttribute('style')); const al = ps.get('text-align'); m.set('display', 'block'); if (al === 'center' || !al) { m.set('margin-left', 'auto'); m.set('margin-right', 'auto'); } else if (al === 'right') m.set('margin-left', 'auto'); }\n        if (m.size) img.setAttribute('style', styleStr(m));\n      }\n    });\n    applyFixes(d, part);\n    // strip internal markers\n    d.querySelectorAll('[data-empty],[data-hl]').forEach((e) => { e.removeAttribute('data-empty'); e.removeAttribute('data-hl'); });\n    if (mode === 'output') {\n      // generic font on top-level blocks\n      Array.from(d.children).forEach((el) => { const m = parseStyle(el.getAttribute('style')); if (!m.has('font-family')) { m.set('font-family', 'Arial, sans-serif'); el.setAttribute('style', styleStr(m)); } });\n      out[part] = serialize(d);\n    } else out[part] = d.innerHTML;\n  });\n  return { parts: out, used, warn, embedded };\n}\nfunction tidyStyles(d) {\n  d.querySelectorAll('[style]').forEach((el) => {\n    const m = parseStyle(el.getAttribute('style'));\n    if (m.has('margin') && /^(0(pt|px)?\\s*){1,4}$/.test(m.get('margin').trim() + ' ')) m.set('margin', '0');\n    const sides = ['top', 'right', 'bottom', 'left'].map((k) => m.get('border-' + k));\n    if (sides[0] && sides.every((x) => x === sides[0])) { ['top', 'right', 'bottom', 'left'].forEach((k) => m.delete('border-' + k)); m.set('border', sides[0]); }\n    el.setAttribute('style', styleStr(m));\n  });\n}\nfunction serialize(d) {\n  tidyStyles(d);\n  const out = [];\n  Array.from(d.childNodes).forEach((n) => {\n    if (n.nodeType === 8) { if (/pagebreak/i.test(n.nodeValue)) out.push('<!-- pagebreak -->'); return; }\n    if (n.nodeType === 3) { if (n.nodeValue.trim()) out.push(esc(n.nodeValue.trim())); return; }\n    out.push(n.outerHTML.replace(/>\\s*\\n\\s*</g, '><').replace(/\\n/g, ' '));\n  });\n  return out.join('\\n');\n}\nfunction scaleLen(v, f) { return String(v).replace(/(-?[\\d.]+)(pt|px|em|mm)/g, (_, n, u) => round(+n * f, 2) + u); }\nfunction applyFixes(d, part) {\n  const F = S.fix;\n  // spacer paragraphs (top-level and inside cells)\n  const containers = [d].concat(Array.from(d.querySelectorAll('td,th')));\n  containers.forEach((c) => {\n    const ch = Array.from(c.children);\n    let run = [];\n    const flushRun = (next) => {\n      if (!run.length) return;\n      if (F.spacerMode === 'keep') { run = []; return; }\n      let hpt = 0;\n      run.forEach((p) => {\n        const m = parseStyle(p.getAttribute('style')); const fs = parseFloat(m.get('font-size')) || S.baseFont; const lhRaw = m.get('line-height'); const lh = lhRaw ? (/pt$/.test(lhRaw) ? parseFloat(lhRaw) / fs : parseFloat(lhRaw)) : 1.15;\n        let mg = 0; if (m.has('margin')) { const q = m.get('margin').split(/\\s+/); mg = (parseFloat(q[0]) || 0) + (parseFloat(q.length >= 3 ? q[2] : q[0]) || 0); } else if (m.has('margin-top') || m.has('margin-bottom')) mg = (parseFloat(m.get('margin-top')) || 0) + (parseFloat(m.get('margin-bottom')) || 0); else mg = fs; // browser default 1em (collapsed)\n        hpt += fs * lh + mg;\n      });\n      run.forEach((p) => p.remove());\n      if (F.spacerMode === 'collapse' && next) {\n        const m = parseStyle(next.getAttribute('style'));\n        if (m.has('margin')) { const q = m.get('margin').split(/\\s+/); while (q.length < 4) q.push(q.length === 1 ? q[0] : q[q.length === 3 ? 1 : 0]); q[0] = round((parseFloat(q[0]) || 0) + hpt, 1) + 'pt'; m.set('margin', q.join(' ')); }\n        else m.set('margin-top', round((parseFloat(m.get('margin-top')) || 0) + hpt, 1) + 'pt');\n        next.setAttribute('style', styleStr(m));\n      }\n      run = [];\n    };\n    ch.forEach((el, i) => {\n      if (el.tagName === 'P' && el.getAttribute('data-empty') === '1') { run.push(el); return; }\n      flushRun(el);\n    });\n    flushRun(null); // trailing spacers are dropped (they only push the footer)\n  });\n  // spacing\n  if (F.spacingScale !== 1) {\n    d.querySelectorAll('p,ul,ol,li,table,td,th').forEach((el) => {\n      const m = parseStyle(el.getAttribute('style'));\n      ['margin', 'margin-top', 'margin-bottom', 'padding', 'padding-top', 'padding-bottom'].forEach((k) => { if (m.has(k)) { if (k === 'margin' || k === 'padding') { const p4 = m.get(k).split(/\\s+/); if (p4.length === 4) { p4[0] = scaleLen(p4[0], F.spacingScale); p4[2] = scaleLen(p4[2], F.spacingScale); m.set(k, p4.join(' ')); } else if (p4.length === 2) { p4[0] = scaleLen(p4[0], F.spacingScale); m.set(k, p4.join(' ')); } else m.set(k, scaleLen(m.get(k), F.spacingScale)); } else m.set(k, scaleLen(m.get(k), F.spacingScale)); } });\n      if (el.tagName === 'P' && !m.has('margin') && !m.has('margin-top') && !m.has('margin-bottom')) m.set('margin', round(S.baseFont * F.spacingScale, 1) + 'pt 0');\n      el.setAttribute('style', styleStr(m));\n    });\n  }\n  // font size\n  if (F.fontScale !== 1) {\n    d.querySelectorAll('[style*=\"font-size\"]').forEach((el) => { const m = parseStyle(el.getAttribute('style')); m.set('font-size', scaleLen(m.get('font-size'), F.fontScale)); el.setAttribute('style', styleStr(m)); });\n    Array.from(d.children).forEach((el) => { if (/^(P|UL|OL|TABLE)$/.test(el.tagName)) { const m = parseStyle(el.getAttribute('style')); if (!m.has('font-size')) { m.set('font-size', round(S.baseFont * F.fontScale, 1) + 'pt'); el.setAttribute('style', styleStr(m)); } } });\n  }\n}\n\n/* ===================================================================== PROFILES */\nconst PAPER = { A4: [210, 297], Letter: [215.9, 279.4] };\nconst ASSUMED = { name: 'Assumed A4 (not calibrated)', paper: 'A4', pageW: 210, pageH: 297, mT: 20, mB: 20, mL: 20, mR: 20, mode: 'flow', calibrated: false, printH: null, pagebreak: 'unknown' };\nconst LH12 = (12 * 1.15) / 72 * 25.4; // mm per calibration line\nfunction profiles() { const p = LS.get('jlc_profiles_v1', []); return [ASSUMED].concat(Array.isArray(p) ? p : []); }\nfunction activeProfile() { const n = LS.get('jlc_active_profile', ASSUMED.name); return profiles().find((p) => p.name === n) || ASSUMED; }\nfunction printH(p) { return p.printH || (p.pageH - p.mT - p.mB); }\n\n/* ===================================================================== FIT ENGINE */\nasync function measure(parts, prof) {\n  const host = $('#measure');\n  const printW = prof.pageW - prof.mL - prof.mR;\n  host.style.width = printW * MM + 'px';\n  host.innerHTML = '<div class=\"stream\" style=\"font-size:' + S.baseFont + 'pt\"><div class=\"m-h\">' + parts.header + '</div><div class=\"m-b\">' + parts.body + '</div><div class=\"m-f\">' + parts.footer + '</div></div>';\n  await Promise.all($$('img', host).map((im) => (im.complete ? Promise.resolve() : new Promise((r) => { im.onload = im.onerror = r; }))));\n  const stream = host.firstChild; const top0 = stream.getBoundingClientRect().top;\n  const H = $('.m-h', host), B = $('.m-b', host), F = $('.m-f', host);\n  const rel = (el) => { const r = el.getBoundingClientRect(); return { top: r.top - top0, bottom: r.bottom - top0, h: r.height }; };\n  const hR = rel(H), bR = rel(B), fR = rel(F);\n  const units = []; let forced = false;\n  Array.from(B.childNodes).forEach((n) => {\n    if (n.nodeType === 8 && /pagebreak/i.test(n.nodeValue)) { forced = true; return; }\n    if (n.nodeType !== 1) return;\n    const list = n.tagName === 'TABLE' ? $$('tr', n) : (n.tagName === 'UL' || n.tagName === 'OL') ? $$(':scope > li', n) : [n];\n    list.forEach((el, i) => { const r = rel(el); units.push({ top: r.top, bottom: r.bottom, forced: forced && i === 0, kind: 'body' }); });\n    forced = false;\n  });\n  const capMm = printH(prof);\n  const cap = capMm * MM;\n  const mode = prof.mode;\n  let all;\n  if (mode === 'flow') {\n    all = [];\n    if (hR.h > 0.5) all.push({ top: hR.top, bottom: hR.bottom, kind: 'header' });\n    units.forEach((u) => all.push(u));\n    if (fR.h > 0.5) all.push({ top: fR.top, bottom: fR.bottom, kind: 'footer' });\n  } else all = units;\n  const pageCap = mode === 'flow' ? cap : Math.max(20 * MM, cap - hR.h - fR.h);\n  const pages = paginate(all, pageCap);\n  const total = all.length ? all[all.length - 1].bottom - all[0].top : 0;\n  let footerPushed = false, footerPage = null;\n  if (mode === 'flow' && fR.h > 0.5) {\n    footerPage = pages.findIndex((pg) => pg.units.some((u) => u.kind === 'footer')) + 1;\n    const lastBodyPage = pages.reduce((acc, pg, i) => (pg.units.some((u) => u.kind !== 'footer') ? i + 1 : acc), 0);\n    footerPushed = footerPage > lastBodyPage;\n  }\n  const n = pages.length || 1;\n  const target = S.target;\n  const usedLast = pages.length ? pages[pages.length - 1].end - pages[pages.length - 1].start : 0;\n  const overflowMm = Math.max(0, (total - target * pageCap) / MM);\n  const fits = n <= target;\n  return {\n    pages, pageCap, cap, mode, printW, capMm, n, target, fits, footerPushed, footerPage,\n    headerMm: round(hR.h / MM, 1), bodyMm: round(bR.h / MM, 1), footerMm: round(fR.h / MM, 1), totalMm: round(total / MM, 1),\n    overflowMm: round(overflowMm, 1), spareMm: fits ? round((pageCap - usedLast) / MM, 1) : 0,\n    tallest: units.reduce((m, u) => Math.max(m, u.bottom - u.top), 0) / MM,\n  };\n}\nfunction paginate(units, cap) {\n  const pages = []; if (!units.length) return [{ start: 0, end: 0, units: [] }];\n  let cur = { start: units[0].top, end: units[0].top, units: [] };\n  units.forEach((u) => {\n    if (cur.units.length && (u.forced || u.bottom - cur.start > cap + 0.5)) { pages.push(cur); cur = { start: u.top, end: u.top, units: [] }; }\n    while (u.bottom - cur.start > cap + 0.5 && !cur.units.length) { // a single unit taller than a page\n      pages.push({ start: cur.start, end: cur.start + cap, units: [u], split: true }); cur = { start: cur.start + cap, end: cur.start + cap, units: [] };\n      if (u.bottom - cur.start <= cap) break;\n    }\n    cur.units.push(u); cur.end = Math.max(cur.end, u.bottom);\n  });\n  pages.push(cur);\n  return pages;\n}\n\n/* ===================================================================== PREVIEW */\nfunction renderPages(previewParts, fit, prof) {\n  const box = $('#pages'); box.innerHTML = '';\n  const z = +$('#zoom').value;\n  const pw = prof.pageW * MM, ph = prof.pageH * MM;\n  const stream = '<div class=\"stream\" style=\"font-size:' + S.baseFont + 'pt\"><div class=\"m-h\">' + previewParts.header + '</div><div class=\"m-b\">' + previewParts.body + '</div><div class=\"m-f\">' + previewParts.footer + '</div></div>';\n  const capPx = printH(prof) * MM;\n  const top = prof.mT * MM;\n  fit.pages.forEach((pg, i) => {\n    const wrap = document.createElement('div'); wrap.className = 'pagewrap' + (i + 1 > fit.target ? ' over' : '');\n    wrap.style.width = pw * z + 'px'; wrap.style.height = ph * z + 'px';\n    const page = document.createElement('div'); page.className = 'page'; page.style.width = pw + 'px'; page.style.height = ph + 'px'; page.style.transform = 'scale(' + z + ')';\n    const pa = document.createElement('div'); pa.className = 'pa'; pa.style.left = prof.mL * MM + 'px'; pa.style.top = top + 'px'; pa.style.width = (prof.pageW - prof.mL - prof.mR) * MM + 'px'; pa.style.height = capPx + 'px';\n    page.appendChild(pa);\n    const vp = (y, h, html, shift) => { const v = document.createElement('div'); v.className = 'vp'; v.style.left = prof.mL * MM + 'px'; v.style.top = y + 'px'; v.style.width = (prof.pageW - prof.mL - prof.mR) * MM + 'px'; v.style.height = Math.max(0, h) + 'px'; v.innerHTML = html; if (shift) v.firstChild.style.transform = 'translateY(' + -shift + 'px)'; page.appendChild(v); return v; };\n    if (fit.mode === 'flow') vp(top, pg.end - pg.start, stream, pg.start);\n    else {\n      const hh = fit.headerMm * MM, fh = fit.footerMm * MM;\n      const hv = vp(top, hh, stream, 0); hv.querySelector('.m-b').style.display = 'none'; hv.querySelector('.m-f').style.display = 'none';\n      const bv = vp(top + hh, pg.end - pg.start, stream, pg.start); bv.querySelector('.m-h').style.visibility = 'hidden'; bv.querySelector('.m-f').style.display = 'none';\n      // body coordinates in repeat mode are measured inside the stream including the header height\n      const fv = vp(top + capPx - fh, fh, stream, 0); fv.querySelector('.m-h').style.display = 'none'; fv.querySelector('.m-b').style.display = 'none';\n    }\n    const lbl = document.createElement('div'); lbl.className = 'lbl'; lbl.textContent = 'Page ' + (i + 1) + (i + 1 > fit.target ? ' · over the intended ' + fit.target : '') + (pg.split ? ' · content taller than a page' : '');\n    page.appendChild(lbl);\n    wrap.appendChild(page); box.appendChild(wrap);\n  });\n}\n\n/* ===================================================================== RENDER CYCLE */\nlet renderTimer = null, renderSeq = 0;\nfunction renderAll(now) { clearTimeout(renderTimer); renderTimer = setTimeout(doRender, now ? 0 : 160); }\nfunction hasContent() { return !!(S.parts.header || S.parts.body || S.parts.footer); }\nlet quietDepth = 0;\nasync function doRender() {\n  if (quietDepth) return;\n  prepareEmbeds();\n  const seq = ++renderSeq;\n  renderVarTable(); renderAssign(); renderImages(); renderProfileInfo(); renderStruct(); renderFixState(); if (typeof renderJisr === 'function') renderJisr();\n  if (!hasContent()) return;\n  const prof = activeProfile();\n  const prev = build('preview');\n  const fit = await measure(prev.parts, prof);\n  if (seq !== renderSeq) return;\n  S.lastFit = fit;\n  renderPages(prev.parts, fit, prof);\n  renderFitStatus(fit, prof);\n  if (ED.open) edFitBadge(fit);\n  renderOutput();\n}\nfunction renderFixState() {\n  const base = S.fixBase || { spacerMode: 'collapse', spacingScale: 1, fontScale: 1, imgScale: 1 };\n  const changed = JSON.stringify(base) !== JSON.stringify(S.fix);\n  $('#fixState').textContent = hasContent() ? (changed ? 'Now: ' + describeFix() : 'No adjustments') : '';\n  $('#undoFix').disabled = $('#undoFixB').disabled = !S.fixHistory.length;\n  $('#resetFix2').disabled = !changed;\n}\nfunction renderFitStatus(fit, prof) {\n  const big = $('#fitBig'); const ok = fit.fits && !(fit.footerPushed && fit.footerPage > fit.target);\n  big.className = 'fitbig ' + (ok ? 'ok' : 'bad');\n  big.textContent = ok ? 'Fits on ' + fit.n + ' page' + (fit.n > 1 ? 's' : '') : 'Overflows: ' + fit.n + ' pages, intended ' + fit.target;\n  const bits = [fit.overflowMm > 0 ? 'over by ' + fit.overflowMm + ' mm' : (fit.fits ? fit.spareMm + ' mm spare on the last page' : 'page breaks waste space')];\n  if (fit.footerPushed) bits.push('⚠ footer pushed to page ' + fit.footerPage);\n  bits.push('header ' + fit.headerMm + ' mm · body ' + fit.bodyMm + ' mm · footer ' + fit.footerMm + ' mm · page area ' + round(fit.pageCap / MM, 1) + ' mm');\n  if (!prof.calibrated) bits.push('estimate (not calibrated)');\n  $('#fitMeta').textContent = bits.join(' · ');\n  const rep = $('#fitReport'); rep.className = 'card';\n  rep.innerHTML = '<div class=\"msg ' + (ok ? 'ok' : 'err') + '\">' + esc(big.textContent) + '</div>' +\n    '<table class=\"t\"><tbody>' +\n    [['Profile', prof.name + (prof.calibrated ? '' : ' (estimate)')], ['Header / footer', prof.mode === 'flow' ? 'flow with the body (header on page 1, footer after the body)' : 'repeat on every page'],\n      ['Printable area', round(prof.pageW - prof.mL - prof.mR, 1) + ' × ' + round(printH(prof), 1) + ' mm'], ['Pages used / intended', fit.n + ' / ' + fit.target],\n      ['Overflow', fit.overflowMm + ' mm'], ['Footer pushed to next page', fit.footerPushed ? 'yes, page ' + fit.footerPage : 'no'],\n      ['Header · body · footer height', fit.headerMm + ' · ' + fit.bodyMm + ' · ' + fit.footerMm + ' mm'],\n      ['Adjustments', describeFix()]].map(([a, b]) => '<tr><td>' + esc(a) + '</td><td>' + esc(b) + '</td></tr>').join('') + '</tbody></table>' +\n    (fit.tallest > fit.pageCap / MM ? '<div class=\"msg warn\">One block (a table row or paragraph) is taller than a whole page.</div>' : '') +\n    S.notes.map((n) => '<div class=\"msg warn\">' + esc(n) + '</div>').join('');\n}\nfunction describeFix() {\n  const F = S.fix; const a = [];\n  a.push({ collapse: 'spacers collapsed', keep: 'spacers kept', remove: 'spacers removed' }[F.spacerMode]);\n  if (F.spacingScale !== 1) a.push('spacing ' + Math.round(F.spacingScale * 100) + '%');\n  if (F.fontScale !== 1) a.push('font ' + Math.round(F.fontScale * 100) + '%');\n  if (F.imgScale !== 1) a.push('images ' + Math.round(F.imgScale * 100) + '%');\n  return a.join(', ');\n}\n\n/* ===================================================================== STRUCTURE UI */\nconst ROLE_LABEL = { header: 'Header', body: 'Body', footer: 'Footer', skip: 'Leave out' };\nfunction blockLabel(h) {\n  if (/^<!--\\s*pagebreak/.test(h)) return { t: '— page break —', muted: true };\n  const el = partDom(h).firstElementChild; if (!el) return { t: '(empty)', muted: true };\n  const txt = el.textContent.replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();\n  if (el.tagName === 'TABLE') return { t: 'Table · ' + el.querySelectorAll('tr').length + ' rows · ' + txt.slice(0, 90), rtl: isArabicText(txt) };\n  const imgs = el.querySelectorAll('img').length;\n  if (!txt && imgs) return { t: '[image]' };\n  if (!txt) return { t: '(empty line)', muted: true };\n  return { t: (imgs ? '[image] ' : '') + txt.slice(0, 140) + (txt.length > 140 ? '…' : ''), rtl: isArabicText(txt) };\n}\nfunction renderStruct() {\n  const box = $('#structList');\n  if (!S.blocks.length) { box.innerHTML = '<p class=\"hint\">Import a letter first.</p>'; $('#structSummary').textContent = ''; return; }\n  const n = (r) => S.blocks.filter((b) => b.role === r).length;\n  $('#structSummary').textContent = 'Header ' + n('header') + ' · Body ' + n('body') + ' · Footer ' + n('footer') + (n('skip') ? ' · Left out ' + n('skip') : '');\n  box.innerHTML = S.blocks.map((b) => {\n    const l = blockLabel(b.html);\n    return '<div class=\"srow r-' + b.role + '\"><select data-blk=\"' + b.id + '\">' + ['header', 'body', 'footer', 'skip'].map((r) => '<option value=\"' + r + '\"' + (r === b.role ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('') + '</select>' +\n      '<div style=\"min-width:0\"><span class=\"org\">from Word ' + esc(b.origin) + '</span><div class=\"txt' + (l.muted ? ' muted' : '') + '\"' + (l.rtl ? ' dir=\"rtl\"' : '') + ' title=\"' + esc(l.t) + '\">' + esc(l.t) + '</div></div>' +\n      '<div class=\"acts\"><button class=\"btn sm\" data-hdrto=\"' + b.id + '\" title=\"This line and everything above it become the Header\">Header up to here</button><button class=\"btn sm\" data-ftrfrom=\"' + b.id + '\" title=\"This line and everything below it become the Footer\">Footer from here</button></div></div>';\n  }).join('');\n}\nfunction restructure(fn) { fn(); recomputeParts(); renderAll(true); }\n$('#structList').addEventListener('change', (e) => { const id = +e.target.getAttribute('data-blk'); if (!id) return; restructure(() => { S.blocks.find((b) => b.id === id).role = e.target.value; }); });\n$('#structList').addEventListener('click', (e) => {\n  const h = e.target.getAttribute('data-hdrto'), f = e.target.getAttribute('data-ftrfrom');\n  if (h) restructure(() => { const i = S.blocks.findIndex((b) => b.id === +h); S.blocks.forEach((b, k) => { if (b.role === 'skip') return; if (k <= i) b.role = 'header'; else if (b.role === 'header') b.role = 'body'; }); });\n  if (f) restructure(() => { const i = S.blocks.findIndex((b) => b.id === +f); S.blocks.forEach((b, k) => { if (b.role === 'skip') return; if (k >= i) b.role = 'footer'; else if (b.role === 'footer') b.role = 'body'; }); });\n});\n$('#structReset').addEventListener('click', () => restructure(() => { S.blocks.forEach((b) => { b.role = b.origin.split(' ')[0]; }); }));\n\n/* ===================================================================== VARIABLES UI */\nfunction keyOptions(sel) {\n  const groups = {}; CATALOG.forEach((c) => { (groups[c.group] = groups[c.group] || []).push(c); });\n  return '<option value=\"\">— not a variable (keep text) —</option>' + Object.keys(groups).map((g) => '<optgroup label=\"' + esc(g) + '\">' + groups[g].map((c) => '<option value=\"' + esc(c.key) + '\"' + (c.key === sel ? ' selected' : '') + '>' + esc(c.en) + ' · ' + esc(c.key) + '</option>').join('') + '</optgroup>').join('') +\n    (sel && !catByKey().has(sel) ? '<option value=\"' + esc(sel) + '\" selected>' + esc(sel) + ' (not in catalog)</option>' : '');\n}\nfunction renderVarTable() {\n  const tb = $('#varTable tbody'); const vs = Array.from(S.vars.values());\n  $('#varsMsg').innerHTML = !hasContent() ? '<div class=\"msg info\">Import a letter first.</div>' : (!vs.length ? '<div class=\"msg info\">No placeholders found. Open the letter editor below to place variables.</div>' : '');\n  tb.innerHTML = vs.map((v) => {\n    const tag = v.status === 'confirmed' || v.status === 'manual' ? '<span class=\"tag ok\">confirmed</span>' : v.status === 'unknown' ? '<span class=\"tag bad\">not in catalog</span>' : v.status === 'unmapped' || !v.key ? '<span class=\"tag warn\">no match</span>' : v.status === 'keep' ? '<span class=\"tag\">kept as text</span>' : '<span class=\"tag warn\">proposed ' + Math.round(v.score * 100) + '%</span>';\n    const kindNote = v.kind === 'curly' && (S.source === 'html' || S.source === 'jisr') ? ' <span class=\"tag warn\">two braces</span>' : '';\n    return '<tr data-v=\"' + esc(v.id) + '\"><td dir=\"auto\"><b>' + esc(v.raw) + '</b>' + kindNote + '<div class=\"hint\">' + esc(v.kind) + ' · ' + v.count + '×</div></td><td>' + esc(['header', 'body', 'footer'].filter((p) => (S.parts[p] || '').indexOf('data-jv=\"' + v.id + '\"') >= 0).join(', ') || 'left out') + '</td><td><select data-vsel=\"' + esc(v.id) + '\">' + keyOptions(v.status === 'keep' ? '' : v.key) + '</select></td><td>' + tag + '</td></tr>';\n  }).join('');\n}\n$('#varTable').addEventListener('change', (e) => {\n  const id = e.target.getAttribute('data-vsel'); if (!id) return; const v = S.vars.get(id);\n  if (!e.target.value) { v.status = 'keep'; } else { v.key = e.target.value; v.status = 'confirmed'; }\n  renderAll();\n});\n$('#confirmAll').addEventListener('click', () => { S.vars.forEach((v) => { if (v.key && v.status === 'auto') v.status = 'confirmed'; }); renderAll(); });\nfunction fillKeyList() { $('#keyList').innerHTML = CATALOG.map((c) => '<option value=\"' + esc(c.key) + '\">' + esc(c.en + ' · ' + c.ar) + '</option>').join(''); }\n/* ===================================================================== LETTER EDITOR (Word-like, v1.4)\n   The three parts are shown on one page as editable areas. Variables are chips\n   (<span data-jv contenteditable=false>) that can be dropped or clicked into any spot,\n   including empty table cells. Edits are written back with setPartHtml(). */\nconst ED = { open: false, undo: [], redo: [], base: null, caret: null, sel: null, typingAt: 0, timer: null, written: {}, drag: null, dropEl: null };\nconst PARTS3 = ['header', 'body', 'footer'];\nconst edPart = (p) => $('#edPage .edpart[data-part=\"' + p + '\"]');\nconst blankTxt = (t) => !String(t || '').replace(/[\\s ​]/g, '');\nfunction chipLabel(v) {\n  if (!v) return '?';\n  const t = varText(v); if (!t) return v.raw;\n  const c = catByKey().get(v.key); return c ? c.en : '{{{' + v.key + '}}}';\n}\nfunction chipify(sp, editable) {\n  const v = S.vars.get(sp.getAttribute('data-jv'));\n  if (!sp.hasAttribute('data-raw')) sp.setAttribute('data-raw', sp.textContent);\n  sp.textContent = chipLabel(v);\n  sp.className = 'chip' + (v && varText(v) ? '' : ' keep');\n  sp.title = v && varText(v) ? varText(v) : 'Kept as text: ' + sp.getAttribute('data-raw');\n  if (editable) { sp.setAttribute('contenteditable', 'false'); sp.setAttribute('draggable', 'true'); }\n  return sp;\n}\nfunction decorate(html, editable) {\n  const d = partDom(html);\n  d.querySelectorAll('img[data-jimg]').forEach((img) => { const im = S.images[+img.getAttribute('data-jimg')]; if (im && (im.dataUrl || im.url)) img.setAttribute('src', im.dataUrl || im.url); else img.setAttribute('alt', '[image]'); if (editable) img.setAttribute('draggable', 'false'); });\n  d.querySelectorAll('[data-jv]').forEach((sp) => chipify(sp, editable));\n  return d.innerHTML;\n}\nconst INLINE = /^(SPAN|B|I|U|S|STRONG|EM|SUB|SUP|A|BR|IMG|FONT|MARK)$/;\nfunction undecorate(el) {\n  const d = partDom(el.innerHTML);\n  d.querySelectorAll('[data-jv]').forEach((sp) => {\n    const id = sp.getAttribute('data-jv'); const v = S.vars.get(id);\n    const raw = sp.getAttribute('data-raw');\n    const n = document.createElement('span'); n.setAttribute('data-jv', id); n.textContent = raw != null ? raw : (v ? v.raw : '');\n    sp.replaceWith(n);\n  });\n  d.querySelectorAll('img').forEach((img) => { if (img.hasAttribute('data-jimg')) { img.removeAttribute('src'); img.removeAttribute('alt'); } img.removeAttribute('draggable'); });\n  d.querySelectorAll('.dropt').forEach((x) => x.classList.remove('dropt'));\n  d.querySelectorAll('[class=\"\"]').forEach((x) => x.removeAttribute('class'));\n  // Chrome may create <div> lines; Jisr letters use <p>\n  Array.from(d.children).forEach((c) => { if (c.tagName === 'DIV' && !c.attributes.length) { const p = document.createElement('p'); while (c.firstChild) p.appendChild(c.firstChild); c.replaceWith(p); } });\n  // loose inline content at the top level is wrapped in a paragraph\n  let run = null;\n  Array.from(d.childNodes).forEach((n) => {\n    const inline = n.nodeType === 3 ? !!n.nodeValue.trim() || !!run : (n.nodeType === 1 && INLINE.test(n.tagName));\n    if (inline) { if (!run) { run = document.createElement('p'); n.before(run); } run.appendChild(n); } else run = null;\n  });\n  d.querySelectorAll('p').forEach((p) => { if (blankTxt(p.textContent) && !p.querySelector('img,[data-jv]')) p.setAttribute('data-empty', '1'); else p.removeAttribute('data-empty'); });\n  return d.innerHTML;\n}\nfunction ensureInsVar(key) {\n  const id = 'ins_' + key.replace(/[^A-Za-z0-9_@]/g, '_');\n  let v = S.vars.get(id);\n  if (!v) { const c = catByKey().get(key); v = { id, label: c ? c.en : key, raw: '{{{' + key + '}}}', kind: 'inserted', key, score: 1, status: 'manual', parts: new Set(), count: 0 }; S.vars.set(id, v); }\n  v.key = key; v.status = 'manual';\n  return v;\n}\nfunction makeChip(key) {\n  const v = ensureInsVar(key); const sp = document.createElement('span');\n  sp.setAttribute('data-jv', v.id); sp.setAttribute('data-raw', v.raw);\n  return chipify(sp, true);\n}\nfunction recountVars() {\n  S.vars.forEach((v, id) => {\n    const parts = PARTS3.filter((p) => (S.parts[p] || '').indexOf('data-jv=\"' + id + '\"') >= 0);\n    if (v.kind !== 'inserted') return;\n    if (!parts.length) { S.vars.delete(id); return; }\n    v.parts = new Set(parts); v.count = PARTS3.reduce((n, p) => n + (S.parts[p] || '').split('data-jv=\"' + id + '\"').length - 1, 0);\n  });\n}\nfunction edSync() {\n  clearTimeout(ED.timer); ED.timer = null;\n  if (!ED.open) return false;\n  let changed = false;\n  PARTS3.forEach((p) => { const h = undecorate(edPart(p)); if (h !== ED.written[p]) { ED.written[p] = h; setPartHtml(p, h); changed = true; } });\n  if (changed) { recountVars(); renderAll(); }\n  return changed;\n}\nfunction edSoon() { clearTimeout(ED.timer); ED.timer = setTimeout(edSync, 350); }\nconst edSnap = () => PARTS3.map((p) => edPart(p).innerHTML);\nfunction edBtns() { $('#edUndo').disabled = !ED.undo.length; $('#edRedo').disabled = !ED.redo.length; }\nfunction edPush() { ED.undo.push(edSnap()); if (ED.undo.length > 150) ED.undo.shift(); ED.redo = []; edBtns(); }\nfunction edRestore(snap) { PARTS3.forEach((p, i) => { edPart(p).innerHTML = snap[i]; }); ED.caret = null; edSelChip(null); edSoon(); edBtns(); }\nfunction edUndo() { if (!ED.undo.length) return; ED.redo.push(edSnap()); edRestore(ED.undo.pop()); }\nfunction edRedo() { if (!ED.redo.length) return; ED.undo.push(edSnap()); edRestore(ED.redo.pop()); }\nfunction edFitBadge(fit) {\n  const b = $('#edFit'); if (!b) return;\n  if (!fit) { b.textContent = ''; b.className = 'tag'; return; }\n  b.textContent = fit.fits ? '✓ Fits ' + fit.n + ' page' + (fit.n === 1 ? '' : 's') : '✗ ' + fit.n + ' pages, intended ' + fit.target;\n  b.className = 'tag ' + (fit.fits ? 'ok' : 'bad');\n}\nfunction edMsg(t, kind) { $('#edMsg').innerHTML = t ? '<div class=\"msg ' + (kind || 'info') + '\">' + t + '</div>' : ''; }\nfunction renderPalette() {\n  const q = normTxt($('#edSearch').value);\n  const groups = {};\n  CATALOG.forEach((c) => {\n    if (q && ![c.en, c.ar, c.key].concat(c.aliases || []).some((x) => normTxt(x).indexOf(q) >= 0)) return;\n    (groups[c.group] = groups[c.group] || []).push(c);\n  });\n  const g = Object.keys(groups);\n  $('#edList').innerHTML = g.length ? g.map((k) => '<div class=\"pvg\">' + esc(k) + '</div>' + groups[k].map((c) => '<div class=\"pv\" draggable=\"true\" data-key=\"' + esc(c.key) + '\" title=\"{{{' + esc(c.key) + '}}}\">' + esc(c.en) + '<small dir=\"rtl\" style=\"text-align:left\">' + esc(c.ar || '') + '</small><code>{{{' + esc(c.key) + '}}}</code></div>').join('')).join('') : '<p class=\"hint\">No variable matches. Use \"Other key\" below.</p>';\n}\nfunction edSelChip(chip) {\n  $$('#edPage .chip.sel').forEach((x) => x.classList.remove('sel'));\n  ED.sel = chip || null;\n  const bar = $('#edSelBar');\n  if (!chip) { bar.innerHTML = ''; return; }\n  chip.classList.add('sel');\n  const v = S.vars.get(chip.getAttribute('data-jv'));\n  const raw = chip.getAttribute('data-raw') || '';\n  const canText = v && v.kind !== 'inserted' && raw && !/^\\{\\{\\{/.test(raw);\n  bar.innerHTML = '<div class=\"msg info\">Selected: <b>' + esc(chip.textContent) + '</b> <span class=\"kbd\">' + esc(chip.title) + '</span>' +\n    '<div class=\"row\" style=\"margin-top:6px\">' + (canText ? '<button class=\"btn sm\" id=\"edChipText\">Turn back into text “' + esc(raw.slice(0, 30)) + '”</button>' : '') + '<button class=\"btn sm\" id=\"edChipDel\">Delete</button></div>' +\n    '<div class=\"hint\" style=\"margin:4px 0 0\">Click a variable below to swap it. Drag the chip to move it.</div></div>';\n}\nfunction edDeleteChip(chip, asText) {\n  if (!chip) return;\n  edPush();\n  if (asText) chip.replaceWith(document.createTextNode(chip.getAttribute('data-raw') || '')); else chip.remove();\n  edSelChip(null); edSoon();\n}\nfunction inEditor(n) { const el = n && (n.nodeType === 1 ? n : n.parentElement); return el ? el.closest('#edPage .edpart') : null; }\nfunction caretFromPoint(x, y) {\n  if (document.caretRangeFromPoint) return document.caretRangeFromPoint(x, y);\n  if (document.caretPositionFromPoint) { const p = document.caretPositionFromPoint(x, y); if (!p) return null; const r = document.createRange(); r.setStart(p.offsetNode, p.offset); r.collapse(true); return r; }\n  return null;\n}\n/** Put a chip at a range. Empty paragraphs and empty table cells are filled instead of split. */\nfunction placeNode(range, node) {\n  if (!range || !inEditor(range.startContainer)) return false;\n  let r = range;\n  const startEl = (n) => (n.nodeType === 1 ? n : n.parentElement);\n  const chipAnc = startEl(r.startContainer).closest('.chip');\n  if (chipAnc && chipAnc !== node) { r = document.createRange(); r.setStartAfter(chipAnc); r.collapse(true); }\n  if (!r.collapsed) r.deleteContents();\n  const host = startEl(r.startContainer);\n  const part = host.closest('.edpart');\n  const blk = host.closest('p,td,th,li,h1,h2,h3,h4,h5,h6');\n  if (blk && part.contains(blk) && blankTxt(blk.textContent) && !blk.querySelector('img,.chip,table')) {\n    const inner = blk.matches('td,th') ? (blk.querySelector('p,div') || blk) : blk;\n    Array.from(inner.childNodes).forEach((c) => { if (c.nodeType === 3 || (c.nodeType === 1 && c.tagName === 'BR')) c.remove(); });\n    inner.appendChild(node); inner.removeAttribute('data-empty');\n  } else if (host === part) {\n    const p = document.createElement('p'); p.appendChild(node); r.insertNode(p);\n  } else {\n    let before = '', after = '';\n    if (r.startContainer.nodeType === 3) { const t = r.startContainer.nodeValue; before = t.charAt(r.startOffset - 1); after = t.charAt(r.startOffset); }\n    r.insertNode(node);\n    if (before && !/[\\s (\\[«\"'\\/]/.test(before)) node.before(document.createTextNode(' '));\n    if (after && !/[\\s )\\]».,:;!?،؛\"'\\/]/.test(after)) node.after(document.createTextNode(' '));\n  }\n  const c = document.createRange(); c.setStartAfter(node); c.collapse(true);\n  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(c); ED.caret = c.cloneRange();\n  return true;\n}\n/** Test/automation hook: insert key into an element of the editor (e.g. an empty td). */\nfunction edInsertAt(el, key) { const r = document.createRange(); r.selectNodeContents(el); r.collapse(false); edPush(); const ok = placeNode(r, makeChip(key)); if (!ok) ED.undo.pop(); edSoon(); return ok; }\nfunction edInsertKey(key) {\n  key = String(key || '').trim().replace(/^\\{+|\\}+$/g, '');\n  if (!/^[A-Za-z0-9_@]+$/.test(key)) { edMsg('That is not a valid key. Use letters, digits and _ only.', 'err'); return; }\n  if (ED.sel && document.contains(ED.sel)) { edPush(); const n = makeChip(key); ED.sel.replaceWith(n); edSelChip(n); edSoon(); edMsg(''); return; }\n  const r = ED.caret && document.contains(ED.caret.startContainer) && inEditor(ED.caret.startContainer) ? ED.caret.cloneRange() : null;\n  if (!r) { edMsg('Click in the letter where the variable should go, then click the variable. Or drag it in.', 'warn'); return; }\n  edPush(); if (!placeNode(r, makeChip(key))) ED.undo.pop(); edMsg(''); edSoon();\n}\nfunction edOpen() {\n  if (!hasContent()) { alert('Import a letter first.'); return; }\n  const prof = activeProfile(); const pg = $('#edPage');\n  pg.style.width = (prof.pageW - prof.mL - prof.mR) + 'mm';\n  pg.style.padding = prof.mT + 'mm ' + prof.mR + 'mm ' + prof.mB + 'mm ' + prof.mL + 'mm';\n  pg.style.minHeight = (prof.pageH - prof.mT - prof.mB) + 'mm';\n  pg.style.fontSize = S.baseFont + 'pt';\n  PARTS3.forEach((p) => { edPart(p).innerHTML = decorate(S.parts[p], true); });\n  PARTS3.forEach((p) => { ED.written[p] = undecorate(edPart(p)); });\n  ED.base = edSnap(); ED.undo = []; ED.redo = []; ED.caret = null; ED.open = true;\n  edSelChip(null); edMsg(''); renderPalette(); edBtns(); edFitBadge(S.lastFit);\n  $('#ed').hidden = false;\n  try { document.execCommand('defaultParagraphSeparator', false, 'p'); document.execCommand('styleWithCSS', false, true); } catch (e) { /* older browsers */ }\n}\nfunction edClose() { edSync(); ED.open = false; $('#ed').hidden = true; ED.caret = null; renderAll(true); }\nfunction renderAssign() {\n  const el = $('#assignView'); if (!el) return;\n  if (!hasContent()) { el.innerHTML = '<p class=\"hint\">Import a letter first.</p>'; $('#edSummary').textContent = ''; return; }\n  el.innerHTML = PARTS3.filter((p) => S.parts[p]).map((p) => '<div class=\"edlbl\">' + ROLE_LABEL[p] + '</div>' + decorate(S.parts[p], false)).join('');\n  const n = el.querySelectorAll('.chip:not(.keep)').length;\n  $('#edSummary').textContent = n + ' variable' + (n === 1 ? '' : 's') + ' in the letter';\n}\n$('#edOpen').addEventListener('click', edOpen);\n$('#assignView').addEventListener('click', () => { if (hasContent()) edOpen(); });\n$('#edDone').addEventListener('click', edClose);\n$('#edUndo').addEventListener('click', edUndo);\n$('#edRedo').addEventListener('click', edRedo);\n$('#edRevert').addEventListener('click', () => { if (!ED.base) return; edPush(); edRestore(ED.base); });\n$('#edSearch').addEventListener('input', renderPalette);\n$('#edCustomBtn').addEventListener('click', () => edInsertKey($('#edCustom').value));\n$('#edSelBar').addEventListener('click', (e) => {\n  if (e.target.id === 'edChipDel') edDeleteChip(ED.sel, false);\n  if (e.target.id === 'edChipText') edDeleteChip(ED.sel, true);\n});\n// keep the caret / selection when clicking toolbar and palette\n$$('.edbar button, #edSelBar').forEach((b) => b.addEventListener('mousedown', (e) => { if (!e.target.closest('input')) e.preventDefault(); }));\n$('.edbar').addEventListener('click', (e) => {\n  const b = e.target.closest('button[data-cmd]'); if (!b) return;\n  if (ED.caret && document.contains(ED.caret.startContainer)) { const s = window.getSelection(); s.removeAllRanges(); s.addRange(ED.caret); }\n  edPush(); document.execCommand(b.getAttribute('data-cmd')); edSoon();\n});\n$('#edDir').addEventListener('click', () => {\n  const r = ED.caret; if (!r || !inEditor(r.startContainer)) { edMsg('Click in a paragraph first.', 'warn'); return; }\n  const el = (r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement).closest('p,td,th,li,h1,h2,h3,h4,h5,h6');\n  if (!el || !inEditor(el)) return;\n  edPush();\n  const rtl = (el.getAttribute('dir') || getComputedStyle(el).direction) === 'rtl';\n  el.setAttribute('dir', rtl ? 'ltr' : 'rtl'); el.style.textAlign = rtl ? 'left' : 'right'; edSoon();\n});\n$('#edList').addEventListener('click', (e) => { const it = e.target.closest('.pv'); if (it) edInsertKey(it.getAttribute('data-key')); });\n$('#edList').addEventListener('dragstart', (e) => {\n  const it = e.target.closest('.pv'); if (!it) return;\n  ED.drag = { kind: 'new', key: it.getAttribute('data-key') };\n  e.dataTransfer.setData('text/plain', '{{{' + ED.drag.key + '}}}'); e.dataTransfer.effectAllowed = 'copyMove';\n});\ndocument.addEventListener('selectionchange', () => {\n  if (!ED.open) return;\n  const s = window.getSelection();\n  if (s.rangeCount && inEditor(s.anchorNode) && inEditor(s.focusNode)) ED.caret = s.getRangeAt(0).cloneRange();\n});\n(function wirePage() {\n  const page = $('#edPage');\n  const clearDrop = () => { if (ED.dropEl) ED.dropEl.classList.remove('dropt'); ED.dropEl = null; };\n  page.addEventListener('mousedown', (e) => { const c = e.target.closest('.chip'); edSelChip(c && inEditor(c) ? c : null); });\n  page.addEventListener('dragstart', (e) => {\n    const t = e.target.nodeType === 3 ? e.target.parentElement : e.target;\n    const c = t && t.closest && t.closest('.chip'); if (!c) { if (t && t.tagName === 'IMG') e.preventDefault(); return; }\n    ED.drag = { kind: 'move', chip: c };\n    e.dataTransfer.setData('text/plain', c.title || ''); e.dataTransfer.effectAllowed = 'move';\n  });\n  page.addEventListener('dragover', (e) => {\n    if (!ED.drag) return; e.preventDefault();\n    e.dataTransfer.dropEffect = ED.drag.kind === 'move' ? 'move' : 'copy';\n    const t = e.target.closest && e.target.closest('td,th,p,li,h1,h2,h3,h4,h5,h6');\n    if (t !== ED.dropEl) { clearDrop(); if (t && inEditor(t)) { ED.dropEl = t; t.classList.add('dropt'); } }\n  });\n  page.addEventListener('dragleave', (e) => { if (e.relatedTarget && !page.contains(e.relatedTarget)) clearDrop(); });\n  page.addEventListener('drop', (e) => {\n    if (!ED.drag) return; e.preventDefault();\n    const tgt = ED.dropEl || (e.target.closest && e.target.closest('td,th,p,li'));\n    clearDrop();\n    let r = caretFromPoint(e.clientX, e.clientY);\n    const blk = tgt && inEditor(tgt) ? tgt : null;\n    // dropped on cell padding or an empty cell: use the cell\n    if (blk && (!r || !blk.contains(r.startContainer))) { r = document.createRange(); r.selectNodeContents(blk.matches('td,th') ? (blk.querySelector('p') || blk) : blk); r.collapse(false); }\n    if (!r || !inEditor(r.startContainer)) {\n      const part = e.target.closest && e.target.closest('.edpart');\n      if (!part) { ED.drag = null; return; }\n      r = document.createRange(); r.selectNodeContents(part); r.collapse(false);\n    }\n    const d = ED.drag; ED.drag = null;\n    if (d.kind === 'move' && d.chip.contains(r.startContainer)) return;\n    edPush();\n    let node;\n    if (d.kind === 'move') { node = d.chip; node.classList.remove('sel'); node.remove(); } else node = makeChip(d.key);\n    if (!placeNode(r, node)) { ED.undo.pop(); edBtns(); return; }\n    edSelChip(d.kind === 'move' ? node : null); edSoon();\n  });\n  document.addEventListener('dragend', () => { ED.drag = null; clearDrop(); });\n  page.addEventListener('beforeinput', (e) => {\n    if (/^history/.test(e.inputType)) { e.preventDefault(); if (e.inputType === 'historyUndo') edUndo(); else edRedo(); return; }\n    const now = Date.now(); if (now - ED.typingAt > 1000) edPush(); ED.typingAt = now;\n  });\n  page.addEventListener('input', edSoon);\n  page.addEventListener('paste', (e) => {\n    e.preventDefault(); const t = (e.clipboardData || window.clipboardData).getData('text/plain'); if (!t) return;\n    edPush(); ED.typingAt = Date.now(); document.execCommand('insertText', false, t); edSoon();\n  });\n  page.addEventListener('keydown', (e) => {\n    const mod = e.ctrlKey || e.metaKey;\n    if (mod && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); edUndo(); return; }\n    if (mod && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) { e.preventDefault(); edRedo(); return; }\n    if (ED.sel && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); edDeleteChip(ED.sel, false); }\n  });\n})();\ndocument.addEventListener('keydown', (e) => { if (ED.open && e.key === 'Escape') edClose(); });\n\n/* ===================================================================== SAMPLES */\nconst SAMPLE_COMMON = {\n  employee_code: 'E1043', employee_email: 'employee@example.com', employee_personal_email: 'name@example.com', employee_date_of_birth: '1990-04-12', employee_joining_date: '2021-03-01', employee_joining_date_hijri: '1442/07/17', employee_last_working_day: '2026-12-31',\n  employee_gender_en: 'Male', employee_gender_ar: 'ذكر', employee_marital_status_en: 'Married', employee_marital_status_ar: 'متزوج', employee_mobile_number: '0500000000', employee_iqama_profession_en: 'Accountant', employee_iqama_profession_ar: 'محاسب',\n  employee_payment_type: 'Bank transfer', employee_cr_name_en: 'Example Trading Co.', employee_cr_name_ar: 'شركة المثال التجارية', employee_mol_no: '7-1234567', commercial_registration_number: '1010000000',\n  employee_first_name_ar: 'أحمد', employee_middle_name_ar: 'صالح', employee_last_name_ar: 'الحربي',\n  identification_nationality: 'Saudi', identification_nationality_ar: 'سعودي', identification_religion_en: 'Muslim', identification_religion_ar: 'مسلم', identification_document_type: 'National ID', identification_document_number: '1000000001',\n  identification_passport_number: 'A0000000', identification_iqama_issue_date: '2020-01-01', identification_iqama_issue_date_hijri: '1441/05/06', identification_iqama_issue_place: 'Riyadh', identification_iqama_expiry_date: '2030-01-01', identification_iqama_expiry_date_ar: '1451/08/28',\n  identification_passport_issue_place: 'Riyadh', identification_passport_issue_date: '2022-05-01', identification_passport_expiry_date: '2032-05-01', identification_employer_number: '700000000', identification_outside_kingdom: 'No',\n  bank_account_type: 'Current', bank_account_name: 'Ahmed Saleh Alharbi', bank_account_name_ar: 'أحمد صالح الحربي', bank_name: 'Example Bank', bank_branch_name: 'Olaya', bank_branch_name_ar: 'العليا', bank_swift_code: 'EXMPSARI', bank_sort_code: '000000', bank_account_number: '0000000000', bank_iban: 'SA0000000000000000000000',\n  registered_in_gosi: 'Yes', gosi_subscription: 'Annuities and occupational hazards', company_contribution_percentage: '11.75%', employe_contribution_percentage: '9.75%', company_contribution_value: '1,175.00', employe_contribution_value: '975.00', gosi_employee_number: '400000000', amount_registered_in_gosi: '10,000.00', gosi_effective_date: '2021-03-01',\n  organization_job_title: 'Senior Accountant', organization_job_title_ar: 'محاسب أول', organization_department: 'Finance', organization_department_ar: 'المالية', organization_parent_department: 'Shared Services', organization_parent_department_ar: 'الخدمات المشتركة', organization_location: 'Riyadh HQ', organization_location_ar: 'المقر الرئيسي بالرياض', organization_home_address: 'Riyadh', organization_area: 'Central', organization_area_ar: 'الوسطى', organization_line_manager: 'Khalid Al-Otaibi',\n  organization_employment_type: 'Full time', organization_employment_type_ar: 'دوام كامل', organization_business_unit_en: 'Corporate', organization_business_unit_ar: 'الشركة', organization_contract_type_en: 'Indefinite', organization_contract_type_ar: 'غير محدد المدة', organization_contract_period_en: '2 years', organization_contract_period_ar: 'سنتان',\n  organization_contract_start: '2021-03-01', organization_contract_start_hijri: '1442/07/17', organization_contract_end: '2027-02-28', organization_contract_end_hijri: '1448/09/11', organization_probation_start: '2021-03-01', organization_probation_end: '2021-05-29',\n  compensation_basic_salary: '10,000.00', compensation_full_package: '14,500.00', compensation_grade: 'G7', compensation_currency_symbol_en: 'SAR', compensation_currency_symbol_ar: 'ر.س', compensation_currency_name_en: 'Saudi Riyal', compensation_currency_name_ar: 'ريال سعودي',\n  company_name: 'Example Company Ltd.', company_name_ar: 'شركة المثال المحدودة', company_address_1: 'King Fahd Road', company_address_1_ar: 'طريق الملك فهد', company_city: 'Riyadh', company_city_ar: 'الرياض', company_country: 'Saudi Arabia', company_country_ar: 'المملكة العربية السعودية', company_po_box: '12345', company_postal_code: '11564', company_fax_number: '011 000 0000', company_website: 'www.example.com',\n  benefit_type_62740: '2,500.00', benefit_type_62780: '1,000.00', benefit_type_62783: '1,000.00',\n  request_reason: 'Bank requirement', request_date: '2026-10-13', request_date_hijri: '1448/04/22', request_type: 'Salary certificate', directed_to_ar: 'إلى من يهمه الأمر', directed_to_en: 'To whom it may concern',\n};\nfunction samplesText(arabicNames) {\n  const names = arabicNames ? { employee_first_name: 'أحمد', employee_middle_name: 'صالح', employee_last_name: 'الحربي' } : { employee_first_name: 'Ahmed', employee_middle_name: 'Saleh', employee_last_name: 'Alharbi' };\n  const all = Object.assign({}, names, SAMPLE_COMMON);\n  return Object.keys(all).map((k) => k + ' = ' + all[k]).join('\\n');\n}\n$('#samples').value = LS.get('jlc_samples_v1', null) || samplesText(false);\n$('#samples').addEventListener('input', () => { LS.set('jlc_samples_v1', $('#samples').value); renderAll(); });\n$('#sampleEn').addEventListener('click', () => { $('#samples').value = samplesText(false); LS.set('jlc_samples_v1', $('#samples').value); renderAll(); });\n$('#sampleAr').addEventListener('click', () => { $('#samples').value = samplesText(true); LS.set('jlc_samples_v1', $('#samples').value); renderAll(); });\n$('#hlVars').addEventListener('change', () => renderAll());\n\n/* ===================================================================== CATALOG UI */\nfunction showCatalog() { $('#catalogJson').value = JSON.stringify(CATALOG, null, 1); fillKeyList(); }\n$('#saveCatalog').addEventListener('click', () => { try { const c = JSON.parse($('#catalogJson').value); if (!Array.isArray(c) || !c.every((x) => x && x.key)) throw new Error('Each entry needs a \"key\".'); CATALOG = c; LS.set('jlc_catalog_v1', CATALOG); fillKeyList(); renderAll(); alert('Catalog saved (' + c.length + ' variables).'); } catch (e) { alert('Catalog not saved: ' + e.message); } });\n$('#resetCatalog').addEventListener('click', () => { CATALOG = defaultCatalog_(); LS.set('jlc_catalog_v1', null); showCatalog(); renderAll(); });\n$('#addKeys').addEventListener('click', () => {\n  let added = 0;\n  $('#extraKeys').value.split('\\n').forEach((l) => { const m = l.split(/[,\\t;]/); if (m.length < 2) return; const label = m[0].trim(); const key = m[m.length - 1].trim().replace(/[{}]/g, ''); if (!label || !/^[A-Za-z0-9_]+$/.test(key)) return; const ex = CATALOG.find((c) => c.key === key); const ar = isArabicText(label); if (ex) { if (ar) ex.ar = label; else ex.en = label; } else CATALOG.push({ key, en: ar ? key : label, ar: ar ? label : '', group: 'client-specific', aliases: [] }); added++; });\n  LS.set('jlc_catalog_v1', CATALOG); showCatalog();\n  S.vars.forEach((v) => { if (v.status === 'unmapped' || v.status === 'auto') { const m = matchVar(v.label); if (m.score >= 0.5) { v.key = m.key; v.score = m.score; v.status = 'auto'; } } });\n  renderAll(); alert(added + ' key(s) added.');\n});\n\n/* ===================================================================== IMAGES UI */\nconst imgMode = (im) => im.mode || (im.attId ? 'id' : (im.dataUrl ? 'embed' : 'id'));\nfunction loadImg(url) { return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; }); }\n/** A lighter copy of the image for embedding: at most 2× the size it is shown at, PNG when it has transparency, otherwise the smaller of PNG / JPEG. */\nasync function makeEmbed(dataUrl, showW) {\n  if (!dataUrl || /^data:image\\/svg/.test(dataUrl)) return dataUrl;\n  try {\n    const img = await loadImg(dataUrl);\n    const scale = Math.min(1, (Math.max(40, showW) * 2) / img.naturalWidth);\n    const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.naturalWidth * scale)); c.height = Math.max(1, Math.round(img.naturalHeight * scale));\n    const g = c.getContext('2d'); g.drawImage(img, 0, 0, c.width, c.height);\n    const px = g.getImageData(0, 0, c.width, c.height).data; let alpha = false; for (let i = 3; i < px.length; i += 16) { if (px[i] < 250) { alpha = true; break; } }\n    const png = c.toDataURL('image/png'); if (alpha) return png.length < dataUrl.length ? png : dataUrl;\n    const g2 = document.createElement('canvas'); g2.width = c.width; g2.height = c.height; const x = g2.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(c, 0, 0);\n    const jpg = g2.toDataURL('image/jpeg', 0.9);\n    return [png, jpg, dataUrl].sort((a, b) => a.length - b.length)[0];\n  } catch (e) { return dataUrl; }\n}\nlet embedBusy = false;\nasync function prepareEmbeds() {\n  if (embedBusy) return; embedBusy = true; let changed = false;\n  try { for (const im of S.images) { if (im.dataUrl && !im.embedUrl && !im.background) { im.embedUrl = await makeEmbed(im.dataUrl, im.w); changed = true; } } } finally { embedBusy = false; }\n  if (changed) renderAll();\n}\nconst kb = (s) => Math.round((String(s || '').length * 3) / 4 / 1024);\nfunction renderImages() {\n  const box = $('#imgList');\n  if (!S.images.length) { box.innerHTML = '<p class=\"hint\">No images in this letter.</p>'; return; }\n  box.innerHTML = S.images.map((im) => '<div class=\"imgrow\"><div>' + ((im.dataUrl || im.url) ? '<img class=\"thumb\" src=\"' + esc(im.dataUrl || im.url) + '\" alt=\"\">' : '<div class=\"thumb imgph\" style=\"width:90px;height:60px\">no preview</div>') + '</div><div>' +\n    '<div><b>' + esc(im.name) + '</b> <span class=\"hint\">' + esc(im.part) + ' · ' + im.w + ' × ' + im.h + ' px' + (im.background ? ' · full-page background (left out)' : '') + '</span></div>' +\n    (im.background ? '' : '<div class=\"row\" style=\"margin-top:4px\"><select data-imode=\"' + im.n + '\">' + (im.dataUrl ? '<option value=\"embed\"' + (imgMode(im) === 'embed' ? ' selected' : '') + '>Embed in the source code' + (im.embedUrl ? ' (' + kb(im.embedUrl) + ' KB)' : '') + '</option>' : '') + '<option value=\"id\"' + (imgMode(im) === 'id' ? ' selected' : '') + '>Jisr attachment ID</option></select>' +\n      (imgMode(im) === 'id' ? '<input type=\"text\" data-att=\"' + im.n + '\" value=\"' + esc(im.attId) + '\" placeholder=\"e.g. 33331\" style=\"width:110px\"><span class=\"kbd\">{{{letter_attachment_' + esc(im.attId || 'ID') + '}}}</span>' : '<span class=\"hint\" style=\"margin:0\">no upload or ID needed</span>') + '</div>') +\n    (im.dataUrl ? '<div style=\"margin-top:4px\"><a class=\"btn sm\" download=\"' + esc(im.name.replace(/\\.[^.]+$/, '') || 'image') + '.' + ((im.dataUrl.match(/^data:image\\/(\\w+)/) || [])[1] || 'png').replace('jpeg', 'jpg') + '\" href=\"' + im.dataUrl + '\">Download image</a></div>' : '') +\n    '</div></div>').join('');\n}\n$('#imgList').addEventListener('change', (e) => {\n  const n = e.target.getAttribute('data-att'), md = e.target.getAttribute('data-imode');\n  if (md != null) { S.images[+md].mode = e.target.value; renderAll(true); return; }\n  if (n == null) return; S.images[+n].attId = e.target.value.trim().replace(/\\D+/g, ''); renderAll();\n});\nlet convCode = '';\n$('#convBtn').addEventListener('click', async () => {\n  const f = $('#convImg').files && $('#convImg').files[0]; const info = $('#convInfo');\n  if (!f) { info.textContent = 'Choose an image first.'; return; }\n  const url = await fileToDataUrl(f); const [nw, nh] = await imgSize(url);\n  const prof = activeProfile(); const maxMm = prof.pageW - prof.mL - prof.mR;\n  const wmm = Math.min(maxMm, Math.max(5, +$('#convW').value || 50)); const w = Math.round(wmm * MM), h = Math.round((nh / nw) * w);\n  const embed = await makeEmbed(url, w);\n  const al = $('#convAlign').value;\n  const ist = 'display: block; ' + (al === 'center' ? 'margin-left: auto; margin-right: auto;' : al === 'right' ? 'margin-left: auto;' : 'margin-right: auto;');\n  convCode = '<p dir=\"ltr\" style=\"text-align: ' + al + '; margin: 0; font-family: Arial, sans-serif;\"><img src=\"' + embed + '\" width=\"' + w + '\" height=\"' + h + '\" style=\"' + ist + '\"></p>';\n  $('#convOut').value = convCode; $('#convCopy').disabled = false;\n  info.textContent = f.name + ' → ' + w + ' × ' + h + ' px, ' + kb(embed) + ' KB of source code';\n  const to = $('#convTo').value;\n  if (to) {\n    const n = S.images.length; S.images.push({ n, name: f.name, dataUrl: url, embedUrl: embed, w, h, attId: '', part: to, background: false, mode: 'embed' });\n    setPartHtml(to, (S.parts[to] ? S.parts[to] + '\\n' : '') + '<p dir=\"ltr\" style=\"text-align: ' + al + '; margin: 0; font-size: 1pt; line-height: 1;\"><img data-jimg=\"' + n + '\" width=\"' + w + '\" height=\"' + h + '\" alt=\"\"></p>');\n    if (!S.source) S.source = 'images'; if (!S.fixBase) S.fixBase = Object.assign({}, S.fix);\n    info.textContent += ' · added to the ' + to;\n    renderAll(true);\n  }\n});\n$('#convCopy').addEventListener('click', (e) => copyText(convCode, e.target));\nasync function fileToDataUrl(f) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); }); }\nasync function imgSize(url) { return new Promise((res) => { const i = new Image(); i.onload = () => res([i.naturalWidth, i.naturalHeight]); i.onerror = () => res([300, 80]); i.src = url; }); }\nasync function setPartImage(part, file, hmm) {\n  if (!file) return;\n  const url = await fileToDataUrl(file); const [nw, nh] = await imgSize(url);\n  const prof = activeProfile(); const maxW = (prof.pageW - prof.mL - prof.mR) * MM;\n  let h = hmm * MM, w = (nw / nh) * h; if (w > maxW) { w = maxW; h = (nh / nw) * w; }\n  const n = S.images.length; S.images.push({ n, name: file.name, dataUrl: url, w: Math.round(w), h: Math.round(h), attId: '', part, background: false });\n  setPartHtml(part, '<p dir=\"ltr\" style=\"text-align: center; margin: 0; font-size: 1pt; line-height: 1;\"><img data-jimg=\"' + n + '\" width=\"' + Math.round(w) + '\" height=\"' + Math.round(h) + '\" alt=\"\"></p>', part + ' image');\n  if (!S.fixBase) { S.fixBase = Object.assign({}, S.fix); }\n  if (!S.source) S.source = 'images';\n  renderAll(true);\n}\n$('#hdrImgIn').addEventListener('change', (e) => setPartImage('header', e.target.files[0], +$('#hdrImgH').value || 25));\n$('#ftrImgIn').addEventListener('change', (e) => setPartImage('footer', e.target.files[0], +$('#ftrImgH').value || 15));\n\n/* ===================================================================== FIT UI */\n(function fontOpts() { const s = $('#fontScale'); for (let v = 100; v >= 70; v -= 5) s.insertAdjacentHTML('beforeend', '<option value=\"' + v / 100 + '\">' + v + '%</option>'); })();\nfunction syncFixUi() { $('#spacerMode').value = S.fix.spacerMode; $('#spacingScale').value = String(S.fix.spacingScale); $('#fontScale').value = String(S.fix.fontScale); $('#imgScale').value = String(S.fix.imgScale); }\n[['spacerMode', (v) => v], ['spacingScale', Number], ['fontScale', Number], ['imgScale', Number]].forEach(([id, cast]) => $('#' + id).addEventListener('change', (e) => { pushFix(); S.fix[id] = cast(e.target.value); renderAll(); }));\n$('#targetPages').addEventListener('change', (e) => { S.target = Math.max(1, +e.target.value || 1); renderAll(); });\n$('#baseFont').addEventListener('change', (e) => { S.baseFont = Math.max(6, +e.target.value || 12); renderAll(); });\nfunction pushFix() { S.fixHistory.push(Object.assign({}, S.fix)); if (S.fixHistory.length > 40) S.fixHistory.shift(); }\nfunction undoFix() { if (!S.fixHistory.length) return; S.fix = S.fixHistory.pop(); syncFixUi(); $('#autoFitMsg').innerHTML = ''; renderAll(true); }\nfunction resetFix() { const base = S.fixBase || { spacerMode: 'collapse', spacingScale: 1, fontScale: 1, imgScale: 1 }; if (JSON.stringify(base) !== JSON.stringify(S.fix)) pushFix(); S.fix = Object.assign({}, base); syncFixUi(); $('#autoFitMsg').innerHTML = ''; renderAll(true); }\n$('#resetFix').addEventListener('click', resetFix); $('#resetFix2').addEventListener('click', resetFix);\n$('#undoFix').addEventListener('click', undoFix); $('#undoFixB').addEventListener('click', undoFix);\nconst STEP = (arr, cur) => { const i = arr.indexOf(cur); return arr[Math.min(arr.length - 1, (i < 0 ? 0 : i + 1))]; };\nconst SPACING = [1, 0.75, 0.5, 0.25, 0], FONTS = [1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7], IMGS = [1, 0.9, 0.8, 0.7, 0.6, 0.5];\nasync function fitNow() { const prev = build('preview'); return measure(prev.parts, activeProfile()); }\nasync function autoFit() {\n  if (!hasContent()) return;\n  const r = await autoFitCore();\n  if (JSON.stringify(r.startFix) !== JSON.stringify(S.fix)) { S.fixHistory.push(r.startFix); if (S.fixHistory.length > 40) S.fixHistory.shift(); }\n  syncFixUi();\n  $('#autoFitMsg').innerHTML = '<div class=\"msg ' + (r.ok ? 'ok' : 'err') + '\">' + (r.ok ? 'Fits on ' + r.f.n + ' page(s)' : 'Still ' + r.f.n + ' pages after the allowed adjustments (font not below 75%). Shorten the text or raise the intended pages.') + (r.steps.length ? ': ' + esc(r.steps.join(' → ')) : '') + '. Wording was not changed.</div>';\n  renderAll(true);\n  return r.ok;\n}\nasync function autoFitCore() {\n  const steps = [];\n  const startFix = Object.assign({}, S.fix);\n  const ok = (f) => f.fits && !(f.footerPushed && f.footerPage > f.target);\n  let f = await fitNow();\n  const plan = [\n    () => { if (S.fix.spacerMode === 'keep') { S.fix.spacerMode = 'collapse'; return 'collapsed spacer paragraphs'; } },\n    () => { if (S.fix.spacerMode !== 'remove') { S.fix.spacerMode = 'remove'; return 'removed spacer paragraphs'; } },\n    () => { if (S.fix.spacingScale > 0.5) { S.fix.spacingScale = STEP(SPACING, S.fix.spacingScale); return 'spacing ' + Math.round(S.fix.spacingScale * 100) + '%'; } },\n    () => { if (S.fix.spacingScale > 0.5) { S.fix.spacingScale = STEP(SPACING, S.fix.spacingScale); return 'spacing ' + Math.round(S.fix.spacingScale * 100) + '%'; } },\n    () => { if (S.images.some((i) => !i.background) && S.fix.imgScale > 0.8) { S.fix.imgScale = STEP(IMGS, S.fix.imgScale); return 'images ' + Math.round(S.fix.imgScale * 100) + '%'; } },\n    () => { if (S.images.some((i) => !i.background) && S.fix.imgScale > 0.8) { S.fix.imgScale = STEP(IMGS, S.fix.imgScale); return 'images ' + Math.round(S.fix.imgScale * 100) + '%'; } },\n  ];\n  for (let i = 0; i < 6; i++) plan.push(() => { if (S.fix.fontScale > 0.75) { S.fix.fontScale = STEP(FONTS, S.fix.fontScale); return 'font ' + Math.round(S.fix.fontScale * 100) + '%'; } });\n  for (const p of plan) { if (ok(f)) break; const did = p(); if (did) { steps.push(did); f = await fitNow(); } }\n  return { ok: ok(f), f, steps, startFix };\n}\n$('#autoFit').addEventListener('click', autoFit);\n$$('[data-fix]').forEach((b) => b.addEventListener('click', () => {\n  const k = b.getAttribute('data-fix');\n  if (k !== 'auto') pushFix();\n  if (k === 'spacers') S.fix.spacerMode = 'remove';\n  else if (k === 'spacing') S.fix.spacingScale = STEP(SPACING, S.fix.spacingScale);\n  else if (k === 'font') S.fix.fontScale = STEP(FONTS, S.fix.fontScale);\n  else if (k === 'logo') S.fix.imgScale = STEP(IMGS, S.fix.imgScale);\n  else if (k === 'auto') { autoFit(); return; }\n  syncFixUi(); renderAll(true);\n}));\n$('#zoom').addEventListener('change', () => renderAll(true));\n\n/* ===================================================================== PROFILES UI */\nfunction renderProfileInfo() {\n  const sel = $('#profileSel'); const act = activeProfile();\n  sel.innerHTML = profiles().map((p) => '<option' + (p.name === act.name ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('');\n  $('#profileInfo').textContent = act.paper + ' · margins ' + [act.mT, act.mB, act.mL, act.mR].join(' / ') + ' mm · page area ' + round(printH(act), 1) + ' mm high · header/footer ' + (act.mode === 'flow' ? 'flow with body' : 'repeat') + (act.calibrated ? ' · calibrated' + (act.lines ? ' (' + act.lines + ' lines)' : '') + (act.pagebreak !== 'unknown' ? ' · page break marker ' + (act.pagebreak === 'yes' ? 'works' : 'does NOT work') : '') : ' · not calibrated') + (S.wordGeom ? ' · Word file: ' + S.wordGeom.pageW + ' × ' + S.wordGeom.pageH + ' mm, margins ' + [S.wordGeom.mT, S.wordGeom.mB, S.wordGeom.mL, S.wordGeom.mR].join(' / ') : '');\n  $('#calBanner').classList.toggle('hide', !!act.calibrated);\n  $('#delProfile').disabled = act.name === ASSUMED.name;\n}\n$('#profileSel').addEventListener('change', (e) => { LS.set('jlc_active_profile', e.target.value); renderAll(true); });\n$('#delProfile').addEventListener('click', () => { const act = activeProfile(); if (act.name === ASSUMED.name) return; LS.set('jlc_profiles_v1', profiles().slice(1).filter((p) => p.name !== act.name)); LS.set('jlc_active_profile', ASSUMED.name); renderAll(true); });\n\n/* ===================================================================== CALIBRATION */\nfunction calTemplate() {\n  const header = '<p dir=\"ltr\" style=\"height: 40mm; border: 1px solid #000; margin: 0; box-sizing: border-box; text-align: center; font-size: 12pt; font-family: Arial, sans-serif;\">CALIBRATION HEADER · 40 mm tall box</p>';\n  const lines = []; for (let i = 1; i <= 80; i++) { lines.push('<p dir=\"ltr\" style=\"font-size: 12pt; line-height: 1.15; margin: 0; font-family: Arial, sans-serif;\">Line ' + String(i).padStart(2, '0') + '</p>'); if (i === 80) { lines.push('<!-- pagebreak -->'); lines.push('<p dir=\"ltr\" style=\"font-size: 12pt; line-height: 1.15; margin: 0; font-family: Arial, sans-serif;\">PAGE BREAK TEST</p>'); } }\n  const footer = '<p dir=\"ltr\" style=\"height: 20mm; border: 1px solid #000; margin: 0; box-sizing: border-box; text-align: center; font-size: 12pt; font-family: Arial, sans-serif;\">CALIBRATION FOOTER · 20 mm tall box</p>';\n  return { header, body: lines.join('\\n'), footer };\n}\n$$('[data-calcopy]').forEach((b) => b.addEventListener('click', () => copyText(calTemplate()[b.getAttribute('data-calcopy')], b)));\n$('#calDl').addEventListener('click', () => { const t = calTemplate(); download('jisr-calibration-template.txt', new Blob(['=== HEADER (paste into Header › Source code) ===\\n' + t.header + '\\n\\n=== BODY (paste into Body › Source code) ===\\n' + t.body + '\\n\\n=== FOOTER (paste into Footer › Source code) ===\\n' + t.footer + '\\n'], { type: 'text/plain' })); });\n$('#calSave').addEventListener('click', () => {\n  const name = $('#calName').value.trim(); const lines = +$('#calLines').value;\n  const msg = $('#calMsg');\n  if (!name || name === ASSUMED.name) { msg.innerHTML = '<div class=\"msg err\">Give the profile a name.</div>'; return; }\n  if (!lines || lines < 1 || lines > 80) { msg.innerHTML = '<div class=\"msg err\">Enter the number of the last body line fully on page 1 (1 to 80).</div>'; return; }\n  const paper = $('#calPaper').value; const [pw, ph] = PAPER[paper];\n  const mode = $('#calRepeat').value;\n  const p = { name, paper, pageW: pw, pageH: ph, mT: +$('#calMT').value || 0, mB: +$('#calMB').value || 0, mL: +$('#calML').value || 0, mR: +$('#calMR').value || 0, mode, calibrated: true, lines, pagebreak: $('#calPB').value };\n  p.printH = round(lines * LH12 + (mode === 'flow' ? 40 : 60), 1);\n  const list = profiles().slice(1).filter((x) => x.name !== name); list.push(p);\n  LS.set('jlc_profiles_v1', list); LS.set('jlc_active_profile', name);\n  const geomH = round(ph - p.mT - p.mB, 1);\n  msg.innerHTML = '<div class=\"msg ok\">Saved “' + esc(name) + '”: usable height ' + p.printH + ' mm' + (Math.abs(geomH - p.printH) > 8 ? ' (the margins you entered give ' + geomH + ' mm; the line count is used because it is what Jisr actually printed)' : '') + '.</div>';\n  renderAll(true);\n});\n\n/* ===================================================================== OUTPUT */\nlet lastOut = null;\nfunction renderOutput() {\n  const o = build('output'); lastOut = o;\n  $('#outH').value = o.parts.header; $('#outB').value = o.parts.body; $('#outF').value = o.parts.footer;\n  const w = o.warn.slice();\n  S.vars.forEach((v) => { if (v.status === 'auto' && v.key) w.push('“' + v.raw + '” → {{{' + v.key + '}}} is only proposed; confirm it in step 2.'); if (v.status === 'unknown') w.push('{{{' + v.key + '}}} is not in the catalog; check the spelling in Jisr › Options › Variables.'); if (v.kind === 'curly' && v.key && (S.source === 'html' || S.source === 'jisr')) w.push('“' + v.raw + '” used two braces; the output uses three.'); });\n  if (S.lastFit && !S.lastFit.fits) w.unshift('Does not fit the intended ' + S.lastFit.target + ' page(s) yet.');\n  if (S.lastFit && S.lastFit.footerPushed) w.unshift('The footer is pushed to page ' + S.lastFit.footerPage + '.');\n  const prof = activeProfile(); if (prof.pagebreak === 'no' && /pagebreak/.test(o.parts.body)) w.push('This profile says the page break marker does not work in Jisr.');\n  $('#outWarn').innerHTML = (w.map((x) => '<div class=\"msg warn\">' + esc(x) + '</div>').join('') || (hasContent() ? '<div class=\"msg ok\">Ready to paste.</div>' : '')) + (o.embedded.length ? '<div class=\"msg info\">' + o.embedded.length + ' image(s) are embedded in the source code (' + o.embedded.reduce((a, im) => a + kb(im.embedUrl || im.dataUrl), 0) + ' KB). Jisr\\'s editor normally uploads embedded images when you save the template; re-open Source code after saving to see it.</div>' : '');\n}\nfunction copyText(t, btn) {\n  const done = () => { if (btn) { const o = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = o; }, 1200); } };\n  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(done, () => fallback());\n  else fallback();\n  function fallback() { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); done(); } catch (e) { /* ignore */ } ta.remove(); }\n}\n$$('[data-copy]').forEach((b) => b.addEventListener('click', () => { renderOutput(); copyText(lastOut.parts[b.getAttribute('data-copy')], b); }));\n$$('[data-reflect]').forEach((b) => b.addEventListener('click', () => { if (JISR) doReflect([b.getAttribute('data-reflect')]); }));\n$('#rfAll').addEventListener('click', () => { if (JISR) doReflect(['header', 'body', 'footer']); });\n$('#rfTarget').addEventListener('change', (e) => { if (JISR) { JISR.rfChoice = { key: rfKey(), id: e.target.value }; $('#rfMsg').innerHTML = ''; renderReflect(); } });\nfunction download(name, blob) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); }\nfunction fitReport() {\n  const f = S.lastFit || {}; const p = activeProfile();\n  return { tool: 'Jisr Letter Converter', version: VERSION, created: new Date().toISOString(), source: S.source, file: S.fileName, profile: p, calibrated: !!p.calibrated, intendedPages: S.target, pagesUsed: f.n, fits: f.fits, overflowMm: f.overflowMm, spareMm: f.spareMm, footerPushed: f.footerPushed, footerPage: f.footerPage, headerMm: f.headerMm, bodyMm: f.bodyMm, footerMm: f.footerMm, pageAreaMm: f.capMm, adjustments: S.fix, baseFontPt: S.baseFont, notes: S.notes };\n}\n$('#dlZip').addEventListener('click', async () => {\n  if (!hasContent()) return; renderOutput();\n  const zip = new JSZip(); const o = lastOut;\n  zip.file('header.html', o.parts.header); zip.file('body.html', o.parts.body); zip.file('footer.html', o.parts.footer);\n  const cat = catByKey();\n  const csv = [['key', 'label', 'occurrences', 'parts']].concat(Array.from(o.used.values()).map((u) => [u.key, (cat.get(u.key) || {}).en || '', u.count, Array.from(u.parts).join(' ')]));\n  zip.file('variables-used.csv', '\\ufeff' + csv.map((r) => r.map((c) => '\"' + String(c).replace(/\"/g, '\"\"') + '\"').join(',')).join('\\r\\n'));\n  zip.file('fit-report.json', JSON.stringify(fitReport(), null, 2));\n  const base = (S.fileName || 'letter').replace(/\\.[^.]+$/, '').replace(/[^\\w\\-]+/g, '-');\n  download(base + '-jisr.zip', await zip.generateAsync({ type: 'blob' }));\n});\n\n/* ===================================================================== IMPORT UI */\nasync function onDocx(file) {\n  const msg = $('#importMsg'); msg.innerHTML = '<div class=\"msg info\">Reading ' + esc(file.name) + '…</div>';\n  try {\n    const r = await readDocx(file);\n    syncQueueBack(); S.jisrTpl = null; S.queueId = null; S.source = 'docx'; S.fileName = file.name; S.fix = { spacerMode: 'collapse', spacingScale: 1, fontScale: 1, imgScale: 1 }; syncFixUi();\n    loadParts(r.parts, r.images, { notes: r.notes, wordGeom: r.geom });\n    const cnt = (h) => (h.match(/<(p|li|tr)\\b/g) || []).length;\n    msg.innerHTML = '<div class=\"msg ok\">' + esc(file.name) + ': header ' + cnt(r.parts.header) + ' block(s), body ' + cnt(r.parts.body) + ', footer ' + cnt(r.parts.footer) + ', ' + r.images.length + ' image(s), ' + S.vars.size + ' placeholder(s). Check the structure in step 2 and the variables in step 3.</div>' + r.notes.map((n) => '<div class=\"msg warn\">' + esc(n) + '</div>').join('');\n  } catch (e) { msg.innerHTML = '<div class=\"msg err\">' + esc(e.message || String(e)) + '</div>'; console.error(e); }\n}\n$('#docxDrop').addEventListener('click', () => $('#docxIn').click());\n$('#docxIn').addEventListener('change', (e) => { if (e.target.files[0]) onDocx(e.target.files[0]); e.target.value = ''; });\n['dragover', 'dragenter'].forEach((t) => $('#docxDrop').addEventListener(t, (e) => { e.preventDefault(); $('#docxDrop').classList.add('over'); }));\n['dragleave', 'drop'].forEach((t) => $('#docxDrop').addEventListener(t, (e) => { e.preventDefault(); $('#docxDrop').classList.remove('over'); if (t === 'drop' && e.dataTransfer.files[0]) onDocx(e.dataTransfer.files[0]); }));\n$('#revBtn').addEventListener('click', () => {\n  syncQueueBack(); S.jisrTpl = null; S.queueId = null; S.source = 'html'; S.fileName = 'pasted-template'; S.wordGeom = null;\n  S.fix = { spacerMode: 'keep', spacingScale: 1, fontScale: 1, imgScale: 1 }; syncFixUi();\n  loadParts({ header: $('#revH').value, body: $('#revB').value, footer: $('#revF').value }, [], { notes: [] });\n  $('#revMsg').innerHTML = '<div class=\"msg ok\">Template loaded as it is today (spacers kept); the preview on the right shows how it behaves. Fix it in steps 2 to 5, then copy the cleaned code from 6 · Output.</div><div class=\"row\" style=\"margin-top:6px\"><button class=\"btn sm\" data-goto=\"fit\">Go to 5 · Page &amp; fit</button><button class=\"btn sm pri\" data-goto=\"out\">Go to 6 · Output</button></div>';\n});\n$('#sampleBtn').addEventListener('click', () => {\n  syncQueueBack(); S.jisrTpl = null; S.queueId = null; S.source = 'sample'; S.fileName = 'sample-employment-certificate'; S.wordGeom = null;\n  S.fix = { spacerMode: 'collapse', spacingScale: 1, fontScale: 1, imgScale: 1 }; syncFixUi();\n  const logo = 'data:image/svg+xml;base64,' + btoa('<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"208\" height=\"80\"><rect width=\"208\" height=\"80\" fill=\"#1a5d57\"/><text x=\"104\" y=\"48\" font-family=\"Arial\" font-size=\"22\" fill=\"#fff\" text-anchor=\"middle\">LOGO</text></svg>');\n  const images = [{ n: 0, name: 'logo.svg', dataUrl: logo, w: 208, h: 80, attId: '', part: 'header', background: false }];\n  loadParts({\n    header: '<p style=\"text-align: center; margin: 0;\"><img data-jimg=\"0\" width=\"208\" height=\"80\"></p>',\n    body: '<p dir=\"ltr\" style=\"text-align: center; margin: 0 0 12pt; font-size: 16pt;\"><strong>EMPLOYMENT CERTIFICATE</strong></p><p dir=\"ltr\" style=\"margin: 0 0 8pt; font-size: 12pt;\">Date: [Request Date]</p><p>&nbsp;</p><p dir=\"ltr\" style=\"margin: 0 0 8pt; font-size: 12pt;\">To whom it may concern,</p><p dir=\"ltr\" style=\"text-align: justify; margin: 0 0 8pt; font-size: 12pt;\">This is to certify that Mr. [Employee Name], Nationality ( [Nationality] ), Holding ID No. ( [ID Number] ), has been working with [Company Name] since [Joining Date] as [Job Title].</p><p>&nbsp;</p><p>&nbsp;</p><p dir=\"ltr\" style=\"margin: 0 0 8pt; font-size: 12pt;\">This certificate was issued upon his request without any liability on the company.</p><p>&nbsp;</p><p dir=\"ltr\" style=\"text-align: center; margin: 0; font-size: 12pt;\"><strong>Human Resources Manager</strong></p>',\n    footer: '<p dir=\"ltr\" style=\"text-align: center; margin: 0; font-size: 9pt;\">[Company Address] · P.O. Box [PO Box] · Tel 011 000 0000</p>',\n  }, images, { notes: [] });\n  $('#importMsg').innerHTML = '<div class=\"msg ok\">Sample letter loaded.</div>';\n});\n\n/* ===================================================================== JISR TEMPLATES (create / edit / bulk)\n * Only active when the tool is opened from Bulk Ops on a Jisr page (same origin as Jisr, uses your login).\n * Confirmed (invenu, 2026-10-13):\n *   GET  /v2/letter_types?locale=&slug=                         list of templates\n *   POST /v2/letter_types?slug=  { letter_type: { name, name_ar, header, letter_attachments: { letter_attachment_<id>: <url> } } }  -> 201\n *   POST /v2/letter_attachments?slug= { letter_attachment: { attachment: { data: \"data:image/png;base64,…\", filename } } } -> 201\n * Not captured (detected at runtime / assumed, every save is read back and compared):\n *   names of the body and footer fields (read from an existing template), the list/response shapes,\n *   editing = PUT /v2/letter_types/{id} (PATCH tried if PUT is refused), detail = GET /v2/letter_types/{id}.\n * ===================================================================== */\nconst JISR = (() => {\n  let origin = ''; try { origin = location.origin; } catch (e) { /* ignore */ }\n  const m = /^https:\\/\\/([a-z0-9-]+)\\.(jisr\\.net|jisr\\.net\\.sa)$/i.exec(origin || '');\n  if (!m) return null;\n  const hp = new URLSearchParams(String(location.hash || '').replace(/^#/, ''));\n  return { slug: hp.get('jisr') || m[1], api: /\\.sa$/i.test(m[2]) ? 'https://api.jisr.net.sa/api' : 'https://apis.jisr.net/api', fields: { header: 'header', body: 'template', footer: 'footer' }, fieldsFrom: 'assumed', templates: [], loaded: false, backedUp: new Set(), rfChoice: null };\n})();\nasync function jreq(method, path, query, body) {\n  const qs = new URLSearchParams(Object.assign({}, query || {}, { slug: JISR.slug }));\n  let res;\n  try {\n    res = await fetch(JISR.api + path + '?' + qs, { method, credentials: 'include', headers: Object.assign({ accept: 'application/json', slug: JISR.slug, locale: 'en' }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });\n  } catch (e) { const err = new Error('No answer from Jisr (network). ' + (method !== 'GET' ? 'Check in Jisr whether it was saved before retrying.' : '')); err.unknown = method !== 'GET'; throw err; }\n  const json = await res.json().catch(() => null);\n  if (res.status === 401) throw new Error('Not logged in to Jisr (HTTP 401). Log in again in the Jisr tab, then retry.');\n  const msg = json && (json.message || json.error || (json.errors && (Array.isArray(json.errors) ? json.errors.join('; ') : JSON.stringify(json.errors))));\n  return { status: res.status, ok: res.ok && !(json && json.success === false), json, msg: msg ? String(msg).slice(0, 300) : '' };\n}\nconst looksHtml = (v) => typeof v === 'string' && /<[a-z][^>]*>/i.test(v);\nfunction findTemplateList(json) {\n  let out = null;\n  (function walk(v, d) { if (out || !v || typeof v !== 'object' || d > 5) return; if (Array.isArray(v)) { if (v.length && v.every((x) => x && typeof x === 'object' && x.id != null && ('name' in x || 'name_i18n' in x || 'name_ar' in x))) { out = v; return; } v.forEach((x) => walk(x, d + 1)); return; } Object.keys(v).forEach((k) => walk(v[k], d + 1)); })(json, 0);\n  return out || [];\n}\nfunction findTemplateObj(json, id) {\n  let out = null;\n  (function walk(v, d) { if (out || !v || typeof v !== 'object' || d > 6) return; if (!Array.isArray(v) && String(v.id) === String(id) && ('name' in v || 'name_ar' in v || 'header' in v)) { out = v; return; } (Array.isArray(v) ? v : Object.values(v)).forEach((x) => walk(x, d + 1)); })(json, 0);\n  return out;\n}\nfunction detectFields(t) {\n  const keys = Object.keys(t || {}).filter((k) => looksHtml(t[k]) || /header|footer|body|content/i.test(k));\n  const pick = (res, dflt) => { for (const re of res) { const k = keys.find((x) => re.test(x) && !/_ar$|attachment/i.test(x)); if (k) return k; } return dflt; };\n  return { header: pick([/^header$/i, /header/i], 'header'), body: pick([/^template$/i, /^body$/i, /^content$/i, /body|content/i], 'template'), footer: pick([/^footer$/i, /footer/i], 'footer') };\n}\nfunction attMap(t) {\n  const m = {}; const a = t && t.letter_attachments;\n  if (a && !Array.isArray(a) && typeof a === 'object') Object.keys(a).forEach((k) => { const id = (k.match(/(\\d+)$/) || [])[1]; if (id) m[id] = typeof a[k] === 'string' ? a[k] : (a[k] && (a[k].url || a[k].file_url)) || ''; });\n  if (Array.isArray(a)) a.forEach((x) => { if (x && x.id != null) m[String(x.id)] = x.url || x.file_url || x.attachment_url || ''; });\n  return m;\n}\nasync function loadTemplates() {\n  const r = await jreq('GET', '/v2/letter_types', { locale: '' });\n  if (!r.ok) throw new Error('Could not read the letter templates (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n  JISR.templates = findTemplateList(r.json).map((t) => ({ id: t.id, name: t.name || t.name_i18n || '', name_ar: t.name_ar || '', raw: t }));\n  JISR.loaded = true;\n  const withHtml = JISR.templates.find((t) => looksHtml(t.raw.header) || Object.keys(t.raw).some((k) => looksHtml(t.raw[k])));\n  if (withHtml) { JISR.fields = detectFields(withHtml.raw); JISR.fieldsFrom = 'the list'; }\n  else if (JISR.templates[0]) { try { const d = await templateDetail(JISR.templates[0].id); if (d) { JISR.fields = detectFields(d); JISR.fieldsFrom = '“' + (d.name || 'a template') + '”'; } } catch (e) { /* keep assumed */ } }\n  return JISR.templates;\n}\nasync function templateDetail(id) {\n  const cached = JISR.templates.find((t) => String(t.id) === String(id));\n  if (cached && looksHtml(cached.raw[JISR.fields.header] || cached.raw[JISR.fields.body] || '')) return cached.raw;\n  const r = await jreq('GET', '/v2/letter_types/' + encodeURIComponent(id), { locale: '' });\n  const t = r.ok ? findTemplateObj(r.json, id) : null;\n  if (t) { if (!JISR.fieldsFrom || JISR.fieldsFrom === 'assumed') { JISR.fields = detectFields(t); JISR.fieldsFrom = '“' + (t.name || 'a template') + '”'; } return t; }\n  if (cached) return cached.raw;\n  throw new Error('Could not open template ' + id + ' (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n}\nfunction partsOf(t) { const F = JISR.fields; return { header: t[F.header] || '', body: t[F.body] || '', footer: t[F.footer] || '' }; }\nasync function uploadImages() {\n  const usedIdx = new Set(); ['header', 'body', 'footer'].forEach((p) => { (S.parts[p] || '').replace(/data-jimg=\"(\\d+)\"/g, (_, n) => usedIdx.add(+n)); });\n  const done = [];\n  for (const im of S.images) {\n    if (!usedIdx.has(im.n) || im.background || im.attId || !im.dataUrl) continue;\n    const ext = ((im.dataUrl.match(/^data:image\\/(\\w+)/) || [])[1] || 'png').replace('jpeg', 'jpg').replace('svg+xml', 'svg');\n    const filename = (im.name || 'image').replace(/\\.[^.]+$/, '') + '.' + ext;\n    const r = await jreq('POST', '/v2/letter_attachments', null, { letter_attachment: { attachment: { data: im.dataUrl, filename } } });\n    if (!r.ok) throw new Error('Image “' + im.name + '” could not be uploaded (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n    let id = null, url = '';\n    (function walk(v, d) { if (!v || typeof v !== 'object' || d > 5) return; if (!Array.isArray(v) && v.id != null && id == null) { id = v.id; Object.keys(v).forEach((k) => { if (!url && typeof v[k] === 'string' && /^https?:\\/\\//.test(v[k])) url = v[k]; }); (function deep(o, dd) { if (url || !o || typeof o !== 'object' || dd > 3) return; Object.values(o).forEach((x) => { if (!url && typeof x === 'string' && /^https?:\\/\\//.test(x)) url = x; else deep(x, dd + 1); }); })(v, 0); } (Array.isArray(v) ? v : Object.values(v)).forEach((x) => walk(x, d + 1)); })(r.json, 0);\n    if (id == null) throw new Error('Jisr accepted image “' + im.name + '” but its ID was not found in the answer.');\n    im.attId = String(id); im.url = url; im.mode = 'id'; done.push(im.name + ' → ' + id);\n  }\n  return done;\n}\nfunction templatePayload(name, nameAr, out, prevAtts) {\n  const F = JISR.fields; const lt = { name, name_ar: nameAr };\n  lt[F.header] = out.parts.header; lt[F.body] = out.parts.body; lt[F.footer] = out.parts.footer;\n  const atts = {}; const all = out.parts.header + out.parts.body + out.parts.footer;\n  (all.match(/letter_attachment_(\\d+)/g) || []).forEach((k) => { const id = k.replace('letter_attachment_', ''); const im = S.images.find((x) => String(x.attId) === id); const url = (im && im.url) || (prevAtts && prevAtts[id]) || ''; atts['letter_attachment_' + id] = url; });\n  lt.letter_attachments = atts;\n  return { letter_type: lt };\n}\nconst normHtml = (h) => String(h || '').replace(/\\s+/g, ' ').replace(/>\\s+</g, '><').trim();\nasync function verifySaved(id, payload, only) {\n  let t = null; try { t = await templateDetail(id); } catch (e) { t = null; }\n  if (!t || String(t.id) !== String(id)) { try { await loadTemplates(); t = (JISR.templates.find((x) => String(x.id) === String(id)) || {}).raw; } catch (e) { /* ignore */ } }\n  if (!t) return { ok: false, msg: 'saved, but could not be read back to verify' };\n  const F = JISR.fields; const bad = (only || ['header', 'body', 'footer']).filter((p) => normHtml(t[F[p]]) !== normHtml(payload.letter_type[F[p]]));\n  if (!bad.length && t.name === payload.letter_type.name) return { ok: true, msg: 'saved and verified' };\n  return { ok: false, msg: 'saved, but Jisr returned different ' + (bad.length ? bad.join(', ') : 'name') + ' (field names may differ; check in Jisr)' };\n}\nasync function createTemplate(name, nameAr) {\n  await uploadImages();\n  const out = build('output');\n  const payload = templatePayload(name, nameAr, out, null);\n  const r = await jreq('POST', '/v2/letter_types', null, payload);\n  if (!r.ok) throw new Error('Jisr refused the template (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n  const created = findTemplateObj(r.json, (findTemplateList(r.json)[0] || {}).id) || (function first(v, d) { if (!v || typeof v !== 'object' || d > 4) return null; if (!Array.isArray(v) && v.id != null) return v; for (const x of Object.values(v)) { const f = first(x, d + 1); if (f) return f; } return null; })(r.json, 0);\n  const id = created && created.id;\n  const ver = id != null ? await verifySaved(id, payload) : { ok: false, msg: 'created (no ID in Jisr’s answer to verify)' };\n  return { id, ver };\n}\nasync function updateTemplate(tpl, name, nameAr) {\n  await uploadImages();\n  const out = build('output');\n  const payload = templatePayload(name, nameAr, out, tpl.atts);\n  let r = await jreq('PUT', '/v2/letter_types/' + encodeURIComponent(tpl.id), null, payload);\n  if (r.status === 404 || r.status === 405) r = await jreq('PATCH', '/v2/letter_types/' + encodeURIComponent(tpl.id), null, payload);\n  if (!r.ok) throw new Error('Jisr refused the change (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n  return verifySaved(tpl.id, payload);\n}\nfunction downloadBackup(list, label) {\n  const blob = new Blob([JSON.stringify({ tool: 'Jisr Letter Converter', company: JISR.slug, saved: new Date().toISOString(), fields: JISR.fields, templates: list }, null, 2)], { type: 'application/json' });\n  download('jisr-letter-templates-backup-' + JISR.slug + '-' + label + '-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '') + '.json', blob);\n}\n\n/* ---- state snapshots (current letter, queued Word files, temporary analysis) */\nfunction snapState() { return { blocks: S.blocks, vars: S.vars, images: S.images, fix: Object.assign({}, S.fix), fixBase: S.fixBase && Object.assign({}, S.fixBase), fixHistory: S.fixHistory.slice(), notes: S.notes, wordGeom: S.wordGeom, fileName: S.fileName, source: S.source, jisrTpl: S.jisrTpl || null, queueId: S.queueId || null }; }\nfunction useState(x, render) { Object.assign(S, { blocks: x.blocks, vars: x.vars, images: x.images, fix: Object.assign({}, x.fix), fixBase: x.fixBase, fixHistory: x.fixHistory || [], notes: x.notes || [], wordGeom: x.wordGeom, fileName: x.fileName, source: x.source, jisrTpl: x.jisrTpl || null, queueId: x.queueId || null }); recomputeParts(); if (render) { syncFixUi(); renderAll(true); } }\nasync function withState(x, fn) { const prev = snapState(); quietDepth++; useState(x, false); try { return await fn(); } finally { const now = snapState(); useState(prev, false); Object.assign(x, now); quietDepth--; if (!quietDepth) renderAll(true); } }\nfunction quietLoad(parts, images, opts) { loadParts(parts, images, opts); }\n\n/* ---- v1.5: Reflect in Jisr (Output), Duplicate, copy to another company */\nfunction createdId(json) {\n  const listId = (findTemplateList(json)[0] || {}).id;\n  const obj = findTemplateObj(json, listId) || (function first(v, d) { if (!v || typeof v !== 'object' || d > 4) return null; if (!Array.isArray(v) && v.id != null) return v; for (const x of Object.values(v)) { const f = first(x, d + 1); if (f) return f; } return null; })(json, 0);\n  return obj ? obj.id : null;\n}\nasync function putTemplate(id, payload) {\n  let r = await jreq('PUT', '/v2/letter_types/' + encodeURIComponent(id), null, payload);\n  if (r.status === 404 || r.status === 405) r = await jreq('PATCH', '/v2/letter_types/' + encodeURIComponent(id), null, payload);\n  if (!r.ok) throw new Error('Jisr refused the change (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n  return r;\n}\nfunction linkTemplate(t, name, nameAr) {\n  const same = S.jisrTpl && String(S.jisrTpl.id) === String(t.id);\n  S.jisrTpl = { id: t.id, name: name != null ? name : t.name || '', name_ar: nameAr != null ? nameAr : t.name_ar || '', atts: Object.assign({}, same ? S.jisrTpl.atts : {}, attMap(t)), original: same && S.jisrTpl.original ? S.jisrTpl.original : JSON.parse(JSON.stringify(t)), savedOnce: true };\n  JISR.backedUp.add(String(t.id)); S.source = 'jisr';\n}\n/** Write some or all parts of the current letter into an existing template. Parts not chosen keep what Jisr has. */\nasync function reflectParts(id, which) {\n  await loadTemplates().catch(() => {});\n  const t = await templateDetail(id);\n  if (!JISR.backedUp.has(String(id)) && !(S.jisrTpl && String(S.jisrTpl.id) === String(id) && S.jisrTpl.savedOnce)) { downloadBackup([t], 'before-reflect'); JISR.backedUp.add(String(id)); }\n  await uploadImages();\n  const out = build('output'); const cur = partsOf(t); const parts = {};\n  PARTS3.forEach((p) => { parts[p] = which.indexOf(p) >= 0 ? out.parts[p] : cur[p]; });\n  const payload = templatePayload(t.name || '', t.name_ar || '', { parts }, attMap(t));\n  await putTemplate(id, payload);\n  const ver = await verifySaved(id, payload, which);\n  linkTemplate(t);\n  return { t, ver };\n}\nconst rfKey = () => (S.fileName || '') + '|' + (S.jisrTpl ? S.jisrTpl.id : '');\nfunction rfTarget() { if (JISR.rfChoice && JISR.rfChoice.key === rfKey()) return JISR.rfChoice.id; return S.jisrTpl ? String(S.jisrTpl.id) : '__new'; }\nfunction renderReflect() {\n  const on = !!JISR;\n  $('#rfOff').style.display = on ? 'none' : ''; $('#rfOn').style.display = on ? '' : 'none';\n  $$('[data-reflect]').forEach((b) => { b.disabled = !on || !hasContent(); b.title = on ? 'Write only this part into the template chosen under “Reflect in Jisr”' : 'Open the tool from Bulk Ops while logged in to Jisr to use this'; });\n  if (!on) return;\n  if (JISR.rfMsgKey && JISR.rfMsgKey !== rfKey()) { $('#rfMsg').innerHTML = ''; JISR.rfMsgKey = null; }\n  const sel = $('#rfTarget'); const want = rfTarget();\n  const open = S.jisrTpl ? String(S.jisrTpl.id) : '';\n  sel.innerHTML = '<option value=\"__new\">+ New template…</option>' + JISR.templates.map((t) => '<option value=\"' + esc(t.id) + '\">' + esc(t.name) + (t.name_ar ? ' · ' + esc(t.name_ar) : '') + ' (#' + esc(t.id) + ')' + (open === String(t.id) ? ' — open now' : '') + '</option>').join('');\n  sel.value = Array.from(sel.options).some((o) => o.value === want) ? want : '__new';\n  const isNew = sel.value === '__new';\n  $('#rfNew').style.display = isNew ? '' : 'none';\n  if (isNew && JISR.rfNameKey !== rfKey()) { JISR.rfNameKey = rfKey(); $('#rfName').value = String(S.fileName || '').replace(/\\.docx$/i, '').replace(/[-_]+/g, ' ').trim(); $('#rfNameAr').value = ''; }\n  $('#rfAll').disabled = !hasContent();\n  $('#rfAll').textContent = isNew ? 'Create in Jisr' : 'Reflect all three parts in Jisr';\n  $('#rfInfo').textContent = !JISR.loaded ? 'Templates not loaded yet (Jisr templates › Load templates).' : isNew ? 'Per-part buttons need an existing template.' : '';\n}\nfunction warnLines() { const c = checkCurrent(S.lastFit); return (c.fits ? '' : '\\n\\nWarning: it does not fit the intended pages yet.') + (c.proposed || c.unmapped ? '\\n\\nVariables: ' + c.proposed + ' only proposed, ' + c.unmapped + ' not mapped.' : ''); }\nasync function doReflect(which) {\n  const m = $('#rfMsg'); const id = $('#rfTarget').value; const label = { header: 'Header', body: 'Body', footer: 'Footer' };\n  if (!hasContent()) return;\n  if (id === '__new') {\n    if (which.length < 3) { m.innerHTML = '<div class=\"msg warn\">Choose an existing template to reflect one part, or use “Create in Jisr” for a new template.</div>'; return; }\n    const name = $('#rfName').value.trim(), nameAr = $('#rfNameAr').value.trim();\n    if (!name || !nameAr) { m.innerHTML = '<div class=\"msg err\">Enter both names for the new template.</div>'; return; }\n    if (JISR.templates.some((t) => (t.name || '').trim().toLowerCase() === name.toLowerCase())) { m.innerHTML = '<div class=\"msg err\">A template named “' + esc(name) + '” already exists. Choose it in the list to replace it, or use another name.</div>'; return; }\n    if (!confirm('Create the template “' + name + '” in ' + JISR.slug + ' with this letter?' + warnLines() + '\\n\\nImages without an ID are uploaded to Jisr first.')) return;\n    m.innerHTML = '<div class=\"msg info\">Creating…</div>';\n    try {\n      const r = await createTemplate(name, nameAr);\n      await loadTemplates().catch(() => {});\n      const t = r.id != null && JISR.templates.find((x) => String(x.id) === String(r.id));\n      if (r.id != null) { linkTemplate(t ? t.raw : { id: r.id, name, name_ar: nameAr }, name, nameAr); JISR.rfChoice = { key: rfKey(), id: String(r.id) }; $('#tplName').value = name; $('#tplNameAr').value = nameAr; }\n      m.innerHTML = '<div class=\"msg ' + (r.ver.ok ? 'ok' : 'warn') + '\">Created “' + esc(name) + '”' + (r.id != null ? ' (#' + esc(r.id) + ')' : '') + ': ' + esc(r.ver.msg) + '.</div>';\n    } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n    JISR.rfMsgKey = rfKey(); renderAll(true); return;\n  }\n  const t = JISR.templates.find((x) => String(x.id) === String(id)); const tn = t ? t.name : '#' + id;\n  const what = which.length === 3 ? 'the Header, Body and Footer' : 'only the ' + label[which[0]];\n  const keep = which.length === 3 ? '' : '\\nThe ' + PARTS3.filter((p) => which.indexOf(p) < 0).map((p) => label[p]).join(' and ') + ' in Jisr stay as they are.';\n  const firstTime = !JISR.backedUp.has(String(id)) && !(S.jisrTpl && String(S.jisrTpl.id) === String(id) && S.jisrTpl.savedOnce);\n  if (!confirm('Replace ' + what + ' of “' + tn + '” in ' + JISR.slug + ' with this letter?' + keep + (which.length === 3 ? warnLines() : '') + (firstTime ? '\\n\\nA backup of the current version is downloaded first.' : ''))) return;\n  m.innerHTML = '<div class=\"msg info\">Writing ' + esc(what) + ' to “' + esc(tn) + '”…</div>';\n  try {\n    const r = await reflectParts(id, which);\n    JISR.rfChoice = { key: rfKey(), id: String(id) };\n    m.innerHTML = '<div class=\"msg ' + (r.ver.ok ? 'ok' : 'warn') + '\">' + esc(what.charAt(0).toUpperCase() + what.slice(1)) + ' of “' + esc(tn) + '”: ' + esc(r.ver.msg) + '.' + (firstTime ? ' Backup downloaded; Jisr templates › Restore original puts it back.' : '') + '</div>';\n  } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n  JISR.rfMsgKey = rfKey(); renderAll(true);\n}\n\n/* ---- images when copying templates */\nasync function fetchDataUrl(url) {\n  if (!url) return null; if (/^data:image\\//.test(url)) return url;\n  try {\n    const r = await fetch(url, { credentials: 'omit' }); if (!r.ok) return null;\n    const b = await r.blob(); if (!/^image\\//.test(b.type)) return null;\n    return await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(null); fr.readAsDataURL(b); });\n  } catch (e) { return null; }\n}\nasync function uploadDataUrl(dataUrl, base) {\n  const ext = ((dataUrl.match(/^data:image\\/(\\w+)/) || [])[1] || 'png').replace('jpeg', 'jpg').replace('svg+xml', 'svg');\n  const r = await jreq('POST', '/v2/letter_attachments', null, { letter_attachment: { attachment: { data: dataUrl, filename: base + '.' + ext } } });\n  if (!r.ok) throw new Error('Image could not be uploaded (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n  let id = null, url = '';\n  (function walk(v, d) { if (id != null || !v || typeof v !== 'object' || d > 5) return; if (!Array.isArray(v) && v.id != null) { id = v.id; (function deep(o, dd) { if (url || !o || typeof o !== 'object' || dd > 3) return; Object.values(o).forEach((x) => { if (!url && typeof x === 'string' && /^https?:\\/\\//.test(x)) url = x; else deep(x, dd + 1); }); })(v, 0); return; } (Array.isArray(v) ? v : Object.values(v)).forEach((x) => walk(x, d + 1)); })(r.json, 0);\n  if (id == null) throw new Error('Jisr accepted an image but its ID was not found in the answer.');\n  return { id: String(id), url };\n}\nconst attIds = (parts) => { const s = new Set(); PARTS3.forEach((p) => (String(parts[p] || '').match(/letter_attachment_(\\d+)/g) || []).forEach((k) => s.add(k.slice(18)))); return Array.from(s); };\n/** Give the copy its own images: re-upload each one. If an image cannot be read: same company → share the original's; other company → leave it out. */\nasync function copyImages(parts, atts, sameCompany) {\n  const out = Object.assign({}, parts); const map = {}; const notes = []; let shared = [];\n  for (const id of attIds(out)) {\n    const re = new RegExp('letter_attachment_' + id + '(?!\\\\d)', 'g');\n    const data = await fetchDataUrl(atts[id]);\n    if (data) { const up = await uploadDataUrl(data, 'letter-image-' + id); PARTS3.forEach((p) => { out[p] = out[p].replace(re, 'letter_attachment_' + up.id); }); map['letter_attachment_' + up.id] = up.url; }\n    else if (sameCompany) { map['letter_attachment_' + id] = atts[id] || ''; shared.push(id); notes.push('image ' + id + ' could not be read, so the copy uses the same image as the original'); }\n    else { PARTS3.forEach((p) => { out[p] = out[p].replace(new RegExp('<img[^>]*letter_attachment_' + id + '(?!\\\\d)[^>]*>', 'g'), ''); }); notes.push('image ' + id + ' could not be copied: add the logo again'); }\n  }\n  return { parts: out, atts: map, notes, shared };\n}\nfunction uniqueName(base, field, extra) {\n  const names = new Set(JISR.templates.map((t) => String(t[field] || '').trim().toLowerCase()).concat(extra || []));\n  let n = base; let i = 2; while (names.has(n.trim().toLowerCase())) n = base + ' ' + i++;\n  return n;\n}\nasync function createFromParts(name, nameAr, parts, atts) {\n  const lt = { name, name_ar: nameAr }; PARTS3.forEach((p) => { lt[JISR.fields[p]] = parts[p] || ''; }); lt.letter_attachments = atts;\n  const payload = { letter_type: lt };\n  const r = await jreq('POST', '/v2/letter_types', null, payload);\n  if (!r.ok) throw new Error('Jisr refused “' + name + '” (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n  const id = createdId(r.json);\n  const ver = id != null ? await verifySaved(id, payload) : { ok: false, msg: 'created (no ID in Jisr’s answer to verify)' };\n  return { id, ver };\n}\nasync function duplicateTemplate(id) {\n  const t = await templateDetail(id);\n  const name = uniqueName((t.name || 'Template').trim() + ' dup', 'name'), nameAr = uniqueName((t.name_ar || t.name || '').trim() + ' dup', 'name_ar');\n  const c = await copyImages(partsOf(t), attMap(t), true);\n  const r = await createFromParts(name, nameAr, c.parts, c.atts);\n  if (c.shared.length) { // make sure the original still has its images\n    await loadTemplates().catch(() => {}); const o = await templateDetail(id).catch(() => null); const still = o ? attMap(o) : {};\n    if (c.shared.some((x) => !(x in still))) c.notes.push('check the original in Jisr: its image link may have moved to the copy');\n  }\n  JISR.templates.push({ id: r.id, name, name_ar: nameAr, raw: { id: r.id, name, name_ar: nameAr } });\n  return { id: r.id, name, nameAr, ver: r.ver, notes: c.notes };\n}\nasync function exportForCompany(ids) {\n  const list = [];\n  for (const id of ids) {\n    const t = await templateDetail(id); const atts = attMap(t); const images = {};\n    for (const a of attIds(partsOf(t))) images[a] = await fetchDataUrl(atts[a]);\n    list.push({ name: t.name || '', name_ar: t.name_ar || '', parts: partsOf(t), images });\n  }\n  const blob = new Blob([JSON.stringify({ tool: 'Jisr Letter Converter', kind: 'letter-templates', from: JISR.slug, exported: new Date().toISOString(), templates: list }, null, 2)], { type: 'application/json' });\n  download('jisr-letter-templates-from-' + JISR.slug + '.json', blob);\n  return list;\n}\nasync function importPackage(pkg) {\n  const entries = (pkg.templates || []).map((t) => t.parts ? { name: t.name, name_ar: t.name_ar, parts: t.parts, atts: t.images || {} }\n    : { name: t.name, name_ar: t.name_ar, parts: (function () { const F = pkg.fields || JISR.fields; return { header: t[F.header] || '', body: t[F.body] || '', footer: t[F.footer] || '' }; })(), atts: attMap(t) });\n  const same = pkg.from && pkg.from === JISR.slug; const res = []; const taken = [];\n  for (const e of entries) {\n    try {\n      const name = uniqueName(String(e.name || 'Template').trim(), 'name', taken), nameAr = uniqueName(String(e.name_ar || e.name || '').trim(), 'name_ar');\n      taken.push(name.toLowerCase());\n      const c = await copyImages(e.parts, e.atts, same);\n      const r = await createFromParts(name, nameAr, c.parts, c.atts);\n      JISR.templates.push({ id: r.id, name, name_ar: nameAr, raw: { id: r.id, name, name_ar: nameAr } });\n      res.push({ ok: true, text: '“' + name + '”' + (r.id != null ? ' #' + r.id : '') + ' · ' + r.ver.msg + (c.notes.length ? ' · ' + c.notes.join('; ') : '') });\n    } catch (err) { res.push({ ok: false, text: '“' + e.name + '”: ' + err.message }); }\n  }\n  return res;\n}\n\n/* ---- UI */\nconst QUEUE = []; let queueSeq = 0;\nfunction okFit(f) { return f && f.fits && !(f.footerPushed && f.footerPage > f.target); }\nfunction checkCurrent(f) {\n  const vs = Array.from(S.vars.values()).filter((v) => ['header', 'body', 'footer'].some((p) => (S.parts[p] || '').indexOf('data-jv=\"' + v.id + '\"') >= 0));\n  return { pages: f ? f.n : null, fits: okFit(f), proposed: vs.filter((v) => v.status === 'auto' && v.key).length, unmapped: vs.filter((v) => !v.key || v.status === 'unmapped').length, unknown: vs.filter((v) => v.status === 'unknown').length, images: S.images.filter((i) => !i.background).length };\n}\nconst checkText = (c) => !c ? '—' : (c.fits ? '✓ ' : '✗ ') + c.pages + ' page(s)' + (c.proposed ? ' · ' + c.proposed + ' proposed' : '') + (c.unmapped ? ' · ' + c.unmapped + ' not mapped' : '') + (c.unknown ? ' · ' + c.unknown + ' unknown' : '');\nfunction renderJisr() {\n  renderReflect();\n  if (!JISR) { $('#jisrOff').style.display = ''; $('#jisrOn').style.display = 'none'; return; }\n  $('#jisrOff').style.display = 'none'; $('#jisrOn').style.display = '';\n  $('#jisrSlug').textContent = JISR.slug;\n  $('#jisrInfo').textContent = JISR.loaded ? JISR.templates.length + ' template(s) · fields: header → ' + JISR.fields.header + ', body → ' + JISR.fields.body + ', footer → ' + JISR.fields.footer + ' (' + (JISR.fieldsFrom === 'assumed' ? 'assumed, no template with content yet' : 'read from ' + JISR.fieldsFrom) + ')' : 'Templates not loaded yet.';\n  const tb = $('#tplTable tbody');\n  tb.innerHTML = JISR.templates.map((t) => '<tr data-tid=\"' + esc(t.id) + '\"><td><input type=\"checkbox\" data-tsel=\"' + esc(t.id) + '\"' + (t.sel ? ' checked' : '') + '></td><td>' + esc(t.name) + '</td><td dir=\"rtl\">' + esc(t.name_ar) + '</td><td>' + esc(t.checkText || '') + '</td><td style=\"white-space:nowrap\"><button class=\"btn sm\" data-tedit=\"' + esc(t.id) + '\">Edit</button> <button class=\"btn sm\" data-tdup=\"' + esc(t.id) + '\" title=\"Make a copy named “… dup” with the same header, body, footer and images\">Duplicate</button></td></tr>').join('') || '<tr><td colspan=\"5\" class=\"hint\">' + (JISR.loaded ? 'No templates yet.' : 'Click “Load templates”.') + '</td></tr>';\n  const cur = S.jisrTpl;\n  $('#curInfo').innerHTML = !hasContent() ? '<div class=\"msg info\">No letter open. Import a Word file, or Edit a template above.</div>' : cur ? '<div class=\"msg info\">Editing Jisr template <b>' + esc(cur.name) + '</b> (#' + esc(cur.id) + '). Save writes the three parts and the names back to it.</div>' : '<div class=\"msg info\">Current letter: ' + esc(S.fileName || 'untitled') + (S.queueId ? ' (from the bulk list)' : '') + '. Create it as a new template, or add Word files below to create many.</div>';\n  $('#tplSave').style.display = cur ? '' : 'none'; $('#tplRestore').style.display = cur && cur.savedOnce ? '' : 'none';\n  $('#tplSave').textContent = cur ? 'Save changes to “' + cur.name + '”' : 'Save';\n  $('#tplCreate').disabled = !hasContent();\n  $('#bulkTable tbody').innerHTML = QUEUE.map((q) => '<tr data-qid=\"' + q.id + '\"><td>' + esc(q.fileName) + (S.queueId === q.id ? ' <span class=\"tag ok\">open</span>' : '') + '</td><td><input type=\"text\" data-qname=\"' + q.id + '\" value=\"' + esc(q.name) + '\" style=\"width:100%\"></td><td><input type=\"text\" dir=\"rtl\" data-qnamear=\"' + q.id + '\" value=\"' + esc(q.nameAr) + '\" style=\"width:100%\"></td><td>' + esc(checkText(q.check)) + (q.msg ? '<div class=\"' + (q.state === 'done' ? 'tag ok' : q.state === 'failed' ? 'tag bad' : 'hint') + '\">' + esc(q.msg) + '</div>' : '') + '</td><td style=\"white-space:nowrap\"><button class=\"btn sm\" data-qreview=\"' + q.id + '\">Review</button> <button class=\"btn sm\" data-qdel=\"' + q.id + '\">✕</button></td></tr>').join('') || '<tr><td colspan=\"5\" class=\"hint\">No Word files added.</td></tr>';\n  $('#bulkCreate').disabled = !QUEUE.some((q) => q.state !== 'done');\n}\nfunction syncQueueBack() { if (!S.queueId) return; const q = QUEUE.find((x) => x.id === S.queueId); if (q) q.snap = snapState(); }\nasync function refreshTemplates() {\n  const m = $('#tplMsg'); m.innerHTML = '<div class=\"msg info\">Loading templates…</div>';\n  try { await loadTemplates(); m.innerHTML = ''; } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n  renderJisr();\n}\nasync function openTemplate(id) {\n  const m = $('#tplMsg'); m.innerHTML = '<div class=\"msg info\">Opening…</div>';\n  try {\n    const t = await templateDetail(id);\n    syncQueueBack();\n    S.source = 'jisr'; S.fileName = t.name || 'template-' + id; S.wordGeom = null; S.queueId = null;\n    S.fix = { spacerMode: 'keep', spacingScale: 1, fontScale: 1, imgScale: 1 }; syncFixUi();\n    const atts = attMap(t);\n    loadParts(partsOf(t), [], { notes: [] });\n    S.images.forEach((im) => { if (im.attId && atts[im.attId]) im.url = atts[im.attId]; });\n    S.jisrTpl = { id: t.id, name: t.name || '', name_ar: t.name_ar || '', atts, original: JSON.parse(JSON.stringify(t)), savedOnce: JISR.backedUp.has(String(t.id)) };\n    $('#tplName').value = t.name || ''; $('#tplNameAr').value = t.name_ar || '';\n    m.innerHTML = '<div class=\"msg ok\">Opened “' + esc(t.name) + '”. It is shown as it is today (spacers kept). Adjust it, then Save changes below.</div>';\n    renderAll(true);\n  } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n}\nasync function analyzeTemplates(ids, autoFix) {\n  const m = $('#tplMsg'); const backups = []; let saved = 0, failed = 0;\n  for (const [i, id] of ids.entries()) {\n    const row = JISR.templates.find((t) => String(t.id) === String(id));\n    m.innerHTML = '<div class=\"msg info\">' + (autoFix ? 'Fixing' : 'Checking') + ' ' + (i + 1) + ' / ' + ids.length + ': ' + esc(row ? row.name : id) + '…</div>';\n    try {\n      const t = await templateDetail(id); const atts = attMap(t);\n      const tmp = { blocks: [], vars: new Map(), images: [], fix: { spacerMode: 'keep', spacingScale: 1, fontScale: 1, imgScale: 1 }, fixHistory: [], notes: [], fileName: t.name, source: 'jisr', jisrTpl: { id: t.id, name: t.name, name_ar: t.name_ar, atts } };\n      await withState(tmp, async () => {\n        quietLoad(partsOf(t), [], { notes: [] });\n        S.images.forEach((im) => { if (im.attId && atts[im.attId]) im.url = atts[im.attId]; });\n        let f = await fitNow(); const before = checkCurrent(f);\n        if (autoFix && !okFit(f)) {\n          const r = await autoFitCore(); f = r.f;\n          if (okFit(f)) { backups.push(JSON.parse(JSON.stringify(t))); const ver = await updateTemplate(S.jisrTpl, t.name || '', t.name_ar || ''); saved++; row.checkText = 'fixed: ' + before.pages + ' → ' + f.n + ' page(s) · ' + r.steps.join(', ') + ' · ' + ver.msg; }\n          else row.checkText = '✗ still ' + f.n + ' page(s) after auto-fit, not saved';\n        } else row.checkText = checkText(before) + (before.fits ? '' : ' · footer ' + (f.footerPushed ? 'pushed to page ' + f.footerPage : 'ok'));\n      });\n    } catch (e) { failed++; if (row) row.checkText = '✗ ' + e.message; }\n    renderJisr();\n  }\n  m.innerHTML = '<div class=\"msg ' + (failed ? 'warn' : 'ok') + '\">' + (autoFix ? saved + ' template(s) fixed and saved' : 'Checked ' + ids.length + ' template(s)') + (failed ? ', ' + failed + ' failed' : '') + '. ' + (autoFix && backups.length ? 'A backup of the originals was downloaded.' : '') + '</div>';\n  return backups;\n}\n\nif (JISR) {\n  $('#jisrRefresh').addEventListener('click', refreshTemplates);\n  $('#tplTable').addEventListener('click', async (e) => {\n    const id = e.target.getAttribute('data-tedit'); if (id) openTemplate(id);\n    const dup = e.target.getAttribute('data-tdup'); if (!dup) return;\n    const t = JISR.templates.find((x) => String(x.id) === dup); const m = $('#tplMsg');\n    if (!confirm('Duplicate “' + (t ? t.name : '#' + dup) + '” in ' + JISR.slug + '?\\n\\nThe copy is named “' + uniqueName(((t && t.name) || 'Template').trim() + ' dup', 'name') + '” and has the same header, body, footer and images. It then opens here so you can change the company name and logo.')) return;\n    m.innerHTML = '<div class=\"msg info\">Duplicating…</div>';\n    try {\n      const r = await duplicateTemplate(dup);\n      await loadTemplates().catch(() => {});\n      if (r.id != null) await openTemplate(r.id);\n      m.innerHTML = '<div class=\"msg ' + (r.ver.ok && !r.notes.length ? 'ok' : 'warn') + '\">Created “' + esc(r.name) + '”' + (r.id != null ? ' (#' + esc(r.id) + ')' : '') + ': ' + esc(r.ver.msg) + (r.notes.length ? ' · ' + esc(r.notes.join('; ')) : '') + '.' + (r.id != null ? ' It is open now: change the company name (3 · Variables › Open the letter editor) and the logo (4 · Images), rename it below if needed, then Save changes or use Reflect in Jisr in 6 · Output.' : '') + '</div>';\n    } catch (err) { m.innerHTML = '<div class=\"msg err\">' + esc(err.message) + '</div>'; }\n    renderAll(true);\n  });\n  $('#tplDupSel').addEventListener('click', async () => {\n    const ids = JISR.templates.filter((t) => t.sel).map((t) => t.id); const m = $('#tplMsg');\n    if (!ids.length) { m.innerHTML = '<div class=\"msg warn\">Tick the templates to duplicate.</div>'; return; }\n    if (!confirm('Duplicate ' + ids.length + ' template(s) in ' + JISR.slug + '? Each copy is named “… dup”.')) return;\n    const out = [];\n    for (const [i, id] of ids.entries()) {\n      m.innerHTML = '<div class=\"msg info\">Duplicating ' + (i + 1) + ' / ' + ids.length + '…</div>';\n      try { const r = await duplicateTemplate(id); out.push({ ok: r.ver.ok && !r.notes.length, text: '“' + r.name + '” #' + r.id + ' · ' + r.ver.msg + (r.notes.length ? ' · ' + r.notes.join('; ') : '') }); } catch (err) { out.push({ ok: false, text: err.message }); }\n    }\n    JISR.templates.forEach((t) => { t.sel = false; });\n    await loadTemplates().catch(() => {});\n    m.innerHTML = '<div class=\"msg ' + (out.every((x) => x.ok) ? 'ok' : 'warn') + '\">' + out.filter((x) => x.ok).length + ' of ' + ids.length + ' duplicated.<ul class=\"tight\">' + out.map((x) => '<li>' + esc(x.text) + '</li>').join('') + '</ul></div>';\n    renderJisr();\n  });\n  $('#tplExport').addEventListener('click', async () => {\n    const ids = JISR.templates.filter((t) => t.sel).map((t) => t.id); const m = $('#tplMsg');\n    if (!ids.length) { m.innerHTML = '<div class=\"msg warn\">Tick the templates to copy.</div>'; return; }\n    m.innerHTML = '<div class=\"msg info\">Reading ' + ids.length + ' template(s)…</div>';\n    try { const list = await exportForCompany(ids); const miss = list.reduce((n, t) => n + Object.values(t.images).filter((x) => !x).length, 0); m.innerHTML = '<div class=\"msg ' + (miss ? 'warn' : 'ok') + '\">Downloaded ' + list.length + ' template(s). Open the tool in the other company and use Import.' + (miss ? ' ' + miss + ' image(s) could not be read and will need to be added again there.' : '') + '</div>'; } catch (err) { m.innerHTML = '<div class=\"msg err\">' + esc(err.message) + '</div>'; }\n  });\n  $('#tplImportBtn').addEventListener('click', () => $('#tplImport').click());\n  $('#tplImport').addEventListener('change', async (e) => {\n    const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return; const m = $('#tplMsg');\n    let pkg; try { pkg = JSON.parse(await f.text()); } catch (err) { m.innerHTML = '<div class=\"msg err\">That file is not a template file from this tool.</div>'; return; }\n    if (!pkg || !Array.isArray(pkg.templates) || !pkg.templates.length) { m.innerHTML = '<div class=\"msg err\">No templates found in that file.</div>'; return; }\n    if (!JISR.loaded) { try { await loadTemplates(); } catch (err) { m.innerHTML = '<div class=\"msg err\">' + esc(err.message) + '</div>'; return; } }\n    if (!confirm('Create ' + pkg.templates.length + ' template(s) in ' + JISR.slug + (pkg.from ? ' (copied from ' + pkg.from + ')' : '') + '?\\n\\n' + pkg.templates.map((t) => '• ' + t.name).slice(0, 15).join('\\n') + '\\n\\nNames that already exist get a number. Images are uploaded to this company.')) return;\n    m.innerHTML = '<div class=\"msg info\">Creating…</div>';\n    const res = await importPackage(pkg);\n    await loadTemplates().catch(() => {});\n    m.innerHTML = '<div class=\"msg ' + (res.every((x) => x.ok) ? 'ok' : 'warn') + '\">' + res.filter((x) => x.ok).length + ' of ' + res.length + ' created.<ul class=\"tight\">' + res.map((x) => '<li>' + esc(x.text) + '</li>').join('') + '</ul></div>';\n    renderJisr();\n  });\n  $('#tplTable').addEventListener('change', (e) => { const id = e.target.getAttribute('data-tsel'); if (id) { const t = JISR.templates.find((x) => String(x.id) === id); if (t) t.sel = e.target.checked; } });\n  $('#tplAll').addEventListener('change', (e) => { JISR.templates.forEach((t) => { t.sel = e.target.checked; }); renderJisr(); });\n  $('#tplCheck').addEventListener('click', async () => { const ids = JISR.templates.filter((t) => t.sel).map((t) => t.id); if (!ids.length) { $('#tplMsg').innerHTML = '<div class=\"msg warn\">Tick the templates to check.</div>'; return; } await analyzeTemplates(ids, false); renderAll(true); });\n  $('#tplAutofix').addEventListener('click', async () => {\n    const ids = JISR.templates.filter((t) => t.sel).map((t) => t.id); if (!ids.length) { $('#tplMsg').innerHTML = '<div class=\"msg warn\">Tick the templates to fix.</div>'; return; }\n    if (!confirm('Auto-fit and save ' + ids.length + ' template(s) in ' + JISR.slug + '?\\n\\nOnly templates that do not fit are changed (spacing, then font, never wording). A backup of the originals is downloaded first.')) return;\n    const backups = await analyzeTemplates(ids, true);\n    if (backups.length) downloadBackup(backups, 'auto-fit');\n    renderAll(true);\n  });\n  $('#tplCreate').addEventListener('click', async () => {\n    const name = $('#tplName').value.trim(), nameAr = $('#tplNameAr').value.trim(); const m = $('#saveMsg');\n    if (!name || !nameAr) { m.innerHTML = '<div class=\"msg err\">Enter both template names (English and Arabic).</div>'; return; }\n    if (!JISR.loaded) { try { await loadTemplates(); } catch (e) { /* checked below */ } }\n    if (JISR.templates.some((t) => (t.name || '').trim().toLowerCase() === name.toLowerCase())) { m.innerHTML = '<div class=\"msg err\">A template named “' + esc(name) + '” already exists. Edit that one, or choose another name.</div>'; return; }\n    const c = checkCurrent(S.lastFit);\n    if (!confirm('Create the template “' + name + '” in ' + JISR.slug + '?' + (c.fits ? '' : '\\n\\nWarning: it does not fit the intended pages yet.') + (c.proposed || c.unmapped ? '\\n\\nVariables: ' + c.proposed + ' only proposed, ' + c.unmapped + ' not mapped.' : '') + '\\n\\nImages without an ID are uploaded to Jisr first.')) return;\n    m.innerHTML = '<div class=\"msg info\">Creating…</div>';\n    try {\n      const r = await createTemplate(name, nameAr);\n      m.innerHTML = '<div class=\"msg ' + (r.ver.ok ? 'ok' : 'warn') + '\">Template “' + esc(name) + '” created' + (r.id != null ? ' (#' + esc(r.id) + ')' : '') + ': ' + esc(r.ver.msg) + '.</div>';\n      if (S.queueId) { const q = QUEUE.find((x) => x.id === S.queueId); if (q) { q.state = 'done'; q.msg = 'created #' + r.id; } }\n      await loadTemplates().catch(() => {});\n      if (r.id != null) { const t = JISR.templates.find((x) => String(x.id) === String(r.id)); S.jisrTpl = { id: r.id, name, name_ar: nameAr, atts: t ? attMap(t.raw) : {}, original: t ? JSON.parse(JSON.stringify(t.raw)) : null, savedOnce: false }; S.source = 'jisr'; }\n    } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n    renderAll(true);\n  });\n  $('#tplSave').addEventListener('click', async () => {\n    const cur = S.jisrTpl; if (!cur) return; const m = $('#saveMsg');\n    const name = $('#tplName').value.trim() || cur.name, nameAr = $('#tplNameAr').value.trim() || cur.name_ar;\n    if (!confirm('Save the changes to “' + cur.name + '” in ' + JISR.slug + '?' + (cur.savedOnce ? '' : '\\n\\nA backup of the current version is downloaded first.'))) return;\n    m.innerHTML = '<div class=\"msg info\">Saving…</div>';\n    try {\n      if (!cur.savedOnce && cur.original) downloadBackup([cur.original], 'before-edit');\n      const ver = await updateTemplate(cur, name, nameAr);\n      cur.savedOnce = true; cur.name = name; cur.name_ar = nameAr; JISR.backedUp.add(String(cur.id));\n      m.innerHTML = '<div class=\"msg ' + (ver.ok ? 'ok' : 'warn') + '\">“' + esc(name) + '”: ' + esc(ver.msg) + '. Use Restore original to undo.</div>';\n      await loadTemplates().catch(() => {});\n    } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n    renderAll(true);\n  });\n  $('#tplRestore').addEventListener('click', async () => {\n    const cur = S.jisrTpl; if (!cur || !cur.original) return; const m = $('#saveMsg');\n    if (!confirm('Put back the original version of “' + (cur.original.name || cur.name) + '” in Jisr?')) return;\n    try {\n      const o = cur.original; const lt = { name: o.name, name_ar: o.name_ar }; ['header', 'body', 'footer'].forEach((p) => { lt[JISR.fields[p]] = o[JISR.fields[p]] || ''; }); if (o.letter_attachments) lt.letter_attachments = o.letter_attachments;\n      let r = await jreq('PUT', '/v2/letter_types/' + encodeURIComponent(cur.id), null, { letter_type: lt });\n      if (r.status === 404 || r.status === 405) r = await jreq('PATCH', '/v2/letter_types/' + encodeURIComponent(cur.id), null, { letter_type: lt });\n      if (!r.ok) throw new Error('Jisr refused (HTTP ' + r.status + ')' + (r.msg ? ': ' + r.msg : ''));\n      m.innerHTML = '<div class=\"msg ok\">Original version restored.</div>'; await openTemplate(cur.id);\n    } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; }\n  });\n  // ---- bulk create from Word files\n  async function addWordFiles(files) {\n    const m = $('#bulkMsg'); syncQueueBack(); const prev = snapState();\n    for (const file of files) {\n      m.innerHTML = '<div class=\"msg info\">Reading ' + esc(file.name) + '…</div>';\n      const q = { id: ++queueSeq, fileName: file.name, name: file.name.replace(/\\.docx$/i, '').replace(/[-_]+/g, ' ').trim(), nameAr: '', snap: null, check: null, state: '', msg: '' };\n      try {\n        const r = await readDocx(file);\n        q.snap = { blocks: [], vars: new Map(), images: [], fix: { spacerMode: 'collapse', spacingScale: 1, fontScale: 1, imgScale: 1 }, fixHistory: [], notes: [], fileName: file.name, source: 'docx', queueId: q.id, wordGeom: r.geom };\n        await withState(q.snap, async () => { quietLoad(r.parts, r.images, { notes: r.notes, wordGeom: r.geom }); S.queueId = q.id; S.source = 'docx'; S.fileName = file.name; q.check = checkCurrent(await fitNow()); });\n        QUEUE.push(q);\n      } catch (e) { q.state = 'failed'; q.msg = e.message; QUEUE.push(q); }\n    }\n    useState(prev, true);\n    m.innerHTML = '<div class=\"msg ok\">' + files.length + ' file(s) added. Fill the names, Review any file that needs it, then Create all.</div>';\n    renderJisr();\n  }\n  $('#bulkDrop').addEventListener('click', () => $('#bulkIn').click());\n  $('#bulkIn').addEventListener('change', (e) => { const fs = Array.from(e.target.files || []); e.target.value = ''; if (fs.length) addWordFiles(fs); });\n  ['dragover', 'dragenter'].forEach((t) => $('#bulkDrop').addEventListener(t, (e) => { e.preventDefault(); $('#bulkDrop').classList.add('over'); }));\n  ['dragleave', 'drop'].forEach((t) => $('#bulkDrop').addEventListener(t, (e) => { e.preventDefault(); $('#bulkDrop').classList.remove('over'); if (t === 'drop') { const fs = Array.from(e.dataTransfer.files || []).filter((f) => /\\.docx$/i.test(f.name)); if (fs.length) addWordFiles(fs); } }));\n  $('#bulkTable').addEventListener('input', (e) => { const a = e.target.getAttribute('data-qname'), b = e.target.getAttribute('data-qnamear'); const q = QUEUE.find((x) => x.id === +(a || b)); if (!q) return; if (a) q.name = e.target.value; else q.nameAr = e.target.value; });\n  $('#bulkTable').addEventListener('click', async (e) => {\n    const rv = +e.target.getAttribute('data-qreview'), del = +e.target.getAttribute('data-qdel');\n    if (rv) { const q = QUEUE.find((x) => x.id === rv); if (!q || !q.snap) return; syncQueueBack(); useState(q.snap, true); $('#tplName').value = q.name; $('#tplNameAr').value = q.nameAr; $$('#tabs button').forEach((x) => x.classList.toggle('on', x.getAttribute('data-p') === 'struct')); $$('section.pane').forEach((p) => p.classList.toggle('on', p.id === 'p-struct')); }\n    if (del) { const i = QUEUE.findIndex((x) => x.id === del); if (i >= 0) { if (S.queueId === del) S.queueId = null; QUEUE.splice(i, 1); renderJisr(); } }\n  });\n  $('#bulkCreate').addEventListener('click', async () => {\n    syncQueueBack();\n    const m = $('#bulkMsg'); const todo = QUEUE.filter((q) => q.state !== 'done' && q.snap);\n    if (!JISR.loaded) { try { await loadTemplates(); } catch (e) { m.innerHTML = '<div class=\"msg err\">' + esc(e.message) + '</div>'; return; } }\n    const existing = new Set(JISR.templates.map((t) => (t.name || '').trim().toLowerCase())); const seen = new Set(); const problems = [];\n    todo.forEach((q) => { const n = (q.name || '').trim().toLowerCase(); q.msg = ''; if (!q.name.trim() || !q.nameAr.trim()) q.msg = 'needs both names'; else if (existing.has(n)) q.msg = 'a template with this name exists'; else if (seen.has(n)) q.msg = 'same name as another file'; seen.add(n); if (q.msg) { q.state = 'blocked'; problems.push(q.fileName + ': ' + q.msg); } else q.state = ''; });\n    const ready = todo.filter((q) => q.state !== 'blocked');\n    renderJisr();\n    if (!ready.length) { m.innerHTML = '<div class=\"msg err\">Nothing to create. ' + esc(problems.join(' · ')) + '</div>'; return; }\n    for (const q of ready) await withState(q.snap, async () => { q.check = checkCurrent(await fitNow()); });\n    const notFit = ready.filter((q) => !q.check.fits).length, prop = ready.reduce((a, q) => a + q.check.proposed + q.check.unmapped, 0);\n    if (!confirm('Create ' + ready.length + ' template(s) in ' + JISR.slug + '?' + (problems.length ? '\\n\\n' + problems.length + ' file(s) are skipped (see the list).' : '') + (notFit ? '\\n\\n' + notFit + ' do not fit the intended pages.' : '') + (prop ? '\\n\\n' + prop + ' variable(s) are only proposed or not mapped; proposed ones are used as proposed.' : '') + '\\n\\nImages are uploaded to Jisr first.')) return;\n    let ok = 0;\n    for (const [i, q] of ready.entries()) {\n      m.innerHTML = '<div class=\"msg info\">Creating ' + (i + 1) + ' / ' + ready.length + ': ' + esc(q.name) + '…</div>';\n      try { const r = await withState(q.snap, () => createTemplate(q.name.trim(), q.nameAr.trim())); q.state = 'done'; q.msg = 'created' + (r.id != null ? ' #' + r.id : '') + ' · ' + r.ver.msg; ok++; existing.add(q.name.trim().toLowerCase()); }\n      catch (e) { q.state = 'failed'; q.msg = e.message; }\n      renderJisr();\n    }\n    await loadTemplates().catch(() => {});\n    m.innerHTML = '<div class=\"msg ' + (ok === ready.length ? 'ok' : 'warn') + '\">' + ok + ' of ' + ready.length + ' template(s) created.</div>';\n    renderJisr();\n  });\n  loadTemplates().then(renderJisr).catch(() => renderJisr());\n}\n\n/* ===================================================================== TABS + INIT */\nfunction gotoTab(id) { $$('#tabs button').forEach((x) => x.classList.toggle('on', x.getAttribute('data-p') === id)); $$('section.pane').forEach((p) => p.classList.toggle('on', p.id === 'p-' + id)); if (id === 'vars') renderAssign(); $('.left').scrollTop = 0; }\ndocument.addEventListener('click', (e) => { const g = e.target.closest('[data-goto]'); if (g) gotoTab(g.getAttribute('data-goto')); });\n$('#tabs').addEventListener('click', (e) => { const b = e.target.closest('button[data-p]'); if (!b) return; $$('#tabs button').forEach((x) => x.classList.toggle('on', x === b)); $$('section.pane').forEach((p) => p.classList.toggle('on', p.id === 'p-' + b.getAttribute('data-p'))); if (b.getAttribute('data-p') === 'vars') renderAssign(); });\nshowCatalog(); syncFixUi(); renderProfileInfo();\nwindow.__jlc = { S, ED, edOpen, edClose, edSync, edInsertAt, JISR: typeof JISR !== 'undefined' ? JISR : null, readDocx, loadParts, build, measure, matchVar, autoFit, activeProfile, sanitizeInto, renderAll, fitNow, VERSION };\n</script>\n</body>\n</html>\n";
-  function slug_() { try { const o = GM_getValue('jisrBulkOps_slugOverride', ''); if (o) return o; } catch (e) { /* ignore */ } const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   const blobUrl_ = () => URL.createObjectURL(new Blob([HTML], { type: 'text/html' }));
   // the tab inherits this Jisr page's origin, so it can create / edit letter templates with your login
   const toolUrl_ = () => blobUrl_() + '#jisr=' + encodeURIComponent(slug_());
@@ -53495,7 +55509,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
   function gmGet_(k, f) { try { return GM_getValue(GM_PREFIX + k, f); } catch (e) { return f; } }
-  function slug_() { const o = gmGet_('slugOverride', ''); if (o) return o; const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
   function apiBase_() {
     const h = location.hostname;
     if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
