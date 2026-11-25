@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.116.0
+// @version      4.117.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -187,6 +187,7 @@ function jboActFlush_() {
   let settled = false;
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
   // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
+  // v4.117.0: Settlements tool: (1) "Export employees" saves every employee to one Excel sheet (code, name, Jisr ID, empty last working day, a dropdown for the termination case, optional amounts; what is already in the table is filled in) with a How-to sheet and a Cases sheet; the user edits it and uploads it with "Import and check…", which checks only the rows he filled in (unknown employee, date or case not understood, a number that is not a number, a name that does not match Jisr, an employee listed twice, a case that needs the event date) and shows the result before anything is added; then it adds and calculates the valid rows. (2) "Add employees…" has Select all (all matches while searching) and Clear selection, with counts. (3) "Load from Jisr final settlements" has a small Clear button next to it that removes only the loaded employees, and "Clear list…" removes the ticked rows, the loaded ones, the ones from Excel, the calculated results or everything; every removal can be undone for a minute; reloading no longer overwrites what you entered. (4) New futuristic look for the buttons and panels of this tool (gradient edge, glow, sheen, icons, one filled main action), grouped toolbar, a count strip, a collapsed how-it-works note; a "Futuristic look" switch turns it off; respects reduced motion and high contrast. Nothing is written to Jisr.
   // v4.116.0: The final settlement PDF follows Jisr's own PDF more closely. The company name, country - city, address and logo are now read from the company profile in Jisr (what Jisr prints with "Export as PDF + company details"); "PDF options…" lets you choose that, a custom header, or no company details, set the page size (A4, A3, A5, Letter, Legal), orientation and margins, and pick the layout: like Jisr (signatures on their own last page) or all details on one page per employee (shrinks to fit). The page uses Jisr's font (Noto Sans Arabic), values sit next to the colon in the direction of the page, and the wording is Jisr's ("Created by Jisr system").
   // v4.115.0: Settlements are clearer and match Jisr. The ambiguous Other column is gone: the table now reads Salary & pending, Award, Leave, Compensation & notice, Additions, Deductions and Net payable, and the columns add up to the net (the legend says how). Leave follows Jisr's own rule (its opening balance minus leave taken), so 8.41 days = 5,606.67 matches the native page; Art 77 compensation is a visible switch (off by default, as Jisr leaves it to the contract) with its estimate shown apart. The leave card shows the active balance in days on the chosen date and lets you include it, edit the days or exclude leave pay, each with a live preview. Forecast keeps the presets and adds a single date and a custom end date. Final settlement (PDF) now follows the native Jisr layout, with an editable company header; Excel gets leave status and Art 77 columns.
   // v4.114.0: Settlements now forecast. Pick any last working day (today, tomorrow, end of this or next month, or any date) and see what the company would owe; the Month by month tab shows the entitlement growing across 3 to 24 months; Compare reasons puts resignation, termination, contract end and the Art 77 / Art 80 cases side by side for the same date; Notice impact compares serving the notice, partly serving it and paying in lieu, with a Use this button. None of it is saved or written. The statement is now Gross entitlement (pending payroll items, award, leave, notice, compensation) minus Deductions and offsets (loans still pending in Jisr, unreturned assets, advance leave) = Net payable. New inputs: earlier unpaid months, expense claims, annual bonus (pro rata), asset value. New Add all employees and Forecast report: Excel and printable report of the net payable if everyone left on a date or at each month end, by department and by employee, with a cash-flow alert (cash needed if all leave in one month, against the cash you have). Reads loans, assets and department from Jisr (GET only).
@@ -4437,7 +4438,7 @@ function JBOSettlementEngine_() {
     'leave-edit-bulk': ['Change dates, leave type or comment of leaves that were imported in bulk: a new approved leave request (with an attachment) replaces each one', 'تغيير التواريخ أو نوع الإجازة أو التعليق للإجازات المستوردة جماعيًا: طلب إجازة جديد معتمد (مع مرفق) يحل محل كل واحدة'],
     'leave-create-bulk': ['Create leave requests from a sheet in Jisr\'s import format, with an attachment per employee (File name Attachment), approved at once', 'إنشاء طلبات إجازة من ملف بصيغة استيراد جسر، مع مرفق لكل موظف (File name Attachment) واعتماد فوري'],
     'business-trip-requests': ['Create business trip requests for many employees from Excel: the destination is checked against each employee\'s own policy; approved at once or left in the approval workflow', 'إنشاء طلبات رحلات عمل لعدة موظفين من إكسل: تُفحص الوجهة مقابل سياسة كل موظف؛ تُعتمد فورًا أو تُترك في مسار الاعتماد'],
-    'settlement-calculator': ['Work out each leaver\'s end-of-service award, leave pay, notice and net payout, or forecast what the company would owe for any date, month by month, by reason, with a cash-flow alert (Saudi Labor Law); compare with Jisr; leave balance control, Art 77 switch, Jisr-style final settlement PDF with company details from Jisr, page size, margins and one-page layout; Excel and printable reports', 'احسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وصافي المستحقات لكل موظف، أو توقّع ما ستدفعه الشركة لأي تاريخ وشهرًا بشهر وحسب السبب مع تنبيه التدفق النقدي (نظام العمل السعودي)، وقارنها بجسر، مع ملفات Excel وتقارير للطباعة'],
+    'settlement-calculator': ['Work out each leaver\'s end-of-service award, leave pay, notice and net payout, or forecast what the company would owe for any date, month by month, by reason, with a cash-flow alert (Saudi Labor Law); compare with Jisr; leave balance control, Art 77 switch, Jisr-style final settlement PDF with company details from Jisr, page size, margins and one-page layout; export every employee to Excel, edit it and upload it to be checked; select all / clear the list with undo; Excel and printable reports', 'احسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وصافي المستحقات لكل موظف، أو توقّع ما ستدفعه الشركة لأي تاريخ وشهرًا بشهر وحسب السبب مع تنبيه التدفق النقدي (نظام العمل السعودي)، وقارنها بجسر، مع تصدير كل الموظفين إلى Excel وتعديله ورفعه للفحص، وتحديد الكل ومسح القائمة مع تراجع، وملفات Excel وتقارير للطباعة'],
     'access-report': ['One Excel report of every employee: main data, who was invited, who accepted, who is still waiting, who never logged in, and when each person was last active; invite the ones who have not signed in', 'تقرير Excel واحد لكل موظف: البيانات الأساسية ومن دُعي ومن قبل ومن ما زال ينتظر ومن لم يسجّل الدخول ومتى كان كل شخص نشطًا آخر مرة'],
     'automations': ['When a custom request is approved, do the next step by itself: assign the day off or shift in the scheduler, or add a payroll transaction', 'عند اعتماد طلب مخصص، نفّذ الخطوة التالية تلقائيًا: تحديد يوم إجازة أو وردية في الجدول أو إضافة معاملة رواتب'],
     'requests-manage': ['Find the requests in the employees\' files (any type, by date range, status, leave type), export them, and cancel, delete forever or edit them: with the approval workflow or bypassing it', 'إيجاد الطلبات في ملفات الموظفين (أي نوع، بنطاق تاريخ والحالة ونوع الإجازة)، وتصديرها، وإلغاؤها أو حذفها نهائيًا أو تعديلها: مع مسار الاعتماد أو بتجاوزه'],
@@ -57676,12 +57677,12 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
 
 
 // ###########################################################################
-// ##### SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast (any date, month by month, what-if reasons and notice; bulk report with cash-flow alert)  v4.116.0
+// ##### SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast (any date, month by month, what-if reasons and notice; bulk report with cash-flow alert)  v4.117.0
 // ###########################################################################
 
 /*
  * ===========================================================================
- * SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast  v4.116.0
+ * SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast  v4.117.0
  * ---------------------------------------------------------------------------
  * For each employee you choose: last working day, the termination case (with its Labor Law article) and the leave period. The tool reads the employee's
  * joining date, salary, annual-leave policy / balance and leave history from Jisr (GET only), then works out the salary for the last month, the end-of-service
@@ -57700,7 +57701,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.116.0';
+  const SECTION_VERSION = '4.117.0';
   const MODULE_ID = 'settlement-calculator';
   const W = unsafeWindow;
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
@@ -58154,28 +58155,87 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     return readOrg_().then((org) => go(org, ''), (e) => go(null, String((e && e.message) || e)));
   }
 
-  // ======================================================================= Excel in (last working day, case, period per employee)
-  const IN_HEAD = () => [T('Employee code', 'رقم الموظف'), T('Employee name (for you)', 'اسم الموظف (للمرجع)'), T('Last working day (YYYY-MM-DD)', 'آخر يوم عمل (YYYY-MM-DD)'), T('Termination case or article', 'حالة إنهاء الخدمة أو المادة'), T('Leave period from (optional)', 'بداية فترة الإجازة (اختياري)'), T('Event date: marriage or birth (Art 87)', 'تاريخ الواقعة: زواج أو ولادة (م87)'), T('Notice days (optional)', 'أيام الإشعار (اختياري)'), T('Other additions', 'إضافات أخرى'), T('Other deductions', 'خصومات أخرى'), T('Loans to deduct', 'قروض للخصم')];
+  // ======================================================================= Excel out and in (every employee in one sheet: the user edits it, uploads it and the tool checks it)
+  const IN_HEAD = () => [T('Employee code', 'رقم الموظف'), T('Employee name (for you)', 'اسم الموظف (للمرجع)'), T('Last working day (YYYY-MM-DD)', 'آخر يوم عمل (YYYY-MM-DD)'), T('Termination case or article', 'حالة إنهاء الخدمة أو المادة'), T('Leave period from (optional)', 'بداية فترة الإجازة (اختياري)'), T('Event date: marriage or birth (Art 87)', 'تاريخ الواقعة: زواج أو ولادة (م87)'), T('Notice days (optional)', 'أيام الإشعار (اختياري)'), T('Other additions', 'إضافات أخرى'), T('Other deductions', 'خصومات أخرى'), T('Loans to deduct', 'قروض للخصم'), T('Jisr ID (do not change)', 'معرّف جسر (لا تغيّره)')];
+  const caseText_ = (c) => (I.isAr() ? c.ar : c.en);
   function templateAoa_() {
     const ex = E.CASES.map((c) => [c.key, c.art, c.en, c.ar]);
     return { head: IN_HEAD(), cases: [[T('Key', 'المفتاح'), T('Article', 'المادة'), 'English', 'العربية']].concat(ex) };
   }
-  function downloadTemplate_() {
-    const t = templateAoa_(); const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet([t.head, ['E1001', '', '2026-12-31', 'expiry', '', '', '', '', '', '']]); ws['!cols'] = t.head.map(() => ({ wch: 26 })); XLSX.utils.book_append_sheet(wb, ws, T('Settlements', 'التسويات'));
-    const w2 = XLSX.utils.aoa_to_sheet(t.cases); w2['!cols'] = [{ wch: 18 }, { wch: 12 }, { wch: 70 }, { wch: 70 }]; XLSX.utils.book_append_sheet(wb, w2, T('Cases', 'الحالات'));
-    return saveBlob_(new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/octet-stream' }), 'settlements-template.xlsx');
+  function howToAoa_() {
+    return [[T('How to use this file', 'طريقة استخدام هذا الملف')], [''],
+      [T('1. Each row is one employee. Fill in only the employees who are leaving; leave every other row as it is.', '1. كل صف هو موظف واحد. عبّئ بيانات من سيغادر فقط واترك بقية الصفوف كما هي.')],
+      [T('2. Last working day: a date such as 2026-12-31. Termination case: pick it from the dropdown (the Cases sheet shows the Labor Law article of each).', '2. آخر يوم عمل: تاريخ مثل 2026-12-31. حالة إنهاء الخدمة: اخترها من القائمة (ورقة «الحالات» فيها مادة نظام العمل لكل حالة).')],
+      [T('3. The other columns are optional: leave period start, event date for Art 87, notice days, additions, deductions and loans (numbers).', '3. بقية الأعمدة اختيارية: بداية فترة الإجازة وتاريخ الواقعة للمادة 87 وأيام الإشعار والإضافات والخصومات والقروض (أرقام).')],
+      [T('4. Do not change the employee code or the Jisr ID in the last column: they tell the tool who the row is.', '4. لا تغيّر رقم الموظف ولا معرّف جسر في العمود الأخير: بهما تعرف الأداة من هو صاحب الصف.')],
+      [T('5. Save the file and upload it with "Import and check…". The tool tells you what is missing or wrong in every row you filled, then calculates. It only reads from Jisr: nothing is written there.', '5. احفظ الملف وارفعه بزر «استيراد وفحص…». تُخبرك الأداة بما ينقص أو يخطئ في كل صف عبّأته ثم تحسب. تقرأ من جسر فقط: لا شيء يُكتب هناك.')]];
   }
-  /** rows of cells -> [{ ref, lwd, caseKey, caseText, periodFrom, eventDate, noticeDays, additions, deductions, loans }] (header row is found by its first cell) */
+  /** rows: arrays in IN_HEAD order. Writes the workbook (settlements, how to use, cases) with a dropdown on the case column and returns the file name. */
+  async function saveInputWorkbook_(rows, base) {
+    const t = templateAoa_(); const wb = XLSX.utils.book_new(); wb.__noRef = true;
+    const sn = T('Settlements', 'التسويات'), hn = T('How to use', 'طريقة الاستخدام'), cn = T('Cases', 'الحالات');
+    const ws = XLSX.utils.aoa_to_sheet([t.head].concat(rows)); ws['!cols'] = [14, 30, 16, 56, 16, 18, 12, 14, 14, 14, 14].map((wch) => ({ wch }));
+    ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(1, rows.length), c: t.head.length - 1 } }) };
+    XLSX.utils.book_append_sheet(wb, ws, sn);
+    const w1 = XLSX.utils.aoa_to_sheet(howToAoa_()); w1['!cols'] = [{ wch: 140 }]; XLSX.utils.book_append_sheet(wb, w1, hn);
+    const w2 = XLSX.utils.aoa_to_sheet(t.cases); w2['!cols'] = [{ wch: 18 }, { wch: 12 }, { wch: 70 }, { wch: 70 }]; XLSX.utils.book_append_sheet(wb, w2, cn);
+    const name = base + '_' + (slug_() || 'jisr') + '_' + nowStamp_(new Date()) + '.xlsx'; const X = W.__jisrBulkOpsXlsx;
+    const pick = { sheet: sn, col: 3, strict: false, title: T('Termination case', 'حالة إنهاء الخدمة').slice(0, 32), prompt: T('Pick the case from the list. The Cases sheet shows the Labor Law article of each one.', 'اختر الحالة من القائمة. ورقة «الحالات» فيها مادة نظام العمل لكل حالة.'), values: E.CASES.map(caseText_), rows: Math.max(rows.length + 1, 60), errorMsg: T('Not in the list. The tool will try to match it by its name or article.', 'ليست في القائمة. ستحاول الأداة مطابقتها باسمها أو بمادتها.') };
+    if (X && X.saveWithDropdowns) await X.saveWithDropdowns(wb, name, [pick]);
+    else saveBlob_(new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/octet-stream' }), name);
+    return name;
+  }
+  function downloadTemplate_() { return saveInputWorkbook_([['E1001', '', '2026-12-31', caseText_(E.caseByKey('expiry')), '', '', '', '', '', '', '']], 'settlements-template'); }
+  /** one employee -> one sheet row (what the tool already holds for him is filled in, the rest stays empty) */
+  function exportRow_(e, r) {
+    const x = r ? r.in : null; const c = x && x.caseKey ? E.caseByKey(x.caseKey) : null; const v = (k) => (x && x[k] !== '' && x[k] != null ? x[k] : '');
+    return [e.code == null ? '' : String(e.code), e.name || '', v('lwd'), c ? caseText_(c) : '', v('periodFrom'), v('eventDate'), v('noticeDays'), v('additions'), v('deductions'), v('loans'), e.id == null ? '' : String(e.id)];
+  }
+  /** rows of cells -> [{ row, ref, jid, nm, lwd, lwdRaw, caseKey, caseText, periodFrom, periodRaw, eventDate, eventRaw, noticeDays, additions, deductions, loans, bad }] (the header row is found by its first cell) */
   function parseSheet_(aoa) {
-    const out = []; const dt = (v) => { const t = E.parseDate(v); return t == null ? '' : E.iso(t); };
+    const out = []; const dt = (v) => { const t = E.parseDate(v); return t == null ? '' : E.iso(t); }; const has = (v) => v !== undefined && v !== null && String(v).trim() !== '';
+    const AD = '٠١٢٣٤٥٦٧٨٩';
     (aoa || []).forEach((r, i) => {
-      if (!r || !r.length) return; const ref = String(r[0] == null ? '' : r[0]).trim(); if (!ref) return;
+      if (!r || !r.length) return; const ref = String(r[0] == null ? '' : r[0]).trim(); const jid = String(r[10] == null ? '' : r[10]).trim().replace(/\.0+$/, ''); if (!ref && !jid) return;
       if (i === 0 && /employee|code|رقم|الموظف/i.test(ref) && E.parseDate(r[2]) == null) return; // the header row
-      const ct = String(r[3] == null ? '' : r[3]).trim(); const c = ct ? E.findCase(ct) : null;
-      out.push({ ref, lwd: dt(r[2]), lwdRaw: r[2], caseKey: c ? c.key : '', caseText: ct, periodFrom: dt(r[4]), eventDate: dt(r[5]), noticeDays: r[6] === undefined ? '' : r[6], additions: r[7] === undefined ? '' : r[7], deductions: r[8] === undefined ? '' : r[8], loans: r[9] === undefined ? '' : r[9] });
+      const ct = String(r[3] == null ? '' : r[3]).trim(); const c = ct ? E.findCase(ct) : null; const bad = [];
+      const nv = (idx, en, ar) => { const v = r[idx]; if (!has(v)) return ''; if (typeof v === 'number') return v; const n = Number(String(v).replace(/[٠-٩]/g, (d) => String(AD.indexOf(d))).replace(/٫/g, '.').replace(/[,\s٬]/g, '')); if (!isFinite(n)) { bad.push(T(en, ar)); return ''; } return n; };
+      out.push({ row: i + 1, ref, jid, nm: String(r[1] == null ? '' : r[1]).trim(), lwd: dt(r[2]), lwdRaw: has(r[2]) ? r[2] : '', caseKey: c ? c.key : '', caseText: ct, periodFrom: dt(r[4]), periodRaw: has(r[4]) ? r[4] : '', eventDate: dt(r[5]), eventRaw: has(r[5]) ? r[5] : '',
+        noticeDays: nv(6, 'notice days', 'أيام الإشعار'), additions: nv(7, 'additions', 'الإضافات'), deductions: nv(8, 'deductions', 'الخصومات'), loans: nv(9, 'loans', 'القروض'), bad });
     });
     return out;
+  }
+  const nameTokens_ = (s) => String(s || '').toLowerCase().replace(/[ً-ٰٟ]/g, '').replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').split(/[^a-z0-9ء-ي]+/).filter((x) => x.length > 1);
+  /** Checks what the user filled in, row by row. Rows he did not touch are ignored; every touched row is ready, needs attention, is a duplicate, or names someone Jisr does not have. */
+  function checkImport_(items, emps) {
+    const byId = new Map(), byKey = new Map();
+    (emps || []).forEach((e) => { if (e.id != null) byId.set(String(e.id), e); [e.code, e.nid].forEach((k) => { if (k != null && String(k).trim() !== '') { const kk = String(k).trim().toLowerCase(); if (!byKey.has(kk)) byKey.set(kk, e); } }); });
+    const rows = []; const last = new Map(); const counts = { ready: 0, attention: 0, notfound: 0, dup: 0, untouched: 0 };
+    const iss = (level, en, ar) => ({ level, en, ar });
+    items.forEach((it) => {
+      const issues = []; const label = it.ref || it.jid; const eJ = it.jid ? byId.get(it.jid) : null; const eR = it.ref ? (byKey.get(it.ref.toLowerCase()) || byId.get(it.ref)) : null; const e = eJ || eR || null;
+      const touched = it.lwdRaw !== '' || !!it.caseText || it.periodRaw !== '' || it.eventRaw !== '' || it.noticeDays !== '' || it.additions !== '' || it.deductions !== '' || it.loans !== '' || it.bad.length > 0;
+      if (!e) { if (!touched && !it.nm) return; rows.push({ it, e: null, status: 'notfound', issues: [iss('error', 'Not found in Jisr: ' + label, 'غير موجود في جسر: ' + label)] }); counts.notfound++; return; }
+      if (!touched) { counts.untouched++; return; }
+      if (eJ && eR && eJ !== eR) issues.push(iss('warn', 'The employee code and the Jisr ID point to different employees: the Jisr ID was used.', 'رقم الموظف ومعرّف جسر يشيران إلى موظفين مختلفين: اعتُمد معرّف جسر.'));
+      if (it.nm && e.name) { const a = nameTokens_(it.nm), b = nameTokens_(e.name); if (a.length && b.length && !a.some((x) => b.includes(x))) issues.push(iss('warn', 'The name in the file ("' + it.nm + '") is not the name in Jisr ("' + e.name + '"). Check that the row is the right employee.', 'الاسم في الملف («' + it.nm + '») ليس الاسم في جسر («' + e.name + '»). تأكد أن الصف للموظف الصحيح.')); }
+      if (it.lwdRaw !== '' && !it.lwd) issues.push(iss('error', 'Last working day not understood: "' + it.lwdRaw + '". Use a date such as 2026-12-31.', 'آخر يوم عمل غير مفهوم: «' + it.lwdRaw + '». استخدم تاريخًا مثل 2026-12-31.'));
+      else if (!it.lwd) issues.push(iss('warn', 'No last working day: it is needed to calculate.', 'لا يوجد آخر يوم عمل: مطلوب للحساب.'));
+      else { const y = Number(it.lwd.slice(0, 4)); if (y < 2000 || y > 2100) issues.push(iss('warn', 'Last working day looks wrong: ' + it.lwd + '.', 'آخر يوم عمل يبدو خاطئًا: ' + it.lwd + '.')); }
+      if (it.caseText && !it.caseKey) issues.push(iss('error', 'Termination case not understood: "' + it.caseText + '". Pick it from the dropdown.', 'حالة إنهاء الخدمة غير مفهومة: «' + it.caseText + '». اخترها من القائمة.'));
+      else if (!it.caseKey) issues.push(iss('warn', 'No termination case: it decides the award and the notice.', 'لا توجد حالة إنهاء خدمة: هي التي تحدد المكافأة والإشعار.'));
+      const cs = it.caseKey ? E.caseByKey(it.caseKey) : null; if (cs && cs.needsEvent && !it.eventDate) issues.push(iss('warn', 'This case needs the date of the ' + (cs.needsEvent === 'marriage' ? 'marriage' : 'birth') + '.', 'هذه الحالة تحتاج تاريخ ' + (cs.needsEvent === 'marriage' ? 'الزواج' : 'الولادة') + '.'));
+      if (it.periodRaw !== '' && !it.periodFrom) issues.push(iss('warn', 'Leave period start not understood: "' + it.periodRaw + '". It is left empty.', 'بداية فترة الإجازة غير مفهومة: «' + it.periodRaw + '». ستُترك فارغة.'));
+      if (it.eventRaw !== '' && !it.eventDate) issues.push(iss('warn', 'Event date not understood: "' + it.eventRaw + '".', 'تاريخ الواقعة غير مفهوم: «' + it.eventRaw + '».'));
+      it.bad.forEach((b) => issues.push(iss('warn', 'Not a number in ' + b + ': ignored.', 'ليست رقمًا في ' + b + ': تم تجاهلها.')));
+      const init = { lwd: it.lwd, caseKey: it.caseKey, periodFrom: it.periodFrom, eventDate: it.eventDate, noticeDays: it.noticeDays, additions: it.additions, deductions: it.deductions, loans: it.loans };
+      Object.keys(init).forEach((k) => { if (init[k] === '' || init[k] == null) delete init[k]; });
+      const x = { it, e, init, issues, status: issues.length ? 'attention' : 'ready' };
+      const k = String(e.id); const prev = last.get(k);
+      if (prev) { counts[prev.status]--; prev.status = 'dup'; prev.issues = [iss('warn', 'This employee is listed again in row ' + it.row + ': that later row is used.', 'هذا الموظف مذكور مرة أخرى في الصف ' + it.row + ': يُعتمد الصف الأخير.')]; counts.dup++; }
+      last.set(k, x); rows.push(x); counts[x.status]++;
+    });
+    return { rows, counts, total: items.length };
   }
 
   // ======================================================================= window
@@ -58189,6 +58249,70 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     (children || []).forEach((c) => c != null && c !== false && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
     return n;
   }
+  // ======================================================================= look: one small icon set (same 24 px grid, same stroke), the futuristic skin and its switch
+  const ICONS_ = {
+    plus: 'M12 5v14M5 12h14', cloud: 'M12 11v8m0 0l-3-3m3 3l3-3M7.5 16.5A4.5 4.5 0 0 1 7 7.6a5.5 5.5 0 0 1 10.5 1.4A3.8 3.8 0 0 1 17 16.5', trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6',
+    up: 'M12 16V4m0 0L8 8m4-4l4 4M4 20h16', down: 'M12 4v12m0 0l-4-4m4 4l4-4M4 20h16', sheet: 'M4 5h16v14H4zM4 10h16M4 15h16M10 5v14', chart: 'M4 20V4M4 20h16M8 16v-5M12 16V8M16 16v-3',
+    all: 'M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM9 12l2 2 4-4', x: 'M6 6l12 12M18 6L6 18', print: 'M7 8V4h10v4M7 17H5v-7h14v7h-2M7 14h10v6H7z', bolt: 'M13 3L5 13h6l-1 8 8-10h-6z',
+    stop: 'M7 7h10v10H7z', chev: 'M6 9l6 6 6-6', check: 'M5 12l5 5 9-10', users: 'M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3 19a6 6 0 0 1 12 0M16 5.5a3 3 0 0 1 0 5.5M18 14a5 5 0 0 1 3 5', undo: 'M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3', sliders: 'M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M6 15v4'
+  };
+  const ico_ = (name) => { const s = el('span', { class: 'jst-ic', 'aria-hidden': 'true' }); s.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="' + (ICONS_[name] || '') + '"/></svg>'; return s; };
+  /** a button with an icon and a text label; kind: '' | 'pri' (the one main action) | 'dan' (removes something) */
+  const nbtn_ = (text, icon, fn, o) => { o = o || {}; const x = el('button', { class: 'jbo-btn' + (o.kind === 'pri' ? ' jbo-btn-primary' : '') + (o.kind === 'dan' ? ' jst-dan' : ''), type: 'button', title: o.title || null }, [icon ? ico_(icon) : null, el('span', { class: 'jst-bt', text })]); if (fn) x.addEventListener('click', fn); return x; };
+  const NEO_KEY = 'jisrBulkOps_stNeo';
+  const neoOn_ = () => { try { return GM_getValue(NEO_KEY, true) !== false; } catch (e) { return true; } };
+  const neoCls_ = () => (neoOn_() ? ' jst-neo' : '');
+  function injectNeoCss_() {
+    if (document.getElementById('jbo-st-neo')) return;
+    document.head.appendChild(el('style', { id: 'jbo-st-neo', text: `
+      .jst-neo { --jn-a: #0f6b63; --jn-b: #1fa3b8; --jn-c: #6c5ce7; --jn-g: linear-gradient(135deg, var(--jn-a) 0%, var(--jn-b) 55%, var(--jn-c) 100%); --jn-line: #d3e6e3; --jn-ink: #12413d; }
+      /* ---- buttons: a glass face with a light-edge, a glow and a sheen on hover; the one main action is filled ---- */
+      body .jbo-modal.jst-neo button.jbo-btn:not(#jst), body .jbo-modal.jst-neo .jst-add button.jbo-btn:not(#jst) { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 7px; isolation: isolate; overflow: hidden; min-height: 34px; padding: 6px 14px !important; font: inherit !important; font-size: 12.5px !important; font-weight: 600 !important; letter-spacing: .01em; color: var(--jn-ink) !important; border: 1.5px solid transparent !important; border-radius: 12px !important; background: linear-gradient(#ffffff, #f2faf9) padding-box, var(--jn-g) border-box !important; box-shadow: 0 1px 0 rgba(255,255,255,.95) inset, 0 2px 8px rgba(15,107,99,.10) !important; text-shadow: none !important; cursor: pointer; filter: none; transition: transform .16s ease, box-shadow .2s ease, filter .2s ease; }
+      body .jbo-modal.jst-neo button.jbo-btn:not(#jst)::after { content: ''; position: absolute; inset: 0; z-index: -1; background: linear-gradient(105deg, transparent 38%, rgba(255,255,255,.7) 50%, transparent 62%); transform: translateX(-120%); transition: transform .55s ease; pointer-events: none; }
+      body .jbo-modal.jst-neo button.jbo-btn:not(#jst):hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 0 0 3px rgba(31,163,184,.16), 0 10px 22px rgba(15,107,99,.22) !important; color: #0a2f2c !important; }
+      body .jbo-modal.jst-neo button.jbo-btn:not(#jst):hover:not(:disabled)::after { transform: translateX(120%); }
+      body .jbo-modal.jst-neo button.jbo-btn:not(#jst):active:not(:disabled) { transform: translateY(0) scale(.97); }
+      body .jbo-modal.jst-neo button.jbo-btn:not(#jst):focus-visible { outline: 2px solid var(--jn-c) !important; outline-offset: 2px !important; }
+      body .jbo-modal.jst-neo button.jbo-btn:not(#jst):disabled { opacity: .42; cursor: not-allowed; transform: none; box-shadow: none !important; filter: grayscale(.5); }
+      body .jbo-modal.jst-neo button.jbo-btn.jbo-btn-primary:not(#jst) { color: #fff !important; background: var(--jn-g) border-box !important; box-shadow: 0 0 0 1px rgba(255,255,255,.18) inset, 0 8px 22px rgba(79,70,229,.34) !important; }
+      body .jbo-modal.jst-neo button.jbo-btn.jbo-btn-primary:not(#jst):hover:not(:disabled) { color: #fff !important; filter: brightness(1.08) saturate(1.1); box-shadow: 0 0 0 3px rgba(108,92,231,.22), 0 14px 30px rgba(79,70,229,.42) !important; }
+      body .jbo-modal.jst-neo button.jbo-btn.jst-dan:not(#jst) { color: #8c1d18 !important; background: linear-gradient(#fff, #fff6f4) padding-box, linear-gradient(135deg, #c5221f, #f97316) border-box !important; }
+      body .jbo-modal.jst-neo button.jbo-btn.jst-dan:not(#jst):hover:not(:disabled) { color: #fff !important; background: linear-gradient(135deg, #c5221f, #f97316) border-box !important; box-shadow: 0 0 0 3px rgba(249,115,22,.18), 0 10px 22px rgba(197,34,31,.3) !important; }
+      .jst-neo .jst-ic { display: inline-flex; flex: none; } .jst-neo .jst-ic svg { display: block; }
+      body .jbo-modal.jst-neo button.jbo-btn:not(.jbo-btn-primary):not(.jst-dan):not(#jst) .jst-ic { color: var(--jn-b); }
+      body .jbo-modal.jst-neo button.jbo-btn.jbo-btn-primary:not(#jst):not(:disabled) { animation: jstglow 3.4s ease-in-out infinite; } @keyframes jstglow { 0%, 100% { box-shadow: 0 0 0 1px rgba(255,255,255,.18) inset, 0 8px 22px rgba(79,70,229,.30); } 50% { box-shadow: 0 0 0 1px rgba(255,255,255,.28) inset, 0 10px 30px rgba(31,163,184,.48); } }
+      .jst-neo .jst-prog { height: 26px; } .jst-win > .jbo-modal-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; } .jst-footl { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      .jst-neo .jst-seg { display: inline-flex; } .jst-neo .jst-seg > button:first-child { border-start-end-radius: 0 !important; border-end-end-radius: 0 !important; } .jst-neo .jst-seg > button:last-child { border-start-start-radius: 0 !important; border-end-start-radius: 0 !important; margin-inline-start: -1.5px; padding-inline: 10px !important; }
+      @media (prefers-reduced-motion: reduce) { body .jbo-modal.jst-neo button.jbo-btn:not(#jst), body .jbo-modal.jst-neo button.jbo-btn:not(#jst)::after { transition: none !important; animation: none !important; } .jst-neo .jst-bar i { animation: none !important; } }
+      @media (prefers-contrast: more) { body .jbo-modal.jst-neo button.jbo-btn:not(#jst) { background: #fff !important; border-color: #0f6b63 !important; box-shadow: none !important; } body .jbo-modal.jst-neo button.jbo-btn:not(#jst)::after { display: none; } body .jbo-modal.jst-neo button.jbo-btn.jbo-btn-primary:not(#jst) { background: #0f6b63 !important; } }
+      /* ---- window: a light line under the title, the panels as soft glass cards, a calmer table ---- */
+      .jst-neo > .jbo-modal-head { position: relative; } .jst-neo > .jbo-modal-head::after { content: ''; position: absolute; inset-inline: 0; bottom: -1px; height: 2px; background: var(--jn-g); opacity: .85; }
+      .jst-neo .jst-note { border: 0; border-inline-start: 3px solid var(--jn-b); border-radius: 10px; background: linear-gradient(90deg, rgba(31,163,184,.10), rgba(108,92,231,.05)); }
+      .jst-neo .jst-set, .jst-neo .jst-add { padding: 10px 12px; border: 1px solid var(--jn-line); border-radius: 16px; background: linear-gradient(180deg, rgba(243,250,249,.95), rgba(246,247,255,.95)); box-shadow: 0 1px 0 #fff inset; }
+      .jst-neo .jst-add { align-items: flex-end; gap: 10px 16px; margin: 8px 0; }
+      .jst-grp { display: flex; flex-direction: column; gap: 5px; } .jst-gl { font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: #5b7a77; font-weight: 700; } .jst-grow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+      .jst-menuwrap { position: relative; display: inline-block; } .jst-menu { position: absolute; z-index: 30; inset-inline-start: 0; top: calc(100% + 6px); min-width: 280px; padding: 6px; border: 1px solid var(--jn-line, #d3e6e3); border-radius: 14px; background: rgba(255,255,255,.98); box-shadow: 0 18px 40px rgba(20,50,60,.22); }
+      .jst-menu[hidden] { display: none; } .jst-mi { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; padding: 8px 10px; border: 0; border-radius: 10px; background: none; font: inherit; font-size: 12.5px; text-align: start; color: #1d2b2a; cursor: pointer; }
+      .jst-mi:hover, .jst-mi:focus-visible { background: rgba(31,163,184,.12); outline: none; } .jst-mi:disabled { opacity: .45; cursor: not-allowed; } .jst-mi small { color: #5f6368; font-size: 11.5px; line-height: 1.35; } .jst-mi.dan b { color: #a50e0e; }
+      .jst-neo .jst-scroll { border: 1px solid var(--jn-line); border-radius: 14px; box-shadow: 0 6px 18px rgba(15,60,70,.07); }
+      .jst-neo .jst-tbl th { background: linear-gradient(180deg, #f3faf9, #e6f2f0); border-bottom: 1px solid var(--jn-line); letter-spacing: .01em; }
+      .jst-neo .jst-tbl tr:hover td { background: #f3fbfa; } .jst-neo .jst-tbl tr.on td { background: #e3f4f1; } .jst-neo .jst-tbl tr.on td:first-child { box-shadow: inset 3px 0 0 var(--jn-b); }
+      .jst-neo .jst-bulk { border: 1px solid var(--jn-line); border-radius: 14px; background: #fbfdfd; } .jst-bulk.off { opacity: .62; } .jst-bulk.off:hover { opacity: 1; }
+      .jst-neo .jst-bar { background: #e3ecec; } .jst-neo .jst-bar i { background: linear-gradient(90deg, var(--jn-a), var(--jn-b), var(--jn-c), var(--jn-b)); background-size: 200% 100%; animation: jstflow 1.6s linear infinite; } @keyframes jstflow { to { background-position: -200% 0; } }
+      .jst-neo .jst-tab.on { color: var(--jn-a); border-bottom-color: var(--jn-b); } .jst-neo .jst-kpi, .jst-neo .jst-det, .jst-neo .jst-leave, .jst-neo .jst-a77 { border-radius: 14px; border-color: var(--jn-line); }
+      .jst-neo .jst-eqb.hero { background: var(--jn-g); border-color: transparent; box-shadow: 0 8px 22px rgba(79,70,229,.25); }
+      .jst-neo.jbo-modal > .jbo-modal-foot, .jst-neo > .jbo-modal-foot { background: linear-gradient(180deg, rgba(255,255,255,.85), rgba(240,248,247,.95)); }
+      /* ---- list strip, undo bar, picker header, import report, clear dialog ---- */
+      .jst-strip { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 2px; } .jst-chp { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid #d3e6e3; background: #fff; font-size: 12px; color: #31403f; } .jst-chp i { width: 8px; height: 8px; border-radius: 50%; background: #9aa6a3; } .jst-chp.ok i { background: #137333; } .jst-chp.warn i { background: #e8a200; } .jst-chp.bad i { background: #c5221f; } .jst-chp.sel i { background: #6c5ce7; }
+      .jst-undo { display: flex; align-items: center; gap: 10px; margin: 6px 0 0; padding: 6px 10px; border-radius: 10px; background: #eef2ff; border: 1px solid #cfd6ff; font-size: 12.5px; } .jst-undo[hidden] { display: none; } .jst-undo button { min-height: 28px !important; padding: 3px 12px !important; }
+      .jst-pickbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0 0; } .jst-pickinfo { font-size: 12px; margin-inline-start: auto; }
+      .jst-sum { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; } .jst-sum .jst-chp b { font-variant-numeric: tabular-nums; }
+      .jst-iss { max-height: 40vh; overflow: auto; border: 1px solid #e1e5ea; border-radius: 12px; margin: 8px 0; } .jst-iss > div { padding: 7px 10px; border-bottom: 1px solid #f1f3f4; font-size: 12.5px; } .jst-iss > div:last-child { border-bottom: 0; } .jst-iss b { font-weight: 600; } .jst-iss .e { color: #a50e0e; } .jst-iss .w { color: #8a5a00; } .jst-iss .d { color: #5f6368; }
+      .jst-good { padding: 10px 12px; border-radius: 12px; background: #e6f4ea; border: 1px solid #b6dfc2; font-size: 13px; }
+    ` }));
+  }
+  const setBt_ = (b, t) => { const s = b.querySelector('.jst-bt'); if (s) s.textContent = t; else b.textContent = t; };
+
   function injectCss_() {
     if (document.getElementById('jbo-st-css')) return;
     document.head.appendChild(el('style', { id: 'jbo-st-css', text: `
@@ -58260,11 +58384,11 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   }
 
   function openTool_() {
-    injectCss_(); try { jboActOpen_(MODULE_ID); } catch (e) { /* ignore */ }
+    injectCss_(); injectNeoCss_(); try { jboActOpen_(MODULE_ID); } catch (e) { /* ignore */ }
     const S = { rows: [], set: { eosBase: 'full', leaveBase: 'full', deductAdvanceLeave: false, loansFromJisr: true, art77All: false }, tab: 'stmt', fc: null, busy: false, stop: false, sel: new Set(), open: null, jisrList: null, more: false };
     const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
     const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': T('Close', 'إغلاق') });
-    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1320px, 98vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('End-of-service and leave settlement', 'تسوية نهاية الخدمة والإجازات') }), closeBtn]), body, foot]);
+    const modal = el('div', { class: 'jbo-modal jst-win' + neoCls_(), style: { width: 'min(1320px, 98vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('End-of-service and leave settlement', 'تسوية نهاية الخدمة والإجازات') }), closeBtn]), body, foot]);
     const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
     const close = () => { S.stop = true; backdrop.remove(); };
     closeBtn.addEventListener('click', close); backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
@@ -58273,17 +58397,18 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     const barFill = el('i'); const progEl = el('div', { class: 'jst-prog', 'aria-hidden': 'true', style: { visibility: 'hidden' } }, [el('div', { class: 'jst-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, [barFill])]);
     const setNote = (t, err) => { noteEl.textContent = t; noteEl.style.color = err ? '#a50e0e' : ''; };
     const setProg = (done, total) => { if (!total) { progEl.style.visibility = 'hidden'; return; } const p = Math.round(done / total * 100); progEl.style.visibility = 'visible'; barFill.style.width = p + '%'; progEl.firstChild.setAttribute('aria-valuenow', String(p)); };
-    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') }); const stmtB = el('button', { class: 'jbo-btn', text: T('Final settlement (PDF)', 'التسوية النهائية (PDF)') }); const mainB = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('Calculate', 'احسب') });
+    const stopB = nbtn_(T('Stop', 'إيقاف'), 'stop'); const stmtB = nbtn_(T('Final settlement (PDF)', 'التسوية النهائية (PDF)'), 'print'); const mainB = nbtn_(T('Calculate', 'احسب'), 'bolt', null, { kind: 'pri' });
     foot.appendChild(stopB); foot.appendChild(stmtB); foot.appendChild(mainB); stopB.style.display = 'none';
     stopB.addEventListener('click', () => { S.stop = true; setNote(T('Stopping…', 'جارٍ الإيقاف…')); });
 
     const targets = () => (S.sel.size ? S.rows.filter((r) => S.sel.has(r.id)) : S.rows);
     const done = () => S.rows.filter((r) => r.res && r.res.ok);
     const recalcAll = () => { S.rows.forEach((r) => calc_(r, S.set)); };
-    const addRow = (e, init) => {
-      let r = S.rows.find((x) => String(x.id) === String(e.id));
-      if (!r) { r = { id: e.id, code: String(e.code == null ? '' : e.code), name: e.name || '', nid: e.nid || '', data: null, in: blankIn_(), res: null, cmp: null, jisr: null, msg: '', err: '' }; S.rows.push(r); }
-      if (init) Object.assign(r.in, init);
+    /** src says where the row came from ('pick', 'jisr', 'excel'); init fills only the empty fields of a row already in the list, unless overwrite is true (the Excel file he edited) */
+    const addRow = (e, init, src, overwrite) => {
+      let r = S.rows.find((x) => String(x.id) === String(e.id)); let fresh = false;
+      if (!r) { r = { id: e.id, code: String(e.code == null ? '' : e.code), name: e.name || '', nid: e.nid || '', src: src || 'pick', data: null, in: blankIn_(), res: null, cmp: null, jisr: null, msg: '', err: '' }; S.rows.push(r); fresh = true; }
+      if (init) Object.keys(init).forEach((k) => { if (overwrite || fresh || r.in[k] === '' || r.in[k] == null) r.in[k] = init[k]; });
       return r;
     };
 
@@ -58313,8 +58438,8 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       }
       return n;
     }
-    async function calculateNow() {
-      if (S.busy) return; const list = targets(); if (!list.length) { setNote(T('Add employees first.', 'أضف موظفين أولًا.'), true); return; }
+    async function calculateNow(only) {
+      if (S.busy) return; const list = only && only.length ? only : targets(); if (!list.length) { setNote(T('Add employees first.', 'أضف موظفين أولًا.'), true); return; }
       S.busy = true; S.stop = false; mainB.disabled = true; stopB.style.display = ''; render();
       try {
         const rd = await readRows(list); recalcAll();
@@ -58326,56 +58451,139 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       finally { S.busy = false; mainB.disabled = false; stopB.style.display = 'none'; setProg(0, 0); render(); }
     }
 
-    // ---------------------------------------------------------------- adding employees
+    // ---------------------------------------------------------------- adding employees, clearing the list, Excel out and in
+    const mkDlg = (title, width) => {
+      const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+      const dlg = el('div', { class: 'jbo-modal jst-dlg' + neoCls_(), style: { width: width || 'min(560px, 94vw)' }, role: 'dialog', 'aria-modal': 'true', 'aria-label': title }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: title })]), body, foot]);
+      dlg.__jboRun = true; const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); const close = () => bd.remove(); document.body.appendChild(bd);
+      return { dlg, bd, body, foot, close };
+    };
     async function pickEmployees() {
       const list = await new Promise((resolve) => {
-        const q = el('input', { type: 'text', placeholder: T('Search name, code or ID…', 'ابحث بالاسم أو الرقم أو الهوية…'), style: { width: '100%', font: 'inherit', padding: '7px 9px', border: '1px solid #c9cdd2', borderRadius: '6px' } });
-        const holder = el('div', { class: 'jst-pick' }); const chosen = new Set(); let all = []; const addB = el('button', { class: 'jbo-btn jbo-btn-primary', type: 'button', text: T('Add', 'إضافة') }); const cancel = el('button', { class: 'jbo-btn', type: 'button', text: T('Cancel', 'إلغاء') });
-        const dlg = el('div', { class: 'jbo-modal jst-dlg', style: { width: 'min(560px, 94vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('Add employees', 'إضافة موظفين') })]), el('div', { class: 'jbo-modal-body' }, [q, holder]), el('div', { class: 'jbo-modal-foot' }, [cancel, addB])]);
-        dlg.__jboRun = true; const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); const fin = (v) => { bd.remove(); resolve(v); };
+        const D = mkDlg(T('Add employees', 'إضافة موظفين')); const have = new Set(S.rows.map((r) => String(r.id))); const chosen = new Set(); let all = [];
+        const q = el('input', { type: 'text', 'aria-label': T('Search employees', 'بحث في الموظفين'), placeholder: T('Search name, code or ID…', 'ابحث بالاسم أو الرقم أو الهوية…'), style: { width: '100%', font: 'inherit', padding: '7px 9px', border: '1px solid #c9cdd2', borderRadius: '6px' } });
+        const holder = el('div', { class: 'jst-pick' }); const info = el('div', { class: 'jbo-muted jst-pickinfo', role: 'status', 'aria-live': 'polite' });
+        const selAll = nbtn_('', 'all'); const selNone = nbtn_(T('Clear selection', 'إزالة التحديد'), 'x'); const addB = nbtn_(T('Add', 'إضافة'), 'plus', null, { kind: 'pri' }); const cancel = nbtn_(T('Cancel', 'إلغاء'), null);
+        const fin = (v) => { D.close(); resolve(v); };
+        const matches = () => { const nd = q.value.trim().toLowerCase(); return all.filter((e) => !nd || (e.name + ' ' + e.code + ' ' + (e.nid || '')).toLowerCase().includes(nd)); };
+        const sync = (m) => {
+          const free = m.filter((e) => !have.has(String(e.id))); const picked = free.filter((e) => chosen.has(e.id)).length; const searching = !!q.value.trim();
+          setBt_(selAll, searching ? T('Select all ' + free.length + ' matches', 'تحديد كل المطابقين (' + free.length + ')') : T('Select all ' + free.length, 'تحديد الكل (' + free.length + ')')); selAll.disabled = !free.length || picked === free.length; selNone.disabled = !chosen.size;
+          setBt_(addB, chosen.size ? T('Add ' + chosen.size, 'أضف ' + chosen.size) : T('Add', 'إضافة')); addB.disabled = !chosen.size;
+          info.textContent = (chosen.size ? T(chosen.size + ' selected', 'المحدد: ' + chosen.size) : '') + (m.length > 150 ? (chosen.size ? ' · ' : '') + T('showing the first 150 of ' + m.length, 'يظهر أول 150 من ' + m.length) : '') + (all.length && !free.length ? (chosen.size || m.length > 150 ? ' · ' : '') + T('everyone here is already in the list', 'كل من هنا موجود في القائمة') : '');
+        };
         const paint = () => {
-          holder.textContent = ''; const nd = q.value.trim().toLowerCase();
-          const shown = all.filter((e) => !nd || (e.name + ' ' + e.code + ' ' + (e.nid || '')).toLowerCase().includes(nd)).slice(0, 150);
-          shown.forEach((e) => { const dup = S.rows.some((r) => String(r.id) === String(e.id)); const cb = el('input', { type: 'checkbox' }); cb.checked = dup || chosen.has(e.id); cb.disabled = dup; cb.addEventListener('change', () => { if (cb.checked) chosen.add(e.id); else chosen.delete(e.id); addB.textContent = T('Add ', 'أضف ') + chosen.size; addB.disabled = !chosen.size; });
+          holder.textContent = ''; const m = matches(); const shown = m.slice(0, 150);
+          shown.forEach((e) => { const dup = have.has(String(e.id)); const cb = el('input', { type: 'checkbox' }); cb.checked = dup || chosen.has(e.id); cb.disabled = dup; cb.addEventListener('change', () => { if (cb.checked) chosen.add(e.id); else chosen.delete(e.id); sync(matches()); });
             holder.appendChild(el('label', { 'data-off': dup ? '1' : '0' }, [cb, el('span', { text: (e.code ? e.code + ' · ' : '') + e.name + (dup ? T(' (already added)', ' (مضاف)') : ''), dir: 'auto' })])); });
           if (!shown.length) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '8px' }, text: all.length ? T('Nobody matches.', 'لا أحد مطابق.') : T('Loading employees…', 'جارٍ تحميل الموظفين…') }));
+          sync(m);
         };
-        q.addEventListener('input', paint); cancel.addEventListener('click', () => fin(null)); bd.addEventListener('mousedown', (e) => { if (e.target === bd) fin(null); });
-        addB.disabled = true; addB.addEventListener('click', () => fin(all.filter((e) => chosen.has(e.id)))); document.body.appendChild(bd); paint(); q.focus();
+        selAll.addEventListener('click', () => { matches().forEach((e) => { if (!have.has(String(e.id))) chosen.add(e.id); }); paint(); });
+        selNone.addEventListener('click', () => { chosen.clear(); paint(); });
+        q.addEventListener('input', paint); cancel.addEventListener('click', () => fin(null)); D.bd.addEventListener('mousedown', (e) => { if (e.target === D.bd) fin(null); });
+        addB.addEventListener('click', () => fin(all.filter((e) => chosen.has(e.id))));
+        D.body.appendChild(q); D.body.appendChild(el('div', { class: 'jst-pickbar' }, [selAll, selNone, info])); D.body.appendChild(holder); D.foot.appendChild(cancel); D.foot.appendChild(addB); paint(); q.focus();
         W.__jisrBulkOpsEmployees.get(false).then((l) => { all = l || []; paint(); }).catch((e) => { holder.textContent = String(e.message || e); });
       });
-      if (!list || !list.length) return; list.forEach((e) => addRow(e)); setNote(list.length + T(' employee(s) added. Enter each one\'s last working day and case, then click Calculate.', ' موظف أُضيف. أدخل آخر يوم عمل وحالة كل موظف ثم اضغط احسب.')); render();
+      if (!list || !list.length) return; list.forEach((e) => addRow(e, null, 'pick')); setNote(list.length + T(' employee(s) added. Enter each one\'s last working day and case, then click Calculate.', ' موظف أُضيف. أدخل آخر يوم عمل وحالة كل موظف ثم اضغط احسب.')); render();
     }
     async function loadFromJisr() {
       if (S.busy) return; S.busy = true; S.stop = false; mainB.disabled = true; stopB.style.display = ''; render();
       try {
         setNote(T('Reading the final settlements Jisr already has…', 'جارٍ قراءة التسويات النهائية الموجودة في جسر…')); S.jisrList = await listSettlements_(() => S.stop);
-        let n = 0, un = 0; const seen = new Set();
-        S.jisrList.forEach((s) => { if (s.empId == null || seen.has(s.empId)) return; seen.add(s.empId); const c = E.findCase(s.reason); if (!c && s.reason) un++; addRow({ id: s.empId, code: s.code, name: s.name }, { lwd: s.lwd, caseKey: c ? c.key : '' }); n++; });
-        setNote(n + T(' employees with a final settlement in Jisr were added with their last working day and reason.', ' موظف لديهم تسوية نهائية في جسر أُضيفوا مع آخر يوم عمل والسبب.') + (un ? ' ' + un + T(' reason(s) could not be matched to a case: choose them yourself.', ' سبب لم يُطابق حالة: اخترها بنفسك.') : '') + T(' Click Calculate to compare with Jisr.', ' اضغط احسب للمقارنة مع جسر.'));
+        let n = 0, kept = 0, un = 0; const seen = new Set();
+        S.jisrList.forEach((s) => { if (s.empId == null || seen.has(s.empId)) return; seen.add(s.empId); const c = E.findCase(s.reason); if (!c && s.reason) un++; const had = S.rows.some((r) => String(r.id) === String(s.empId)); addRow({ id: s.empId, code: s.code, name: s.name }, { lwd: s.lwd, caseKey: c ? c.key : '' }, 'jisr'); if (had) kept++; else n++; });
+        setNote(n + T(' employees with a final settlement in Jisr were added with their last working day and reason.', ' موظف لديهم تسوية نهائية في جسر أُضيفوا مع آخر يوم عمل والسبب.') + (kept ? ' ' + kept + T(' were already in the list and keep what you entered.', ' كانوا في القائمة ويحتفظون بما أدخلته.') : '') + (un ? ' ' + un + T(' reason(s) could not be matched to a case: choose them yourself.', ' سبب لم يُطابق حالة: اخترها بنفسك.') : '') + T(' Click Calculate to compare with Jisr. "Clear" removes them again.', ' اضغط احسب للمقارنة مع جسر. زر «مسح» يزيلهم من جديد.'));
       } catch (e) { setNote(String(e.message || e).slice(0, 240), true); }
       finally { S.busy = false; mainB.disabled = false; stopB.style.display = 'none'; render(); }
     }
-    async function importExcel(file) {
+    // ---- undo: whatever leaves the list can come back for a while
+    let undoTimer = null;
+    function offerUndo(text, restore) {
+      clearTimeout(undoTimer); undoEl.textContent = ''; undoEl.hidden = false;
+      const u = nbtn_(T('Undo', 'تراجع'), 'undo', () => { clearTimeout(undoTimer); undoEl.hidden = true; restore(); });
+      undoEl.appendChild(el('span', { text })); undoEl.appendChild(u); undoTimer = setTimeout(() => { undoEl.hidden = true; }, 60000);
+    }
+    function removeRows(pred, what) {
+      const gone = S.rows.filter(pred); if (!gone.length) return 0; const order = new Map(S.rows.map((r, i) => [r.id, i])); const wasSel = new Set(gone.filter((r) => S.sel.has(r.id)).map((r) => r.id));
+      S.rows = S.rows.filter((r) => !pred(r)); gone.forEach((r) => S.sel.delete(r.id)); if (S.open != null && !S.rows.some((r) => r.id === S.open)) S.open = null;
+      offerUndo(T('Removed ' + gone.length + ' ' + what + '.', 'أُزيل ' + gone.length + ' ' + what + '.'), () => { gone.forEach((r) => { if (!S.rows.some((x) => x.id === r.id)) S.rows.push(r); }); S.rows.sort((a, b) => (order.has(a.id) ? order.get(a.id) : 1e9) - (order.has(b.id) ? order.get(b.id) : 1e9)); wasSel.forEach((id) => S.sel.add(id)); setNote(T('Brought back ' + gone.length + '.', 'أُعيد ' + gone.length + '.')); render(); });
+      render(); return gone.length;
+    }
+    const countSrc = (s) => S.rows.filter((r) => r.src === s).length;
+    function clearDialog(pre) {
+      const nTick = S.sel.size, nJ = countSrc('jisr'), nX = countSrc('excel'), nRes = S.rows.filter((r) => r.res || r.data).length, nAll = S.rows.length;
+      if (!nAll) { setNote(T('The list is already empty.', 'القائمة فارغة أصلًا.')); return; }
+      const D = mkDlg(T('Clear the list', 'مسح القائمة'), 'min(520px, 94vw)'); let pick = pre && ({ jisr: nJ, ticked: nTick, excel: nX }[pre]) ? pre : (nTick ? 'ticked' : nJ ? 'jisr' : 'all');
+      const opts = [['ticked', nTick, T('Only the ticked rows', 'الصفوف المحددة فقط'), T('The rows you ticked in the table.', 'الصفوف التي حددتها في الجدول.')], ['jisr', nJ, T('Loaded from Jisr final settlements', 'المحمّلون من التسويات النهائية في جسر'), T('Keeps the employees you added yourself.', 'يُبقي الموظفين الذين أضفتهم بنفسك.')], ['excel', nX, T('Added from an Excel file', 'المضافون من ملف Excel'), T('Keeps everyone else.', 'يُبقي بقية الموظفين.')],
+        ['results', nRes, T('Calculated results only', 'النتائج المحسوبة فقط'), T('Keeps the employees and what you typed; the next Calculate reads Jisr again.', 'يُبقي الموظفين وما كتبته؛ وعند الحساب التالي تُقرأ بيانات جسر من جديد.')], ['all', nAll, T('Everything', 'كل شيء'), T('Empties the table.', 'يُفرّغ الجدول.')]];
+      const box = el('div'); const go = nbtn_('', 'trash', null, { kind: 'dan' }); const cancel = nbtn_(T('Cancel', 'إلغاء'), null);
+      const paint = () => {
+        box.textContent = ''; opts.forEach(([k, n, label, hint]) => { const i = el('input', { type: 'radio', name: 'jst-clr', value: k }); i.checked = pick === k; i.disabled = !n; i.addEventListener('change', () => { pick = k; paint(); });
+          box.appendChild(el('label', { class: 'jst-opt' + (pick === k ? ' on' : ''), style: n ? null : { opacity: '.5', cursor: 'not-allowed' } }, [i, el('span', {}, [el('b', { text: label + ' (' + n + ')' }), el('small', { text: hint })])])); });
+        const n = opts.find((o) => o[0] === pick)[1]; setBt_(go, pick === 'results' ? T('Forget results', 'انسَ النتائج') : T('Clear ' + n, 'امسح ' + n)); go.disabled = !n;
+      };
+      go.addEventListener('click', () => {
+        D.close();
+        if (pick === 'results') { const n = S.rows.filter((r) => r.res || r.data).length; S.rows.forEach((r) => { r.data = null; r.res = null; r.cmp = null; r.jisr = null; r.noJisr = false; r.err = ''; }); S.jisrList = null; setNote(T('Forgot the results of ' + n + ' employees. Click Calculate to read Jisr again.', 'نُسيت نتائج ' + n + ' موظف. اضغط احسب لقراءة جسر من جديد.')); render(); return; }
+        const pred = { ticked: (r) => S.sel.has(r.id), jisr: (r) => r.src === 'jisr', excel: (r) => r.src === 'excel', all: () => true }[pick]; const what = { ticked: T('ticked employees', 'موظفًا محددًا'), jisr: T('employees loaded from Jisr', 'موظفًا محمّلًا من جسر'), excel: T('employees added from Excel', 'موظفًا مضافًا من Excel'), all: T('employees', 'موظفًا') }[pick];
+        const n = removeRows(pred, what); setNote(n + T(' removed from the list. Undo is available for a minute.', ' أُزيلوا من القائمة. التراجع متاح لمدة دقيقة.'));
+      });
+      cancel.addEventListener('click', D.close); D.bd.addEventListener('mousedown', (e) => { if (e.target === D.bd) D.close(); });
+      D.body.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('Choose what to clear. Nothing in Jisr changes.', 'اختر ما تريد مسحه. لا يتغير شيء في جسر.') })); D.body.appendChild(box); D.foot.appendChild(cancel); D.foot.appendChild(go); paint();
+    }
+    // ---- Excel out: every employee in one sheet, with what the tool already holds filled in
+    async function exportEmployees(scope) {
+      if (S.busy) return;
       try {
-        const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' }); const ws = wb.Sheets[wb.SheetNames[0]]; const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
-        const items = parseSheet_(aoa);
-        const list = await W.__jisrBulkOpsEmployees.get(false); const by = new Map(); (list || []).forEach((e) => { [e.id, e.code, e.nid].forEach((k) => { if (k != null && String(k) !== '') by.set(String(k).trim().toLowerCase(), e); }); });
-        let ok = 0; const miss = [], badDate = [], badCase = [];
-        items.forEach((it) => {
-          const e = by.get(it.ref.toLowerCase()); if (!e) { miss.push(it.ref); return; }
-          if (it.lwdRaw !== '' && !it.lwd) badDate.push(it.ref); if (it.caseText && !it.caseKey) badCase.push(it.ref);
-          const init = { lwd: it.lwd, caseKey: it.caseKey, periodFrom: it.periodFrom, eventDate: it.eventDate, noticeDays: it.noticeDays, additions: it.additions, deductions: it.deductions, loans: it.loans };
-          Object.keys(init).forEach((k) => { if (init[k] === '' || init[k] == null) delete init[k]; }); addRow(e, init); ok++;
-        });
-        setNote(ok + T(' employee(s) read from the file.', ' موظف قُرئوا من الملف.') + (miss.length ? '\n' + T('Not found in Jisr: ', 'غير موجودين في جسر: ') + miss.slice(0, 10).join(', ') + (miss.length > 10 ? '…' : '') : '') + (badDate.length ? '\n' + T('Date not understood: ', 'تاريخ غير مفهوم: ') + badDate.slice(0, 10).join(', ') : '') + (badCase.length ? '\n' + T('Case not understood (choose it in the table): ', 'حالة غير مفهومة (اخترها من الجدول): ') + badCase.slice(0, 10).join(', ') : ''), !!(miss.length || badDate.length || badCase.length)); render();
+        if (scope === 'blank') { setNote(T('Saved: ', 'حُفظ: ') + await downloadTemplate_()); return; }
+        setNote(T('Preparing the Excel file…', 'جارٍ تجهيز ملف Excel…')); const byId = new Map(S.rows.map((r) => [String(r.id), r])); let emps;
+        if (scope === 'list' || scope === 'ticked') { const src = scope === 'ticked' ? S.rows.filter((r) => S.sel.has(r.id)) : S.rows; if (!src.length) { setNote(T('There is nobody in the list to export.', 'لا أحد في القائمة لتصديره.'), true); return; } emps = src.map((r) => ({ id: r.id, code: r.code, name: r.name })); }
+        else { const all = (await W.__jisrBulkOpsEmployees.get(false)) || []; emps = all.filter((e) => byId.has(String(e.id))).concat(all.filter((e) => !byId.has(String(e.id)))); }
+        const name = await saveInputWorkbook_(emps.map((e) => exportRow_(e, byId.get(String(e.id)))), scope === 'all' ? 'settlements-all-employees' : 'settlements-list');
+        setNote(T('Saved: ', 'حُفظ: ') + name + ' (' + emps.length + T(' employees). Fill in the ones who are leaving, save, then click "Import and check…".', ' موظف). عبّئ بيانات من سيغادر واحفظ الملف ثم اضغط «استيراد وفحص…».'));
+        try { jboActReport_(MODULE_ID, 'export-employees', 'ok', emps.length + ' employees'); } catch (e) { /* ignore */ }
+      } catch (e) { setNote(String(e.message || e).slice(0, 200), true); }
+    }
+    // ---- Excel in: check first, add after the user has seen the result
+    function importDialog(rep, fileName) {
+      return new Promise((resolve) => {
+        const D = mkDlg(T('Check of the Excel file', 'فحص ملف Excel'), 'min(760px, 96vw)'); const c = rep.counts; const found = c.ready + c.attention; const listed = rep.rows.filter((x) => x.status !== 'ready');
+        const fin = (v) => { D.close(); resolve(v); }; const chip = (cls, n, en, ar) => el('span', { class: 'jst-chp ' + cls }, [el('i'), el('b', { text: String(n) }), ' ' + T(en, ar)]);
+        const updates = rep.rows.filter((x) => x.e && x.status !== 'dup' && x.exists).length;
+        D.body.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: fileName + ' · ' + T('only the rows you filled in are checked; untouched rows are ignored.', 'تُفحص الصفوف التي عبّأتها فقط؛ والصفوف التي لم تلمسها تُتجاهل.') }));
+        D.body.appendChild(el('div', { class: 'jst-sum' }, [chip('ok', c.ready, 'ready', 'جاهز'), c.attention ? chip('warn', c.attention, 'need attention', 'يحتاج مراجعة') : null, c.notfound ? chip('bad', c.notfound, 'not found in Jisr', 'غير موجود في جسر') : null, c.dup ? chip('warn', c.dup, 'listed twice', 'مكرر') : null, chip('', c.untouched, 'unchanged, ignored', 'بلا تعديل، متجاهَل'), updates ? chip('sel', updates, 'already in your list: updated', 'موجود في قائمتك: يُحدَّث') : null]));
+        if (!listed.length && found) D.body.appendChild(el('div', { class: 'jst-good', text: T('No problems found in the ' + found + ' rows you filled in.', 'لا مشاكل في ' + found + ' صف عبّأته.') }));
+        else if (listed.length) { const box = el('div', { class: 'jst-iss', role: 'list' }); listed.slice(0, 300).forEach((x) => { const nm = x.e ? ((x.e.code ? x.e.code + ' · ' : '') + x.e.name) : (x.it.ref || x.it.jid); box.appendChild(el('div', { role: 'listitem' }, [el('b', { dir: 'auto', text: T('Row ', 'الصف ') + x.it.row + ' · ' + nm })].concat(x.issues.map((s) => el('div', { class: s.level === 'error' ? 'e' : x.status === 'dup' ? 'd' : 'w', dir: 'auto', text: T(s.en, s.ar) }))))); }); if (listed.length > 300) box.appendChild(el('div', { class: 'jbo-muted', text: T('… and ' + (listed.length - 300) + ' more.', '… و' + (listed.length - 300) + ' أخرى.') })); D.body.appendChild(box); }
+        if (!found) D.body.appendChild(el('div', { class: 'jst-flag error', text: T('Nobody in the file can be added. Fill in the last working day and the case of the employees who are leaving.', 'لا يمكن إضافة أحد من الملف. عبّئ آخر يوم عمل وحالة من سيغادر.') }));
+        const cancel = nbtn_(T('Cancel', 'إلغاء'), null, () => fin(null));
+        D.foot.appendChild(cancel);
+        if (c.attention) D.foot.appendChild(nbtn_(T('Add all ' + found + ' found', 'أضف كل ' + found + ' الموجودين'), 'plus', () => fin({ all: true, calc: false }), { kind: c.ready ? '' : 'pri', title: T('The rows with notes are added too: fix them in the table', 'تُضاف الصفوف التي عليها ملاحظات أيضًا: أصلحها في الجدول') }));
+        if (c.ready) D.foot.appendChild(nbtn_(T('Add ' + c.ready + ' and calculate', 'أضف ' + c.ready + ' واحسب'), 'bolt', () => fin({ all: false, calc: true }), { kind: 'pri' }));
+        D.bd.addEventListener('mousedown', (e) => { if (e.target === D.bd) fin(null); });
+      });
+    }
+    async function importExcel(file) {
+      if (S.busy) return;
+      try {
+        setNote(T('Reading the file…', 'جارٍ قراءة الملف…')); const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+        const sn = wb.SheetNames.find((n) => { const h = (XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' })[0]) || []; return /employee code|رقم الموظف/i.test(String(h[0] || '')); }) || wb.SheetNames[0];
+        const items = parseSheet_(XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' }));
+        if (!items.length) { setNote(T('The file has no employee rows. Use "Export employees" and fill that file in.', 'لا توجد صفوف موظفين في الملف. استخدم «تصدير الموظفين» وعبّئ ذلك الملف.'), true); return; }
+        const rep = checkImport_(items, (await W.__jisrBulkOpsEmployees.get(false)) || []); rep.rows.forEach((x) => { x.exists = !!x.e && S.rows.some((r) => String(r.id) === String(x.e.id)); });
+        const pick = await importDialog(rep, file.name); if (!pick) { setNote(T('Nothing was added.', 'لم يُضف شيء.')); return; }
+        const added = []; let upd = 0; rep.rows.filter((x) => x.status === 'ready' || (pick.all && x.status === 'attention')).forEach((x) => { if (x.exists) upd++; const r = addRow(x.e, x.init, 'excel', true); calc_(r, S.set); added.push(r); });
+        setNote(added.length + T(' employee(s) read from the file', ' موظف قُرئوا من الملف') + (upd ? ' (' + upd + T(' already in the list: updated)', ' كانوا في القائمة: حُدّثوا)') : '') + (rep.counts.notfound ? '\n' + T('Not found in Jisr: ', 'غير موجودين في جسر: ') + rep.rows.filter((x) => x.status === 'notfound').slice(0, 10).map((x) => x.it.ref || x.it.jid).join(', ') : '')); render();
+        try { jboActReport_(MODULE_ID, 'import-excel', 'ok', added.length + ' rows'); } catch (e) { /* ignore */ }
+        if (pick.calc && added.length) await calculateNow(added);
       } catch (e) { setNote(T('Could not read the file: ', 'تعذّرت قراءة الملف: ') + String(e.message || e).slice(0, 160), true); }
     }
 
     // ---------------------------------------------------------------- rendering
     function pdfDialog() {
       const P = pdfOpts_(); const H = Object.assign({}, header_()); const ar = I.isAr();
-      const dlg = el('div', { class: 'jbo-modal jst-dlg', style: { width: 'min(620px, 96vw)' } }); const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); dlg.__jboRun = true;
+      const dlg = el('div', { class: 'jbo-modal jst-dlg' + neoCls_(), style: { width: 'min(620px, 96vw)' } }); const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); dlg.__jboRun = true;
       const fin = () => bd.remove(); let orgState = ORG_ ? 'ok' : 'idle', orgErr = '', msg = ''; const body = el('div', { class: 'jbo-modal-body' });
       const loadOrg = (force) => { orgState = 'loading'; paint(); readOrg_(force).then(() => { orgState = 'ok'; paint(); }, (e) => { orgState = 'err'; orgErr = String((e && e.message) || e); paint(); }); };
       const opt = (grp, val, cur, label, hint, set_) => { const i = el('input', { type: 'radio', name: 'jst-' + grp, value: val }); i.checked = cur === val; i.addEventListener('change', () => { set_(val); paint(); }); return el('label', { class: 'jst-opt' + (cur === val ? ' on' : '') }, [i, el('span', {}, [el('b', { text: label }), hint ? el('small', { text: hint }) : null])]); };
@@ -58437,14 +58645,16 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       const ln = el('input', { type: 'checkbox' }); ln.checked = S.set.loansFromJisr !== false; ln.addEventListener('change', () => { S.set.loansFromJisr = ln.checked; recalcAll(); render(); });
       const a77 = el('input', { type: 'checkbox' }); a77.checked = !!S.set.art77All; a77.addEventListener('change', () => { S.set.art77All = a77.checked; recalcAll(); render(); });
       const hb = el('button', { class: 'jbo-btn', type: 'button', text: T('PDF options…', 'خيارات PDF…'), title: T('Company details and logo (from Jisr or custom), page size, margins and layout of the final settlement', 'بيانات الشركة والشعار (من جسر أو مخصصة) وحجم الصفحة والهوامش وتخطيط التسوية النهائية') }); hb.addEventListener('click', pdfDialog);
-      return el('div', { class: 'jst-set' }, [bs('eosBase', T('Wage for the end-of-service award', 'الأجر لمكافأة نهاية الخدمة')), bs('leaveBase', T('Wage for leave pay', 'الأجر لبدل الإجازة')), el('label', { class: 'jst-ck' }, [adv, T('Deduct leave taken in advance', 'خصم الإجازة المأخوذة مقدمًا')]), el('label', { class: 'jst-ck' }, [ln, T('Deduct loans still pending in Jisr', 'خصم القروض المتبقية في جسر')]), el('label', { class: 'jst-ck', title: T('Jisr leaves the Art 77 compensation to the contract (0.00). Tick to add the law-based estimate for everyone; or switch it per employee.', 'يترك جسر تعويض المادة 77 للعقد (0.00). فعّله لإضافة التقدير حسب النظام للجميع، أو بدّله لكل موظف.') }, [a77, T('Include the Art 77 estimate for everyone', 'احتساب تقدير المادة 77 للجميع')]), hb]);
+      const nk = el('input', { type: 'checkbox' }); nk.checked = neoOn_(); nk.addEventListener('change', () => { try { GM_setValue(NEO_KEY, nk.checked); } catch (e) { /* ignore */ } modal.classList.toggle('jst-neo', nk.checked); });
+      const lookSw = el('label', { class: 'jst-ck', title: T('The futuristic look of the buttons and panels in this tool. Turn it off for the plain look.', 'المظهر المستقبلي للأزرار واللوحات في هذه الأداة. أطفئه للمظهر البسيط.') }, [nk, T('Futuristic look', 'المظهر المستقبلي')]);
+      return el('div', { class: 'jst-set' }, [bs('eosBase', T('Wage for the end-of-service award', 'الأجر لمكافأة نهاية الخدمة')), bs('leaveBase', T('Wage for leave pay', 'الأجر لبدل الإجازة')), el('label', { class: 'jst-ck' }, [adv, T('Deduct leave taken in advance', 'خصم الإجازة المأخوذة مقدمًا')]), el('label', { class: 'jst-ck' }, [ln, T('Deduct loans still pending in Jisr', 'خصم القروض المتبقية في جسر')]), el('label', { class: 'jst-ck', title: T('Jisr leaves the Art 77 compensation to the contract (0.00). Tick to add the law-based estimate for everyone; or switch it per employee.', 'يترك جسر تعويض المادة 77 للعقد (0.00). فعّله لإضافة التقدير حسب النظام للجميع، أو بدّله لكل موظف.') }, [a77, T('Include the Art 77 estimate for everyone', 'احتساب تقدير المادة 77 للجميع')]), hb, lookSw]);
     }
     function bulkBar() {
       const n = S.sel.size; const d = el('input', { type: 'date', 'aria-label': T('Last working day', 'آخر يوم عمل') }); const c = caseSelect_('', () => {}, T('Case: keep', 'الحالة: بدون تغيير')); const p = el('input', { type: 'date', 'aria-label': T('Leave period from', 'بداية فترة الإجازة') });
       const ap = el('button', { class: 'jbo-btn', type: 'button', text: T('Apply to ' + n + ' ticked', 'طبّق على ' + n + ' محدد') }); ap.disabled = !n;
       ap.addEventListener('click', () => { S.rows.filter((r) => S.sel.has(r.id)).forEach((r) => { if (d.value) r.in.lwd = d.value; if (c.value) r.in.caseKey = c.value; if (p.value) r.in.periodFrom = p.value; }); recalcAll(); render(); });
-      const rm = el('button', { class: 'jbo-btn', type: 'button', text: T('Remove ticked', 'احذف المحدد') }); rm.disabled = !n; rm.addEventListener('click', () => { S.rows = S.rows.filter((r) => !S.sel.has(r.id)); if (S.open != null && !S.rows.some((r) => r.id === S.open)) S.open = null; S.sel.clear(); render(); });
-      return el('div', { class: 'jst-bulk' }, [el('b', { text: T('Set for the ticked rows:', 'تعيين للصفوف المحددة:') }), el('label', {}, [T('Last working day ', 'آخر يوم عمل '), d]), c, el('label', {}, [T('Leave from ', 'الإجازة من '), p]), ap, rm]);
+      const rm = nbtn_(T('Remove ticked', 'احذف المحدد'), 'trash', () => { removeRows((r) => S.sel.has(r.id), T('ticked employees', 'موظفًا محددًا')); }, { kind: 'dan' }); rm.disabled = !n;
+      return el('div', { class: 'jst-bulk' + (n ? '' : ' off') }, [el('b', { text: T('Set for the ticked rows:', 'تعيين للصفوف المحددة:') }), el('label', {}, [T('Last working day ', 'آخر يوم عمل '), d]), c, el('label', {}, [T('Leave from ', 'الإجازة من '), p]), ap, rm]);
     }
     const statusCell = (r) => {
       if (r.err) return el('span', { class: 'jst-bad', text: r.err }); if (!r.data) return el('span', { class: 'jbo-muted', text: T('Not read yet', 'لم تُقرأ بعد') });
@@ -58606,7 +58816,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       if (S.busy) return;
       try {
         setNote(T('Loading the employee list…', 'جارٍ تحميل قائمة الموظفين…')); const list = await W.__jisrBulkOpsEmployees.get(false); let n = 0;
-        (list || []).forEach((e) => { if (!S.rows.some((r) => String(r.id) === String(e.id))) { addRow(e); n++; } });
+        (list || []).forEach((e) => { if (!S.rows.some((r) => String(r.id) === String(e.id))) { addRow(e, null, 'pick'); n++; } });
         setNote(n + T(' employee(s) added. Open "Forecast report…" to project what the company would owe, or enter dates and cases and click Calculate.', ' موظف أُضيف. افتح "تقرير التوقع…" لتوقع ما ستدفعه الشركة، أو أدخل التواريخ والحالات واضغط احسب.')); render();
       } catch (e) { setNote(String(e.message || e).slice(0, 200), true); }
     }
@@ -58614,7 +58824,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       if (S.busy) return; const pool = S.sel.size ? S.rows.filter((r) => S.sel.has(r.id)) : S.rows;
       if (!pool.length) { setNote(T('Add employees first (or use "Add all employees").', 'أضف موظفين أولًا (أو استخدم "إضافة كل الموظفين").'), true); return; }
       const O = { start: todayIso_(), months: 12, end: '', caseKey: 'employer_notice', useOwn: true, notice: 'none', cash: '', stress: -1 }; let model = null;
-      const dlg = el('div', { class: 'jbo-modal jst-dlg', style: { width: 'min(1100px, 98vw)' } }); const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); dlg.__jboRun = true;
+      const dlg = el('div', { class: 'jbo-modal jst-dlg' + neoCls_(), style: { width: 'min(1100px, 98vw)' } }); const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); dlg.__jboRun = true;
       const fin = () => { bd.remove(); }; const head = el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('Forecast report: what would the company owe?', 'تقرير التوقع: كم ستدفع الشركة؟') })]);
       const bodyD = el('div', { class: 'jbo-modal-body' }); const footD = el('div', { class: 'jbo-modal-foot' });
       const msg = el('div', { class: 'jbo-muted', role: 'status', 'aria-live': 'polite', style: { minHeight: '18px', margin: '6px 0' } }); const result = el('div');
@@ -58745,20 +58955,57 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     }
     // The top part (note, settings, add buttons, status) is built once; only the table and detail below it are rebuilt, so a click on a button is not lost
     // when the change event of a field you just edited re-renders the table.
+    const undoEl = el('div', { class: 'jst-undo', role: 'status', 'aria-live': 'polite', hidden: true });
+    const noteBox = (txt) => el('details', { class: 'jst-note' }, [el('summary', { text: T('How this works: it only reads from Jisr', 'كيف تعمل الأداة: تقرأ من جسر فقط'), style: { cursor: 'pointer', fontWeight: '600' } }), el('div', { text: txt, style: { marginTop: '6px' } })]);
     const top = el('div'); const dyn = el('div'); body.appendChild(top); body.appendChild(dyn);
-    top.appendChild(el('div', { class: 'jst-note', text: T('For each employee, enter the last working day, the termination case (it carries its Labor Law article) and, if needed, the leave period. The tool reads the joining date, salary and leave from Jisr and works out the end-of-service award, leave pay, notice, Art 77 compensation and the net payout. It only reads: nothing is written to Jisr or saved here. Saudi Labor Law; guidance, not legal advice.', 'لكل موظف أدخل آخر يوم عمل وحالة إنهاء الخدمة (وفيها مادة نظام العمل) وعند الحاجة فترة الإجازة. تقرأ الأداة تاريخ الالتحاق والراتب والإجازات من جسر وتحسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وتعويض المادة 77 وصافي المبلغ. تقرأ فقط: لا شيء يُكتب في جسر ولا يُحفظ هنا. نظام العمل السعودي؛ للإرشاد وليس استشارة قانونية.') }));
+    top.appendChild(noteBox(T('For each employee, enter the last working day, the termination case (it carries its Labor Law article) and, if needed, the leave period. The tool reads the joining date, salary and leave from Jisr and works out the end-of-service award, leave pay, notice, Art 77 compensation and the net payout. It only reads: nothing is written to Jisr or saved here. Saudi Labor Law; guidance, not legal advice.', 'لكل موظف أدخل آخر يوم عمل وحالة إنهاء الخدمة (وفيها مادة نظام العمل) وعند الحاجة فترة الإجازة. تقرأ الأداة تاريخ الالتحاق والراتب والإجازات من جسر وتحسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وتعويض المادة 77 وصافي المبلغ. تقرأ فقط: لا شيء يُكتب في جسر ولا يُحفظ هنا. نظام العمل السعودي؛ للإرشاد وليس استشارة قانونية.')));
     top.appendChild(settingsBar());
-      const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } }); fileIn.addEventListener('change', () => { if (fileIn.files[0]) importExcel(fileIn.files[0]); fileIn.value = ''; });
-      const b = (t, f, title) => { const x = el('button', { class: 'jbo-btn', type: 'button', text: t, title: title || null }); x.addEventListener('click', f); return x; };
-      const addBar = el('div', { class: 'jst-add' }, [b(T('Add employees…', 'إضافة موظفين…'), pickEmployees), b(T('Load from Jisr final settlements', 'تحميل من التسويات النهائية في جسر'), loadFromJisr, T('Adds every employee that already has a final settlement, with the last working day and reason Jisr holds', 'يضيف كل موظف لديه تسوية نهائية مع آخر يوم عمل والسبب المسجلين في جسر')), b(T('Import Excel', 'استيراد Excel'), () => fileIn.click(), T('Columns: employee code, last working day, case or article, leave period from…', 'الأعمدة: رقم الموظف، آخر يوم عمل، الحالة أو المادة، بداية فترة الإجازة…')), b(T('Add all employees', 'إضافة كل الموظفين'), addAllEmployees, T('Adds every employee in the company: use it with the forecast report', 'يضيف كل موظفي الشركة: استخدمه مع تقرير التوقع')), b(T('Forecast report…', 'تقرير التوقع…'), forecastDialog, T('What would the company owe if employees left on a date or month by month? Excel and printable report with a cash-flow alert', 'كم ستدفع الشركة إذا غادر الموظفون في تاريخ أو شهرًا بشهر؟ ملف Excel وتقرير للطباعة مع تنبيه التدفق النقدي')), b(T('Excel template', 'نموذج Excel'), () => { try { setNote(T('Saved: ', 'حُفظ: ') + downloadTemplate_()); } catch (e) { setNote(String(e.message || e), true); } }), fileIn]);
-    top.appendChild(addBar); top.appendChild(noteEl); top.appendChild(progEl);
+      const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' }, 'aria-label': T('Excel file to check', 'ملف Excel للفحص') }); fileIn.addEventListener('change', () => { if (fileIn.files[0]) importExcel(fileIn.files[0]); fileIn.value = ''; });
+      /** a button that opens a small menu of choices (built each time it opens, so the counts are current) */
+      const menuBtn = (text, icon, items, title) => {
+        const wrap = el('div', { class: 'jst-menuwrap' }); const btn = nbtn_(text, icon, null, { title }); btn.setAttribute('aria-haspopup', 'menu'); btn.setAttribute('aria-expanded', 'false'); btn.appendChild(ico_('chev'));
+        const menu = el('div', { class: 'jst-menu', role: 'menu' }); menu.hidden = true; wrap.appendChild(btn); wrap.appendChild(menu);
+        const away = (e) => { if (!wrap.contains(e.target)) shut(); }; const esc = (e) => { if (e.key === 'Escape') { shut(); btn.focus(); e.stopPropagation(); } };
+        function shut() { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('mousedown', away, true); document.removeEventListener('keydown', esc, true); }
+        menu.addEventListener('keydown', (e) => { if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return; const it = Array.from(menu.querySelectorAll('.jst-mi:not(:disabled)')); if (!it.length) return; const i = it.indexOf(document.activeElement); const n = it[(i + (e.key === 'ArrowDown' ? 1 : -1) + it.length) % it.length]; if (n) { n.focus(); e.preventDefault(); } });
+        btn.addEventListener('click', () => {
+          if (!menu.hidden) { shut(); return; }
+          menu.textContent = ''; items().forEach((m) => { const i = el('button', { class: 'jst-mi' + (m.dan ? ' dan' : ''), type: 'button', role: 'menuitem' }, [el('b', { text: m.text }), m.hint ? el('small', { text: m.hint }) : null]); i.disabled = !!m.off; i.addEventListener('click', () => { shut(); m.fn(); }); menu.appendChild(i); });
+          menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); document.addEventListener('mousedown', away, true); document.addEventListener('keydown', esc, true); const f = menu.querySelector('.jst-mi:not(:disabled)'); if (f) f.focus();
+        });
+        return wrap;
+      };
+      const grp = (label, kids) => el('div', { class: 'jst-grp' }, [el('div', { class: 'jst-gl', text: label }), el('div', { class: 'jst-grow' }, kids)]);
+      const addB = nbtn_(T('Add employees…', 'إضافة موظفين…'), 'plus', pickEmployees, { title: T('Pick employees from the company list. You can select all of them or clear the selection.', 'اختر موظفين من قائمة الشركة. يمكنك تحديدهم كلهم أو إزالة التحديد.') });
+      const loadB = nbtn_(T('Load from Jisr final settlements', 'تحميل من التسويات النهائية في جسر'), 'cloud', loadFromJisr, { title: T('Adds every employee that already has a final settlement, with the last working day and reason Jisr holds', 'يضيف كل موظف لديه تسوية نهائية مع آخر يوم عمل والسبب المسجلين في جسر') });
+      const loadClr = nbtn_('', 'x', () => { const n = removeRows((r) => r.src === 'jisr', T('employees loaded from Jisr', 'موظفًا محمّلًا من جسر')); setNote(n + T(' removed from the list. Undo is available for a minute.', ' أُزيلوا من القائمة. التراجع متاح لمدة دقيقة.')); });
+      const allB = nbtn_(T('Add all employees', 'إضافة كل الموظفين'), 'users', addAllEmployees, { title: T('Adds every employee in the company: use it with the forecast report', 'يضيف كل موظفي الشركة: استخدمه مع تقرير التوقع') });
+      const expM = menuBtn(T('Export employees', 'تصدير الموظفين'), 'down', () => [
+        { text: T('All employees (to fill in)', 'كل الموظفين (للتعبئة)'), hint: T('One row per employee with a dropdown for the case. Fill in the ones who are leaving, then import the file.', 'صف لكل موظف مع قائمة للحالة. عبّئ بيانات من سيغادر ثم استورد الملف.'), fn: () => exportEmployees('all') },
+        { text: T('The list below (' + S.rows.length + ')', 'القائمة أدناه (' + S.rows.length + ')'), hint: T('Keeps what you already entered in the table.', 'يُبقي ما أدخلته في الجدول.'), fn: () => exportEmployees('list'), off: !S.rows.length },
+        { text: T('Ticked rows only (' + S.sel.size + ')', 'الصفوف المحددة فقط (' + S.sel.size + ')'), fn: () => exportEmployees('ticked'), off: !S.sel.size },
+        { text: T('Blank template', 'نموذج فارغ'), hint: T('One example row and the list of cases.', 'صف مثال وقائمة الحالات.'), fn: () => exportEmployees('blank') }], T('Saves an Excel file with the employees: fill it in and upload it with "Import and check…"', 'يحفظ ملف Excel بالموظفين: عبّئه وارفعه بزر «استيراد وفحص…»'));
+      const impB = nbtn_(T('Import and check…', 'استيراد وفحص…'), 'up', () => fileIn.click(), { title: T('Upload the filled file: every row you changed is checked, problems are listed, then the valid ones are added and calculated', 'ارفع الملف المعبّأ: يُفحص كل صف عدّلته وتُعرض المشاكل ثم تُضاف الصفوف السليمة وتُحسب') });
+      const fcB = nbtn_(T('Forecast report…', 'تقرير التوقع…'), 'chart', forecastDialog, { title: T('What would the company owe if employees left on a date or month by month? Excel and printable report with a cash-flow alert', 'كم ستدفع الشركة إذا غادر الموظفون في تاريخ أو شهرًا بشهر؟ ملف Excel وتقرير للطباعة مع تنبيه التدفق النقدي') });
+      const clrB = nbtn_(T('Clear list…', 'مسح القائمة…'), 'trash', () => clearDialog(), { kind: 'dan', title: T('Remove the ticked rows, the ones loaded from Jisr, the ones from Excel, or everyone', 'أزل الصفوف المحددة أو المحمّلة من جسر أو من Excel أو الجميع') });
+      const addBar = el('div', { class: 'jst-add' }, [grp(T('List', 'القائمة'), [addB, el('div', { class: 'jst-seg' }, [loadB, loadClr]), allB, clrB]), grp('Excel', [expM, impB, fileIn])]); foot.insertBefore(el('div', { class: 'jst-footl' }, [fcB, stmtB, stopB]), mainB);
+      const refreshBar = () => {
+        const nJ = countSrc('jisr'); loadClr.style.display = nJ ? '' : 'none'; setBt_(loadClr, T('Clear ' + nJ, 'مسح ' + nJ)); loadClr.title = T('Remove the ' + nJ + ' employees loaded from Jisr final settlements (the ones you added yourself stay)', 'إزالة ' + nJ + ' موظفًا محمّلًا من التسويات النهائية في جسر (من أضفتهم بنفسك يبقون)');
+        addB.classList.toggle('jbo-btn-primary', !S.rows.length); if (!S.busy) clrB.disabled = !S.rows.length;
+      };
+    top.appendChild(addBar); top.appendChild(undoEl); top.appendChild(noteEl); top.appendChild(progEl);
+    function listStrip() {
+      const n = S.rows.length, calc = done().length, need = S.rows.filter((r) => !r.in.lwd || !r.in.caseKey).length;
+      const chip = (cls, v, en, ar) => el('span', { class: 'jst-chp ' + cls }, [el('i'), el('b', { text: String(v) }), ' ' + T(en, ar)]);
+      return el('div', { class: 'jst-strip' }, [chip('', n, n === 1 ? 'employee' : 'employees', 'موظف'), chip('ok', calc, 'calculated', 'محسوب'), need ? chip('warn', need, 'need a last working day or a case', 'تحتاج آخر يوم عمل أو حالة') : null, S.sel.size ? chip('sel', S.sel.size, 'ticked', 'محدد') : null]);
+    }
     function render() {
       dyn.textContent = '';
-      addBar.querySelectorAll('button').forEach((x) => { x.disabled = S.busy; });
-      if (S.rows.length) { dyn.appendChild(bulkBar()); const holder = el('div', { class: 'jst-scroll' }); dyn.appendChild(holder); renderTable(holder); const dw = el('div'); dyn.appendChild(dw); renderDetail(dw); }
+      addBar.querySelectorAll('button').forEach((x) => { x.disabled = S.busy; }); fcB.disabled = S.busy; refreshBar();
+      if (S.rows.length) { dyn.appendChild(listStrip()); dyn.appendChild(bulkBar()); const holder = el('div', { class: 'jst-scroll' }); dyn.appendChild(holder); renderTable(holder); const dw = el('div'); dyn.appendChild(dw); renderDetail(dw); }
       else dyn.appendChild(el('div', { class: 'jbo-muted', style: { padding: '14px 4px' }, text: T('No employees yet. Add employees, load the ones that already have a final settlement in Jisr, or import an Excel file.', 'لا موظفين بعد. أضف موظفين أو حمّل من لديهم تسوية نهائية في جسر أو استورد ملف Excel.') }));
-      const ready = done().length; const pending = targets().some((r) => !r.res || !r.res.ok);
-      mainB.textContent = ready && !pending && !S.busy ? T('Download Excel', 'نزّل ملف Excel') : T('Calculate', 'احسب'); stmtB.style.display = ready ? '' : 'none'; stmtB.disabled = S.busy;
+      const ready = done().length; const pending = targets().some((r) => !r.res || !r.res.ok); const dl = ready && !pending && !S.busy;
+      setBt_(mainB, dl ? T('Download Excel', 'نزّل ملف Excel') : T('Calculate', 'احسب')); mainB.replaceChild(ico_(dl ? 'down' : 'bolt'), mainB.firstChild); stmtB.style.display = ready ? '' : 'none'; stmtB.disabled = S.busy;
     }
     const exportRows = () => { const t = S.sel.size ? S.rows.filter((r) => S.sel.has(r.id)) : S.rows; return t.filter((r) => r.res && r.res.ok); };
     mainB.addEventListener('click', () => {
@@ -58773,7 +59020,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'End-of-Service & Leave Settlement', open: openTool_, version: SECTION_VERSION };
-    W.__jisrSettlement = { printStatements_, pdfOpts_, readOrg_, statementsHtml_, scheduleDates_, header_, E, readEmployee_, engineInput_, calc_, compute_, forecastModel_, forecastWorkbook_, forecastHtml_, stmtRows_, blankIn_, workbook_, statementsHtml_, parseSheet_, listSettlements_, readJisrAmounts_, cfg };
+    W.__jisrSettlement = { checkImport_, exportRow_, saveInputWorkbook_, printStatements_, pdfOpts_, readOrg_, statementsHtml_, scheduleDates_, header_, E, readEmployee_, engineInput_, calc_, compute_, forecastModel_, forecastWorkbook_, forecastHtml_, stmtRows_, blankIn_, workbook_, statementsHtml_, parseSheet_, listSettlements_, readJisrAmounts_, cfg };
     if (g._rerender) g._rerender();
   }
   register_();
