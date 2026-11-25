@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.112.0
+// @version      4.113.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -45,7 +45,7 @@ const JBO_TRACKED_TOOLS = ['payroll-transactions-bulk', 'leave-cancel-bulk', 'le
 const JBO_OPEN_ONLY_TOOLS = ['payroll-reconciliation', 'data-validation', 'data-cleanser', 'activation-checklist', 'letter-converter']; // read-only: the dashboard shows that they were used
 // v4.83: tools that check the result themselves (read it back from Jisr) report ONE row per employee / leave with its real outcome stage, so the
 // wrapper below leaves them alone: "HTTP 200" is not the outcome for them (Jisr can answer OK and not apply the change).
-const JBO_SELF_REPORT_TOOLS = ['access-report', 'automations', 'employee-photos', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'business-trip-requests', 'company-documents'];
+const JBO_SELF_REPORT_TOOLS = ['settlement-calculator', 'access-report', 'automations', 'employee-photos', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'business-trip-requests', 'company-documents'];
 // Outcome stages the dashboard understands (keep in step with STAGES in the Worker). cls: ok | warn | err | skip. A stage the dashboard does not know is ignored.
 const JBO_STAGE_CLASS = { ok: 'ok', ok_retry: 'ok', pending: 'warn', unverified: 'warn', skipped: 'skip', no_match: 'skip', rejected: 'err', denied: 'err', not_found: 'err', rate_limited: 'err', server_error: 'err', network: 'err', not_reflected: 'err', mismatch: 'err', rolled_back: 'err', restore_failed: 'err', failed: 'err' };
 /** HTTP status -> stage (0 / no status = no answer) */
@@ -187,6 +187,7 @@ function jboActFlush_() {
   let settled = false;
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
   // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
+  // v4.113.0: End-of-Service & Leave Settlement (new tool, Payroll & GOSI). For each employee you set the last working day, the termination case (with its Labor Law article) and the leave period; the tool reads the joining date, salary and leave from Jisr and works out the end-of-service award (Art 84, 85, 87), salary of the last month, accrued leave pay (Art 111), notice pay (Art 76), the Art 77 compensation, your additions / deductions / loans, the net payout and the date to pay by (Art 88). It compares with the final settlement Jisr already made, exports one Excel for one or many employees and prints one statement page per employee. Read only. The arithmetic matches 10 real Jisr settlements (test/settlement-engine.test.js).
   // v4.112.0: Fixed Working Hours: when Jisr answers "another request is in progress for the same resource, please retry later", the row is no longer marked failed. It shows "Jisr is still busy, trying again in Ns (try n)", the panel says "waiting for Jisr", and the same change is sent again automatically until Jisr accepts it (up to about 12 minutes, or Stop). Works for create, edit and delete. New button "Retry failed (n)" puts failed rows back in the queue and sends them again.
   // v4.111.0: Fixed Working Hours (and every tool window): a visible percentage while it works. Fixed Hours has its own progress panel (percentage, bar, done of total, ticks and crosses) for reading schedules, the dry run and saving, and its result cells now count in the window's status strip; the strip shows the percentage next to its bar for every tool ("…" while only requests are known).
   // v4.110.0: Import Word, PDF or picture files into the editor, in both Letter Templates and the Letter Converter. One "Import file" button in the Studio bar (and drag-and-drop on the page): Word and PDF go to the tool's own importer; a picture asks what it is: a picture in the letter, a letterhead (top of the header, page wide), or a scan to read (Arabic + English text recognition, tesseract.js pinned with an integrity hash, downloaded on first use). The Letter Converter now also imports PDF (text, or a scanned PDF read page by page) and picture files, and has a new look ported from a Lovable prototype: teal brand, aurora header, six-step stepper with hints, rounded cards, dot-grid canvas, variable pills, light/dark theme. The Studio toolbar and dialogs share the same colours.
@@ -1984,6 +1985,245 @@ function jlStudioFactory_() {
   return { version: VERSION, attach, STARTERS, sampleValue, cleanPaste, fillHtml, normAr, SAMPLE_EMPLOYEES };
 }
 // <<< JBO-STUDIO:END
+// >>> JBO-SETTLE:BEGIN  (generated from shared/jbo-settlement-engine.js by tools/inject-shared.js: do not edit here)
+/**
+ * Settlement engine (v4.113.0): end-of-service award (EOSB) and leave settlement under the Saudi Labor Law. Pure functions, no DOM, no network.
+ * Source of truth for the Settlements tool; tools/inject-shared.js copies it into new.user.js between the JBO-SETTLE markers.
+ *
+ * Method calibrated against Jisr's own final settlements (checked to the halala on real settlements, see test/fixtures/settlement-jisr.json):
+ *   service      = calendar years / months / days from the joining date to the last working day, both days counted
+ *   service (T)  = years + months / 12 + days / 360
+ *   award        = 0.5 x wage x min(T, 5) + 1 x wage x max(T - 5, 0)                       (Art 84)
+ *   resignation  = 0 under 2 years, 1/3 up to 5, 2/3 over 5 and under 10, all from 10 years   (Art 85)
+ *   daily wage   = monthly wage / 30
+ *   leave days   = annual days x days from the period start to the last working day (both counted) / 365   (Art 111), rounded to 2 decimals
+ *   salary       = monthly wage x days worked in the last month / 30 (the day number of the last working day, at most 30)
+ * Guidance only, not legal advice.
+ */
+function JBOSettlementEngine_() {
+  'use strict';
+  const DAY = 86400000;
+  const r2 = (x) => { x = Number(x); if (!isFinite(x)) return 0; return Math.round((x + (x >= 0 ? 1 : -1) * 1e-9) * 100) / 100; };
+  const num = (v, d) => { if (v === null || v === undefined || v === '') return d === undefined ? 0 : d; const n = typeof v === 'number' ? v : Number(String(v).replace(/[,\s٬]/g, '').replace(/[٠-٩]/g, (c) => '٠١٢٣٤٥٦٧٨٩'.indexOf(c))); return isFinite(n) ? n : (d === undefined ? 0 : d); };
+  const pad = (n) => String(n).padStart(2, '0');
+  const utc = (y, m, d) => Date.UTC(y, m, d);
+  const iso = (ms) => { if (ms == null) return ''; const d = new Date(ms); return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()); };
+  /** 2026-11-22 | 22-11-2026 | 22/11/2026 | Date | Excel serial -> UTC midnight ms, or null */
+  function parseDate(v) {
+    if (v === null || v === undefined || v === '') return null;
+    if (v instanceof Date) return isNaN(v) ? null : utc(v.getFullYear(), v.getMonth(), v.getDate());
+    if (typeof v === 'number') { if (v > 20000 && v < 80000) return Math.round((v - 25569) * DAY); return null; }
+    const s = String(v).trim().replace(/[٠-٩]/g, (c) => '٠١٢٣٤٥٦٧٨٩'.indexOf(c));
+    let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s); if (m) return valid(+m[1], +m[2] - 1, +m[3]);
+    m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/.exec(s); if (m) return valid(+m[3], +m[2] - 1, +m[1]);
+    if (/^\d{5}(\.\d+)?$/.test(s)) return parseDate(Number(s));
+    return null;
+  }
+  function valid(y, m, d) { const t = utc(y, m, d); const x = new Date(t); return x.getUTCFullYear() === y && x.getUTCMonth() === m && x.getUTCDate() === d ? t : null; }
+  const addDays = (ms, n) => ms + n * DAY;
+  const diffDays = (a, b) => Math.round((b - a) / DAY);
+  const dim = (y, m) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  function addMonths(ms, n) { const d = new Date(ms); const t = d.getUTCFullYear() * 12 + d.getUTCMonth() + n; const y = Math.floor(t / 12), m = t - y * 12; return utc(y, m, Math.min(d.getUTCDate(), dim(y, m))); }
+  const yearStart = (ms) => utc(new Date(ms).getUTCFullYear(), 0, 1);
+
+  /** years / months / days between the joining date and the last working day, the last working day counted */
+  function service(join, lwd, unpaidDays) {
+    if (join == null || lwd == null || lwd < join) return { y: 0, m: 0, d: 0, T: 0, totalDays: 0, valid: false, unpaid: 0 };
+    const end = addDays(lwd, 1);
+    let months = (new Date(end).getUTCFullYear() - new Date(join).getUTCFullYear()) * 12 + (new Date(end).getUTCMonth() - new Date(join).getUTCMonth());
+    if (addMonths(join, months) > end) months--;
+    const days = diffDays(addMonths(join, months), end);
+    let y = Math.floor(months / 12), m = months - y * 12, d = days;
+    const un = Math.max(0, Math.round(num(unpaidDays, 0)));
+    if (un) { let t = y * 360 + m * 30 + d - un; if (t < 0) t = 0; y = Math.floor(t / 360); m = Math.floor((t % 360) / 30); d = t % 30; }
+    return { y, m, d, T: y + m / 12 + d / 360, totalDays: diffDays(join, end), valid: true, unpaid: un };
+  }
+  const eosGross = (S, T) => 0.5 * S * Math.min(T, 5) + S * Math.max(T - 5, 0);
+
+  /** The termination cases. award: full | none | resign | custom. notice: who owes the notice pay when notice is short (Art 76). */
+  const CASES = [
+    { key: 'expiry', art: '74 (1, 2)', award: 'full', notice: null, grp: 'contract', en: 'Contract ended by agreement or by the end of its term', ar: 'انتهاء العقد باتفاق الطرفين أو بانتهاء مدته', noteEn: 'Full award (Art 84).', noteAr: 'مكافأة كاملة (المادة 84).' },
+    { key: 'employer_notice', art: '74 (3), 75', award: 'full', notice: 'employer', grp: 'employer', en: 'Employer ends an open-ended contract (with notice)', ar: 'إنهاء صاحب العمل لعقد غير محدد المدة (بإشعار)', noteEn: 'Full award (Art 84). Notice: 60 days if paid monthly (Art 75); short notice is paid by the employer (Art 76).', noteAr: 'مكافأة كاملة (المادة 84). الإشعار 60 يومًا للأجر الشهري (المادة 75)، وبدل الإشعار الناقص على صاحب العمل (المادة 76).' },
+    { key: 'employer_invalid', art: '77', award: 'full', notice: 'employer', comp77: true, grp: 'employer', en: 'Employer ends the contract without a valid reason', ar: 'إنهاء صاحب العمل للعقد دون سبب مشروع', noteEn: 'Full award plus compensation under Art 77 (open-ended: 15 days per year; fixed term: the rest of the term; never below 2 months).', noteAr: 'مكافأة كاملة مع التعويض وفق المادة 77 (غير محدد المدة: أجر 15 يومًا عن كل سنة؛ محدد المدة: أجر المدة المتبقية؛ وبحد أدنى أجر شهرين).' },
+    { key: 'employer_art80', art: '80', award: 'none', notice: null, grp: 'employer', en: 'Employer ends the contract for a case in Art 80 (no award, notice or indemnity)', ar: 'فسخ صاحب العمل للعقد في إحدى حالات المادة 80 (دون مكافأة أو إشعار أو تعويض)', noteEn: 'No award, no notice and no indemnity. Art 80 requires giving the worker the chance to state his objection first.', noteAr: 'لا مكافأة ولا إشعار ولا تعويض. تشترط المادة 80 إتاحة الفرصة للعامل لإبداء أسباب اعتراضه قبل الفسخ.' },
+    { key: 'probation', art: '53, 54', award: 'none', notice: null, grp: 'contract', en: 'Contract ended during the probation period', ar: 'إنهاء العقد خلال فترة التجربة', noteEn: 'During probation neither party is entitled to compensation and the worker has no award (Art 54).', noteAr: 'لا تعويض لأي من الطرفين ولا مكافأة للعامل عند الإنهاء خلال فترة التجربة (المادة 54).' },
+    { key: 'resignation', art: '79 bis, 85', award: 'resign', notice: 'employee', grp: 'employee', en: 'Employee resigns', ar: 'استقالة العامل', noteEn: 'Award by service (Art 85): none under 2 years, one third up to 5, two thirds up to 10, full from 10 years. Notice: 30 days (Art 75).', noteAr: 'المكافأة حسب مدة الخدمة (المادة 85): لا شيء دون سنتين، الثلث حتى 5 سنوات، الثلثان حتى 10 سنوات، والكاملة من 10 سنوات. الإشعار 30 يومًا (المادة 75).' },
+    { key: 'employee_art81', art: '81', award: 'full', notice: null, grp: 'employee', en: 'Employee leaves without notice for a case in Art 81 (employer breach)', ar: 'ترك العامل العمل دون إشعار في إحدى حالات المادة 81 (إخلال صاحب العمل)', noteEn: 'Statutory rights are kept, so the full award is due. Other compensation (Art 77 style) is not added automatically: enter it as an addition if it applies.', noteAr: 'تبقى حقوق العامل النظامية، فتستحق المكافأة كاملة. لا يُضاف أي تعويض آخر تلقائيًا: أدخله كإضافة إن انطبق.' },
+    { key: 'art87_force', art: '87', award: 'full', notice: null, grp: 'employee', en: 'Employee leaves because of a force majeure beyond his control', ar: 'ترك العامل العمل لقوة قاهرة خارجة عن إرادته', noteEn: 'Full award as an exception to Art 85 (Art 87).', noteAr: 'مكافأة كاملة استثناءً من المادة 85 (المادة 87).' },
+    { key: 'art87_marriage', art: '87', award: 'full', notice: null, grp: 'employee', needsEvent: 'marriage', months: 6, en: 'Female employee ends the contract within 6 months of marriage', ar: 'عاملة أنهت العقد خلال ستة أشهر من الزواج', noteEn: 'Full award if the contract ends within 6 months of the marriage date (Art 87). Enter the marriage date in the event date.', noteAr: 'مكافأة كاملة إذا أُنهي العقد خلال ستة أشهر من تاريخ الزواج (المادة 87). أدخل تاريخ الزواج في تاريخ الواقعة.' },
+    { key: 'art87_birth', art: '87', award: 'full', notice: null, grp: 'employee', needsEvent: 'birth', months: 3, en: 'Female employee ends the contract within 3 months of giving birth', ar: 'عاملة أنهت العقد خلال ثلاثة أشهر من الولادة', noteEn: 'Full award if the contract ends within 3 months of the birth date (Art 87). Enter the birth date in the event date.', noteAr: 'مكافأة كاملة إذا أُنهي العقد خلال ثلاثة أشهر من تاريخ الولادة (المادة 87). أدخل تاريخ الولادة في تاريخ الواقعة.' },
+    { key: 'retirement', art: '74 (4)', award: 'full', notice: null, grp: 'contract', en: 'Employee reaches retirement age', ar: 'بلوغ العامل سن التقاعد', noteEn: 'Full award (Art 84).', noteAr: 'مكافأة كاملة (المادة 84).' },
+    { key: 'closure', art: '74 (5-7)', award: 'full', notice: null, grp: 'contract', en: 'Force majeure, permanent closure or end of the activity', ar: 'قوة قاهرة أو إغلاق نهائي للمنشأة أو انتهاء النشاط', noteEn: 'Full award (Art 84).', noteAr: 'مكافأة كاملة (المادة 84).' },
+    { key: 'death', art: '79', award: 'full', notice: null, grp: 'contract', en: 'Death or incapacity of the employee', ar: 'وفاة العامل أو عجزه', noteEn: 'Full award (Art 84); paid to the heirs in case of death.', noteAr: 'مكافأة كاملة (المادة 84)؛ تُدفع للورثة في حالة الوفاة.' },
+    { key: 'custom', art: '', award: 'custom', notice: null, grp: 'other', en: 'Other case (enter the share of the award yourself)', ar: 'حالة أخرى (أدخل نسبة المكافأة بنفسك)', noteEn: 'Enter the percentage of the full award in "Award %".', noteAr: 'أدخل نسبة المكافأة من الكاملة في خانة «نسبة المكافأة».' },
+  ];
+  const caseByKey = (k) => CASES.find((c) => c.key === k) || null;
+  /** Reads a case from a name / key / article typed in a file or shown by Jisr ("Termination ... Article 80") */
+  function findCase(text) {
+    const s = String(text == null ? '' : text).trim().toLowerCase(); if (!s) return null;
+    const exact = CASES.find((c) => c.key === s || c.en.toLowerCase() === s || c.ar === String(text).trim()); if (exact) return exact;
+    const art = /(?:art(?:icle)?\.?|مادة|المادة)\s*\(?\s*(\d+)/i.exec(s);
+    if (art) {
+      const a = art[1];
+      if (a === '77') return caseByKey('employer_invalid'); if (a === '80') return caseByKey('employer_art80'); if (a === '81') return caseByKey('employee_art81');
+      if (a === '85' || a === '79') return caseByKey('resignation'); if (a === '87') return caseByKey('art87_force'); if (a === '74') return /resign|استقال/.test(s) ? caseByKey('resignation') : caseByKey('expiry');
+      if (a === '75') return caseByKey('employer_notice'); if (a === '54' || a === '53') return caseByKey('probation');
+    }
+    if (/resign|استقال/.test(s)) return caseByKey('resignation'); if (/probation|تجرب/.test(s)) return caseByKey('probation'); if (/force majeure|قوة قاهرة/.test(s)) return caseByKey('art87_force');
+    if (/retire|تقاعد/.test(s)) return caseByKey('retirement'); if (/death|died|وفاة/.test(s)) return caseByKey('death'); if (/expir|mutual|agreement|انتهاء|اتفاق/.test(s)) return caseByKey('expiry');
+    if (/unlawful|invalid|without a valid|غير مشروع/.test(s)) return caseByKey('employer_invalid'); if (/employer|صاحب العمل/.test(s)) return caseByKey('employer_notice');
+    return null;
+  }
+
+  const BASES = [{ key: 'full', en: 'Full compensation package', ar: 'إجمالي الراتب والبدلات' }, { key: 'basic', en: 'Basic salary', ar: 'الراتب الأساسي' }, { key: 'basic_housing', en: 'Basic salary + housing', ar: 'الأساسي + السكن' }];
+  const baseAmount = (kind, sal) => { const b = num(sal && sal.basic), h = num(sal && sal.housing), p = num(sal && sal.pack, 0); if (kind === 'basic') return b; if (kind === 'basic_housing') return b + h; return p || b + h; };
+
+  /** Accrued annual leave for the period [from, to] (both days counted), the way Jisr does it. */
+  function leaveEntitlement(o) {
+    const to = o.to, join = o.join;
+    let from = o.from != null ? o.from : Math.max(join != null ? join : 0, yearStart(to));
+    if (join != null && from < join) from = join;
+    const daysIn = to >= from ? diffDays(from, to) + 1 : 0;
+    const annual = num(o.annualDays, 21);
+    const accrued = annual * daysIn / 365;
+    const carry = from <= yearStart(to) ? num(o.prevBalance) : 0;
+    const adj = num(o.adjustment), unp = num(o.unpaidDeduction), used = num(o.usedDays);
+    const net = accrued + carry + adj - unp - used;
+    return { from, to, daysIn, annual, accrued: r2(accrued), carry: r2(carry), adjustment: r2(adj), unpaidDeduction: r2(unp), used: r2(used), net: r2(net) };
+  }
+  /** Annual-leave days taken inside [from, to], from Jisr's leave history. Partly overlapping leaves are counted in proportion. */
+  function usedInPeriod(history, annualNames, from, to) {
+    const names = (annualNames || []).map((x) => String(x).toLowerCase()).filter(Boolean);
+    let days = 0; const items = []; let partial = false;
+    (history || []).forEach((h) => {
+      const nm = String(h.name_en || h.name || h.leave_type_name || '').toLowerCase();
+      if (!(names.some((n) => nm === n) || /^annual$|سنوي/.test(nm))) return;
+      const f = parseDate(h.from), t = parseDate(h.to); if (f == null || t == null) return;
+      const ded = num(h.deducted_balance != null ? h.deducted_balance : h.applied_days);
+      const lo = Math.max(f, from), hi = Math.min(t, to); if (hi < lo) return;
+      const whole = diffDays(f, t) + 1, part = diffDays(lo, hi) + 1;
+      const d = part >= whole ? ded : ded * part / whole; if (part < whole) partial = true;
+      days += d; items.push({ from: iso(f), to: iso(t), days: r2(d) });
+    });
+    return { days: r2(days), items, partial };
+  }
+  function unpaidLeaveDays(history, from, to) {
+    let days = 0;
+    (history || []).forEach((h) => { const nm = String(h.name_en || h.name || '').toLowerCase(); if (!/unpaid|بدون (راتب|أجر)|غير مدفوع/.test(nm)) return; const f = parseDate(h.from), t = parseDate(h.to); if (f == null || t == null) return; const lo = Math.max(f, from), hi = Math.min(t, to); if (hi >= lo) days += diffDays(lo, hi) + 1; });
+    return days;
+  }
+
+  const MONTHS_EN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const MONTHS_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+  const f2 = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const f4 = (n) => String(Math.round(n * 10000) / 10000);
+
+  /**
+   * One employee. in: { join, lwd, caseKey, sal: {basic, housing, pack}, annualDays, prevBalance, adjustment, unpaidDeduction, usedDays, periodFrom,
+   *   contractType ('fixed'|'indefinite'|''), contractEnd, art77 (false = leave the Art 77 compensation out), customPct, eventDate, noticeDays, unpaidServiceDays, unpaidDaysLastMonth,
+   *   additions, deductions, loans, leaveOverride, eosBase, leaveBase, nat }
+   * settings: { eosBase, leaveBase, deductAdvanceLeave }
+   */
+  function compute(inp, set) {
+    set = set || {};
+    const flags = []; const lines = []; const steps = [];
+    const flag = (level, en, ar) => flags.push({ level, en, ar: ar || en });
+    const c = caseByKey(inp.caseKey);
+    const join = typeof inp.join === 'number' ? inp.join : parseDate(inp.join), lwd = typeof inp.lwd === 'number' ? inp.lwd : parseDate(inp.lwd);
+    const out = { ok: false, flags, lines, steps, case: c, join, lwd };
+    if (!c) { flag('error', 'Choose the termination case.', 'اختر حالة إنهاء الخدمة.'); return out; }
+    if (join == null) { flag('error', 'Joining date is missing in Jisr.', 'تاريخ الالتحاق غير موجود في جسر.'); return out; }
+    if (lwd == null) { flag('error', 'Enter the last working day.', 'أدخل آخر يوم عمل.'); return out; }
+    if (lwd < join) { flag('error', 'The last working day is before the joining date.', 'آخر يوم عمل قبل تاريخ الالتحاق.'); return out; }
+    const sal = inp.sal || {};
+    const eosKind = inp.eosBase || set.eosBase || 'full', leaveKind = inp.leaveBase || set.leaveBase || 'full';
+    const S = baseAmount(eosKind, sal), Lw = baseAmount(leaveKind, sal), full = baseAmount('full', sal);
+    if (!(full > 0)) { flag('error', 'No salary found in Jisr for this employee.', 'لا يوجد راتب لهذا الموظف في جسر.'); return out; }
+    out.base = { eosKind, leaveKind, eos: r2(S), leave: r2(Lw), full: r2(full) };
+
+    // ---- service
+    const sv = service(join, lwd, inp.unpaidServiceDays); out.service = sv;
+    // ---- salary for the days worked in the last month
+    const lwdD = new Date(lwd); const ms = Date.UTC(lwdD.getUTCFullYear(), lwdD.getUTCMonth(), 1);
+    const startDay = join > ms ? new Date(join).getUTCDate() : 1; let worked = Math.min(30, lwdD.getUTCDate()) - (startDay - 1);
+    worked = Math.max(0, worked - Math.max(0, Math.round(num(inp.unpaidDaysLastMonth))));
+    const monthEn = MONTHS_EN[lwdD.getUTCMonth()] + ' ' + lwdD.getUTCFullYear(), monthAr = MONTHS_AR[lwdD.getUTCMonth()] + ' ' + lwdD.getUTCFullYear();
+    const salaryAmt = r2(full / 30 * worked);
+    out.salaryDays = worked;
+    lines.push({ sec: 'earn', key: 'salary', en: 'Salary for ' + worked + ' day(s) of ' + monthEn, ar: 'راتب ' + worked + ' يوم من ' + monthAr, amount: salaryAmt, formula: f2(full) + ' / 30 x ' + worked });
+
+    // ---- end-of-service award
+    const T = sv.T; let frac = 1, why = '';
+    if (c.award === 'none') { frac = 0; why = c.noteEn; }
+    else if (c.award === 'resign') { frac = T >= 10 ? 1 : T > 5 ? 2 / 3 : T >= 2 ? 1 / 3 : 0; why = 'Resignation: ' + (frac === 1 ? 'full award from 10 years' : frac === 0 ? 'under 2 years of service: no award' : frac > 0.5 ? 'two thirds (over 5 years)' : 'one third (2 to 5 years)') + ' (Art 85)'; }
+    else if (c.award === 'custom') { frac = Math.max(0, Math.min(100, num(inp.customPct, 100))) / 100; why = 'Award share entered: ' + Math.round(frac * 10000) / 100 + '%'; }
+    else { frac = 1; why = 'Full award (Art 84)'; }
+    if (c.needsEvent) {
+      const ev = parseDate(inp.eventDate);
+      const inWin = ev != null && lwd >= ev && lwd <= addMonths(ev, c.months);
+      if (!inWin) { frac = T >= 10 ? 1 : T > 5 ? 2 / 3 : T >= 2 ? 1 / 3 : 0; why = ev == null ? 'No ' + c.needsEvent + ' date: the resignation scale (Art 85) is used' : 'The contract ended outside the ' + c.months + '-month window after the ' + c.needsEvent + ' date: the resignation scale (Art 85) is used'; flag('warn', ev == null ? 'Enter the ' + c.needsEvent + ' date to confirm the full award (Art 87).' : 'Outside the Art 87 window: the resignation scale is used.', ev == null ? 'أدخل تاريخ ' + (c.needsEvent === 'marriage' ? 'الزواج' : 'الولادة') + ' لتأكيد المكافأة الكاملة (المادة 87).' : 'خارج مدة المادة 87: طُبّق جدول الاستقالة.'); }
+    }
+    const gross = eosGross(S, T); const eosAmt = r2(gross * frac);
+    out.eos = { T, years: sv.y, months: sv.m, days: sv.d, wage: r2(S), gross: r2(gross), fraction: frac, payable: eosAmt, why };
+    const awardFormula = '0.5 x ' + f2(S) + ' x ' + f4(Math.min(T, 5)) + (T > 5 ? ' + ' + f2(S) + ' x ' + f4(T - 5) : '') + ' = ' + f2(gross) + (frac !== 1 ? ' x ' + (Math.round(frac * 10000) / 100) + '%' : '');
+    lines.push({ sec: 'earn', key: 'eosb', en: 'End-of-service award (Art ' + (c.award === 'resign' ? '84, 85' : '84') + ')', ar: 'مكافأة نهاية الخدمة (المادة ' + (c.award === 'resign' ? '84، 85' : '84') + ')', amount: eosAmt, formula: awardFormula });
+
+    // ---- leave
+    const ent = leaveEntitlement({ to: lwd, join, from: inp.periodFrom != null ? (typeof inp.periodFrom === 'number' ? inp.periodFrom : parseDate(inp.periodFrom)) : null, annualDays: inp.annualDays != null && inp.annualDays !== '' ? inp.annualDays : (T >= 5 ? 30 : 21), prevBalance: inp.prevBalance, adjustment: inp.adjustment, unpaidDeduction: inp.unpaidDeduction, usedDays: inp.usedDays });
+    out.leave = ent;
+    let days = ent.net, source = 'calculated';
+    if (inp.leaveOverride !== null && inp.leaveOverride !== undefined && inp.leaveOverride !== '') { days = num(inp.leaveOverride); source = 'override'; }
+    days = r2(days);
+    let leaveAmt = 0, advance = 0;
+    if (days < 0) { advance = -days; if (set.deductAdvanceLeave) leaveAmt = r2(days * Lw / 30); flag('info', 'Leave taken in advance: ' + f2(advance) + ' day(s)' + (set.deductAdvanceLeave ? ' (deducted).' : ' (not deducted).'), 'إجازة مأخوذة مقدمًا: ' + f2(advance) + ' يوم' + (set.deductAdvanceLeave ? ' (تُخصم).' : ' (لا تُخصم).')); }
+    else leaveAmt = r2(days * Lw / 30);
+    out.leaveSettle = { days, source, daily: r2(Lw / 30), amount: leaveAmt };
+    lines.push({ sec: leaveAmt < 0 ? 'ded' : 'earn', key: 'leave', en: 'Accrued leave pay (Art 111): ' + f2(days) + ' day(s)', ar: 'بدل الإجازة المستحقة (المادة 111): ' + f2(days) + ' يوم', amount: leaveAmt, formula: f2(days) + ' x ' + f2(Lw) + ' / 30' });
+
+    // ---- notice (Art 76)
+    const nd = Math.max(0, num(inp.noticeDays));
+    if (nd > 0 && c.notice) {
+      const amt = r2(full / 30 * nd);
+      if (c.notice === 'employer') lines.push({ sec: 'earn', key: 'notice', en: 'Notice pay in lieu (Art 76): ' + nd + ' day(s)', ar: 'بدل الإشعار (المادة 76): ' + nd + ' يوم', amount: amt, formula: f2(full) + ' / 30 x ' + nd });
+      else lines.push({ sec: 'ded', key: 'notice', en: 'Notice not served by the employee (Art 76): ' + nd + ' day(s)', ar: 'إشعار لم يلتزم به العامل (المادة 76): ' + nd + ' يوم', amount: -amt, formula: f2(full) + ' / 30 x ' + nd });
+    } else if (nd > 0) flag('info', 'Notice days were entered, but this case has no notice pay.', 'أُدخلت أيام إشعار لكن هذه الحالة لا تتضمن بدل إشعار.');
+    // ---- Art 77 compensation
+    if (c.comp77 && inp.art77 !== false) {
+      const ct = inp.contractType || ''; const cend = typeof inp.contractEnd === 'number' ? inp.contractEnd : parseDate(inp.contractEnd);
+      const minC = 2 * full; let comp = 0, f = '';
+      if (ct === 'fixed' && cend != null) { const rem = Math.max(0, diffDays(lwd, cend)); comp = full / 30 * rem; f = f2(full) + ' / 30 x ' + rem + ' remaining day(s)'; if (rem === 0) flag('warn', 'The fixed term ended before the last working day: the 2-month minimum applies.', 'انتهت مدة العقد قبل آخر يوم عمل: يُطبّق الحد الأدنى (أجر شهرين).'); }
+      else { comp = full / 30 * 15 * T; f = f2(full) + ' / 30 x 15 x ' + f4(T) + ' year(s)'; if (ct === 'fixed') flag('warn', 'Fixed-term contract without an end date: the open-ended formula is used.', 'عقد محدد المدة بلا تاريخ انتهاء: طُبّقت صيغة العقد غير المحدد.'); else if (!ct) flag('info', 'Contract type unknown: treated as open-ended.', 'نوع العقد غير معروف: عوملت كغير محددة المدة.'); }
+      if (comp < minC) { f += ' (minimum 2 months = ' + f2(minC) + ')'; comp = minC; }
+      lines.push({ sec: 'earn', key: 'art77', en: 'Compensation for termination without a valid reason (Art 77)', ar: 'تعويض الإنهاء دون سبب مشروع (المادة 77)', amount: r2(comp), formula: f });
+    }
+    // ---- manual lines
+    const add = num(inp.additions), ded = num(inp.deductions), loans = num(inp.loans);
+    if (add) lines.push({ sec: 'earn', key: 'add', en: 'Other additions', ar: 'إضافات أخرى', amount: r2(add), formula: '' });
+    if (loans) lines.push({ sec: 'ded', key: 'loans', en: 'Loans and advances', ar: 'القروض والسلف', amount: -Math.abs(r2(loans)), formula: '' });
+    if (ded) lines.push({ sec: 'ded', key: 'ded', en: 'Other deductions (Art 88: work-related debts)', ar: 'خصومات أخرى (المادة 88: ديون متعلقة بالعمل)', amount: -Math.abs(r2(ded)), formula: '' });
+
+    const earn = r2(lines.filter((l) => l.amount > 0).reduce((a, l) => a + l.amount, 0)), dedt = r2(lines.filter((l) => l.amount < 0).reduce((a, l) => a + l.amount, 0));
+    out.totals = { earnings: earn, deductions: dedt, net: r2(earn + dedt) };
+    // ---- Art 88: when to pay
+    out.payBy = iso(addDays(lwd, c.grp === 'employee' ? 14 : 7)); out.payByDays = c.grp === 'employee' ? 14 : 7;
+    // ---- notes
+    if (sv.y === 0 && sv.m === 0 && sv.d === 0) flag('warn', 'No service period counted.', 'لا توجد مدة خدمة محتسبة.');
+    if (c.award === 'resign' && frac === 0) flag('info', 'Under 2 years of service: no award on resignation (Art 85).', 'أقل من سنتين من الخدمة: لا مكافأة عند الاستقالة (المادة 85).');
+    out.ok = true; return out;
+  }
+
+  /** Compare with the figures Jisr already holds in a final settlement (all numbers as plain numbers). */
+  function compareJisr(res, j) {
+    if (!res || !res.ok || !j) return null;
+    const get = (k) => { const l = res.lines.find((x) => x.key === k); return l ? l.amount : 0; };
+    const d = { salary: r2(get('salary') - num(j.salary)), eos: r2(get('eosb') - num(j.eos)), leave: r2(get('leave') - num(j.leave)), leaveDays: r2(res.leaveSettle.days - num(j.leaveDays)) };
+    d.any = Math.abs(d.salary) > 0.05 || Math.abs(d.eos) > 0.05 || Math.abs(d.leave) > 0.05;
+    return d;
+  }
+
+  return { r2, num, parseDate, iso, addDays, addMonths, diffDays, service, eosGross, CASES, caseByKey, findCase, BASES, baseAmount, leaveEntitlement, usedInPeriod, unpaidLeaveDays, compute, compareJisr, yearStart, f2 };
+}
+// <<< JBO-SETTLE:END
 
 /**
  * JISR BULK OPS - ALL-IN-ONE  v4.44.0
@@ -2842,6 +3082,7 @@ function jlStudioFactory_() {
 "Business Trip Requests (Bulk)": "طلبات رحلات العمل (جماعي)",
 "Data Cleanser": "منظّف البيانات",
 "Salary Comparison": "مقارنة الرواتب",
+"End-of-Service & Leave Settlement": "تسوية نهاية الخدمة والإجازات",
 "Bulk Payroll Transactions": "حركات الرواتب الجماعية",
 "Fixed Working Hours (Bulk)": "ساعات العمل الثابتة (جماعي)",
 "New Area": "المنطقة الجديدة",
@@ -4062,7 +4303,7 @@ function jlStudioFactory_() {
   // ======================================================================= hub menu
   const CATEGORIES = [
     ['employees', 'Employees', 'الموظفون', ['data-validation', 'data-cleanser', 'access-report', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'employee-assets-cleanup', 'delete-employees']],
-    ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'salary-compare', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'gosi-compliance', 'payroll-reconciliation', 'flight-tickets-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk']],
+    ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'salary-compare', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'gosi-compliance', 'payroll-reconciliation', 'flight-tickets-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk', 'settlement-calculator']],
     ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units', 'company-documents', 'company-assets-bulk']],
     ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'business-trip-requests', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear', 'attendance-log-converter']],
     ['performance', 'Performance', 'الأداء', ['performance-templates', 'performance-drafts']],
@@ -4073,7 +4314,7 @@ function jlStudioFactory_() {
   const SECTIONS = [
     { key: 'bulk', en: 'Bulk actions', ar: 'العمليات الجماعية', icon: 'layers', color: '#8FA8F7', groups: [
       ['employees', 'Employees', 'الموظفون', ['access-report', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'employee-assets-cleanup', 'delete-employees']],
-      ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'salary-compare', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk']],
+      ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'salary-compare', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk', 'settlement-calculator']],
       ['policies', 'Policies & benefits', 'السياسات والمزايا', ['business-trip-cities', 'flight-tickets-bulk']],
       ['performance', 'Performance', 'الأداء', ['performance-templates', 'performance-drafts']],
       ['requests', 'Requests & approvals', 'الطلبات والموافقات', ['approval-cycles', 'automations']],
@@ -4162,6 +4403,7 @@ function jlStudioFactory_() {
     'leave-edit-bulk': ['Change dates, leave type or comment of leaves that were imported in bulk: a new approved leave request (with an attachment) replaces each one', 'تغيير التواريخ أو نوع الإجازة أو التعليق للإجازات المستوردة جماعيًا: طلب إجازة جديد معتمد (مع مرفق) يحل محل كل واحدة'],
     'leave-create-bulk': ['Create leave requests from a sheet in Jisr\'s import format, with an attachment per employee (File name Attachment), approved at once', 'إنشاء طلبات إجازة من ملف بصيغة استيراد جسر، مع مرفق لكل موظف (File name Attachment) واعتماد فوري'],
     'business-trip-requests': ['Create business trip requests for many employees from Excel: the destination is checked against each employee\'s own policy; approved at once or left in the approval workflow', 'إنشاء طلبات رحلات عمل لعدة موظفين من إكسل: تُفحص الوجهة مقابل سياسة كل موظف؛ تُعتمد فورًا أو تُترك في مسار الاعتماد'],
+    'settlement-calculator': ['Work out each leaver\'s end-of-service award, leave pay, notice and net payout from their last working day and termination case (Saudi Labor Law); compare with Jisr; Excel and printable statements', 'احسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وصافي المستحقات لكل موظف حسب آخر يوم عمل وحالة إنهاء الخدمة (نظام العمل السعودي)، وقارنها بجسر، مع ملف Excel وكشوف للطباعة'],
     'access-report': ['One Excel report of every employee: main data, who was invited, who accepted, who is still waiting, who never logged in, and when each person was last active; invite the ones who have not signed in', 'تقرير Excel واحد لكل موظف: البيانات الأساسية ومن دُعي ومن قبل ومن ما زال ينتظر ومن لم يسجّل الدخول ومتى كان كل شخص نشطًا آخر مرة'],
     'automations': ['When a custom request is approved, do the next step by itself: assign the day off or shift in the scheduler, or add a payroll transaction', 'عند اعتماد طلب مخصص، نفّذ الخطوة التالية تلقائيًا: تحديد يوم إجازة أو وردية في الجدول أو إضافة معاملة رواتب'],
     'requests-manage': ['Find the requests in the employees\' files (any type, by date range, status, leave type), export them, and cancel, delete forever or edit them: with the approval workflow or bypassing it', 'إيجاد الطلبات في ملفات الموظفين (أي نوع، بنطاق تاريخ والحالة ونوع الإجازة)، وتصديرها، وإلغاؤها أو حذفها نهائيًا أو تعديلها: مع مسار الاعتماد أو بتجاوزه'],
@@ -4175,7 +4417,7 @@ function jlStudioFactory_() {
     'letter-templates': ['Open, edit and save Jisr\'s letter templates (variables, header, body, footer)', 'فتح قوالب خطابات جسر وتعديلها وحفظها (المتغيرات، الترويسة، النص، التذييل)'],
     'letter-converter': ['Word letters to Jisr templates', 'تحويل خطابات Word إلى قوالب جسر'],
   };
-  const NEW_IDS = ['access-report', 'automations', 'business-trip-requests', 'requests-manage', 'company-assets-bulk', 'employee-assets-cleanup', 'performance-drafts', 'salary-compare', 'data-cleanser', 'leave-create-bulk', 'company-documents', 'leave-edit-bulk', 'employee-photos', 'probation-bulk', 'locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
+  const NEW_IDS = ['settlement-calculator', 'access-report', 'automations', 'business-trip-requests', 'requests-manage', 'company-assets-bulk', 'employee-assets-cleanup', 'performance-drafts', 'salary-compare', 'data-cleanser', 'leave-create-bulk', 'company-documents', 'leave-edit-bulk', 'employee-photos', 'probation-bulk', 'locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
   const svg_ = (k, size) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('width', size || 16); s.setAttribute('height', size || 16); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.8'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round'); s.innerHTML = ICONS[k] || ICONS.other; return s; };
   const normQ_ = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[ً-ٰٟـ]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
   function highlight_(text, q) {
@@ -57393,6 +57635,551 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'Locations Setup (onboarding)', open: openTool_, version: SECTION_VERSION };
     W.__jisrLocSetup = { detectColumns_, nk_, cityKey_, matchCity_, regionKey_ };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
+// ###########################################################################
+// ##### SECTION 54 — End-of-Service & Leave Settlement Calculator (per employee, per period; Excel and printable statements)  v4.113.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 54 — End-of-Service & Leave Settlement Calculator  v4.113.0
+ * ---------------------------------------------------------------------------
+ * For each employee you choose: last working day, the termination case (with its Labor Law article) and the leave period. The tool reads the employee's
+ * joining date, salary, annual-leave policy / balance and leave history from Jisr (GET only), then works out the salary for the last month, the end-of-service
+ * award (Art 84, 85, 87), accrued leave pay (Art 111), notice pay (Art 76), the Art 77 compensation, your own additions / deductions / loans, the net payout and
+ * the date it must be paid by (Art 88). Nothing is written to Jisr and nothing is saved in this browser.
+ * The arithmetic lives in shared/jbo-settlement-engine.js (JBOSettlementEngine_), tested against 10 real Jisr final settlements (test/settlement-engine.test.js).
+ * READ (confirmed live on onboardingteam, 2026-11-25):
+ *   GET /v2/employees/{id}?profile_tab=salary_and_financial -> data.employee{ joining_date, is_saudi_national, contract_type, salary{ basic_salary, full_package, housing_benefit }, currency }
+ *   GET /v2/employees/{id}?template=offboarding_header_info -> data.employee.employee_contract{ contract_type, end_date }
+ *   GET /v2/employees/{id}/leaves/summary                   -> data.annual_leave{ annual_leave_days, previous_year_balance, used, manual_balance_adjustment, unpaid_leave_deduction, from }  (current year only; no date parameter)
+ *   GET /v2/employees/{id}/leaves/history?all_years=true&rpp=100&page=n -> data.leave_history[{ name_en, from, to, deducted_balance, applied_days }]
+ *   GET /v2/finance/payruns/off_cycle?type=final_settlement&page=&per_page=  and  GET /v2/finance/payruns/{payrun}/remarks?employee_id=   (compare with the settlement Jisr already made)
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.113.0';
+  const MODULE_ID = 'settlement-calculator';
+  const W = unsafeWindow;
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const E = JBOSettlementEngine_();
+  const cfg = { workers: 3, maxHistPages: 6 };
+
+  // ======================================================================= network (GET only)
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  async function get_(path, pairs) {
+    const qs = new URLSearchParams(); (pairs || []).forEach(([k, v]) => qs.append(k, v)); qs.append('slug', slug_());
+    const url = apiBase_() + path + '?' + qs.toString();
+    for (let a = 0; a < 4; a++) {
+      let res;
+      try { res = await fetch(url, { method: 'GET', credentials: 'include', headers: { accept: 'application/json', slug: slug_(), locale: 'en' } }); }
+      catch (e) { await sleep_(700 * (a + 1)); continue; }
+      if (res.status === 401) { const err = new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول.')); err.auth = true; throw err; }
+      if (res.status === 429 || res.status >= 500) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
+      const json = await res.json().catch(() => null);
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+    }
+    throw new Error(T('No answer from Jisr', 'لا رد من جسر'));
+  }
+  const n_ = (v) => { if (v == null || v === '') return null; const x = Number(String(v).replace(/,/g, '')); return isFinite(x) ? x : null; };
+  const txt_ = (v) => { if (v == null) return ''; if (typeof v === 'object') return String(v.en || v.ar || v.name_i18n || v.name || ''); return String(v).trim(); };
+
+  // ======================================================================= reading one employee
+  /** -> data{ join, basic, housing, pack, saudi, contractType, contractEnd, annual, prev, adj, unpaid, summaryUsed, summaryFrom, annualName, history[], currency } or throws */
+  async function readEmployee_(id) {
+    const d = { id };
+    const sal = await get_('/v2/employees/' + encodeURIComponent(id), [['profile_tab', 'salary_and_financial']]);
+    const em = sal.ok && sal.json && sal.json.data && sal.json.data.employee;
+    if (!em) throw new Error(T('Could not read the salary (HTTP ', 'تعذّرت قراءة الراتب (HTTP ') + sal.status + ')');
+    d.join = String(em.joining_date || ''); d.saudi = em.is_saudi_national === true; d.contractType = /fixed/i.test(String(em.contract_type || '')) ? 'fixed' : (em.contract_type ? 'indefinite' : '');
+    const s = em.salary || {};
+    d.basic = n_(s.basic_salary) || 0; d.housing = n_(s.housing_benefit) || 0; d.pack = n_(s.full_package) || n_(s.salary_package) || 0;
+    d.currency = (em.currency && (em.currency.code || em.currency.symbol_i18n)) || 'SAR'; d.name = txt_(em.full_name_i18n); d.code = String(em.code == null ? '' : em.code);
+    const [hdr, sum] = await Promise.all([get_('/v2/employees/' + encodeURIComponent(id), [['template', 'offboarding_header_info']]).catch(() => null), get_('/v2/employees/' + encodeURIComponent(id) + '/leaves/summary', []).catch((e) => { if (e.auth) throw e; return null; })]);
+    const ec = hdr && hdr.ok && hdr.json && hdr.json.data && hdr.json.data.employee && hdr.json.data.employee.employee_contract;
+    if (ec) { d.contractEnd = String(ec.end_date || ''); if (ec.contract_type && !d.contractType) d.contractType = /fixed/i.test(String(ec.contract_type)) ? 'fixed' : 'indefinite'; }
+    const al = sum && sum.ok && sum.json && sum.json.data && sum.json.data.annual_leave;
+    if (al) {
+      d.annual = n_(al.annual_leave_days); d.prev = n_(al.previous_year_balance) || 0; d.adj = n_(al.manual_balance_adjustment) || 0; d.unpaid = n_(al.unpaid_leave_deduction) || 0; d.summaryUsed = n_(al.used) || 0;
+      d.summaryFrom = String(al.from || ''); d.annualName = al.leave_type && (al.leave_type.name || al.leave_type.label) || '';
+    } else d.leaveErr = true;
+    d.history = []; d.historyErr = false;
+    try {
+      for (let p = 1; p <= cfg.maxHistPages; p++) {
+        const h = await get_('/v2/employees/' + encodeURIComponent(id) + '/leaves/history', [['all_years', 'true'], ['rpp', '100'], ['page', String(p)], ['imported_leaves', 'true']]);
+        if (!h.ok) { d.historyErr = true; break; }
+        const dd = (h.json && h.json.data) || {}; (dd.leave_history || []).forEach((x) => d.history.push(x));
+        if (!dd.pagination || !dd.pagination.next_page) break;
+      }
+    } catch (e) { if (e.auth) throw e; d.historyErr = true; }
+    return d;
+  }
+  /** "dd-mm-yyyy" (the leave summary) or "yyyy-mm-dd" -> yyyy-mm-dd */
+  function isoOf_(v) { const t = E.parseDate(v); return t == null ? '' : E.iso(t); }
+
+  // ======================================================================= Jisr's own settlement (to compare with)
+  async function listSettlements_(stopped) {
+    const out = [];
+    for (let page = 1; page <= 40; page++) {
+      if (stopped && stopped()) break;
+      const r = await get_('/v2/finance/payruns/off_cycle', [['type', 'final_settlement'], ['search', ''], ['page', String(page)], ['per_page', '50']]);
+      if (!r.ok) throw new Error(T('Could not read the final settlements (HTTP ', 'تعذّرت قراءة التسويات النهائية (HTTP ') + r.status + ')');
+      const dd = (r.json && r.json.data) || {}; const list = dd.off_cycles || [];
+      list.forEach((o) => out.push({ payrunId: o.id, empId: o.employee && o.employee.id, code: o.employee && o.employee.code, name: txt_(o.employee && (o.employee.name_i18n || o.employee.full_name_i18n)), lwd: isoOf_(o.last_working_day), reason: String(o.termination_reason || ''), status: String(o.payrun_status || ''), total: n_(o.total_amount) }));
+      const pi = dd.pagination_info; if (!list.length || !pi || !pi.total_pages || page >= pi.total_pages) break;
+    }
+    return out;
+  }
+  async function readJisrAmounts_(s) {
+    const r = await get_('/v2/finance/payruns/' + encodeURIComponent(s.payrunId) + '/remarks', [['employee_id', String(s.empId)]]);
+    const d = r.ok && r.json && r.json.data; if (!d) throw new Error(T('Could not read the settlement amounts (HTTP ', 'تعذّرت قراءة مبالغ التسوية (HTTP ') + r.status + ')');
+    const b = (d.earnings && d.earnings.breakdown) || {}; const tx = (k) => (b[k] && b[k].transactions && b[k].transactions[0]) || {};
+    return { payrunId: s.payrunId, status: s.status, salary: n_(b.eos_earnings && b.eos_earnings.total_amount) || 0, eos: n_(b.eos_settlement && b.eos_settlement.total_amount) || 0, leave: n_(b.leave_settlement && b.leave_settlement.total_amount) || 0,
+      leaveDays: n_(tx('leave_settlement').number_of_leave_balance_days) || 0, a77: n_(b.article77_compensation && b.article77_compensation.total_amount) || 0, loans: n_(b.loan_settlements && b.loan_settlements.total_amount) || 0, net: n_(d.net_salary), reason: s.reason };
+  }
+
+  // ======================================================================= one row -> engine input -> result
+  const blankIn_ = () => ({ lwd: '', caseKey: '', eventDate: '', periodFrom: '', noticeDays: '', additions: '', deductions: '', loans: '', leaveOverride: '', adjustment: '', annualDays: '', serviceDeduct: '', art77: true, eosBase: '', leaveBase: '' });
+  function engineInput_(row, set) {
+    const d = row.data, x = row.in; const flags = [];
+    const join = E.parseDate(d.join), lwd = E.parseDate(x.lwd);
+    const fromT = x.periodFrom ? E.parseDate(x.periodFrom) : null;
+    let periodStart = null;
+    if (lwd != null && join != null) periodStart = Math.max(join, fromT != null ? fromT : E.yearStart(lwd));
+    const sameYear = lwd != null && d.summaryFrom && new Date(lwd).getUTCFullYear() === new Date(E.parseDate(d.summaryFrom)).getUTCFullYear();
+    let used = d.summaryUsed || 0, unpaid = d.unpaid || 0, usedItems = [], partial = false;
+    if (lwd != null && periodStart != null && !d.historyErr) {
+      const u = E.usedInPeriod(d.history, [d.annualName, 'Annual'], periodStart, lwd); used = u.days; usedItems = u.items; partial = u.partial;
+      if (!sameYear) unpaid = E.unpaidLeaveDays(d.history, periodStart, lwd);
+    }
+    if (d.historyErr) flags.push({ level: 'warn', en: 'Leave history could not be read: leave taken is taken from the current-year total.', ar: 'تعذّرت قراءة سجل الإجازات: أُخذت الإجازات المستخدمة من إجمالي السنة الحالية.' });
+    if (d.leaveErr) flags.push({ level: 'warn', en: 'Jisr gave no annual-leave summary: the leave policy is assumed (21 days, 30 from 5 years).', ar: 'لم يعطِ جسر ملخص الإجازة السنوية: افتُرضت السياسة (21 يومًا، و30 بعد 5 سنوات).' });
+    if (partial) flags.push({ level: 'info', en: 'A leave overlaps the start or end of the period: only the days inside the period are counted.', ar: 'إجازة تتقاطع مع بداية أو نهاية الفترة: تُحتسب الأيام داخل الفترة فقط.' });
+    let prev = d.prev || 0, adj = d.adj || 0;
+    if (lwd != null && d.summaryFrom && !sameYear) { prev = 0; adj = 0; flags.push({ level: 'warn', en: 'Jisr\'s leave summary is for ' + new Date(E.parseDate(d.summaryFrom)).getUTCFullYear() + ', not the year of the last working day: the balance brought forward and adjustments are not available. Enter them as a leave adjustment if needed.', ar: 'ملخص الإجازة في جسر لسنة ' + new Date(E.parseDate(d.summaryFrom)).getUTCFullYear() + ' لا لسنة آخر يوم عمل: الرصيد المرحّل والتسويات غير متاحة. أدخلها كتسوية إجازة عند الحاجة.' }); }
+    const inp = {
+      join: d.join, lwd: x.lwd, caseKey: x.caseKey, sal: { basic: d.basic, housing: d.housing, pack: d.pack },
+      annualDays: x.annualDays !== '' ? E.num(x.annualDays) : (d.annual != null ? d.annual : ''), prevBalance: prev, adjustment: adj + E.num(x.adjustment), unpaidDeduction: unpaid, usedDays: used, periodFrom: x.periodFrom || null,
+      contractType: d.contractType, contractEnd: d.contractEnd, art77: x.art77 !== false, customPct: x.customPct, eventDate: x.eventDate, noticeDays: x.noticeDays, unpaidServiceDays: x.serviceDeduct,
+      additions: x.additions, deductions: x.deductions, loans: x.loans, leaveOverride: x.leaveOverride === '' ? null : x.leaveOverride, eosBase: x.eosBase || '', leaveBase: x.leaveBase || '',
+    };
+    return { inp, usedItems, flags };
+  }
+  function calc_(row, set) {
+    row.res = null; row.cmp = null;
+    if (!row.data) return;
+    if (!row.in.lwd || !row.in.caseKey) { row.msg = !row.in.lwd ? T('Enter the last working day', 'أدخل آخر يوم عمل') : T('Choose the termination case', 'اختر حالة إنهاء الخدمة'); return; }
+    const g = engineInput_(row, set); const r = E.compute(g.inp, set);
+    r.flags = g.flags.concat(r.flags); r.usedItems = g.usedItems; row.res = r; row.msg = '';
+    if (row.jisr) row.cmp = E.compareJisr(r, row.jisr);
+    if (row.cmp && row.cmp.any) r.flags.push({ level: 'warn', en: 'Differs from the settlement Jisr already made (see the Jisr columns).', ar: 'يختلف عن التسوية التي أنشأها جسر (انظر أعمدة جسر).' });
+  }
+  const lineAmt_ = (res, k) => { const l = res && res.lines.find((x) => x.key === k); return l ? l.amount : 0; };
+  const svText_ = (sv) => sv && sv.valid ? sv.y + T('y ', 'س ') + sv.m + T('m ', 'ش ') + sv.d + T('d', 'ي') : '';
+  const fmt_ = (n) => (n == null || isNaN(n) ? '' : E.f2(n));
+  const caseLabel_ = (c) => c ? T(c.en, c.ar) : '';
+  const nowStamp_ = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const esc_ = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' }[c]));
+
+  // ======================================================================= exports
+  const rowsOk_ = (rows) => rows.filter((r) => r.res && r.res.ok);
+  function settingsText_(set) {
+    const b = (k) => { const x = E.BASES.find((y) => y.key === k); return x ? T(x.en, x.ar) : k; };
+    return [
+      [T('End-of-service wage', 'أجر مكافأة نهاية الخدمة'), b(set.eosBase)], [T('Leave pay wage', 'أجر بدل الإجازة'), b(set.leaveBase)],
+      [T('Leave taken in advance', 'إجازة مأخوذة مقدمًا'), set.deductAdvanceLeave ? T('Deducted from the payout', 'تُخصم من المستحقات') : T('Not deducted', 'لا تُخصم')],
+    ];
+  }
+  const NOTES = () => [
+    T('Saudi Labor Law only. Guidance for the HR team, not legal advice: check the result before paying.', 'نظام العمل السعودي فقط. إرشاد لفريق الموارد البشرية وليس استشارة قانونية: راجع النتيجة قبل الصرف.'),
+    T('Service = calendar years, months and days from the joining date to the last working day, both days counted. Years = years + months / 12 + days / 360.', 'مدة الخدمة = السنوات والأشهر والأيام من تاريخ الالتحاق إلى آخر يوم عمل، مع احتساب اليومين. السنوات = السنوات + الأشهر ÷ 12 + الأيام ÷ 360.'),
+    T('Award (Art 84): half a month\'s wage for each of the first 5 years and a full month\'s wage for each year after, pro rata. Resignation (Art 85): nothing under 2 years, one third up to 5, two thirds up to 10, full from 10. Art 87: full award for the listed exceptions.', 'المكافأة (م84): نصف أجر شهر عن كل سنة من الخمس الأولى وأجر شهر عن كل سنة بعدها، بالتناسب. الاستقالة (م85): لا شيء قبل سنتين، الثلث حتى 5 سنوات، الثلثان حتى 10، والكاملة من 10. المادة 87: مكافأة كاملة للحالات المستثناة.'),
+    T('Daily wage = monthly wage / 30. Salary of the last month = wage / 30 x the day number of the last working day (at most 30).', 'الأجر اليومي = الأجر الشهري ÷ 30. راتب الشهر الأخير = الأجر ÷ 30 × رقم يوم آخر يوم عمل (حتى 30 كحد أقصى).'),
+    T('Leave (Art 111): annual days x days from the period start to the last working day (both counted) / 365, plus the balance brought forward and adjustments, minus leave taken and unpaid leave. Paid at the daily wage.', 'الإجازة (م111): أيام الإجازة السنوية × أيام الفترة من بدايتها إلى آخر يوم عمل (باليومين) ÷ 365، مضافًا إليها الرصيد المرحّل والتسويات ومخصومًا منها الإجازات المستخدمة وغير المدفوعة. تُدفع بالأجر اليومي.'),
+    T('Payment (Art 88): within 7 days of the end of the contract, or 14 days when the employee ends it.', 'الصرف (م88): خلال 7 أيام من انتهاء العقد، و14 يومًا إذا أنهى العامل العقد.'),
+    T('Method checked against real Jisr final settlements; where Jisr\'s own settlement exists the tool shows the difference.', 'الطريقة مطابقة لتسويات نهائية حقيقية في جسر؛ وإن وُجدت تسوية في جسر تعرض الأداة الفرق.'),
+  ];
+  function workbook_(rows, set, at) {
+    const ok = rowsOk_(rows);
+    const wb = XLSX.utils.book_new();
+    const add = (name, aoa, widths, filter) => {
+      const ws = XLSX.utils.aoa_to_sheet(aoa); if (widths) ws['!cols'] = widths.map((w) => ({ wch: w }));
+      if (filter && aoa.length > 1) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: aoa[0].length - 1 } }) };
+      Object.keys(ws).forEach((k) => { if (k[0] !== '!' && ws[k].t === 'n') ws[k].z = '#,##0.00'; });
+      XLSX.utils.book_append_sheet(wb, ws, name);
+    };
+    const sum = (f) => E.r2(ok.reduce((a, r) => a + f(r), 0));
+    const S = [[T('End-of-service and leave settlements', 'تسويات نهاية الخدمة والإجازات')], [T('Company', 'الشركة'), slug_()], [T('Date', 'التاريخ'), nowStamp_(at)], [],
+      [T('Employees calculated', 'الموظفون المحسوبون'), ok.length], [T('Salary for the last month', 'راتب الشهر الأخير'), sum((r) => lineAmt_(r.res, 'salary'))], [T('End-of-service awards', 'مكافآت نهاية الخدمة'), sum((r) => lineAmt_(r.res, 'eosb'))],
+      [T('Leave pay', 'بدل الإجازات'), sum((r) => lineAmt_(r.res, 'leave'))], [T('Total earnings', 'إجمالي المستحقات'), sum((r) => r.res.totals.earnings)], [T('Total deductions', 'إجمالي الخصومات'), sum((r) => r.res.totals.deductions)], [T('Net payout', 'صافي المبلغ المستحق'), sum((r) => r.res.totals.net)], [],
+      [T('Settings', 'الإعدادات')]].concat(settingsText_(set)).concat([[], [T('Notes', 'ملاحظات')]]).concat(NOTES().map((x) => [x]));
+    add(T('Summary', 'الملخص'), S, [44, 26]);
+    const head = [T('Code', 'الرقم'), T('Name', 'الاسم'), T('Joined', 'تاريخ الالتحاق'), T('Last working day', 'آخر يوم عمل'), T('Termination case', 'حالة إنهاء الخدمة'), T('Article', 'المادة'), T('Years', 'سنوات'), T('Months', 'أشهر'), T('Days', 'أيام'), T('Service (years)', 'مدة الخدمة (سنوات)'),
+      T('Award wage', 'أجر المكافأة'), T('Award share', 'نسبة المكافأة'), T('End-of-service award', 'مكافأة نهاية الخدمة'), T('Salary days', 'أيام الراتب'), T('Salary of the last month', 'راتب الشهر الأخير'),
+      T('Leave period from', 'فترة الإجازة من'), T('Annual days', 'أيام الإجازة السنوية'), T('Accrued days', 'الأيام المستحقة'), T('Brought forward', 'مرحّل'), T('Adjustments', 'تسويات'), T('Unpaid leave', 'إجازة غير مدفوعة'), T('Leave taken', 'إجازة مستخدمة'), T('Leave days', 'أيام الإجازة'), T('Daily wage', 'الأجر اليومي'), T('Leave pay', 'بدل الإجازة'),
+      T('Notice', 'الإشعار'), T('Art 77 compensation', 'تعويض م77'), T('Additions', 'إضافات'), T('Deductions', 'خصومات'), T('Loans', 'قروض'), T('Total earnings', 'إجمالي المستحقات'), T('Total deductions', 'إجمالي الخصومات'), T('Net payout', 'صافي المبلغ'), T('Pay by', 'آخر موعد للصرف'),
+      T('Jisr: salary', 'جسر: الراتب'), T('Jisr: award', 'جسر: المكافأة'), T('Jisr: leave', 'جسر: الإجازة'), T('Jisr: net', 'جسر: الصافي'), T('Difference vs Jisr', 'الفرق عن جسر'), T('Notes', 'ملاحظات')];
+    const body = ok.map((r) => {
+      const q = r.res, sv = q.service, e = q.eos, lv = q.leave, c = q.case; const j = r.jisr; const d = r.cmp;
+      const flags = q.flags.filter((f) => f.level !== 'info' || true).map((f) => T(f.en, f.ar)).join(' | ');
+      return [r.code, r.name, E.iso(q.join), E.iso(q.lwd), caseLabel_(c), c.art, sv.y, sv.m, sv.d, E.r2(sv.T), q.base.eos, e.fraction, e.payable, q.salaryDays, lineAmt_(q, 'salary'), E.iso(lv.from), lv.annual, lv.accrued, lv.carry, lv.adjustment, lv.unpaidDeduction, lv.used, q.leaveSettle.days, q.leaveSettle.daily, lineAmt_(q, 'leave'),
+        lineAmt_(q, 'notice'), lineAmt_(q, 'art77'), lineAmt_(q, 'add'), lineAmt_(q, 'ded'), lineAmt_(q, 'loans'), q.totals.earnings, q.totals.deductions, q.totals.net, q.payBy,
+        j ? j.salary : '', j ? j.eos : '', j ? j.leave : '', j && j.net != null ? j.net : '', d ? (d.any ? T('Differs', 'يختلف') : T('Matches', 'مطابق')) : '', flags];
+    });
+    add(T('Settlements', 'التسويات'), [head].concat(body), [10, 26, 12, 12, 40, 10, 7, 7, 7, 10, 12, 9, 14, 8, 14, 12, 9, 10, 10, 10, 10, 10, 10, 10, 12, 10, 12, 10, 10, 10, 14, 12, 14, 12, 12, 12, 12, 12, 14, 60], true);
+    const lines = [[T('Code', 'الرقم'), T('Name', 'الاسم'), T('Item', 'البند'), T('Basis', 'طريقة الحساب'), T('Amount', 'المبلغ')]];
+    ok.forEach((r) => r.res.lines.forEach((l) => lines.push([r.code, r.name, T(l.en, l.ar), l.formula, l.amount])));
+    add(T('Statement lines', 'بنود التسوية'), lines, [10, 26, 56, 60, 14], true);
+    const lv = [[T('Code', 'الرقم'), T('Name', 'الاسم'), T('Leave from', 'من'), T('Leave to', 'إلى'), T('Annual days counted', 'أيام الإجازة السنوية المحتسبة')]];
+    ok.forEach((r) => (r.res.usedItems || []).forEach((u) => lv.push([r.code, r.name, u.from, u.to, u.days])));
+    add(T('Leave taken', 'الإجازات المستخدمة'), lv, [10, 26, 12, 12, 22], true);
+    return wb;
+  }
+  function saveBlob_(blob, name) {
+    const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.style.display = 'none';
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000); return name;
+  }
+  function downloadExcel_(rows, set) {
+    const at = new Date(); const out = XLSX.write(workbook_(rows, set, at), { bookType: 'xlsx', type: 'array' });
+    return saveBlob_(new Blob([out], { type: 'application/octet-stream' }), 'settlements_' + (slug_() || 'jisr') + '_' + nowStamp_(at) + '.xlsx');
+  }
+
+  /** One printable page per employee: open the file, then Print / Save as PDF. Both languages on every line. */
+  function statementsHtml_(rows, set, at) {
+    const ok = rowsOk_(rows); const company = slug_();
+    const css = 'body{font:13px/1.5 "Segoe UI",Tahoma,Arial,sans-serif;color:#111;margin:0;background:#f3f4f6}.pg{width:210mm;min-height:297mm;margin:12px auto;background:#fff;padding:16mm 15mm;box-sizing:border-box;page-break-after:always}h1{font-size:18px;margin:0 0 2px}h2{font-size:13px;margin:16px 0 6px}.sub{color:#555;margin-bottom:10px}'
+      + 'table{width:100%;border-collapse:collapse}td,th{padding:5px 7px;border-bottom:1px solid #e3e5e8;vertical-align:top}th{background:#f6f7f8;text-align:start;font-weight:600}.num{text-align:end;white-space:nowrap;font-variant-numeric:tabular-nums}.ar{direction:rtl;text-align:right;color:#444;display:block}.f{color:#666;font-size:11.5px;direction:ltr;text-align:left}'
+      + '.tot td{font-weight:700;border-top:2px solid #111;border-bottom:0}.kv td:first-child{width:34%;color:#555}.flag{margin:2px 0;padding:4px 8px;border-radius:5px;background:#fff7e0;font-size:12px}.sig{display:flex;gap:24px;margin-top:34px}.sig div{flex:1;border-top:1px solid #111;padding-top:4px;font-size:12px;color:#444}.dis{margin-top:14px;font-size:11px;color:#666}'
+      + '@media print{body{background:#fff}.pg{margin:0;box-shadow:none}}';
+    const L = (en, ar) => '<span>' + esc_(en) + '</span><span class="ar">' + esc_(ar) + '</span>';
+    const pages = ok.map((r) => {
+      const q = r.res; const sv = q.service; const c = q.case; const lv = q.leave;
+      const kv = (en, ar, v) => '<tr><td>' + L(en, ar) + '</td><td dir="auto">' + esc_(v) + '</td></tr>';
+      const lines = q.lines.map((l) => '<tr><td>' + L(l.en, l.ar) + (l.formula ? '<div class="f">' + esc_(l.formula) + '</div>' : '') + '</td><td class="num">' + esc_(E.f2(l.amount)) + '</td></tr>').join('');
+      const flags = q.flags.map((f) => '<div class="flag">' + L(f.en, f.ar) + '</div>').join('');
+      return '<div class="pg"><h1>' + L('End-of-service and leave settlement', 'تسوية نهاية الخدمة والإجازات') + '</h1><div class="sub">' + esc_(company) + ' · ' + esc_(nowStamp_(at)) + '</div>'
+        + '<table class="kv">' + kv('Employee', 'الموظف', r.name + (r.code ? ' (' + r.code + ')' : '')) + (r.nid ? kv('ID / Iqama', 'الهوية / الإقامة', r.nid) : '') + kv('Joining date', 'تاريخ الالتحاق', E.iso(q.join)) + kv('Last working day', 'آخر يوم عمل', E.iso(q.lwd))
+        + kv('Termination case', 'حالة إنهاء الخدمة', c.en + ' — ' + c.ar + (c.art ? ' (Art ' + c.art + ')' : '')) + kv('Length of service', 'مدة الخدمة', sv.y + ' y ' + sv.m + ' m ' + sv.d + ' d  =  ' + E.r2(sv.T).toFixed(4) + ' years')
+        + kv('Wage used for the award', 'الأجر المعتمد للمكافأة', E.f2(q.base.eos)) + kv('Leave period', 'فترة الإجازة', E.iso(lv.from) + ' → ' + E.iso(lv.to) + '  (' + lv.annual + ' days a year)') + '</table>'
+        + '<h2>' + L('Settlement', 'التسوية') + '</h2><table>' + lines + '<tr class="tot"><td>' + L('Net payout', 'صافي المبلغ المستحق') + '</td><td class="num">' + esc_(E.f2(q.totals.net)) + '</td></tr></table>'
+        + '<p>' + L('To be paid by', 'يُصرف قبل تاريخ') + ' <b>' + esc_(q.payBy) + '</b> (' + L('Art 88', 'المادة 88') + ')</p>' + (flags ? '<h2>' + L('Notes', 'ملاحظات') + '</h2>' + flags : '')
+        + '<div class="sig"><div>' + L('Employee', 'الموظف') + '</div><div>' + L('HR', 'الموارد البشرية') + '</div><div>' + L('Finance', 'المالية') + '</div></div>'
+        + '<div class="dis">' + L('Prepared with Jisr Bulk Ops from the data in Jisr. Guidance only: check against the contract and the Saudi Labor Law before payment.', 'أُعدّ بواسطة Jisr Bulk Ops من بيانات جسر. للإرشاد فقط: راجعه مع العقد ونظام العمل السعودي قبل الصرف.') + '</div></div>';
+    }).join('');
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>' + esc_('Settlements ' + company + ' ' + nowStamp_(at)) + '</title><style>' + css + '</style></head><body>' + pages + '</body></html>';
+  }
+  function downloadStatements_(rows, set) {
+    const at = new Date(); const html = statementsHtml_(rows, set, at);
+    return saveBlob_(new Blob([html], { type: 'text/html;charset=utf-8' }), 'settlement-statements_' + (slug_() || 'jisr') + '_' + nowStamp_(at) + '.html');
+  }
+
+  // ======================================================================= Excel in (last working day, case, period per employee)
+  const IN_HEAD = () => [T('Employee code', 'رقم الموظف'), T('Employee name (for you)', 'اسم الموظف (للمرجع)'), T('Last working day (YYYY-MM-DD)', 'آخر يوم عمل (YYYY-MM-DD)'), T('Termination case or article', 'حالة إنهاء الخدمة أو المادة'), T('Leave period from (optional)', 'بداية فترة الإجازة (اختياري)'), T('Event date: marriage or birth (Art 87)', 'تاريخ الواقعة: زواج أو ولادة (م87)'), T('Notice days (optional)', 'أيام الإشعار (اختياري)'), T('Other additions', 'إضافات أخرى'), T('Other deductions', 'خصومات أخرى'), T('Loans to deduct', 'قروض للخصم')];
+  function templateAoa_() {
+    const ex = E.CASES.map((c) => [c.key, c.art, c.en, c.ar]);
+    return { head: IN_HEAD(), cases: [[T('Key', 'المفتاح'), T('Article', 'المادة'), 'English', 'العربية']].concat(ex) };
+  }
+  function downloadTemplate_() {
+    const t = templateAoa_(); const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([t.head, ['E1001', '', '2026-12-31', 'expiry', '', '', '', '', '', '']]); ws['!cols'] = t.head.map(() => ({ wch: 26 })); XLSX.utils.book_append_sheet(wb, ws, T('Settlements', 'التسويات'));
+    const w2 = XLSX.utils.aoa_to_sheet(t.cases); w2['!cols'] = [{ wch: 18 }, { wch: 12 }, { wch: 70 }, { wch: 70 }]; XLSX.utils.book_append_sheet(wb, w2, T('Cases', 'الحالات'));
+    return saveBlob_(new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/octet-stream' }), 'settlements-template.xlsx');
+  }
+  /** rows of cells -> [{ ref, lwd, caseKey, caseText, periodFrom, eventDate, noticeDays, additions, deductions, loans }] (header row is found by its first cell) */
+  function parseSheet_(aoa) {
+    const out = []; const dt = (v) => { const t = E.parseDate(v); return t == null ? '' : E.iso(t); };
+    (aoa || []).forEach((r, i) => {
+      if (!r || !r.length) return; const ref = String(r[0] == null ? '' : r[0]).trim(); if (!ref) return;
+      if (i === 0 && /employee|code|رقم|الموظف/i.test(ref) && E.parseDate(r[2]) == null) return; // the header row
+      const ct = String(r[3] == null ? '' : r[3]).trim(); const c = ct ? E.findCase(ct) : null;
+      out.push({ ref, lwd: dt(r[2]), lwdRaw: r[2], caseKey: c ? c.key : '', caseText: ct, periodFrom: dt(r[4]), eventDate: dt(r[5]), noticeDays: r[6] === undefined ? '' : r[6], additions: r[7] === undefined ? '' : r[7], deductions: r[8] === undefined ? '' : r[8], loans: r[9] === undefined ? '' : r[9] });
+    });
+    return out;
+  }
+
+  // ======================================================================= window
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c != null && c !== false && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-st-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-st-css', text: `
+      .jst-note { font-size: 12.5px; background: #eef4ff; border: 1px solid #cfe0fb; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
+      .jst-set { display: flex; gap: 14px 18px; align-items: end; flex-wrap: wrap; margin: 6px 0 10px; font-size: 13px; }
+      .jst-set label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #5f6368; }
+      .jst-set label.jst-ck { flex-direction: row; align-items: center; gap: 6px; color: inherit; font-size: 13px; }
+      .jst-set select, .jst-bulk select, .jst-bulk input, .jst-tbl input, .jst-tbl select, .jst-det input, .jst-det select { font: inherit; font-size: 12.5px; padding: 4px 6px; border: 1px solid #c9cdd2; border-radius: 6px; background: #fff; color: inherit; max-width: 100%; }
+      .jst-add { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+      .jst-bulk { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; padding: 8px 10px; border: 1px dashed #c9cdd2; border-radius: 8px; font-size: 12.5px; }
+      .jst-scroll { max-height: 42vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jst-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jst-tbl th { text-align: start; padding: 6px 8px; background: #f8f9fa; border-bottom: 1px solid #e8eaed; font-weight: 600; position: sticky; top: 0; white-space: nowrap; z-index: 1; }
+      .jst-tbl td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: middle; }
+      .jst-tbl td.num, .jst-tbl th.num { text-align: end; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .jst-tbl tr.on td { background: #eef4ff; }
+      .jst-tbl td small { display: block; color: #5f6368; font-size: 11.5px; }
+      .jst-tbl .jst-name { background: none; border: 0; padding: 0; font: inherit; font-weight: 600; cursor: pointer; text-align: start; color: inherit; text-decoration: underline dotted; }
+      .jst-tbl input[type=date] { width: 132px; direction: ltr; } .jst-tbl select { width: 250px; } .jst-tbl td.jst-sv { white-space: nowrap; }
+      .jst-ok { color: #137333; } .jst-bad { color: #a50e0e; } .jst-warn { color: #8a5a00; }
+      .jst-prog { height: 36px; } .jst-bar { height: 6px; border-radius: 3px; background: #e8eaed; overflow: hidden; margin-top: 4px; } .jst-bar i { display: block; height: 100%; background: #1a73e8; width: 0; transition: width .2s ease; }
+      .jst-det { margin-top: 12px; border: 1px solid #d0d7de; border-radius: 10px; padding: 12px 14px; }
+      .jst-det h3 { margin: 0 0 6px; font-size: 14px; } .jst-grid { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 16px; } @media (max-width: 820px) { .jst-grid { grid-template-columns: 1fr; } }
+      .jst-fld { display: grid; grid-template-columns: 1fr 120px; gap: 6px 10px; align-items: center; font-size: 12.5px; margin: 6px 0; } .jst-fld input[type=number], .jst-fld input[type=date], .jst-fld select { width: 100%; direction: ltr; }
+      .jst-fld.wide { grid-template-columns: 1fr; }
+      .jst-stmt { width: 100%; border-collapse: collapse; font-size: 12.5px; } .jst-stmt td { padding: 5px 6px; border-bottom: 1px solid #f1f3f4; vertical-align: top; } .jst-stmt td.num { text-align: end; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .jst-stmt tr.tot td { font-weight: 700; border-top: 2px solid #1f2328; border-bottom: 0; } .jst-stmt .fx { color: #5f6368; font-size: 11.5px; direction: ltr; text-align: start; }
+      .jst-flag { margin: 4px 0; padding: 5px 8px; border-radius: 6px; background: #fff7e0; font-size: 12.5px; } .jst-flag.error { background: #fdecea; } .jst-flag.info { background: #eef4ff; }
+      .jst-dlg p { margin: 6px 0; font-size: 13px; } .jst-pick { max-height: 46vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; margin-top: 8px; } .jst-pick label { display: flex; gap: 8px; padding: 5px 8px; border-bottom: 1px solid #f1f3f4; font-size: 13px; cursor: pointer; } .jst-pick label[data-off="1"] { opacity: .5; cursor: default; }
+      .jst-cmp { margin-top: 8px; font-size: 12.5px; } .jst-cmp table { border-collapse: collapse; } .jst-cmp td, .jst-cmp th { padding: 3px 10px; border-bottom: 1px solid #f1f3f4; text-align: end; } .jst-cmp th:first-child, .jst-cmp td:first-child { text-align: start; }
+    ` }));
+  }
+  const CASE_GROUPS = () => [['employer', T('Employer ends the contract', 'إنهاء من صاحب العمل')], ['employee', T('Employee ends the contract', 'إنهاء من العامل')], ['contract', T('Contract ends', 'انتهاء العقد')], ['other', T('Other', 'أخرى')]];
+  function caseSelect_(value, onChange, withBlank) {
+    const s = el('select', { 'aria-label': T('Termination case', 'حالة إنهاء الخدمة') });
+    if (withBlank !== false) s.appendChild(el('option', { value: '', text: withBlank || T('Choose…', 'اختر…') }));
+    CASE_GROUPS().forEach(([g, label]) => { const og = el('optgroup', { label }); E.CASES.filter((c) => c.grp === g).forEach((c) => og.appendChild(el('option', { value: c.key, text: caseLabel_(c) + (c.art ? ' · ' + T('Art ', 'م') + c.art : '') }))); s.appendChild(og); });
+    s.value = value || ''; const tt = () => { const o = s.options[s.selectedIndex]; s.title = o ? o.text : ''; }; tt(); s.addEventListener('change', () => { tt(); onChange(s.value); }); return s;
+  }
+
+  function openTool_() {
+    injectCss_(); try { jboActOpen_(MODULE_ID); } catch (e) { /* ignore */ }
+    const S = { rows: [], set: { eosBase: 'full', leaveBase: 'full', deductAdvanceLeave: false }, busy: false, stop: false, sel: new Set(), open: null, jisrList: null, more: false };
+    const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+    const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': T('Close', 'إغلاق') });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1320px, 98vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('End-of-service and leave settlement', 'تسوية نهاية الخدمة والإجازات') }), closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => { S.stop = true; backdrop.remove(); };
+    closeBtn.addEventListener('click', close); backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+    const noteEl = el('div', { class: 'jbo-muted', role: 'status', 'aria-live': 'polite', style: { margin: '6px 0 0', minHeight: '18px', whiteSpace: 'pre-line' } });
+    const barFill = el('i'); const progEl = el('div', { class: 'jst-prog', 'aria-hidden': 'true', style: { visibility: 'hidden' } }, [el('div', { class: 'jst-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, [barFill])]);
+    const setNote = (t, err) => { noteEl.textContent = t; noteEl.style.color = err ? '#a50e0e' : ''; };
+    const setProg = (done, total) => { if (!total) { progEl.style.visibility = 'hidden'; return; } const p = Math.round(done / total * 100); progEl.style.visibility = 'visible'; barFill.style.width = p + '%'; progEl.firstChild.setAttribute('aria-valuenow', String(p)); };
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') }); const stmtB = el('button', { class: 'jbo-btn', text: T('Printable statements', 'كشوف للطباعة') }); const mainB = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('Calculate', 'احسب') });
+    foot.appendChild(stopB); foot.appendChild(stmtB); foot.appendChild(mainB); stopB.style.display = 'none';
+    stopB.addEventListener('click', () => { S.stop = true; setNote(T('Stopping…', 'جارٍ الإيقاف…')); });
+
+    const targets = () => (S.sel.size ? S.rows.filter((r) => S.sel.has(r.id)) : S.rows);
+    const done = () => S.rows.filter((r) => r.res && r.res.ok);
+    const recalcAll = () => { S.rows.forEach((r) => calc_(r, S.set)); };
+    const addRow = (e, init) => {
+      let r = S.rows.find((x) => String(x.id) === String(e.id));
+      if (!r) { r = { id: e.id, code: String(e.code == null ? '' : e.code), name: e.name || '', nid: e.nid || '', data: null, in: blankIn_(), res: null, cmp: null, jisr: null, msg: '', err: '' }; S.rows.push(r); }
+      if (init) Object.assign(r.in, init);
+      return r;
+    };
+
+    // ---------------------------------------------------------------- reading + calculating
+    async function readRows(list) {
+      const need = list.filter((r) => !r.data); let next = 0, ok = 0, bad = 0, doneN = 0; const total = need.length; let authErr = null;
+      const worker = async () => {
+        while (!S.stop && !authErr) {
+          const i = next++; if (i >= total) return; const r = need[i];
+          try { r.data = await readEmployee_(r.id); r.err = ''; if (r.data.name && !r.name) r.name = r.data.name; if (r.data.code && !r.code) r.code = r.data.code; ok++; }
+          catch (e) { if (e.auth) { authErr = e; return; } r.err = String(e.message || e).slice(0, 160); bad++; }
+          doneN++; setProg(doneN, total); setNote(T('Reading from Jisr… ', 'جارٍ القراءة من جسر… ') + doneN + ' / ' + total + ' (' + Math.round(doneN / total * 100) + '%)' + (bad ? ' · ' + bad + T(' failed', ' فشل') : ''));
+        }
+      };
+      if (total) await Promise.all(Array.from({ length: cfg.workers }, worker));
+      if (authErr) throw authErr; return { ok, bad, total };
+    }
+    async function attachJisr(list) {
+      const want = list.filter((r) => r.res && r.res.ok && !r.jisr && !r.noJisr);
+      if (!want.length) return 0;
+      if (!S.jisrList) { setNote(T('Looking for settlements Jisr already made…', 'جارٍ البحث عن تسويات أنشأها جسر…')); try { S.jisrList = await listSettlements_(() => S.stop); } catch (e) { if (e.auth) throw e; S.jisrList = []; } }
+      let n = 0;
+      for (const r of want) {
+        if (S.stop) break;
+        const cand = S.jisrList.filter((s) => String(s.empId) === String(r.id)); const s = cand.find((x) => x.lwd === r.in.lwd) || cand[0]; if (!s) { r.noJisr = true; continue; }
+        try { r.jisr = await readJisrAmounts_(s); n++; } catch (e) { if (e.auth) throw e; r.noJisr = true; }
+      }
+      return n;
+    }
+    async function calculateNow() {
+      if (S.busy) return; const list = targets(); if (!list.length) { setNote(T('Add employees first.', 'أضف موظفين أولًا.'), true); return; }
+      S.busy = true; S.stop = false; mainB.disabled = true; stopB.style.display = ''; render();
+      try {
+        const rd = await readRows(list); recalcAll();
+        const withJ = await attachJisr(list); recalcAll();
+        const ok = list.filter((r) => r.res && r.res.ok).length, miss = list.filter((r) => r.data && !r.res).length;
+        setNote((S.stop ? T('Stopped. ', 'أُوقف. ') : '') + ok + T(' calculated', ' محسوب') + (miss ? ' · ' + miss + T(' need a last working day or a case', ' تحتاج آخر يوم عمل أو حالة') : '') + (rd.bad ? ' · ' + rd.bad + T(' could not be read from Jisr', ' تعذّرت قراءتها من جسر') : '') + (withJ ? ' · ' + withJ + T(' compared with Jisr', ' قورنت مع جسر') : ''), !!rd.bad);
+        try { jboActReport_(MODULE_ID, 'calculate', rd.bad ? 'failed' : 'ok', ok + ' calculated'); } catch (e) { /* ignore */ }
+      } catch (e) { setNote(String(e.message || e).slice(0, 240), true); }
+      finally { S.busy = false; mainB.disabled = false; stopB.style.display = 'none'; setProg(0, 0); render(); }
+    }
+
+    // ---------------------------------------------------------------- adding employees
+    async function pickEmployees() {
+      const list = await new Promise((resolve) => {
+        const q = el('input', { type: 'text', placeholder: T('Search name, code or ID…', 'ابحث بالاسم أو الرقم أو الهوية…'), style: { width: '100%', font: 'inherit', padding: '7px 9px', border: '1px solid #c9cdd2', borderRadius: '6px' } });
+        const holder = el('div', { class: 'jst-pick' }); const chosen = new Set(); let all = []; const addB = el('button', { class: 'jbo-btn jbo-btn-primary', type: 'button', text: T('Add', 'إضافة') }); const cancel = el('button', { class: 'jbo-btn', type: 'button', text: T('Cancel', 'إلغاء') });
+        const dlg = el('div', { class: 'jbo-modal jst-dlg', style: { width: 'min(560px, 94vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('Add employees', 'إضافة موظفين') })]), el('div', { class: 'jbo-modal-body' }, [q, holder]), el('div', { class: 'jbo-modal-foot' }, [cancel, addB])]);
+        dlg.__jboRun = true; const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); const fin = (v) => { bd.remove(); resolve(v); };
+        const paint = () => {
+          holder.textContent = ''; const nd = q.value.trim().toLowerCase();
+          const shown = all.filter((e) => !nd || (e.name + ' ' + e.code + ' ' + (e.nid || '')).toLowerCase().includes(nd)).slice(0, 150);
+          shown.forEach((e) => { const dup = S.rows.some((r) => String(r.id) === String(e.id)); const cb = el('input', { type: 'checkbox' }); cb.checked = dup || chosen.has(e.id); cb.disabled = dup; cb.addEventListener('change', () => { if (cb.checked) chosen.add(e.id); else chosen.delete(e.id); addB.textContent = T('Add ', 'أضف ') + chosen.size; addB.disabled = !chosen.size; });
+            holder.appendChild(el('label', { 'data-off': dup ? '1' : '0' }, [cb, el('span', { text: (e.code ? e.code + ' · ' : '') + e.name + (dup ? T(' (already added)', ' (مضاف)') : ''), dir: 'auto' })])); });
+          if (!shown.length) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '8px' }, text: all.length ? T('Nobody matches.', 'لا أحد مطابق.') : T('Loading employees…', 'جارٍ تحميل الموظفين…') }));
+        };
+        q.addEventListener('input', paint); cancel.addEventListener('click', () => fin(null)); bd.addEventListener('mousedown', (e) => { if (e.target === bd) fin(null); });
+        addB.disabled = true; addB.addEventListener('click', () => fin(all.filter((e) => chosen.has(e.id)))); document.body.appendChild(bd); paint(); q.focus();
+        W.__jisrBulkOpsEmployees.get(false).then((l) => { all = l || []; paint(); }).catch((e) => { holder.textContent = String(e.message || e); });
+      });
+      if (!list || !list.length) return; list.forEach((e) => addRow(e)); setNote(list.length + T(' employee(s) added. Enter each one\'s last working day and case, then click Calculate.', ' موظف أُضيف. أدخل آخر يوم عمل وحالة كل موظف ثم اضغط احسب.')); render();
+    }
+    async function loadFromJisr() {
+      if (S.busy) return; S.busy = true; S.stop = false; mainB.disabled = true; stopB.style.display = ''; render();
+      try {
+        setNote(T('Reading the final settlements Jisr already has…', 'جارٍ قراءة التسويات النهائية الموجودة في جسر…')); S.jisrList = await listSettlements_(() => S.stop);
+        let n = 0, un = 0; const seen = new Set();
+        S.jisrList.forEach((s) => { if (s.empId == null || seen.has(s.empId)) return; seen.add(s.empId); const c = E.findCase(s.reason); if (!c && s.reason) un++; addRow({ id: s.empId, code: s.code, name: s.name }, { lwd: s.lwd, caseKey: c ? c.key : '' }); n++; });
+        setNote(n + T(' employees with a final settlement in Jisr were added with their last working day and reason.', ' موظف لديهم تسوية نهائية في جسر أُضيفوا مع آخر يوم عمل والسبب.') + (un ? ' ' + un + T(' reason(s) could not be matched to a case: choose them yourself.', ' سبب لم يُطابق حالة: اخترها بنفسك.') : '') + T(' Click Calculate to compare with Jisr.', ' اضغط احسب للمقارنة مع جسر.'));
+      } catch (e) { setNote(String(e.message || e).slice(0, 240), true); }
+      finally { S.busy = false; mainB.disabled = false; stopB.style.display = 'none'; render(); }
+    }
+    async function importExcel(file) {
+      try {
+        const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' }); const ws = wb.Sheets[wb.SheetNames[0]]; const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+        const items = parseSheet_(aoa);
+        const list = await W.__jisrBulkOpsEmployees.get(false); const by = new Map(); (list || []).forEach((e) => { [e.id, e.code, e.nid].forEach((k) => { if (k != null && String(k) !== '') by.set(String(k).trim().toLowerCase(), e); }); });
+        let ok = 0; const miss = [], badDate = [], badCase = [];
+        items.forEach((it) => {
+          const e = by.get(it.ref.toLowerCase()); if (!e) { miss.push(it.ref); return; }
+          if (it.lwdRaw !== '' && !it.lwd) badDate.push(it.ref); if (it.caseText && !it.caseKey) badCase.push(it.ref);
+          const init = { lwd: it.lwd, caseKey: it.caseKey, periodFrom: it.periodFrom, eventDate: it.eventDate, noticeDays: it.noticeDays, additions: it.additions, deductions: it.deductions, loans: it.loans };
+          Object.keys(init).forEach((k) => { if (init[k] === '' || init[k] == null) delete init[k]; }); addRow(e, init); ok++;
+        });
+        setNote(ok + T(' employee(s) read from the file.', ' موظف قُرئوا من الملف.') + (miss.length ? '\n' + T('Not found in Jisr: ', 'غير موجودين في جسر: ') + miss.slice(0, 10).join(', ') + (miss.length > 10 ? '…' : '') : '') + (badDate.length ? '\n' + T('Date not understood: ', 'تاريخ غير مفهوم: ') + badDate.slice(0, 10).join(', ') : '') + (badCase.length ? '\n' + T('Case not understood (choose it in the table): ', 'حالة غير مفهومة (اخترها من الجدول): ') + badCase.slice(0, 10).join(', ') : ''), !!(miss.length || badDate.length || badCase.length)); render();
+      } catch (e) { setNote(T('Could not read the file: ', 'تعذّرت قراءة الملف: ') + String(e.message || e).slice(0, 160), true); }
+    }
+
+    // ---------------------------------------------------------------- rendering
+    function settingsBar() {
+      const bs = (key, label) => { const s = el('select', { 'aria-label': label }); E.BASES.forEach((b) => s.appendChild(el('option', { value: b.key, text: T(b.en, b.ar) }))); s.value = S.set[key]; s.addEventListener('change', () => { S.set[key] = s.value; recalcAll(); render(); }); return el('label', {}, [label, s]); };
+      const adv = el('input', { type: 'checkbox' }); adv.checked = !!S.set.deductAdvanceLeave; adv.addEventListener('change', () => { S.set.deductAdvanceLeave = adv.checked; recalcAll(); render(); });
+      return el('div', { class: 'jst-set' }, [bs('eosBase', T('Wage for the end-of-service award', 'الأجر لمكافأة نهاية الخدمة')), bs('leaveBase', T('Wage for leave pay', 'الأجر لبدل الإجازة')), el('label', { class: 'jst-ck' }, [adv, T('Deduct leave taken in advance', 'خصم الإجازة المأخوذة مقدمًا')])]);
+    }
+    function bulkBar() {
+      const n = S.sel.size; const d = el('input', { type: 'date', 'aria-label': T('Last working day', 'آخر يوم عمل') }); const c = caseSelect_('', () => {}, T('Case: keep', 'الحالة: بدون تغيير')); const p = el('input', { type: 'date', 'aria-label': T('Leave period from', 'بداية فترة الإجازة') });
+      const ap = el('button', { class: 'jbo-btn', type: 'button', text: T('Apply to ' + n + ' ticked', 'طبّق على ' + n + ' محدد') }); ap.disabled = !n;
+      ap.addEventListener('click', () => { S.rows.filter((r) => S.sel.has(r.id)).forEach((r) => { if (d.value) r.in.lwd = d.value; if (c.value) r.in.caseKey = c.value; if (p.value) r.in.periodFrom = p.value; }); recalcAll(); render(); });
+      const rm = el('button', { class: 'jbo-btn', type: 'button', text: T('Remove ticked', 'احذف المحدد') }); rm.disabled = !n; rm.addEventListener('click', () => { S.rows = S.rows.filter((r) => !S.sel.has(r.id)); if (S.open != null && !S.rows.some((r) => r.id === S.open)) S.open = null; S.sel.clear(); render(); });
+      return el('div', { class: 'jst-bulk' }, [el('b', { text: T('Set for the ticked rows:', 'تعيين للصفوف المحددة:') }), el('label', {}, [T('Last working day ', 'آخر يوم عمل '), d]), c, el('label', {}, [T('Leave from ', 'الإجازة من '), p]), ap, rm]);
+    }
+    const statusCell = (r) => {
+      if (r.err) return el('span', { class: 'jst-bad', text: r.err }); if (!r.data) return el('span', { class: 'jbo-muted', text: T('Not read yet', 'لم تُقرأ بعد') });
+      if (!r.res) return el('span', { class: 'jst-warn', text: r.msg || '' }); if (!r.res.ok) return el('span', { class: 'jst-bad', text: T(r.res.flags[0].en, r.res.flags[0].ar) });
+      const w = r.res.flags.filter((f) => f.level !== 'info').length; const j = r.cmp ? (r.cmp.any ? el('span', { class: 'jst-warn', text: T('Differs from Jisr', 'يختلف عن جسر') }) : el('span', { class: 'jst-ok', text: T('Matches Jisr', 'مطابق لجسر') })) : null;
+      return el('span', {}, [j, j && w ? ' · ' : null, w ? el('span', { class: 'jst-warn', text: w + T(' note(s)', ' ملاحظة') }) : (!j ? el('span', { class: 'jst-ok', text: T('Ready', 'جاهز') }) : null)]);
+    };
+    function renderTable(holder) {
+      holder.textContent = ''; const hdr = el('input', { type: 'checkbox', 'aria-label': T('Tick all', 'تحديد الكل') }); hdr.checked = !!S.rows.length && S.rows.every((r) => S.sel.has(r.id));
+      hdr.addEventListener('change', () => { S.rows.forEach((r) => { if (hdr.checked) S.sel.add(r.id); else S.sel.delete(r.id); }); render(); });
+      const th = (t, c) => el('th', { class: c || '', text: t });
+      const tb = el('table', { class: 'jst-tbl' }, [el('tr', {}, [el('th', {}, [hdr]), th(T('Employee', 'الموظف')), th(T('Last working day', 'آخر يوم عمل')), th(T('Termination case', 'حالة إنهاء الخدمة')), th(T('Leave period from', 'فترة الإجازة من')), th(T('Service', 'الخدمة')), th(T('Salary', 'الراتب'), 'num'), th(T('Award', 'المكافأة'), 'num'), th(T('Leave', 'الإجازة'), 'num'), th(T('Other', 'أخرى'), 'num'), th(T('Net payout', 'الصافي'), 'num'), th(T('Check', 'الفحص'))])]);
+      S.rows.slice(0, 500).forEach((r) => {
+        const cb = el('input', { type: 'checkbox', 'aria-label': r.name }); cb.checked = S.sel.has(r.id); cb.addEventListener('change', () => { if (cb.checked) S.sel.add(r.id); else S.sel.delete(r.id); render(); });
+        const d = el('input', { type: 'date', value: r.in.lwd, 'aria-label': T('Last working day', 'آخر يوم عمل') }); d.addEventListener('change', () => { r.in.lwd = d.value; calc_(r, S.set); render(); });
+        const c = caseSelect_(r.in.caseKey, (v) => { r.in.caseKey = v; calc_(r, S.set); render(); });
+        const p = el('input', { type: 'date', value: r.in.periodFrom, 'aria-label': T('Leave period from', 'بداية فترة الإجازة'), title: T('Empty = start of the year of the last working day (or the joining date)', 'فارغ = بداية سنة آخر يوم عمل (أو تاريخ الالتحاق)') }); p.addEventListener('change', () => { r.in.periodFrom = p.value; calc_(r, S.set); render(); });
+        const q = r.res && r.res.ok ? r.res : null; const nm = el('button', { class: 'jst-name', type: 'button', text: r.name || String(r.id), dir: 'auto' }); nm.addEventListener('click', () => { S.open = S.open === r.id ? null : r.id; render(); });
+        const other0 = q ? E.r2(q.totals.net - lineAmt_(q, 'salary') - lineAmt_(q, 'eosb') - lineAmt_(q, 'leave')) : null; const other = other0 != null && Math.abs(other0) < 0.005 ? 0 : other0; const cell = (v, c2) => el('td', { class: 'num' + (c2 ? ' ' + c2 : ''), text: v == null ? '' : fmt_(v) });
+        tb.appendChild(el('tr', { class: S.open === r.id ? 'on' : '' }, [el('td', {}, [cb]), el('td', {}, [nm, el('small', { text: (r.code || '') + (r.data && r.data.join ? ' · ' + T('joined ', 'التحاق ') + r.data.join : '') })]), el('td', {}, [d]), el('td', {}, [c]), el('td', {}, [p]),
+          el('td', { class: 'jst-sv', text: q ? svText_(q.service) : '' }), cell(q ? lineAmt_(q, 'salary') : null), cell(q ? lineAmt_(q, 'eosb') : null), el('td', { class: 'num', text: q ? E.f2(q.leaveSettle.days) + T(' d · ', ' ي · ') + E.f2(lineAmt_(q, 'leave')) : '' }), cell(other), cell(q ? q.totals.net : null, q && q.totals.net < 0 ? 'jst-bad' : ''), el('td', {}, [statusCell(r)])]));
+      });
+      holder.appendChild(tb); if (S.rows.length > 500) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px 8px' }, text: T('Showing the first 500 of ', 'يعرض أول 500 من ') + S.rows.length + T('. The Excel file has everyone calculated.', '. ملف Excel يحتوي كل المحسوبين.') }));
+    }
+    function fieldNum(r, key, label, hint, step) {
+      const i = el('input', { type: 'number', step: step || 'any', value: r.in[key] === '' || r.in[key] == null ? '' : String(r.in[key]), placeholder: hint || '', 'aria-label': label }); i.addEventListener('change', () => { r.in[key] = i.value === '' ? '' : Number(i.value); calc_(r, S.set); render(); });
+      return [el('span', { text: label }), i];
+    }
+    function renderDetail(wrap) {
+      const r = S.rows.find((x) => x.id === S.open); if (!r) return; const q = r.res && r.res.ok ? r.res : null; const c = E.caseByKey(r.in.caseKey);
+      const box = el('div', { class: 'jst-det' }); wrap.appendChild(box);
+      const closeD = el('button', { class: 'jbo-btn', type: 'button', text: T('Close', 'إغلاق') }); closeD.addEventListener('click', () => { S.open = null; render(); });
+      box.appendChild(el('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'start' } }, [el('h3', { dir: 'auto', text: (r.name || r.id) + (r.code ? ' · ' + r.code : '') }), closeD]));
+      if (!r.data) { box.appendChild(el('p', { class: 'jbo-muted', text: T('Click Calculate to read this employee from Jisr first.', 'اضغط احسب لقراءة هذا الموظف من جسر أولًا.') })); return; }
+      const grid = el('div', { class: 'jst-grid' }); box.appendChild(grid); const left = el('div'), right = el('div'); grid.appendChild(left); grid.appendChild(right);
+      const fl = (...kids) => el('div', { class: 'jst-fld' }, kids);
+      if (c && c.needsEvent) { const i = el('input', { type: 'date', value: r.in.eventDate, 'aria-label': T('Event date', 'تاريخ الواقعة') }); i.addEventListener('change', () => { r.in.eventDate = i.value; calc_(r, S.set); render(); }); left.appendChild(fl(el('span', { text: c.needsEvent === 'marriage' ? T('Marriage date', 'تاريخ الزواج') : T('Date of birth of the child', 'تاريخ الولادة') }), i)); }
+      if (c && c.award === 'custom') left.appendChild(fl(...fieldNum(r, 'customPct', T('Share of the full award (%)', 'نسبة المكافأة من الكاملة (%)'), '100')));
+      if (c && c.notice) left.appendChild(fl(...fieldNum(r, 'noticeDays', c.notice === 'employer' ? T('Notice days the employer did not give (paid to the employee)', 'أيام الإشعار التي لم يمنحها صاحب العمل (تُدفع للعامل)') : T('Notice days the employee did not serve (deducted)', 'أيام الإشعار التي لم يلتزم بها العامل (تُخصم)'), '0', '1')));
+      if (c && c.comp77) { const i = el('input', { type: 'checkbox' }); i.checked = r.in.art77 !== false; i.addEventListener('change', () => { r.in.art77 = i.checked; calc_(r, S.set); render(); }); left.appendChild(fl(el('span', { text: T('Include the Art 77 compensation', 'احتساب تعويض المادة 77') }), i)); }
+      left.appendChild(fl(...fieldNum(r, 'additions', T('Other additions', 'إضافات أخرى'), '0')));
+      left.appendChild(fl(...fieldNum(r, 'deductions', T('Other deductions', 'خصومات أخرى'), '0')));
+      left.appendChild(fl(...fieldNum(r, 'loans', T('Loans and advances to deduct', 'القروض والسلف للخصم'), '0')));
+      const mv = el('button', { class: 'jbo-btn', type: 'button', text: S.more ? T('Fewer options', 'خيارات أقل') : T('More options (leave days, wage, service)', 'خيارات أكثر (أيام الإجازة، الأجر، الخدمة)') }); mv.addEventListener('click', () => { S.more = !S.more; render(); }); left.appendChild(el('div', { style: { margin: '8px 0' } }, [mv]));
+      if (S.more) {
+        left.appendChild(fl(...fieldNum(r, 'annualDays', T('Annual leave days a year', 'أيام الإجازة السنوية'), r.data.annual != null ? String(r.data.annual) : '21')));
+        left.appendChild(fl(...fieldNum(r, 'adjustment', T('Leave adjustment (days, + or −)', 'تسوية الإجازة (أيام، + أو −)'), '0')));
+        left.appendChild(fl(...fieldNum(r, 'leaveOverride', T('Leave days to pay (replaces the calculation)', 'أيام الإجازة للدفع (تحل محل الحساب)'), q ? String(q.leave.net) : '')));
+        left.appendChild(fl(...fieldNum(r, 'serviceDeduct', T('Days to take off the service (unpaid leave)', 'أيام تُخصم من الخدمة (إجازة غير مدفوعة)'), '0', '1')));
+        const wb = (key, label) => { const s = el('select', { 'aria-label': label }); s.appendChild(el('option', { value: '', text: T('Same as the setting above', 'مثل الإعداد أعلاه') })); E.BASES.forEach((b) => s.appendChild(el('option', { value: b.key, text: T(b.en, b.ar) }))); s.value = r.in[key] || ''; s.addEventListener('change', () => { r.in[key] = s.value; calc_(r, S.set); render(); }); return fl(el('span', { text: label }), s); };
+        left.appendChild(wb('eosBase', T('Wage for the award (this employee)', 'الأجر للمكافأة (لهذا الموظف)'))); left.appendChild(wb('leaveBase', T('Wage for leave pay (this employee)', 'الأجر لبدل الإجازة (لهذا الموظف)')));
+      }
+      left.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px', marginTop: '8px' }, text: T('From Jisr: basic ', 'من جسر: الأساسي ') + E.f2(r.data.basic) + T(', housing ', '، السكن ') + E.f2(r.data.housing) + T(', full package ', '، الإجمالي ') + E.f2(r.data.pack) + (r.data.contractType ? ' · ' + (r.data.contractType === 'fixed' ? T('fixed-term contract', 'عقد محدد المدة') : T('open-ended contract', 'عقد غير محدد المدة')) : '') + (r.data.contractEnd ? ' (' + r.data.contractEnd + ')' : '') }));
+      if (!q) { right.appendChild(el('p', { class: 'jst-warn', text: r.msg || (r.res && r.res.flags[0] ? T(r.res.flags[0].en, r.res.flags[0].ar) : '') })); return; }
+      const tb = el('table', { class: 'jst-stmt' }); q.lines.forEach((l) => tb.appendChild(el('tr', {}, [el('td', {}, [el('div', { dir: 'auto', text: T(l.en, l.ar) }), l.formula ? el('div', { class: 'fx', text: l.formula }) : null]), el('td', { class: 'num' + (l.amount < 0 ? ' jst-bad' : ''), text: E.f2(l.amount) })])));
+      tb.appendChild(el('tr', { class: 'tot' }, [el('td', { text: T('Net payout', 'صافي المبلغ المستحق') }), el('td', { class: 'num', text: E.f2(q.totals.net) })])); right.appendChild(tb);
+      right.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('Pay by ', 'يُصرف قبل ') + q.payBy + T(' (Art 88: ' + q.payByDays + ' days after the end of the contract). Service ', ' (م88: ' + q.payByDays + ' يومًا من انتهاء العقد). الخدمة ') + svText_(q.service) + ' = ' + E.r2(q.service.T).toFixed(4) + T(' years. ', ' سنة. ') + (c ? T(c.noteEn, c.noteAr) : '') }));
+      const lv = q.leave; right.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('Leave from ', 'الإجازة من ') + E.iso(lv.from) + T(' to ', ' إلى ') + E.iso(lv.to) + ' (' + lv.daysIn + T(' days): ', ' يومًا): ') + lv.annual + T(' days a year gives ', ' يوم سنويًا تعطي ') + E.f2(lv.accrued) + (lv.carry ? ' + ' + E.f2(lv.carry) + T(' brought forward', ' مرحّلة') : '') + (lv.adjustment ? (lv.adjustment > 0 ? ' + ' : ' − ') + E.f2(Math.abs(lv.adjustment)) + T(' adjustments', ' تسويات') : '') + (lv.unpaidDeduction ? ' − ' + E.f2(lv.unpaidDeduction) + T(' unpaid', ' غير مدفوعة') : '') + ' − ' + E.f2(lv.used) + T(' taken', ' مستخدمة') + ' = ' + E.f2(lv.net) + T(' days', ' يوم') }));
+      q.flags.forEach((f) => right.appendChild(el('div', { class: 'jst-flag ' + f.level, dir: 'auto', text: T(f.en, f.ar) })));
+      if (r.jisr) {
+        const j = r.jisr, d = r.cmp; const row = (lab, mine, theirs) => el('tr', {}, [el('td', { text: lab }), el('td', { text: E.f2(mine) }), el('td', { text: E.f2(theirs) }), el('td', { class: Math.abs(mine - theirs) > 0.05 ? 'jst-warn' : 'jst-ok', text: Math.abs(mine - theirs) > 0.05 ? E.f2(E.r2(mine - theirs)) : '✓' })]);
+        right.appendChild(el('div', { class: 'jst-cmp' }, [el('b', { text: T('Compared with the settlement Jisr made (', 'مقارنة مع تسوية جسر (') + (j.status || '') + ')' }), el('table', {}, [el('tr', {}, [el('th', { text: '' }), el('th', { text: T('This tool', 'هذه الأداة') }), el('th', { text: 'Jisr' }), el('th', { text: T('Difference', 'الفرق') })]),
+          row(T('Salary', 'الراتب'), lineAmt_(q, 'salary'), j.salary), row(T('End-of-service award', 'مكافأة نهاية الخدمة'), lineAmt_(q, 'eosb'), j.eos), row(T('Leave days', 'أيام الإجازة'), q.leaveSettle.days, j.leaveDays), row(T('Leave pay', 'بدل الإجازة'), lineAmt_(q, 'leave'), j.leave)])]));
+        if (d && d.any) right.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('A difference is not always a mistake: Jisr may use a different wage, leave balance or case. Check the wage setting, the leave period and the case first.', 'الفرق ليس دائمًا خطأ: قد يستخدم جسر أجرًا أو رصيد إجازة أو حالة مختلفة. افحص إعداد الأجر وفترة الإجازة والحالة أولًا.') }));
+      }
+    }
+    function render() {
+      body.textContent = '';
+      body.appendChild(el('div', { class: 'jst-note', text: T('For each employee, enter the last working day, the termination case (it carries its Labor Law article) and, if needed, the leave period. The tool reads the joining date, salary and leave from Jisr and works out the end-of-service award, leave pay, notice, Art 77 compensation and the net payout. It only reads: nothing is written to Jisr or saved here. Saudi Labor Law; guidance, not legal advice.', 'لكل موظف أدخل آخر يوم عمل وحالة إنهاء الخدمة (وفيها مادة نظام العمل) وعند الحاجة فترة الإجازة. تقرأ الأداة تاريخ الالتحاق والراتب والإجازات من جسر وتحسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وتعويض المادة 77 وصافي المبلغ. تقرأ فقط: لا شيء يُكتب في جسر ولا يُحفظ هنا. نظام العمل السعودي؛ للإرشاد وليس استشارة قانونية.') }));
+      body.appendChild(settingsBar());
+      const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } }); fileIn.addEventListener('change', () => { if (fileIn.files[0]) importExcel(fileIn.files[0]); fileIn.value = ''; });
+      const b = (t, f, title) => { const x = el('button', { class: 'jbo-btn', type: 'button', text: t, title: title || null }); x.disabled = S.busy; x.addEventListener('click', f); return x; };
+      body.appendChild(el('div', { class: 'jst-add' }, [b(T('Add employees…', 'إضافة موظفين…'), pickEmployees), b(T('Load from Jisr final settlements', 'تحميل من التسويات النهائية في جسر'), loadFromJisr, T('Adds every employee that already has a final settlement, with the last working day and reason Jisr holds', 'يضيف كل موظف لديه تسوية نهائية مع آخر يوم عمل والسبب المسجلين في جسر')), b(T('Import Excel', 'استيراد Excel'), () => fileIn.click(), T('Columns: employee code, last working day, case or article, leave period from…', 'الأعمدة: رقم الموظف، آخر يوم عمل، الحالة أو المادة، بداية فترة الإجازة…')), b(T('Excel template', 'نموذج Excel'), () => { try { setNote(T('Saved: ', 'حُفظ: ') + downloadTemplate_()); } catch (e) { setNote(String(e.message || e), true); } }), fileIn]));
+      body.appendChild(noteEl); body.appendChild(progEl);
+      if (S.rows.length) { body.appendChild(bulkBar()); const holder = el('div', { class: 'jst-scroll' }); body.appendChild(holder); renderTable(holder); const dw = el('div'); body.appendChild(dw); renderDetail(dw); }
+      else body.appendChild(el('div', { class: 'jbo-muted', style: { padding: '14px 4px' }, text: T('No employees yet. Add employees, load the ones that already have a final settlement in Jisr, or import an Excel file.', 'لا موظفين بعد. أضف موظفين أو حمّل من لديهم تسوية نهائية في جسر أو استورد ملف Excel.') }));
+      const ready = done().length; const pending = targets().some((r) => !r.res || !r.res.ok);
+      mainB.textContent = ready && !pending && !S.busy ? T('Download Excel', 'نزّل ملف Excel') : T('Calculate', 'احسب'); stmtB.style.display = ready ? '' : 'none'; stmtB.disabled = S.busy;
+    }
+    const exportRows = () => { const t = S.sel.size ? S.rows.filter((r) => S.sel.has(r.id)) : S.rows; return t.filter((r) => r.res && r.res.ok); };
+    mainB.addEventListener('click', () => {
+      const ready = done().length; const pending = targets().some((r) => !r.res || !r.res.ok);
+      if (ready && !pending && !S.busy) { try { const rows = exportRows(); const name = downloadExcel_(rows, S.set); setNote(T('Saved: ', 'حُفظ: ') + name + ' (' + rows.length + T(' employees)', ' موظف)')); try { jboActReport_(MODULE_ID, 'excel', 'ok', rows.length + ' employees'); } catch (e) { /* ignore */ } } catch (e) { setNote(String(e.message || e), true); } return; }
+      calculateNow();
+    });
+    stmtB.addEventListener('click', () => { try { const rows = exportRows(); const name = downloadStatements_(rows, S.set); setNote(T('Saved: ', 'حُفظ: ') + name + T(' (open it, then Print or Save as PDF)', ' (افتحه ثم اطبع أو احفظ PDF)')); try { jboActReport_(MODULE_ID, 'statements', 'ok', rows.length + ' statements'); } catch (e) { /* ignore */ } } catch (e) { setNote(String(e.message || e), true); } });
+    render();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'End-of-Service & Leave Settlement', open: openTool_, version: SECTION_VERSION };
+    W.__jisrSettlement = { E, readEmployee_, engineInput_, calc_, blankIn_, workbook_, statementsHtml_, parseSheet_, listSettlements_, readJisrAmounts_, cfg };
     if (g._rerender) g._rerender();
   }
   register_();
