@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.113.0
+// @version      4.114.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -187,6 +187,7 @@ function jboActFlush_() {
   let settled = false;
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
   // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
+  // v4.114.0: Settlements now forecast. Pick any last working day (today, tomorrow, end of this or next month, or any date) and see what the company would owe; the Month by month tab shows the entitlement growing across 3 to 24 months; Compare reasons puts resignation, termination, contract end and the Art 77 / Art 80 cases side by side for the same date; Notice impact compares serving the notice, partly serving it and paying in lieu, with a Use this button. None of it is saved or written. The statement is now Gross entitlement (pending payroll items, award, leave, notice, compensation) minus Deductions and offsets (loans still pending in Jisr, unreturned assets, advance leave) = Net payable. New inputs: earlier unpaid months, expense claims, annual bonus (pro rata), asset value. New Add all employees and Forecast report: Excel and printable report of the net payable if everyone left on a date or at each month end, by department and by employee, with a cash-flow alert (cash needed if all leave in one month, against the cash you have). Reads loans, assets and department from Jisr (GET only).
   // v4.113.0: End-of-Service & Leave Settlement (new tool, Payroll & GOSI). For each employee you set the last working day, the termination case (with its Labor Law article) and the leave period; the tool reads the joining date, salary and leave from Jisr and works out the end-of-service award (Art 84, 85, 87), salary of the last month, accrued leave pay (Art 111), notice pay (Art 76), the Art 77 compensation, your additions / deductions / loans, the net payout and the date to pay by (Art 88). It compares with the final settlement Jisr already made, exports one Excel for one or many employees and prints one statement page per employee. Read only. The arithmetic matches 10 real Jisr settlements (test/settlement-engine.test.js).
   // v4.112.0: Fixed Working Hours: when Jisr answers "another request is in progress for the same resource, please retry later", the row is no longer marked failed. It shows "Jisr is still busy, trying again in Ns (try n)", the panel says "waiting for Jisr", and the same change is sent again automatically until Jisr accepts it (up to about 12 minutes, or Stop). Works for create, edit and delete. New button "Retry failed (n)" puts failed rows back in the queue and sends them again.
   // v4.111.0: Fixed Working Hours (and every tool window): a visible percentage while it works. Fixed Hours has its own progress panel (percentage, bar, done of total, ticks and crosses) for reading schedules, the dry run and saving, and its result cells now count in the window's status strip; the strip shows the percentage next to its bar for every tool ("…" while only requests are known).
@@ -2120,7 +2121,7 @@ function JBOSettlementEngine_() {
 
   /**
    * One employee. in: { join, lwd, caseKey, sal: {basic, housing, pack}, annualDays, prevBalance, adjustment, unpaidDeduction, usedDays, periodFrom,
-   *   contractType ('fixed'|'indefinite'|''), contractEnd, art77 (false = leave the Art 77 compensation out), customPct, eventDate, noticeDays, unpaidServiceDays, unpaidDaysLastMonth,
+   *   contractType ('fixed'|'indefinite'|''), contractEnd, art77 (false = leave the Art 77 compensation out), customPct, eventDate, noticeDays, unpaidServiceDays, unpaidDaysLastMonth, unpaidMonths, claims, bonusAnnual (per year, pro rata to the last working day), assets (deduction),
    *   additions, deductions, loans, leaveOverride, eosBase, leaveBase, nat }
    * settings: { eosBase, leaveBase, deductAdvanceLeave }
    */
@@ -2197,13 +2198,22 @@ function JBOSettlementEngine_() {
       lines.push({ sec: 'earn', key: 'art77', en: 'Compensation for termination without a valid reason (Art 77)', ar: 'تعويض الإنهاء دون سبب مشروع (المادة 77)', amount: r2(comp), formula: f });
     }
     // ---- manual lines
+    // pending payroll items: earlier months not paid yet, expense claims, the bonus earned so far this year (pro rata)
+    const um = Math.max(0, num(inp.unpaidMonths)); if (um) lines.push({ sec: 'earn', key: 'unpaid', en: 'Unpaid salary of ' + um + ' earlier month(s)', ar: 'راتب ' + um + ' شهر سابق غير مدفوع', amount: r2(full * um), formula: f2(full) + ' x ' + um });
+    const cl = num(inp.claims); if (cl) lines.push({ sec: 'earn', key: 'claims', en: 'Pending expense claims', ar: 'مطالبات مصاريف معلقة', amount: r2(cl), formula: '' });
+    const ba = num(inp.bonusAnnual);
+    if (ba) { const from0 = Math.max(join, yearStart(lwd)); const bd = diffDays(from0, lwd) + 1; lines.push({ sec: 'earn', key: 'bonus', en: 'Bonus earned so far (pro rata)', ar: 'المكافأة المكتسبة حتى الآن (بالتناسب)', amount: r2(ba * bd / 365), formula: f2(ba) + ' x ' + bd + ' / 365' }); }
+    const ast = num(inp.assets); if (ast) lines.push({ sec: 'ded', key: 'assets', en: 'Unreturned or damaged company assets', ar: 'أصول الشركة غير المرتجعة أو التالفة', amount: -Math.abs(r2(ast)), formula: '' });
     const add = num(inp.additions), ded = num(inp.deductions), loans = num(inp.loans);
     if (add) lines.push({ sec: 'earn', key: 'add', en: 'Other additions', ar: 'إضافات أخرى', amount: r2(add), formula: '' });
     if (loans) lines.push({ sec: 'ded', key: 'loans', en: 'Loans and advances', ar: 'القروض والسلف', amount: -Math.abs(r2(loans)), formula: '' });
     if (ded) lines.push({ sec: 'ded', key: 'ded', en: 'Other deductions (Art 88: work-related debts)', ar: 'خصومات أخرى (المادة 88: ديون متعلقة بالعمل)', amount: -Math.abs(r2(ded)), formula: '' });
 
     const earn = r2(lines.filter((l) => l.amount > 0).reduce((a, l) => a + l.amount, 0)), dedt = r2(lines.filter((l) => l.amount < 0).reduce((a, l) => a + l.amount, 0));
-    out.totals = { earnings: earn, deductions: dedt, net: r2(earn + dedt) };
+    const GRP = { salary: 'pending', unpaid: 'pending', claims: 'pending', bonus: 'pending', eosb: 'eos', leave: 'leave', notice: 'notice', art77: 'comp', add: 'other', loans: 'ded', assets: 'ded', ded: 'ded' };
+    lines.forEach((l) => { l.grp = l.amount < 0 ? 'ded' : (GRP[l.key] || 'other'); });
+    const byGrp = {}; lines.forEach((l) => { byGrp[l.grp] = r2((byGrp[l.grp] || 0) + l.amount); });
+    out.totals = { earnings: earn, deductions: dedt, net: r2(earn + dedt), gross: earn, byGrp };
     // ---- Art 88: when to pay
     out.payBy = iso(addDays(lwd, c.grp === 'employee' ? 14 : 7)); out.payByDays = c.grp === 'employee' ? 14 : 7;
     // ---- notes
@@ -2221,7 +2231,11 @@ function JBOSettlementEngine_() {
     return d;
   }
 
-  return { r2, num, parseDate, iso, addDays, addMonths, diffDays, service, eosGross, CASES, caseByKey, findCase, BASES, baseAmount, leaveEntitlement, usedInPeriod, unpaidLeaveDays, compute, compareJisr, yearStart, f2 };
+  /** Month-end dates (ms), `count` of them, starting with the month that contains `from`. */
+  function monthEnds(from, count) { const d = new Date(from); const out = []; for (let i = 0; i < count; i++) { const t = d.getUTCFullYear() * 12 + d.getUTCMonth() + i; const y = Math.floor(t / 12), m = t - y * 12; out.push(utc(y, m, dim(y, m))); } return out; }
+  /** Notice days the law asks for (Art 75), by who ends the contract. */
+  const noticeDefault = (c) => !c || !c.notice ? 0 : c.notice === 'employer' ? 60 : 30;
+  return { monthEnds, noticeDefault, r2, num, parseDate, iso, addDays, addMonths, diffDays, service, eosGross, CASES, caseByKey, findCase, BASES, baseAmount, leaveEntitlement, usedInPeriod, unpaidLeaveDays, compute, compareJisr, yearStart, f2 };
 }
 // <<< JBO-SETTLE:END
 
@@ -4403,7 +4417,7 @@ function JBOSettlementEngine_() {
     'leave-edit-bulk': ['Change dates, leave type or comment of leaves that were imported in bulk: a new approved leave request (with an attachment) replaces each one', 'تغيير التواريخ أو نوع الإجازة أو التعليق للإجازات المستوردة جماعيًا: طلب إجازة جديد معتمد (مع مرفق) يحل محل كل واحدة'],
     'leave-create-bulk': ['Create leave requests from a sheet in Jisr\'s import format, with an attachment per employee (File name Attachment), approved at once', 'إنشاء طلبات إجازة من ملف بصيغة استيراد جسر، مع مرفق لكل موظف (File name Attachment) واعتماد فوري'],
     'business-trip-requests': ['Create business trip requests for many employees from Excel: the destination is checked against each employee\'s own policy; approved at once or left in the approval workflow', 'إنشاء طلبات رحلات عمل لعدة موظفين من إكسل: تُفحص الوجهة مقابل سياسة كل موظف؛ تُعتمد فورًا أو تُترك في مسار الاعتماد'],
-    'settlement-calculator': ['Work out each leaver\'s end-of-service award, leave pay, notice and net payout from their last working day and termination case (Saudi Labor Law); compare with Jisr; Excel and printable statements', 'احسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وصافي المستحقات لكل موظف حسب آخر يوم عمل وحالة إنهاء الخدمة (نظام العمل السعودي)، وقارنها بجسر، مع ملف Excel وكشوف للطباعة'],
+    'settlement-calculator': ['Work out each leaver\'s end-of-service award, leave pay, notice and net payout, or forecast what the company would owe for any date, month by month, by reason, with a cash-flow alert (Saudi Labor Law); compare with Jisr; Excel and printable reports', 'احسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وصافي المستحقات لكل موظف، أو توقّع ما ستدفعه الشركة لأي تاريخ وشهرًا بشهر وحسب السبب مع تنبيه التدفق النقدي (نظام العمل السعودي)، وقارنها بجسر، مع ملفات Excel وتقارير للطباعة'],
     'access-report': ['One Excel report of every employee: main data, who was invited, who accepted, who is still waiting, who never logged in, and when each person was last active; invite the ones who have not signed in', 'تقرير Excel واحد لكل موظف: البيانات الأساسية ومن دُعي ومن قبل ومن ما زال ينتظر ومن لم يسجّل الدخول ومتى كان كل شخص نشطًا آخر مرة'],
     'automations': ['When a custom request is approved, do the next step by itself: assign the day off or shift in the scheduler, or add a payroll transaction', 'عند اعتماد طلب مخصص، نفّذ الخطوة التالية تلقائيًا: تحديد يوم إجازة أو وردية في الجدول أو إضافة معاملة رواتب'],
     'requests-manage': ['Find the requests in the employees\' files (any type, by date range, status, leave type), export them, and cancel, delete forever or edit them: with the approval workflow or bypassing it', 'إيجاد الطلبات في ملفات الموظفين (أي نوع، بنطاق تاريخ والحالة ونوع الإجازة)، وتصديرها، وإلغاؤها أو حذفها نهائيًا أو تعديلها: مع مسار الاعتماد أو بتجاوزه'],
@@ -57642,12 +57656,12 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
 
 
 // ###########################################################################
-// ##### SECTION 54 — End-of-Service & Leave Settlement Calculator (per employee, per period; Excel and printable statements)  v4.113.0
+// ##### SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast (any date, month by month, what-if reasons and notice; bulk report with cash-flow alert)  v4.114.0
 // ###########################################################################
 
 /*
  * ===========================================================================
- * SECTION 54 — End-of-Service & Leave Settlement Calculator  v4.113.0
+ * SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast  v4.114.0
  * ---------------------------------------------------------------------------
  * For each employee you choose: last working day, the termination case (with its Labor Law article) and the leave period. The tool reads the employee's
  * joining date, salary, annual-leave policy / balance and leave history from Jisr (GET only), then works out the salary for the last month, the end-of-service
@@ -57660,11 +57674,13 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
  *   GET /v2/employees/{id}/leaves/summary                   -> data.annual_leave{ annual_leave_days, previous_year_balance, used, manual_balance_adjustment, unpaid_leave_deduction, from }  (current year only; no date parameter)
  *   GET /v2/employees/{id}/leaves/history?all_years=true&rpp=100&page=n -> data.leave_history[{ name_en, from, to, deducted_balance, applied_days }]
  *   GET /v2/finance/payruns/off_cycle?type=final_settlement&page=&per_page=  and  GET /v2/finance/payruns/{payrun}/remarks?employee_id=   (compare with the settlement Jisr already made)
+ *   v4.114: GET /v2/finance/employees/{id}/loans/ -> data.loans[{ status, amount, pending_amount, monthly_deduction, loan_type.name }];  GET /v2/employees/{id}/employee_assets?page=&rpp=50 -> data.employee_assets[{ status, asset{ name_en, code } }];
+ *           department / job title from the offboarding_header_info template. Forecast = the same engine run for other dates and cases (what-if tabs, bulk forecast report); still GET only.
  * ===========================================================================
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.113.0';
+  const SECTION_VERSION = '4.114.0';
   const MODULE_ID = 'settlement-calculator';
   const W = unsafeWindow;
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
@@ -57700,7 +57716,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
 
   // ======================================================================= reading one employee
   /** -> data{ join, basic, housing, pack, saudi, contractType, contractEnd, annual, prev, adj, unpaid, summaryUsed, summaryFrom, annualName, history[], currency } or throws */
-  async function readEmployee_(id) {
+  async function readEmployee_(id, light) {
     const d = { id };
     const sal = await get_('/v2/employees/' + encodeURIComponent(id), [['profile_tab', 'salary_and_financial']]);
     const em = sal.ok && sal.json && sal.json.data && sal.json.data.employee;
@@ -57709,15 +57725,23 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     const s = em.salary || {};
     d.basic = n_(s.basic_salary) || 0; d.housing = n_(s.housing_benefit) || 0; d.pack = n_(s.full_package) || n_(s.salary_package) || 0;
     d.currency = (em.currency && (em.currency.code || em.currency.symbol_i18n)) || 'SAR'; d.name = txt_(em.full_name_i18n); d.code = String(em.code == null ? '' : em.code);
-    const [hdr, sum] = await Promise.all([get_('/v2/employees/' + encodeURIComponent(id), [['template', 'offboarding_header_info']]).catch(() => null), get_('/v2/employees/' + encodeURIComponent(id) + '/leaves/summary', []).catch((e) => { if (e.auth) throw e; return null; })]);
-    const ec = hdr && hdr.ok && hdr.json && hdr.json.data && hdr.json.data.employee && hdr.json.data.employee.employee_contract;
+    const soft = (e) => { if (e && e.auth) throw e; return null; };
+    const [hdr, sum, loan, ast] = await Promise.all([get_('/v2/employees/' + encodeURIComponent(id), [['template', 'offboarding_header_info']]).catch(() => null), get_('/v2/employees/' + encodeURIComponent(id) + '/leaves/summary', []).catch(soft),
+      get_('/v2/finance/employees/' + encodeURIComponent(id) + '/loans/', []).catch(soft), get_('/v2/employees/' + encodeURIComponent(id) + '/employee_assets', [['page', '1'], ['rpp', '50']]).catch(soft)]);
+    const he = hdr && hdr.ok && hdr.json && hdr.json.data && hdr.json.data.employee; d.dept = he ? txt_(he.department_i18n) : ''; d.job = he ? txt_(he.job_title_i18n) : '';
+    const ec = he && he.employee_contract;
     if (ec) { d.contractEnd = String(ec.end_date || ''); if (ec.contract_type && !d.contractType) d.contractType = /fixed/i.test(String(ec.contract_type)) ? 'fixed' : 'indefinite'; }
     const al = sum && sum.ok && sum.json && sum.json.data && sum.json.data.annual_leave;
     if (al) {
       d.annual = n_(al.annual_leave_days); d.prev = n_(al.previous_year_balance) || 0; d.adj = n_(al.manual_balance_adjustment) || 0; d.unpaid = n_(al.unpaid_leave_deduction) || 0; d.summaryUsed = n_(al.used) || 0;
       d.summaryFrom = String(al.from || ''); d.annualName = al.leave_type && (al.leave_type.name || al.leave_type.label) || '';
     } else d.leaveErr = true;
+    const LN = loan && loan.ok && loan.json && loan.json.data && loan.json.data.loans;
+    if (Array.isArray(LN)) { const act = LN.filter((l) => String(l.status || '').toLowerCase() !== 'cancelled' && (n_(l.pending_amount) || 0) > 0); d.loansPending = E.r2(act.reduce((a, l) => a + (n_(l.pending_amount) || 0), 0)); d.loansList = act.map((l) => txt_(l.loan_type && l.loan_type.name) + ' ' + E.f2(n_(l.pending_amount) || 0)); } else d.loansErr = true;
+    const AS = ast && ast.ok && ast.json && ast.json.data && ast.json.data.employee_assets;
+    if (Array.isArray(AS)) d.assetsOut = AS.filter((a) => String(a.status || '').toLowerCase() !== 'returned').map((a) => (a.asset && (a.asset.name_en || a.asset.code)) || ''); else d.assetsErr = true;
     d.history = []; d.historyErr = false;
+    if (light) { d.noHistory = true; return d; }
     try {
       for (let p = 1; p <= cfg.maxHistPages; p++) {
         const h = await get_('/v2/employees/' + encodeURIComponent(id) + '/leaves/history', [['all_years', 'true'], ['rpp', '100'], ['page', String(p)], ['imported_leaves', 'true']]);
@@ -57753,7 +57777,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   }
 
   // ======================================================================= one row -> engine input -> result
-  const blankIn_ = () => ({ lwd: '', caseKey: '', eventDate: '', periodFrom: '', noticeDays: '', additions: '', deductions: '', loans: '', leaveOverride: '', adjustment: '', annualDays: '', serviceDeduct: '', art77: true, eosBase: '', leaveBase: '' });
+  const blankIn_ = () => ({ lwd: '', caseKey: '', eventDate: '', periodFrom: '', noticeDays: '', additions: '', deductions: '', loans: '', leaveOverride: '', adjustment: '', annualDays: '', serviceDeduct: '', art77: true, eosBase: '', leaveBase: '', unpaidMonths: '', claims: '', bonusAnnual: '', assets: '' });
   function engineInput_(row, set) {
     const d = row.data, x = row.in; const flags = [];
     const join = E.parseDate(d.join), lwd = E.parseDate(x.lwd);
@@ -57762,20 +57786,27 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     if (lwd != null && join != null) periodStart = Math.max(join, fromT != null ? fromT : E.yearStart(lwd));
     const sameYear = lwd != null && d.summaryFrom && new Date(lwd).getUTCFullYear() === new Date(E.parseDate(d.summaryFrom)).getUTCFullYear();
     let used = d.summaryUsed || 0, unpaid = d.unpaid || 0, usedItems = [], partial = false;
-    if (lwd != null && periodStart != null && !d.historyErr) {
+    if (lwd != null && periodStart != null && !d.historyErr && !d.noHistory) {
       const u = E.usedInPeriod(d.history, [d.annualName, 'Annual'], periodStart, lwd); used = u.days; usedItems = u.items; partial = u.partial;
       if (!sameYear) unpaid = E.unpaidLeaveDays(d.history, periodStart, lwd);
     }
+    if (d.noHistory && lwd != null && !sameYear) { used = 0; unpaid = 0; }
+    if (d.noHistory) flags.push({ level: 'info', en: 'Quick read: leave taken is the current-year total from Jisr (no leave history).', ar: 'قراءة سريعة: الإجازات المستخدمة هي إجمالي السنة الحالية من جسر (بدون سجل الإجازات).' });
     if (d.historyErr) flags.push({ level: 'warn', en: 'Leave history could not be read: leave taken is taken from the current-year total.', ar: 'تعذّرت قراءة سجل الإجازات: أُخذت الإجازات المستخدمة من إجمالي السنة الحالية.' });
     if (d.leaveErr) flags.push({ level: 'warn', en: 'Jisr gave no annual-leave summary: the leave policy is assumed (21 days, 30 from 5 years).', ar: 'لم يعطِ جسر ملخص الإجازة السنوية: افتُرضت السياسة (21 يومًا، و30 بعد 5 سنوات).' });
     if (partial) flags.push({ level: 'info', en: 'A leave overlaps the start or end of the period: only the days inside the period are counted.', ar: 'إجازة تتقاطع مع بداية أو نهاية الفترة: تُحتسب الأيام داخل الفترة فقط.' });
     let prev = d.prev || 0, adj = d.adj || 0;
-    if (lwd != null && d.summaryFrom && !sameYear) { prev = 0; adj = 0; flags.push({ level: 'warn', en: 'Jisr\'s leave summary is for ' + new Date(E.parseDate(d.summaryFrom)).getUTCFullYear() + ', not the year of the last working day: the balance brought forward and adjustments are not available. Enter them as a leave adjustment if needed.', ar: 'ملخص الإجازة في جسر لسنة ' + new Date(E.parseDate(d.summaryFrom)).getUTCFullYear() + ' لا لسنة آخر يوم عمل: الرصيد المرحّل والتسويات غير متاحة. أدخلها كتسوية إجازة عند الحاجة.' }); }
+    const sy = d.summaryFrom ? new Date(E.parseDate(d.summaryFrom)).getUTCFullYear() : null, ly = lwd != null ? new Date(lwd).getUTCFullYear() : null;
+    if (lwd != null && sy != null && !sameYear && ly === sy + 1) { prev = carryOver_(d, set, sy); adj = 0; flags.push({ level: 'info', en: 'Leave brought into ' + ly + ' is estimated from the unused balance at the end of ' + sy + ' (' + E.f2(prev) + ' days).', ar: 'الرصيد المرحّل إلى ' + ly + ' مقدَّر من الرصيد غير المستخدم في نهاية ' + sy + ' (' + E.f2(prev) + ' يومًا).' }); }
+    else if (lwd != null && d.summaryFrom && !sameYear) { prev = 0; adj = 0; flags.push({ level: 'warn', en: 'Jisr\'s leave summary is for ' + new Date(E.parseDate(d.summaryFrom)).getUTCFullYear() + ', not the year of the last working day: the balance brought forward and adjustments are not available. Enter them as a leave adjustment if needed.', ar: 'ملخص الإجازة في جسر لسنة ' + new Date(E.parseDate(d.summaryFrom)).getUTCFullYear() + ' لا لسنة آخر يوم عمل: الرصيد المرحّل والتسويات غير متاحة. أدخلها كتسوية إجازة عند الحاجة.' }); }
+    const loansIn = x.loans !== '' && x.loans != null ? x.loans : (set && set.loansFromJisr !== false && d.loansPending ? d.loansPending : '');
+    if ((x.loans === '' || x.loans == null) && loansIn) flags.push({ level: 'info', en: 'Loans still pending in Jisr (' + E.f2(loansIn) + ') are deducted. Enter 0 in the loans field to leave them out.', ar: 'القروض المتبقية في جسر (' + E.f2(loansIn) + ') تُخصم. أدخل 0 في حقل القروض لاستبعادها.' });
+    if (d.assetsOut && d.assetsOut.length && !E.num(x.assets)) flags.push({ level: 'info', en: 'Jisr shows ' + d.assetsOut.length + ' asset(s) not returned (' + d.assetsOut.slice(0, 4).join(', ') + '): enter their value under unreturned assets if it should be deducted.', ar: 'يعرض جسر ' + d.assetsOut.length + ' أصل غير مرتجع (' + d.assetsOut.slice(0, 4).join('، ') + '): أدخل قيمتها في الأصول غير المرتجعة إن كانت ستُخصم.' });
     const inp = {
       join: d.join, lwd: x.lwd, caseKey: x.caseKey, sal: { basic: d.basic, housing: d.housing, pack: d.pack },
       annualDays: x.annualDays !== '' ? E.num(x.annualDays) : (d.annual != null ? d.annual : ''), prevBalance: prev, adjustment: adj + E.num(x.adjustment), unpaidDeduction: unpaid, usedDays: used, periodFrom: x.periodFrom || null,
       contractType: d.contractType, contractEnd: d.contractEnd, art77: x.art77 !== false, customPct: x.customPct, eventDate: x.eventDate, noticeDays: x.noticeDays, unpaidServiceDays: x.serviceDeduct,
-      additions: x.additions, deductions: x.deductions, loans: x.loans, leaveOverride: x.leaveOverride === '' ? null : x.leaveOverride, eosBase: x.eosBase || '', leaveBase: x.leaveBase || '',
+      additions: x.additions, deductions: x.deductions, loans: loansIn, unpaidMonths: x.unpaidMonths, claims: x.claims, bonusAnnual: x.bonusAnnual, assets: x.assets, leaveOverride: x.leaveOverride === '' ? null : x.leaveOverride, eosBase: x.eosBase || '', leaveBase: x.leaveBase || '',
     };
     return { inp, usedItems, flags };
   }
@@ -57783,8 +57814,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     row.res = null; row.cmp = null;
     if (!row.data) return;
     if (!row.in.lwd || !row.in.caseKey) { row.msg = !row.in.lwd ? T('Enter the last working day', 'أدخل آخر يوم عمل') : T('Choose the termination case', 'اختر حالة إنهاء الخدمة'); return; }
-    const g = engineInput_(row, set); const r = E.compute(g.inp, set);
-    r.flags = g.flags.concat(r.flags); r.usedItems = g.usedItems; row.res = r; row.msg = '';
+    const r = compute_(row, set); row.res = r; row.msg = '';
     if (row.jisr) row.cmp = E.compareJisr(r, row.jisr);
     if (row.cmp && row.cmp.any) r.flags.push({ level: 'warn', en: 'Differs from the settlement Jisr already made (see the Jisr columns).', ar: 'يختلف عن التسوية التي أنشأها جسر (انظر أعمدة جسر).' });
   }
@@ -57795,6 +57825,118 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   const nowStamp_ = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   const esc_ = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' }[c]));
 
+  // ======================================================================= what-if and forecasting (nothing is saved or written; the row is never changed)
+  const todayIso_ = () => nowStamp_(new Date());
+  const addDaysIso_ = (iso, n) => E.iso(E.addDays(E.parseDate(iso), n));
+  /** The engine result for a row with some inputs replaced (a date, a case, notice days). The row itself is not touched. */
+  function compute_(row, set, ov) {
+    const x = Object.assign({}, row.in, ov || {});
+    const g = engineInput_({ data: row.data, in: x }, set); const r = E.compute(g.inp, set);
+    r.flags = g.flags.concat(r.flags); r.usedItems = g.usedItems; return r;
+  }
+  /** Leave balance (days) a person still holds at the end of the year of Jisr's summary: used to estimate what carries into next year. */
+  function carryOver_(d, set, year) {
+    const r = E.compute({ join: d.join, lwd: year + '-12-31', caseKey: 'expiry', sal: { basic: d.basic, housing: d.housing, pack: d.pack }, annualDays: d.annual != null ? d.annual : '', prevBalance: d.prev || 0, adjustment: d.adj || 0, unpaidDeduction: d.unpaid || 0, usedDays: d.summaryUsed || 0 }, set || {});
+    return r.ok ? Math.max(0, r.leave.net) : 0;
+  }
+  const GROUPS = () => [['pending', 'Pending payroll items', 'مستحقات الرواتب المعلقة'], ['eos', 'End-of-service award', 'مكافأة نهاية الخدمة'], ['leave', 'Encashable leave', 'بدل الإجازة'], ['notice', 'Notice pay', 'بدل الإشعار'], ['comp', 'Compensation', 'التعويض'], ['other', 'Other additions', 'إضافات أخرى']];
+  const grpLabel_ = (g) => { if (g === 'ded') return T('Deductions and offsets', 'الخصومات والمقاصة'); const x = GROUPS().find((y) => y[0] === g); return x ? T(x[1], x[2]) : g; };
+  /** Statement as rows: group headings with subtotals, lines, Gross entitlement, deductions, Total deductions, Net payable = Gross - Deductions. */
+  function stmtRows_(q) {
+    const out = [];
+    GROUPS().forEach(([k, en, ar]) => { const ls = q.lines.filter((l) => l.grp === k); if (!ls.length) return; out.push({ kind: 'h', en, ar, amount: E.r2(ls.reduce((a, l) => a + l.amount, 0)) }); ls.forEach((l) => out.push({ kind: 'l', en: l.en, ar: l.ar, formula: l.formula, amount: l.amount })); });
+    out.push({ kind: 't', en: 'Gross entitlement', ar: 'إجمالي الاستحقاق', amount: q.totals.gross });
+    out.push({ kind: 'h', en: 'Deductions and offsets', ar: 'الخصومات والمقاصة' });
+    const ded = q.lines.filter((l) => l.grp === 'ded'); if (!ded.length) out.push({ kind: 'l', en: 'None', ar: 'لا يوجد', formula: '', amount: 0 });
+    ded.forEach((l) => out.push({ kind: 'l', en: l.en, ar: l.ar, formula: l.formula, amount: l.amount }));
+    out.push({ kind: 't', en: 'Total deductions', ar: 'إجمالي الخصومات', amount: q.totals.deductions });
+    out.push({ kind: 'n', en: 'Net payable = gross entitlement − total deductions', ar: 'صافي المستحق = إجمالي الاستحقاق − إجمالي الخصومات', amount: q.totals.net });
+    return out;
+  }
+
+  const KEY_REASONS = ['resignation', 'employer_notice', 'expiry', 'employer_invalid'];
+  /** The start date, then every month end from that month on. */
+  function scheduleDates_(startIso, count) {
+    const s = E.parseDate(startIso); if (s == null) return [];
+    const out = [s]; E.monthEnds(s, count).forEach((t) => { if (t > out[out.length - 1]) out.push(t); }); return out;
+  }
+  const noticeFor_ = (ck, mode) => (mode === 'lieu' ? E.noticeDefault(E.caseByKey(ck)) : 0);
+  /**
+   * Forecast: for every row with its data read, the full settlement if the employee left on each date, under one case.
+   * o = { start, months, caseKey (used when the row has no case or useOwn is false), useOwn, notice: 'none' | 'lieu', cash (available, optional), stress (month index, -1 = the peak) }
+   */
+  function forecastModel_(rows, set, o) {
+    const dates = scheduleDates_(o.start, o.months); const labels = dates.map((t) => E.iso(t)); const emp = [];
+    rows.filter((r) => r.data).forEach((r) => {
+      const ck = (o.useOwn && r.in.caseKey) ? r.in.caseKey : o.caseKey;
+      const cells = labels.map((lw) => { const x = compute_(r, set, { lwd: lw, caseKey: ck, noticeDays: noticeFor_(ck, o.notice) }); return x.ok ? x : null; });
+      const reasons = {}; KEY_REASONS.forEach((k) => { const x = compute_(r, set, { lwd: labels[0], caseKey: k, noticeDays: noticeFor_(k, o.notice) }); reasons[k] = x.ok ? x.totals.net : null; });
+      emp.push({ row: r, caseKey: ck, cells, reasons, dept: r.data.dept || '' });
+    });
+    const used = emp.filter((e) => e.cells.some(Boolean)); const failed = emp.filter((e) => !e.cells.some(Boolean)).map((e) => e.row);
+    const KS = ['pending', 'eos', 'leave', 'notice', 'comp', 'other', 'ded'];
+    const months = labels.map((date, i) => {
+      const m = { date, n: 0, gross: 0, net: 0, cash: 0, recover: 0 }; KS.forEach((k) => { m[k] = 0; });
+      used.forEach((e) => { const c = e.cells[i]; if (!c) return; m.n++; KS.forEach((k) => { m[k] += c.totals.byGrp[k] || 0; }); m.gross += c.totals.gross; m.net += c.totals.net; if (c.totals.net > 0) m.cash += c.totals.net; else m.recover += c.totals.net; });
+      Object.keys(m).forEach((k) => { if (k !== 'date' && k !== 'n') m[k] = E.r2(m[k]); }); return m;
+    });
+    const names = [...new Set(used.map((e) => e.dept || '—'))].sort();
+    const depts = names.map((name) => { const list = used.filter((e) => (e.dept || '—') === name); return { name, n: list.length, net: labels.map((_, i) => E.r2(list.reduce((a, e) => a + (e.cells[i] ? Math.max(0, e.cells[i].totals.net) : 0), 0))) }; });
+    let peakIdx = 0; months.forEach((m, i) => { if (m.cash > months[peakIdx].cash) peakIdx = i; });
+    const si = o.stress >= 0 && o.stress < months.length ? o.stress : peakIdx; const cashAvail = o.cash === '' || o.cash == null ? null : E.num(o.cash);
+    const stress = months[si] || null;
+    return { o, labels, emp: used, failed, months, depts, peakIdx, peak: months[peakIdx] || null, stressIdx: si, stress, cashAvail, shortfall: stress && cashAvail != null ? E.r2(Math.max(0, stress.cash - cashAvail)) : null };
+  }
+  const caseName_ = (k) => { const c = E.caseByKey(k); return c ? T(c.en, c.ar) : k; };
+  const PROJ_NOTE = () => T('Projection: today\'s salary, leave policy and leave history are held constant; no future leave is assumed. The balance brought into next year is estimated from this year\'s unused balance. Expense claims, bonus and asset values are what you entered; loans are the amounts still pending in Jisr. Guidance only.', 'التوقع: يُفترض ثبات الراتب وسياسة الإجازة وسجل الإجازات الحالي ولا تُفترض إجازات مستقبلية. يُقدَّر الرصيد المرحّل للسنة القادمة من رصيد هذه السنة غير المستخدم. المطالبات والمكافآت وقيم الأصول هي ما أدخلته؛ والقروض هي المبالغ المتبقية في جسر. للإرشاد فقط.');
+  function forecastSummary_(m) {
+    const o = m.o; const s = m.stress; const rows = [
+      [T('End-of-service forecast', 'توقع نهاية الخدمة')], [T('Company', 'الشركة'), slug_()], [T('Prepared', 'تاريخ الإعداد'), todayIso_()], [],
+      [T('Start date', 'تاريخ البداية'), o.start], [T('Months ahead', 'عدد الأشهر'), o.months], [T('Case', 'الحالة'), (o.useOwn ? T('Each row\'s own case; otherwise ', 'حالة كل صف؛ وإلا ') : '') + caseName_(o.caseKey)],
+      [T('Notice', 'الإشعار'), o.notice === 'lieu' ? T('Paid in lieu (60 days employer, 30 days employee)', 'بدل إشعار (60 يومًا صاحب العمل، 30 يومًا العامل)') : T('Not counted', 'غير محتسب')],
+      [T('Employees included', 'الموظفون المشمولون'), m.emp.length], [T('Could not be calculated', 'تعذّر حسابهم'), m.failed.length], []];
+    if (m.months.length) {
+      rows.push([T('Cash needed if everyone leaves on the start date', 'النقد المطلوب إذا غادر الجميع في تاريخ البداية'), m.months[0].cash]);
+      if (m.peak) rows.push([T('Highest month', 'أعلى شهر'), m.peak.date, m.peak.cash]);
+      if (s) rows.push([T('Cash needed if everyone leaves on ', 'النقد المطلوب إذا غادر الجميع في ') + s.date, s.cash], [T('  of which end-of-service awards', '  منها مكافآت نهاية الخدمة'), s.eos], [T('  of which leave pay', '  منها بدل الإجازات'), s.leave], [T('  of which pending payroll items', '  منها مستحقات رواتب معلقة'), s.pending], [T('  of which notice and compensation', '  منها الإشعار والتعويض'), E.r2(s.notice + s.comp)], [T('  recoveries (employees who owe the company)', '  مستردات (موظفون مدينون للشركة)'), s.recover]);
+      if (m.cashAvail != null) rows.push([T('Cash available', 'النقد المتاح'), m.cashAvail], [T('Shortfall', 'العجز'), m.shortfall], [T('Cash-flow alert', 'تنبيه التدفق النقدي'), m.shortfall > 0 ? T('NOT ENOUGH CASH', 'النقد غير كافٍ') : T('Covered', 'مغطّى')]);
+    }
+    rows.push([], [T('Notes', 'ملاحظات')], [PROJ_NOTE()]); NOTES().forEach((x) => rows.push([x])); return rows;
+  }
+  function forecastWorkbook_(m, set, at) {
+    const wb = XLSX.utils.book_new();
+    const add = (name, aoa, widths) => { const ws = XLSX.utils.aoa_to_sheet(aoa); if (widths) ws['!cols'] = widths.map((w) => ({ wch: w })); Object.keys(ws).forEach((k) => { if (k[0] !== '!' && ws[k].t === 'n') ws[k].z = '#,##0.00'; }); XLSX.utils.book_append_sheet(wb, ws, name); };
+    add(T('Summary', 'الملخص'), forecastSummary_(m), [58, 18, 18]);
+    add(T('Month totals', 'إجمالي الأشهر'), [[T('Leave on', 'المغادرة في'), T('Employees', 'الموظفون'), T('Pending payroll items', 'مستحقات معلقة'), T('End-of-service awards', 'مكافآت نهاية الخدمة'), T('Leave pay', 'بدل الإجازة'), T('Notice pay', 'بدل الإشعار'), T('Compensation', 'التعويض'), T('Other additions', 'إضافات أخرى'), T('Gross entitlement', 'إجمالي الاستحقاق'), T('Deductions', 'الخصومات'), T('Net payable', 'صافي المستحق'), T('Cash required', 'النقد المطلوب'), T('Recoveries', 'المستردات')]]
+      .concat(m.months.map((x) => [x.date, x.n, x.pending, x.eos, x.leave, x.notice, x.comp, x.other, x.gross, x.ded, x.net, x.cash, x.recover])), [14, 11, 16, 18, 14, 14, 14, 14, 18, 14, 16, 16, 14]);
+    add(T('Departments by month', 'الأقسام حسب الشهر'), [[T('Department', 'القسم'), T('Employees', 'الموظفون')].concat(m.labels)].concat(m.depts.map((d) => [d.name, d.n].concat(d.net))).concat([[T('Total', 'الإجمالي'), m.emp.length].concat(m.months.map((x) => x.cash))]), [28, 11].concat(m.labels.map(() => 14)));
+    add(T('Employees by month', 'الموظفون حسب الشهر'), [[T('Code', 'الرقم'), T('Name', 'الاسم'), T('Department', 'القسم'), T('Joined', 'الالتحاق'), T('Case', 'الحالة'), T('Service at start', 'الخدمة عند البداية')].concat(m.labels)]
+      .concat(m.emp.map((e) => { const c0 = e.cells.find(Boolean); return [e.row.code, e.row.name, e.dept, c0 ? E.iso(c0.join) : '', caseName_(e.caseKey), e.cells[0] ? svText_(e.cells[0].service) : ''].concat(e.cells.map((c) => (c ? c.totals.net : ''))); })), [10, 26, 22, 12, 36, 14].concat(m.labels.map(() => 14)));
+    add(T('Reasons at start date', 'الأسباب عند تاريخ البداية'), [[T('Code', 'الرقم'), T('Name', 'الاسم'), T('Department', 'القسم')].concat(KEY_REASONS.map((k) => caseName_(k)))].concat(m.emp.map((e) => [e.row.code, e.row.name, e.dept].concat(KEY_REASONS.map((k) => (e.reasons[k] == null ? '' : e.reasons[k]))))), [10, 26, 22, 34, 34, 34, 34]);
+    return wb;
+  }
+  function downloadForecast_(m, set) {
+    const at = new Date(); const out = XLSX.write(forecastWorkbook_(m, set, at), { bookType: 'xlsx', type: 'array' });
+    return saveBlob_(new Blob([out], { type: 'application/octet-stream' }), 'eosb-forecast_' + (slug_() || 'jisr') + '_' + nowStamp_(at) + '.xlsx');
+  }
+  function forecastHtml_(m) {
+    const css = 'body{font:12.5px/1.45 "Segoe UI",Tahoma,Arial,sans-serif;color:#111;margin:0;background:#f3f4f6}.pg{max-width:297mm;margin:12px auto;background:#fff;padding:12mm 12mm;box-sizing:border-box}h1{font-size:19px;margin:0 0 2px}h2{font-size:14px;margin:18px 0 6px}.sub{color:#555;margin-bottom:10px}'
+      + 'table{border-collapse:collapse;width:100%}td,th{padding:4px 7px;border-bottom:1px solid #e3e5e8;text-align:end;white-space:nowrap}th{background:#f6f7f8;font-weight:600}td:first-child,th:first-child{text-align:start}.k{display:flex;gap:10px;flex-wrap:wrap}.c{flex:1;min-width:170px;border:1px solid #d0d7de;border-radius:8px;padding:8px 10px}.c b{display:block;font-size:17px}.al{border:2px solid #c5221f;background:#fdecea;border-radius:8px;padding:8px 12px;margin:10px 0}.ok{border-color:#137333;background:#e6f4ea}.pk{background:#fff1d6;font-weight:700}.n{font-size:11px;color:#555;margin-top:10px}.ar{direction:rtl;display:block;color:#444}'
+      + '@media print{body{background:#fff}.pg{margin:0;max-width:none}@page{size:A4 landscape;margin:10mm}}';
+    const L = (en, ar) => '<span>' + esc_(en) + '</span><span class="ar">' + esc_(ar) + '</span>'; const f = (v) => esc_(E.f2(v)); const s = m.stress;
+    const tbl = (head, rows) => '<table><tr>' + head.map((h) => '<th>' + h + '</th>').join('') + '</tr>' + rows.join('') + '</table>';
+    const alert = s ? '<div class="al' + (m.cashAvail != null && m.shortfall <= 0 ? ' ok' : '') + '"><b>' + L('Cash-flow alert', 'تنبيه التدفق النقدي') + '</b> ' + esc_(T('If all ', 'إذا غادر جميع ') + m.emp.length + T(' employees leave on ', ' موظفًا في ') + s.date + T(', the company needs ', '، تحتاج الشركة إلى ') + E.f2(s.cash) + T(' in cash (end-of-service ', ' نقدًا (مكافآت ') + E.f2(s.eos) + T(', leave ', '، إجازات ') + E.f2(s.leave) + T(', pending payroll ', '، مستحقات معلقة ') + E.f2(s.pending) + T(', notice and compensation ', '، إشعار وتعويض ') + E.f2(s.notice + s.comp) + ').')
+      + (m.cashAvail != null ? ' ' + esc_(m.shortfall > 0 ? T('Cash available ', 'النقد المتاح ') + E.f2(m.cashAvail) + T(': shortfall ', ': العجز ') + E.f2(m.shortfall) + '.' : T('Cash available ', 'النقد المتاح ') + E.f2(m.cashAvail) + T(': covered.', ': مغطّى.')) : '') + '</div>' : '';
+    const o = m.o;
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>' + esc_('EOSB forecast ' + slug_() + ' ' + todayIso_()) + '</title><style>' + css + '</style></head><body><div class="pg"><h1>' + L('End-of-service forecast', 'توقع نهاية الخدمة') + '</h1><div class="sub">' + esc_(slug_()) + ' · ' + esc_(todayIso_()) + ' · ' + esc_(o.start) + ' + ' + o.months + T(' months', ' شهرًا') + ' · ' + esc_(caseName_(o.caseKey)) + '</div>'
+      + '<div class="k"><div class="c">' + L('Employees included', 'الموظفون المشمولون') + '<b>' + m.emp.length + '</b></div><div class="c">' + L('Cash if everyone leaves on the start date', 'النقد إذا غادر الجميع في البداية') + '<b>' + f(m.months[0] ? m.months[0].cash : 0) + '</b></div><div class="c">' + L('Highest month', 'أعلى شهر') + '<b>' + f(m.peak ? m.peak.cash : 0) + '</b>' + esc_(m.peak ? m.peak.date : '') + '</div></div>' + alert
+      + '<h2>' + L('Totals by leaving date', 'الإجماليات حسب تاريخ المغادرة') + '</h2>' + tbl([L('Leave on', 'المغادرة في'), L('Pending items', 'معلقة'), L('End-of-service', 'نهاية الخدمة'), L('Leave pay', 'الإجازة'), L('Notice and comp.', 'إشعار وتعويض'), L('Deductions', 'خصومات'), L('Cash required', 'النقد المطلوب')], m.months.map((x, i) => '<tr' + (i === m.peakIdx ? ' class="pk"' : '') + '><td>' + esc_(x.date) + '</td><td>' + f(x.pending + x.other) + '</td><td>' + f(x.eos) + '</td><td>' + f(x.leave) + '</td><td>' + f(x.notice + x.comp) + '</td><td>' + f(x.ded) + '</td><td>' + f(x.cash) + '</td></tr>'))
+      + '<h2>' + L('Departments by leaving date (net payable)', 'الأقسام حسب تاريخ المغادرة (الصافي)') + '</h2>' + tbl([L('Department', 'القسم'), L('Staff', 'العدد')].concat(m.labels.map((x) => esc_(x.slice(2)))), m.depts.map((d) => '<tr><td>' + esc_(d.name) + '</td><td>' + d.n + '</td>' + d.net.map((v, i) => '<td' + (i === m.peakIdx ? ' class="pk"' : '') + '>' + f(v) + '</td>').join('') + '</tr>'))
+      + '<h2>' + L('Reasons compared at the start date (net payable)', 'مقارنة الأسباب عند تاريخ البداية (الصافي)') + '</h2>' + tbl([L('Employee', 'الموظف'), L('Department', 'القسم')].concat(KEY_REASONS.map((k) => esc_(caseName_(k)))), m.emp.map((e) => '<tr><td>' + esc_(e.row.name + (e.row.code ? ' (' + e.row.code + ')' : '')) + '</td><td>' + esc_(e.dept) + '</td>' + KEY_REASONS.map((k) => '<td>' + (e.reasons[k] == null ? '' : f(e.reasons[k])) + '</td>').join('') + '</tr>'))
+      + '<div class="n">' + esc_(PROJ_NOTE()) + '</div></div></body></html>';
+  }
+  function downloadForecastHtml_(m) { return saveBlob_(new Blob([forecastHtml_(m)], { type: 'text/html;charset=utf-8' }), 'eosb-forecast_' + (slug_() || 'jisr') + '_' + todayIso_() + '.html'); }
+
   // ======================================================================= exports
   const rowsOk_ = (rows) => rows.filter((r) => r.res && r.res.ok);
   function settingsText_(set) {
@@ -57802,6 +57944,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     return [
       [T('End-of-service wage', 'أجر مكافأة نهاية الخدمة'), b(set.eosBase)], [T('Leave pay wage', 'أجر بدل الإجازة'), b(set.leaveBase)],
       [T('Leave taken in advance', 'إجازة مأخوذة مقدمًا'), set.deductAdvanceLeave ? T('Deducted from the payout', 'تُخصم من المستحقات') : T('Not deducted', 'لا تُخصم')],
+      [T('Loans pending in Jisr', 'القروض المتبقية في جسر'), set.loansFromJisr !== false ? T('Deducted (unless a loan amount is entered)', 'تُخصم (ما لم يُدخل مبلغ قرض)') : T('Not deducted automatically', 'لا تُخصم تلقائيًا')],
     ];
   }
   const NOTES = () => [
@@ -57825,25 +57968,26 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     const sum = (f) => E.r2(ok.reduce((a, r) => a + f(r), 0));
     const S = [[T('End-of-service and leave settlements', 'تسويات نهاية الخدمة والإجازات')], [T('Company', 'الشركة'), slug_()], [T('Date', 'التاريخ'), nowStamp_(at)], [],
       [T('Employees calculated', 'الموظفون المحسوبون'), ok.length], [T('Salary for the last month', 'راتب الشهر الأخير'), sum((r) => lineAmt_(r.res, 'salary'))], [T('End-of-service awards', 'مكافآت نهاية الخدمة'), sum((r) => lineAmt_(r.res, 'eosb'))],
-      [T('Leave pay', 'بدل الإجازات'), sum((r) => lineAmt_(r.res, 'leave'))], [T('Total earnings', 'إجمالي المستحقات'), sum((r) => r.res.totals.earnings)], [T('Total deductions', 'إجمالي الخصومات'), sum((r) => r.res.totals.deductions)], [T('Net payout', 'صافي المبلغ المستحق'), sum((r) => r.res.totals.net)], [],
+      [T('Leave pay', 'بدل الإجازات'), sum((r) => lineAmt_(r.res, 'leave'))], [T('Other pending payroll items (unpaid months, claims, bonus)', 'مستحقات معلقة أخرى (أشهر غير مدفوعة، مطالبات، مكافأة)'), sum((r) => lineAmt_(r.res, 'unpaid') + lineAmt_(r.res, 'claims') + lineAmt_(r.res, 'bonus'))], [T('Gross entitlement', 'إجمالي الاستحقاق'), sum((r) => r.res.totals.gross)], [T('Total deductions', 'إجمالي الخصومات'), sum((r) => r.res.totals.deductions)], [T('Net payable (gross entitlement − total deductions)', 'صافي المستحق (إجمالي الاستحقاق − إجمالي الخصومات)'), sum((r) => r.res.totals.net)], [],
       [T('Settings', 'الإعدادات')]].concat(settingsText_(set)).concat([[], [T('Notes', 'ملاحظات')]]).concat(NOTES().map((x) => [x]));
     add(T('Summary', 'الملخص'), S, [44, 26]);
-    const head = [T('Code', 'الرقم'), T('Name', 'الاسم'), T('Joined', 'تاريخ الالتحاق'), T('Last working day', 'آخر يوم عمل'), T('Termination case', 'حالة إنهاء الخدمة'), T('Article', 'المادة'), T('Years', 'سنوات'), T('Months', 'أشهر'), T('Days', 'أيام'), T('Service (years)', 'مدة الخدمة (سنوات)'),
+    const head = [T('Code', 'الرقم'), T('Name', 'الاسم'), T('Department', 'القسم'), T('Joined', 'تاريخ الالتحاق'), T('Last working day', 'آخر يوم عمل'), T('Termination case', 'حالة إنهاء الخدمة'), T('Article', 'المادة'), T('Years', 'سنوات'), T('Months', 'أشهر'), T('Days', 'أيام'), T('Service (years)', 'مدة الخدمة (سنوات)'),
       T('Award wage', 'أجر المكافأة'), T('Award share', 'نسبة المكافأة'), T('End-of-service award', 'مكافأة نهاية الخدمة'), T('Salary days', 'أيام الراتب'), T('Salary of the last month', 'راتب الشهر الأخير'),
       T('Leave period from', 'فترة الإجازة من'), T('Annual days', 'أيام الإجازة السنوية'), T('Accrued days', 'الأيام المستحقة'), T('Brought forward', 'مرحّل'), T('Adjustments', 'تسويات'), T('Unpaid leave', 'إجازة غير مدفوعة'), T('Leave taken', 'إجازة مستخدمة'), T('Leave days', 'أيام الإجازة'), T('Daily wage', 'الأجر اليومي'), T('Leave pay', 'بدل الإجازة'),
-      T('Notice', 'الإشعار'), T('Art 77 compensation', 'تعويض م77'), T('Additions', 'إضافات'), T('Deductions', 'خصومات'), T('Loans', 'قروض'), T('Total earnings', 'إجمالي المستحقات'), T('Total deductions', 'إجمالي الخصومات'), T('Net payout', 'صافي المبلغ'), T('Pay by', 'آخر موعد للصرف'),
+      T('Unpaid earlier months', 'أشهر سابقة غير مدفوعة'), T('Expense claims', 'مطالبات مصاريف'), T('Bonus (pro rata)', 'مكافأة (بالتناسب)'), T('Notice', 'الإشعار'), T('Art 77 compensation', 'تعويض م77'), T('Additions', 'إضافات'),
+      T('Gross entitlement', 'إجمالي الاستحقاق'), T('Other deductions', 'خصومات أخرى'), T('Loans', 'قروض'), T('Unreturned assets', 'أصول غير مرتجعة'), T('Total deductions', 'إجمالي الخصومات'), T('Net payable', 'صافي المستحق'), T('Pay by', 'آخر موعد للصرف'),
       T('Jisr: salary', 'جسر: الراتب'), T('Jisr: award', 'جسر: المكافأة'), T('Jisr: leave', 'جسر: الإجازة'), T('Jisr: net', 'جسر: الصافي'), T('Difference vs Jisr', 'الفرق عن جسر'), T('Notes', 'ملاحظات')];
     const body = ok.map((r) => {
       const q = r.res, sv = q.service, e = q.eos, lv = q.leave, c = q.case; const j = r.jisr; const d = r.cmp;
-      const flags = q.flags.filter((f) => f.level !== 'info' || true).map((f) => T(f.en, f.ar)).join(' | ');
-      return [r.code, r.name, E.iso(q.join), E.iso(q.lwd), caseLabel_(c), c.art, sv.y, sv.m, sv.d, E.r2(sv.T), q.base.eos, e.fraction, e.payable, q.salaryDays, lineAmt_(q, 'salary'), E.iso(lv.from), lv.annual, lv.accrued, lv.carry, lv.adjustment, lv.unpaidDeduction, lv.used, q.leaveSettle.days, q.leaveSettle.daily, lineAmt_(q, 'leave'),
-        lineAmt_(q, 'notice'), lineAmt_(q, 'art77'), lineAmt_(q, 'add'), lineAmt_(q, 'ded'), lineAmt_(q, 'loans'), q.totals.earnings, q.totals.deductions, q.totals.net, q.payBy,
+      const flags = q.flags.map((f) => T(f.en, f.ar)).join(' | ');
+      return [r.code, r.name, (r.data && r.data.dept) || '', E.iso(q.join), E.iso(q.lwd), caseLabel_(c), c.art, sv.y, sv.m, sv.d, E.r2(sv.T), q.base.eos, e.fraction, e.payable, q.salaryDays, lineAmt_(q, 'salary'), E.iso(lv.from), lv.annual, lv.accrued, lv.carry, lv.adjustment, lv.unpaidDeduction, lv.used, q.leaveSettle.days, q.leaveSettle.daily, lineAmt_(q, 'leave'),
+        lineAmt_(q, 'unpaid'), lineAmt_(q, 'claims'), lineAmt_(q, 'bonus'), lineAmt_(q, 'notice'), lineAmt_(q, 'art77'), lineAmt_(q, 'add'), q.totals.gross, lineAmt_(q, 'ded'), lineAmt_(q, 'loans'), lineAmt_(q, 'assets'), q.totals.deductions, q.totals.net, q.payBy,
         j ? j.salary : '', j ? j.eos : '', j ? j.leave : '', j && j.net != null ? j.net : '', d ? (d.any ? T('Differs', 'يختلف') : T('Matches', 'مطابق')) : '', flags];
     });
-    add(T('Settlements', 'التسويات'), [head].concat(body), [10, 26, 12, 12, 40, 10, 7, 7, 7, 10, 12, 9, 14, 8, 14, 12, 9, 10, 10, 10, 10, 10, 10, 10, 12, 10, 12, 10, 10, 10, 14, 12, 14, 12, 12, 12, 12, 12, 14, 60], true);
-    const lines = [[T('Code', 'الرقم'), T('Name', 'الاسم'), T('Item', 'البند'), T('Basis', 'طريقة الحساب'), T('Amount', 'المبلغ')]];
-    ok.forEach((r) => r.res.lines.forEach((l) => lines.push([r.code, r.name, T(l.en, l.ar), l.formula, l.amount])));
-    add(T('Statement lines', 'بنود التسوية'), lines, [10, 26, 56, 60, 14], true);
+    add(T('Settlements', 'التسويات'), [head].concat(body), [10, 26, 22, 12, 12, 40, 10, 7, 7, 7, 10, 12, 9, 14, 8, 14, 12, 9, 10, 10, 10, 10, 10, 10, 10, 12, 12, 12, 12, 10, 12, 10, 14, 12, 10, 12, 14, 14, 12, 12, 12, 12, 12, 14, 60], true);
+    const lines = [[T('Code', 'الرقم'), T('Name', 'الاسم'), T('Group', 'المجموعة'), T('Item', 'البند'), T('Basis', 'طريقة الحساب'), T('Amount', 'المبلغ')]];
+    ok.forEach((r) => { r.res.lines.forEach((l) => lines.push([r.code, r.name, grpLabel_(l.grp), T(l.en, l.ar), l.formula, l.amount])); lines.push([r.code, r.name, '', T('Gross entitlement', 'إجمالي الاستحقاق'), '', r.res.totals.gross], [r.code, r.name, '', T('Total deductions', 'إجمالي الخصومات'), '', r.res.totals.deductions], [r.code, r.name, '', T('Net payable = gross entitlement − total deductions', 'صافي المستحق = إجمالي الاستحقاق − إجمالي الخصومات'), '', r.res.totals.net]); });
+    add(T('Statement lines', 'بنود التسوية'), lines, [10, 26, 26, 56, 60, 14], true);
     const lv = [[T('Code', 'الرقم'), T('Name', 'الاسم'), T('Leave from', 'من'), T('Leave to', 'إلى'), T('Annual days counted', 'أيام الإجازة السنوية المحتسبة')]];
     ok.forEach((r) => (r.res.usedItems || []).forEach((u) => lv.push([r.code, r.name, u.from, u.to, u.days])));
     add(T('Leave taken', 'الإجازات المستخدمة'), lv, [10, 26, 12, 12, 22], true);
@@ -57863,19 +58007,19 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     const ok = rowsOk_(rows); const company = slug_();
     const css = 'body{font:13px/1.5 "Segoe UI",Tahoma,Arial,sans-serif;color:#111;margin:0;background:#f3f4f6}.pg{width:210mm;min-height:297mm;margin:12px auto;background:#fff;padding:16mm 15mm;box-sizing:border-box;page-break-after:always}h1{font-size:18px;margin:0 0 2px}h2{font-size:13px;margin:16px 0 6px}.sub{color:#555;margin-bottom:10px}'
       + 'table{width:100%;border-collapse:collapse}td,th{padding:5px 7px;border-bottom:1px solid #e3e5e8;vertical-align:top}th{background:#f6f7f8;text-align:start;font-weight:600}.num{text-align:end;white-space:nowrap;font-variant-numeric:tabular-nums}.ar{direction:rtl;text-align:right;color:#444;display:block}.f{color:#666;font-size:11.5px;direction:ltr;text-align:left}'
-      + '.tot td{font-weight:700;border-top:2px solid #111;border-bottom:0}.kv td:first-child{width:34%;color:#555}.flag{margin:2px 0;padding:4px 8px;border-radius:5px;background:#fff7e0;font-size:12px}.sig{display:flex;gap:24px;margin-top:34px}.sig div{flex:1;border-top:1px solid #111;padding-top:4px;font-size:12px;color:#444}.dis{margin-top:14px;font-size:11px;color:#666}'
+      + '.tot td{font-weight:700;border-top:2px solid #111;border-bottom:0}.gh td{background:#f6f7f8;font-weight:600}.ln td:first-child{padding-inline-start:16px}.sub td{font-weight:600;border-top:1px solid #111}.kv td:first-child{width:34%;color:#555}.flag{margin:2px 0;padding:4px 8px;border-radius:5px;background:#fff7e0;font-size:12px}.sig{display:flex;gap:24px;margin-top:34px}.sig div{flex:1;border-top:1px solid #111;padding-top:4px;font-size:12px;color:#444}.dis{margin-top:14px;font-size:11px;color:#666}'
       + '@media print{body{background:#fff}.pg{margin:0;box-shadow:none}}';
     const L = (en, ar) => '<span>' + esc_(en) + '</span><span class="ar">' + esc_(ar) + '</span>';
     const pages = ok.map((r) => {
       const q = r.res; const sv = q.service; const c = q.case; const lv = q.leave;
       const kv = (en, ar, v) => '<tr><td>' + L(en, ar) + '</td><td dir="auto">' + esc_(v) + '</td></tr>';
-      const lines = q.lines.map((l) => '<tr><td>' + L(l.en, l.ar) + (l.formula ? '<div class="f">' + esc_(l.formula) + '</div>' : '') + '</td><td class="num">' + esc_(E.f2(l.amount)) + '</td></tr>').join('');
+      const lines = stmtRows_(q).map((x) => '<tr class="' + (x.kind === 'n' ? 'tot' : x.kind === 't' ? 'sub' : x.kind === 'h' ? 'gh' : 'ln') + '"><td>' + L(x.en, x.ar) + (x.formula ? '<div class="f">' + esc_(x.formula) + '</div>' : '') + '</td><td class="num">' + (x.amount == null ? '' : esc_(E.f2(x.amount))) + '</td></tr>').join('');
       const flags = q.flags.map((f) => '<div class="flag">' + L(f.en, f.ar) + '</div>').join('');
       return '<div class="pg"><h1>' + L('End-of-service and leave settlement', 'تسوية نهاية الخدمة والإجازات') + '</h1><div class="sub">' + esc_(company) + ' · ' + esc_(nowStamp_(at)) + '</div>'
         + '<table class="kv">' + kv('Employee', 'الموظف', r.name + (r.code ? ' (' + r.code + ')' : '')) + (r.nid ? kv('ID / Iqama', 'الهوية / الإقامة', r.nid) : '') + kv('Joining date', 'تاريخ الالتحاق', E.iso(q.join)) + kv('Last working day', 'آخر يوم عمل', E.iso(q.lwd))
         + kv('Termination case', 'حالة إنهاء الخدمة', c.en + ' — ' + c.ar + (c.art ? ' (Art ' + c.art + ')' : '')) + kv('Length of service', 'مدة الخدمة', sv.y + ' y ' + sv.m + ' m ' + sv.d + ' d  =  ' + E.r2(sv.T).toFixed(4) + ' years')
         + kv('Wage used for the award', 'الأجر المعتمد للمكافأة', E.f2(q.base.eos)) + kv('Leave period', 'فترة الإجازة', E.iso(lv.from) + ' → ' + E.iso(lv.to) + '  (' + lv.annual + ' days a year)') + '</table>'
-        + '<h2>' + L('Settlement', 'التسوية') + '</h2><table>' + lines + '<tr class="tot"><td>' + L('Net payout', 'صافي المبلغ المستحق') + '</td><td class="num">' + esc_(E.f2(q.totals.net)) + '</td></tr></table>'
+        + '<h2>' + L('Settlement', 'التسوية') + '</h2><table>' + lines + '</table>'
         + '<p>' + L('To be paid by', 'يُصرف قبل تاريخ') + ' <b>' + esc_(q.payBy) + '</b> (' + L('Art 88', 'المادة 88') + ')</p>' + (flags ? '<h2>' + L('Notes', 'ملاحظات') + '</h2>' + flags : '')
         + '<div class="sig"><div>' + L('Employee', 'الموظف') + '</div><div>' + L('HR', 'الموارد البشرية') + '</div><div>' + L('Finance', 'المالية') + '</div></div>'
         + '<div class="dis">' + L('Prepared with Jisr Bulk Ops from the data in Jisr. Guidance only: check against the contract and the Saudi Labor Law before payment.', 'أُعدّ بواسطة Jisr Bulk Ops من بيانات جسر. للإرشاد فقط: راجعه مع العقد ونظام العمل السعودي قبل الصرف.') + '</div></div>';
@@ -57951,6 +58095,15 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       .jst-stmt tr.tot td { font-weight: 700; border-top: 2px solid #1f2328; border-bottom: 0; } .jst-stmt .fx { color: #5f6368; font-size: 11.5px; direction: ltr; text-align: start; }
       .jst-flag { margin: 4px 0; padding: 5px 8px; border-radius: 6px; background: #fff7e0; font-size: 12.5px; } .jst-flag.error { background: #fdecea; } .jst-flag.info { background: #eef4ff; }
       .jst-dlg p { margin: 6px 0; font-size: 13px; } .jst-pick { max-height: 46vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; margin-top: 8px; } .jst-pick label { display: flex; gap: 8px; padding: 5px 8px; border-bottom: 1px solid #f1f3f4; font-size: 13px; cursor: pointer; } .jst-pick label[data-off="1"] { opacity: .5; cursor: default; }
+      .jst-stmt tr.gh td { font-weight: 600; background: #f8f9fa; padding-top: 6px; } .jst-stmt tr.ln td:first-child { padding-inline-start: 16px; } .jst-stmt tr.sub td { font-weight: 600; border-top: 1px solid #1f2328; }
+      .jst-sub { font-weight: 600; font-size: 12.5px; margin: 12px 0 2px; padding-top: 8px; border-top: 1px solid #e8eaed; }
+      .jst-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 8px; border-bottom: 1px solid #e8eaed; } .jst-tab { font: inherit; font-size: 12.5px; padding: 6px 12px; border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer; color: #5f6368; } .jst-tab.on { color: #1a73e8; border-bottom-color: #1a73e8; font-weight: 600; }
+      .jst-quick { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 8px; } .jst-quick .jbo-btn { padding: 3px 9px; font-size: 12px; }
+      .jst-wi { display: flex; gap: 10px 14px; flex-wrap: wrap; align-items: end; margin: 4px 0; } .jst-wl { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #5f6368; } .jst-wl select, .jst-wl input { font: inherit; font-size: 12.5px; padding: 4px 6px; border: 1px solid #c9cdd2; border-radius: 6px; background: #fff; color: inherit; max-width: 330px; }
+      .jst-scroll2 { overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; margin: 6px 0; max-height: 44vh; } .jst-tbl2 td small { display: block; color: #5f6368; font-size: 11.5px; white-space: normal; max-width: 300px; } .jst-tbl2 .jst-netc { min-width: 130px; } .jst-bar2 { display: block; height: 4px; background: #e8eaed; border-radius: 2px; margin-top: 3px; overflow: hidden; } .jst-bar2 i { display: block; height: 100%; background: #1a73e8; }
+      .jst-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; } .jst-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid #c9cdd2; border-radius: 14px; font-size: 12px; cursor: pointer; max-width: 360px; } .jst-chip.on { background: #eef4ff; border-color: #1a73e8; } .jst-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .jst-kpis { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; } .jst-kpi { flex: 1; min-width: 170px; border: 1px solid #d0d7de; border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; font-size: 12px; color: #5f6368; } .jst-kpi b { font-size: 17px; color: #1f2328; } .jst-kpi small { color: #5f6368; }
+      .jst-alert { border: 2px solid #c5221f; background: #fdecea; border-radius: 8px; padding: 9px 12px; margin: 8px 0; font-size: 13px; } .jst-alert.ok { border-color: #137333; background: #e6f4ea; } .jst-alert select { font: inherit; font-size: 12.5px; padding: 2px 4px; } .jst-hl { background: #fff1d6; font-weight: 700; }
       .jst-cmp { margin-top: 8px; font-size: 12.5px; } .jst-cmp table { border-collapse: collapse; } .jst-cmp td, .jst-cmp th { padding: 3px 10px; border-bottom: 1px solid #f1f3f4; text-align: end; } .jst-cmp th:first-child, .jst-cmp td:first-child { text-align: start; }
     ` }));
   }
@@ -57964,7 +58117,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
 
   function openTool_() {
     injectCss_(); try { jboActOpen_(MODULE_ID); } catch (e) { /* ignore */ }
-    const S = { rows: [], set: { eosBase: 'full', leaveBase: 'full', deductAdvanceLeave: false }, busy: false, stop: false, sel: new Set(), open: null, jisrList: null, more: false };
+    const S = { rows: [], set: { eosBase: 'full', leaveBase: 'full', deductAdvanceLeave: false, loansFromJisr: true }, tab: 'stmt', fc: null, busy: false, stop: false, sel: new Set(), open: null, jisrList: null, more: false };
     const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
     const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': T('Close', 'إغلاق') });
     const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1320px, 98vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('End-of-service and leave settlement', 'تسوية نهاية الخدمة والإجازات') }), closeBtn]), body, foot]);
@@ -57991,17 +58144,17 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     };
 
     // ---------------------------------------------------------------- reading + calculating
-    async function readRows(list) {
-      const need = list.filter((r) => !r.data); let next = 0, ok = 0, bad = 0, doneN = 0; const total = need.length; let authErr = null;
+    async function readRows(list, light) {
+      const need = list.filter((r) => !r.data || (!light && r.data.noHistory)); let next = 0, ok = 0, bad = 0, doneN = 0; const total = need.length; let authErr = null;
       const worker = async () => {
         while (!S.stop && !authErr) {
           const i = next++; if (i >= total) return; const r = need[i];
-          try { r.data = await readEmployee_(r.id); r.err = ''; if (r.data.name && !r.name) r.name = r.data.name; if (r.data.code && !r.code) r.code = r.data.code; ok++; }
+          try { r.data = await readEmployee_(r.id, !!light); r.err = ''; if (r.data.name && !r.name) r.name = r.data.name; if (r.data.code && !r.code) r.code = r.data.code; ok++; }
           catch (e) { if (e.auth) { authErr = e; return; } r.err = String(e.message || e).slice(0, 160); bad++; }
           doneN++; setProg(doneN, total); setNote(T('Reading from Jisr… ', 'جارٍ القراءة من جسر… ') + doneN + ' / ' + total + ' (' + Math.round(doneN / total * 100) + '%)' + (bad ? ' · ' + bad + T(' failed', ' فشل') : ''));
         }
       };
-      if (total) await Promise.all(Array.from({ length: cfg.workers }, worker));
+      if (total) await Promise.all(Array.from({ length: light ? cfg.workers + 1 : cfg.workers }, worker));
       if (authErr) throw authErr; return { ok, bad, total };
     }
     async function attachJisr(list) {
@@ -58079,7 +58232,8 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     function settingsBar() {
       const bs = (key, label) => { const s = el('select', { 'aria-label': label }); E.BASES.forEach((b) => s.appendChild(el('option', { value: b.key, text: T(b.en, b.ar) }))); s.value = S.set[key]; s.addEventListener('change', () => { S.set[key] = s.value; recalcAll(); render(); }); return el('label', {}, [label, s]); };
       const adv = el('input', { type: 'checkbox' }); adv.checked = !!S.set.deductAdvanceLeave; adv.addEventListener('change', () => { S.set.deductAdvanceLeave = adv.checked; recalcAll(); render(); });
-      return el('div', { class: 'jst-set' }, [bs('eosBase', T('Wage for the end-of-service award', 'الأجر لمكافأة نهاية الخدمة')), bs('leaveBase', T('Wage for leave pay', 'الأجر لبدل الإجازة')), el('label', { class: 'jst-ck' }, [adv, T('Deduct leave taken in advance', 'خصم الإجازة المأخوذة مقدمًا')])]);
+      const ln = el('input', { type: 'checkbox' }); ln.checked = S.set.loansFromJisr !== false; ln.addEventListener('change', () => { S.set.loansFromJisr = ln.checked; recalcAll(); render(); });
+      return el('div', { class: 'jst-set' }, [bs('eosBase', T('Wage for the end-of-service award', 'الأجر لمكافأة نهاية الخدمة')), bs('leaveBase', T('Wage for leave pay', 'الأجر لبدل الإجازة')), el('label', { class: 'jst-ck' }, [adv, T('Deduct leave taken in advance', 'خصم الإجازة المأخوذة مقدمًا')]), el('label', { class: 'jst-ck' }, [ln, T('Deduct loans still pending in Jisr', 'خصم القروض المتبقية في جسر')])]);
     }
     function bulkBar() {
       const n = S.sel.size; const d = el('input', { type: 'date', 'aria-label': T('Last working day', 'آخر يوم عمل') }); const c = caseSelect_('', () => {}, T('Case: keep', 'الحالة: بدون تغيير')); const p = el('input', { type: 'date', 'aria-label': T('Leave period from', 'بداية فترة الإجازة') });
@@ -58115,6 +58269,150 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       const i = el('input', { type: 'number', step: step || 'any', value: r.in[key] === '' || r.in[key] == null ? '' : String(r.in[key]), placeholder: hint || '', 'aria-label': label }); i.addEventListener('change', () => { r.in[key] = i.value === '' ? '' : Number(i.value); calc_(r, S.set); render(); });
       return [el('span', { text: label }), i];
     }
+    // ---------------------------------------------------------------- what-if tabs (the row is never changed by them, unless you press "Use this")
+    const FC = () => (S.fc = S.fc || { start: '', months: 12, caseKey: '', notice: 'none', cmpDate: '', cmp: new Set(['resignation', 'employer_notice', 'expiry', 'employer_invalid', 'employer_art80']), nDate: '', nCase: '', nDays: '', nServed: '', chipsOpen: false });
+    function quickBtns(setter) {
+      const t = todayIso_(); const me = (k) => E.iso(E.monthEnds(E.parseDate(t), 2)[k]);
+      const items = [[T('Today', 'اليوم'), t], [T('Tomorrow', 'غدًا'), addDaysIso_(t, 1)], [T('End of this month', 'نهاية هذا الشهر'), me(0)], [T('End of next month', 'نهاية الشهر القادم'), me(1)]];
+      return el('div', { class: 'jst-quick' }, items.map(([lab, v]) => { const b = el('button', { class: 'jbo-btn', type: 'button', text: lab, title: v }); b.addEventListener('click', () => setter(v)); return b; }));
+    }
+    function tabsBar() {
+      const tabs = [['stmt', T('Statement', 'الكشف')], ['month', T('Month by month', 'شهرًا بشهر')], ['compare', T('Compare reasons', 'مقارنة الأسباب')], ['notice', T('Notice impact', 'أثر الإشعار')]];
+      return el('div', { class: 'jst-tabs', role: 'tablist' }, tabs.map(([k, lab]) => { const b = el('button', { class: 'jst-tab' + (S.tab === k ? ' on' : ''), type: 'button', role: 'tab', 'aria-selected': S.tab === k ? 'true' : 'false', text: lab }); b.addEventListener('click', () => { S.tab = k; render(); }); return b; }));
+    }
+    const whatIfNote = () => el('p', { class: 'jbo-muted', style: { fontSize: '12px', margin: '4px 0 8px' }, text: T('What-if only: nothing here is saved, written to Jisr or changed in the table.', 'للتجربة فقط: لا شيء هنا يُحفظ أو يُكتب في جسر أو يغيّر الجدول.') });
+    const lbl = (text, ...kids) => el('label', { class: 'jst-wl' }, [text].concat(kids));
+    const noticeSel = (F) => { const s = el('select', { 'aria-label': T('Notice', 'الإشعار') }); [['none', T('Notice not counted', 'الإشعار غير محتسب')], ['lieu', T('Notice paid in lieu (60 d employer, 30 d employee)', 'بدل إشعار (60 يومًا لصاحب العمل، 30 يومًا للعامل)')]].forEach(([v, t]) => s.appendChild(el('option', { value: v, text: t }))); s.value = F.notice; s.addEventListener('change', () => { F.notice = s.value; render(); }); return s; };
+    const numCell = (v, cls) => el('td', { class: 'num' + (cls ? ' ' + cls : ''), text: v == null ? '' : E.f2(v) });
+    const wiTable = (head, rows) => el('div', { class: 'jst-scroll2' }, [el('table', { class: 'jst-tbl jst-tbl2' }, [el('tr', {}, head.map((h, i) => el('th', { class: i ? 'num' : '', text: h })))].concat(rows))]);
+
+    function tabMonth(host, r) {
+      const F = FC(); const start = F.start || r.in.lwd || todayIso_(); const ck = F.caseKey || r.in.caseKey || 'employer_notice';
+      host.appendChild(whatIfNote());
+      const d = el('input', { type: 'date', value: start, 'aria-label': T('Start date', 'تاريخ البداية') }); d.addEventListener('change', () => { F.start = d.value; render(); });
+      const ms = el('select', { 'aria-label': T('Months', 'الأشهر') }); [3, 6, 12, 18, 24].forEach((n) => ms.appendChild(el('option', { value: String(n), text: n + T(' months', ' شهرًا') }))); ms.value = String(F.months); ms.addEventListener('change', () => { F.months = Number(ms.value); render(); });
+      host.appendChild(el('div', { class: 'jst-wi' }, [lbl(T('From', 'من'), d), lbl(T('For', 'لمدة'), ms), lbl(T('If the case is', 'حالة الإنهاء'), caseSelect_(ck, (v) => { F.caseKey = v; render(); }, false)), lbl(T('Notice', 'الإشعار'), noticeSel(F))]));
+      host.appendChild(quickBtns((v) => { F.start = v; render(); }));
+      const m = forecastModel_([r], S.set, { start, months: F.months, caseKey: ck, useOwn: false, notice: F.notice });
+      const e = m.emp[0]; if (!e) { host.appendChild(el('p', { class: 'jst-warn', text: T('This employee could not be calculated (check the joining date and salary).', 'تعذّر حساب هذا الموظف (تحقق من تاريخ الالتحاق والراتب).') })); return; }
+      const maxNet = Math.max(1, ...e.cells.map((c) => (c ? c.totals.net : 0)));
+      const rows = e.cells.map((c, i) => {
+        if (!c) return el('tr', {}, [el('td', { text: m.labels[i] }), el('td', { colspan: '7', class: 'jst-warn', text: T('Not calculable on this date (before joining?)', 'لا يمكن الحساب في هذا التاريخ (قبل الالتحاق؟)') })]);
+        const g = c.totals.byGrp; const bar = el('i', { style: { width: Math.max(0, Math.round(c.totals.net / maxNet * 100)) + '%' } });
+        return el('tr', { class: i === 0 ? 'on' : '' }, [el('td', { text: m.labels[i] + (i === 0 ? ' ·' : '') }), el('td', { class: 'jst-sv', text: svText_(c.service) }), numCell(g.eos), numCell(g.leave), numCell((g.pending || 0) + (g.other || 0)), numCell((g.notice || 0) + (g.comp || 0)), numCell(c.totals.deductions), el('td', { class: 'num jst-netc' }, [el('b', { text: E.f2(c.totals.net) }), el('span', { class: 'jst-bar2' }, [bar])])]);
+      });
+      host.appendChild(wiTable([T('Leaving on', 'المغادرة في'), T('Service', 'الخدمة'), T('Award', 'المكافأة'), T('Leave', 'الإجازة'), T('Pending', 'معلقة'), T('Notice, comp.', 'إشعار وتعويض'), T('Deductions', 'خصومات'), T('Net payable', 'الصافي')], rows));
+      const a = e.cells[0], z = e.cells[e.cells.length - 1];
+      if (a && z) host.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('The net payable grows from ', 'ينمو صافي المستحق من ') + E.f2(a.totals.net) + T(' to ', ' إلى ') + E.f2(z.totals.net) + T(' by ', ' حتى ') + m.labels[m.labels.length - 1] + ' (' + (z.totals.net >= a.totals.net ? '+' : '') + E.f2(E.r2(z.totals.net - a.totals.net)) + ').' }));
+      host.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12px' }, text: PROJ_NOTE() }));
+      const x = el('button', { class: 'jbo-btn', type: 'button', text: T('Excel', 'Excel') }); x.addEventListener('click', () => { try { setNote(T('Saved: ', 'حُفظ: ') + downloadForecast_(m, S.set)); } catch (er) { setNote(String(er.message || er), true); } });
+      const h = el('button', { class: 'jbo-btn', type: 'button', text: T('Printable', 'للطباعة') }); h.addEventListener('click', () => { try { setNote(T('Saved: ', 'حُفظ: ') + downloadForecastHtml_(m) + T(' (open it, then Print or Save as PDF)', ' (افتحه ثم اطبع أو احفظ PDF)')); } catch (er) { setNote(String(er.message || er), true); } });
+      host.appendChild(el('div', { class: 'jst-quick' }, [x, h]));
+    }
+    function tabCompare(host, r) {
+      const F = FC(); const date = F.cmpDate || r.in.lwd || todayIso_(); host.appendChild(whatIfNote());
+      const d = el('input', { type: 'date', value: date, 'aria-label': T('Date', 'التاريخ') }); d.addEventListener('change', () => { F.cmpDate = d.value; render(); });
+      host.appendChild(el('div', { class: 'jst-wi' }, [lbl(T('If the employee leaves on', 'إذا غادر الموظف في'), d), lbl(T('Notice', 'الإشعار'), noticeSel(F))])); host.appendChild(quickBtns((v) => { F.cmpDate = v; render(); }));
+      const chips = el('div', { class: 'jst-chips' }); E.CASES.forEach((c) => { const cb = el('input', { type: 'checkbox' }); cb.checked = F.cmp.has(c.key); cb.addEventListener('change', () => { if (cb.checked) F.cmp.add(c.key); else F.cmp.delete(c.key); render(); }); chips.appendChild(el('label', { class: 'jst-chip' + (cb.checked ? ' on' : ''), title: caseLabel_(c) }, [cb, el('span', { text: caseLabel_(c) + (c.art ? ' · ' + T('Art ', 'م') + c.art : '') })])); });
+      const tog = el('button', { class: 'jbo-btn', type: 'button', text: F.chipsOpen ? T('Hide the list of cases', 'إخفاء قائمة الحالات') : T('Cases compared: ', 'الحالات المقارنة: ') + F.cmp.size + ' · ' + T('change', 'تغيير') }); tog.addEventListener('click', () => { F.chipsOpen = !F.chipsOpen; render(); });
+      host.appendChild(el('div', { class: 'jst-quick' }, [tog])); if (F.chipsOpen) host.appendChild(chips);
+      const keys = E.CASES.map((c) => c.key).filter((k) => F.cmp.has(k)); if (!keys.length) { host.appendChild(el('p', { class: 'jbo-muted', text: T('Tick at least one case above.', 'اختر حالة واحدة على الأقل أعلاه.') })); return; }
+      const res = keys.map((k) => ({ k, x: compute_(r, S.set, { lwd: date, caseKey: k, noticeDays: noticeFor_(k, F.notice) }) }));
+      const okR = res.filter((y) => y.x.ok); const nets = okR.map((y) => y.x.totals.net); const lo = Math.min(...nets), hi = Math.max(...nets); const cur = r.in.caseKey ? okR.find((y) => y.k === r.in.caseKey) : null; const ref = cur || okR[0];
+      const rows = res.map((y) => {
+        const c = E.caseByKey(y.k);
+        if (!y.x.ok) return el('tr', {}, [el('td', { text: caseLabel_(c) }), el('td', { colspan: '7', class: 'jst-bad', text: T(y.x.flags[0].en, y.x.flags[0].ar) })]);
+        const t = y.x.totals, g = t.byGrp; const warn = y.x.flags.find((f) => f.level === 'warn'); const diff = ref ? E.r2(t.net - ref.x.totals.net) : 0;
+        return el('tr', {}, [el('td', {}, [el('div', { dir: 'auto', text: caseLabel_(c) + (c.art ? ' · ' + T('Art ', 'م') + c.art : '') }), warn ? el('small', { class: 'jst-warn', text: T(warn.en, warn.ar) }) : null]), numCell(g.eos), numCell(g.leave), numCell((g.pending || 0) + (g.other || 0)), numCell((g.notice || 0) + (g.comp || 0)), numCell(t.deductions),
+          el('td', { class: 'num' }, [el('b', { text: E.f2(t.net) }), t.net === lo && lo !== hi ? el('small', { text: T('lowest', 'الأقل') }) : t.net === hi && lo !== hi ? el('small', { text: T('highest', 'الأعلى') }) : null]), el('td', { class: 'num ' + (diff > 0 ? 'jst-warn' : ''), text: y.k === ref.k ? T('reference', 'مرجع') : (diff > 0 ? '+' : '') + E.f2(diff) })]);
+      });
+      host.appendChild(wiTable([T('Case', 'الحالة'), T('Award', 'المكافأة'), T('Leave', 'الإجازة'), T('Pending', 'معلقة'), T('Notice, comp.', 'إشعار وتعويض'), T('Deductions', 'خصومات'), T('Net payable', 'الصافي'), T('Versus ', 'مقابل ') + (ref ? caseLabel_(ref.x.case).slice(0, 28) : '')], rows));
+      host.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Same date, same pay and leave: only the termination reason changes. Choose the reason that applies to see its exact statement.', 'نفس التاريخ والراتب والإجازة: يتغير سبب الإنهاء فقط. اختر السبب المطابق لعرض كشفه الدقيق.') }));
+    }
+    function tabNotice(host, r) {
+      const F = FC(); const date = F.nDate || r.in.lwd || todayIso_(); host.appendChild(whatIfNote());
+      const c0 = E.caseByKey(r.in.caseKey); const ck = F.nCase || (c0 && c0.notice ? c0.key : 'employer_notice'); const cs = E.caseByKey(ck); const N = F.nDays !== '' ? Math.max(0, Math.round(E.num(F.nDays))) : E.noticeDefault(cs);
+      const S0 = F.nServed !== '' ? Math.min(N, Math.max(0, Math.round(E.num(F.nServed)))) : Math.floor(N / 2);
+      const d = el('input', { type: 'date', value: date, 'aria-label': T('Date', 'التاريخ') }); d.addEventListener('change', () => { F.nDate = d.value; render(); });
+      const nd = el('input', { type: 'number', min: '0', step: '1', value: String(N), 'aria-label': T('Notice period (days)', 'مدة الإشعار (أيام)') }); nd.addEventListener('change', () => { F.nDays = nd.value; render(); });
+      const sv = el('input', { type: 'number', min: '0', step: '1', value: String(S0), 'aria-label': T('Days served', 'أيام العمل خلال الإشعار') }); sv.addEventListener('change', () => { F.nServed = sv.value; render(); });
+      const cases = E.CASES.filter((c) => c.notice); const cs2 = el('select', { 'aria-label': T('Case', 'الحالة') }); cases.forEach((c) => cs2.appendChild(el('option', { value: c.key, text: caseLabel_(c) + (c.art ? ' · ' + T('Art ', 'م') + c.art : '') }))); cs2.value = ck; cs2.addEventListener('change', () => { F.nCase = cs2.value; F.nDays = ''; F.nServed = ''; render(); });
+      host.appendChild(el('div', { class: 'jst-wi' }, [lbl(T('Notice is given on', 'يُسلَّم الإشعار في'), d), lbl(T('Case', 'الحالة'), cs2), lbl(T('Notice period (days)', 'مدة الإشعار (أيام)'), nd), lbl(T('Days served (partly served row)', 'أيام العمل (صف الخدمة الجزئية)'), sv)])); host.appendChild(quickBtns((v) => { F.nDate = v; render(); }));
+      const emp = cs.notice === 'employer';
+      const sc = [
+        { k: 'none', en: 'No notice counted', ar: 'بدون احتساب إشعار', lwd: date, nd: 0, hint: T('The pure legal entitlement, no notice effect.', 'الاستحقاق النظامي فقط بلا أثر للإشعار.') },
+        { k: 'full', en: 'Notice served in full', ar: 'الإشعار مُنفَّذ بالكامل', lwd: addDaysIso_(date, N), nd: 0, hint: emp ? T('Employee works the notice: service, salary and leave run to the end of it; nothing is paid in lieu.', 'يعمل الموظف فترة الإشعار: تمتد الخدمة والراتب والإجازة حتى نهايتها ولا يُدفع بدل.') : T('Employee works the notice: nothing is deducted.', 'يعمل الموظف فترة الإشعار: لا يُخصم شيء.') },
+        { k: 'part', en: 'Partly served (' + S0 + ' of ' + N + ' days)', ar: 'منفَّذ جزئيًا (' + S0 + ' من ' + N + ' يومًا)', lwd: addDaysIso_(date, S0), nd: N - S0, hint: emp ? T('Employer pays the days not served in lieu.', 'يدفع صاحب العمل الأيام غير المنفَّذة بدلًا.') : T('The days not served are deducted from the employee.', 'تُخصم الأيام غير المنفَّذة من العامل.') },
+        { k: 'lieu', en: emp ? 'Paid in lieu (leaves at once)' : 'Leaves at once (notice not served)', ar: emp ? 'بدل إشعار (يغادر فورًا)' : 'يغادر فورًا (دون إشعار)', lwd: date, nd: N, hint: emp ? T('The whole notice is paid in lieu (Art 76).', 'يُدفع كامل الإشعار بدلًا (م76).') : T('The whole notice is deducted from the employee (Art 76).', 'يُخصم كامل الإشعار من العامل (م76).') }];
+      const res = sc.map((s) => ({ s, x: compute_(r, S.set, { lwd: s.lwd, caseKey: ck, noticeDays: s.nd }) })); const base = res[0].x.ok ? res[0].x.totals.net : null;
+      const rows = res.map(({ s, x }) => {
+        if (!x.ok) return el('tr', {}, [el('td', { text: T(s.en, s.ar) }), el('td', { colspan: '8', class: 'jst-bad', text: T(x.flags[0].en, x.flags[0].ar) })]);
+        const t = x.totals, g = t.byGrp; const use = el('button', { class: 'jbo-btn', type: 'button', text: T('Use this', 'اعتمد') }); use.title = T('Put this last working day, case and notice into the table row', 'ضع آخر يوم عمل والحالة والإشعار في صف الجدول');
+        use.addEventListener('click', () => { r.in.lwd = s.lwd; r.in.caseKey = ck; r.in.noticeDays = s.nd; calc_(r, S.set); S.tab = 'stmt'; render(); });
+        return el('tr', {}, [el('td', {}, [el('div', { text: T(s.en, s.ar) }), el('small', { text: s.hint })]), el('td', { class: 'num', text: s.lwd }), el('td', { class: 'jst-sv', text: svText_(x.service) }), numCell(g.eos), numCell(lineAmt_(x, 'salary')), numCell(g.leave), numCell((g.notice || 0)), el('td', { class: 'num' }, [el('b', { text: E.f2(t.net) })]), el('td', { class: 'num', text: base == null || s.k === 'none' ? '' : (t.net - base > 0 ? '+' : '') + E.f2(E.r2(t.net - base)) }), el('td', {}, [use])]);
+      });
+      host.appendChild(wiTable([T('Scenario', 'السيناريو'), T('Last working day', 'آخر يوم عمل'), T('Service', 'الخدمة'), T('Award', 'المكافأة'), T('Salary', 'الراتب'), T('Leave', 'الإجازة'), T('Notice', 'الإشعار'), T('Net payable', 'الصافي'), T('Versus no notice', 'مقابل بدون إشعار'), ''], rows));
+      host.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12px' }, text: emp ? T('Serving the notice costs the company the salary, leave accrual and extra service award for those days; paying in lieu costs the notice pay at once. The difference column shows which is cheaper.', 'تنفيذ الإشعار يكلّف الشركة الراتب واستحقاق الإجازة ومكافأة الخدمة الإضافية لتلك الأيام؛ أما البدل فيكلّف أجر الإشعار فورًا. يبيّن عمود الفرق الأرخص.') : T('When the employee does not serve the notice, Art 76 lets the employer deduct the missing days from the entitlement. Serving it keeps the service running to the end of the notice.', 'إذا لم يلتزم العامل بالإشعار تتيح م76 خصم الأيام المتبقية من مستحقاته. وتنفيذه يُبقي الخدمة سارية حتى نهاية الإشعار.') }));
+    }
+    // ---------------------------------------------------------------- bulk forecast report (departments / whole company; Excel and printable)
+    async function addAllEmployees() {
+      if (S.busy) return;
+      try {
+        setNote(T('Loading the employee list…', 'جارٍ تحميل قائمة الموظفين…')); const list = await W.__jisrBulkOpsEmployees.get(false); let n = 0;
+        (list || []).forEach((e) => { if (!S.rows.some((r) => String(r.id) === String(e.id))) { addRow(e); n++; } });
+        setNote(n + T(' employee(s) added. Open "Forecast report…" to project what the company would owe, or enter dates and cases and click Calculate.', ' موظف أُضيف. افتح "تقرير التوقع…" لتوقع ما ستدفعه الشركة، أو أدخل التواريخ والحالات واضغط احسب.')); render();
+      } catch (e) { setNote(String(e.message || e).slice(0, 200), true); }
+    }
+    async function forecastDialog() {
+      if (S.busy) return; const pool = S.sel.size ? S.rows.filter((r) => S.sel.has(r.id)) : S.rows;
+      if (!pool.length) { setNote(T('Add employees first (or use "Add all employees").', 'أضف موظفين أولًا (أو استخدم "إضافة كل الموظفين").'), true); return; }
+      const O = { start: todayIso_(), months: 12, caseKey: 'employer_notice', useOwn: true, notice: 'none', cash: '', stress: -1 }; let model = null;
+      const dlg = el('div', { class: 'jbo-modal jst-dlg', style: { width: 'min(1100px, 98vw)' } }); const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); dlg.__jboRun = true;
+      const fin = () => { bd.remove(); }; const head = el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('Forecast report: what would the company owe?', 'تقرير التوقع: كم ستدفع الشركة؟') })]);
+      const bodyD = el('div', { class: 'jbo-modal-body' }); const footD = el('div', { class: 'jbo-modal-foot' });
+      const msg = el('div', { class: 'jbo-muted', role: 'status', 'aria-live': 'polite', style: { minHeight: '18px', margin: '6px 0' } }); const result = el('div');
+      const closeB = el('button', { class: 'jbo-btn', type: 'button', text: T('Close', 'إغلاق') }); const stopD = el('button', { class: 'jbo-btn', type: 'button', text: T('Stop', 'إيقاف') }); stopD.style.display = 'none'; stopD.addEventListener('click', () => { S.stop = true; msg.textContent = T('Stopping…', 'جارٍ الإيقاف…'); }); const goB = el('button', { class: 'jbo-btn jbo-btn-primary', type: 'button', text: T('Build forecast', 'ابنِ التوقع') });
+      const xB = el('button', { class: 'jbo-btn', type: 'button', text: T('Excel', 'Excel') }); const hB = el('button', { class: 'jbo-btn', type: 'button', text: T('Printable report (PDF)', 'تقرير للطباعة (PDF)') }); xB.style.display = hB.style.display = 'none';
+      footD.appendChild(stopD); footD.appendChild(closeB); footD.appendChild(hB); footD.appendChild(xB); footD.appendChild(goB); dlg.appendChild(head); dlg.appendChild(bodyD); dlg.appendChild(footD);
+      const d = el('input', { type: 'date', value: O.start }); d.addEventListener('change', () => { O.start = d.value; });
+      const ms = el('select'); [3, 6, 12, 18, 24].forEach((n) => ms.appendChild(el('option', { value: String(n), text: n + T(' months', ' شهرًا') }))); ms.value = '12'; ms.addEventListener('change', () => { O.months = Number(ms.value); });
+      const cs = caseSelect_(O.caseKey, (v) => { O.caseKey = v || 'employer_notice'; }, false);
+      const own = el('input', { type: 'checkbox' }); own.checked = true; own.addEventListener('change', () => { O.useOwn = own.checked; });
+      const ns = el('select'); [['none', T('Notice not counted', 'الإشعار غير محتسب')], ['lieu', T('Notice paid in lieu', 'بدل إشعار')]].forEach(([v, t]) => ns.appendChild(el('option', { value: v, text: t }))); ns.addEventListener('change', () => { O.notice = ns.value; });
+      const cash = el('input', { type: 'number', min: '0', step: 'any', placeholder: T('optional', 'اختياري'), style: { width: '150px' } }); cash.addEventListener('change', () => { O.cash = cash.value === '' ? '' : Number(cash.value); if (model) paint(); });
+      bodyD.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('For ', 'ل') + pool.length + T(S.sel.size ? ' ticked employee(s)' : ' employee(s) in the table', S.sel.size ? ' موظف محدد' : ' موظف في الجدول') + T(': the total the company would owe if they all left on the start date or at the end of each following month. Reads each employee\'s salary, leave, loans and assets from Jisr (read only).', ': إجمالي ما ستدفعه الشركة إذا غادروا جميعًا في تاريخ البداية أو نهاية كل شهر لاحق. تقرأ راتب كل موظف وإجازاته وقروضه وأصوله من جسر (قراءة فقط).') }));
+      bodyD.appendChild(el('div', { class: 'jst-wi' }, [lbl(T('Start date', 'تاريخ البداية'), d), lbl(T('Months ahead', 'الأشهر القادمة'), ms), lbl(T('Case for everyone', 'الحالة للجميع'), cs), lbl(T('Notice', 'الإشعار'), ns), lbl(T('Cash available (for the alert)', 'النقد المتاح (للتنبيه)'), cash)]));
+      bodyD.appendChild(el('label', { class: 'jst-ck', style: { display: 'flex', gap: '6px', alignItems: 'center', fontSize: '13px', margin: '4px 0' } }, [own, T('Use the case already chosen for an employee in the table; the case above is for the rest', 'استخدم الحالة المختارة للموظف في الجدول؛ والحالة أعلاه لبقية الموظفين')]));
+      bodyD.appendChild(msg); bodyD.appendChild(result);
+      const card = (label, value, sub, cls) => el('div', { class: 'jst-kpi ' + (cls || '') }, [el('span', { text: label }), el('b', { text: value }), sub ? el('small', { text: sub }) : null]);
+      function paint() {
+        const m = model = forecastModel_(pool, S.set, O); result.textContent = '';
+        if (!m.emp.length) { result.appendChild(el('p', { class: 'jst-bad', text: T('No employee could be calculated (check the joining dates and salaries).', 'تعذّر حساب أي موظف (تحقق من تواريخ الالتحاق والرواتب).') })); xB.style.display = hB.style.display = 'none'; return; }
+        const s = m.stress; xB.style.display = hB.style.display = '';
+        const sm = el('select', { 'aria-label': T('Month to test', 'الشهر المراد اختباره') }); m.labels.forEach((l, i) => sm.appendChild(el('option', { value: String(i), text: l + (i === m.peakIdx ? T('  (highest)', '  (الأعلى)') : '') }))); sm.value = String(m.stressIdx); sm.addEventListener('change', () => { O.stress = Number(sm.value); paint(); });
+        result.appendChild(el('div', { class: 'jst-kpis' }, [card(T('Employees included', 'الموظفون المشمولون'), String(m.emp.length), m.failed.length ? m.failed.length + T(' could not be calculated', ' تعذّر حسابهم') : ''), card(T('If all leave on the start date', 'إذا غادر الجميع في تاريخ البداية'), E.f2(m.months[0].cash), O.start), card(T('Highest month', 'أعلى شهر'), E.f2(m.peak.cash), m.peak.date), card(T('Spread over the year', 'التفاوت خلال السنة'), E.f2(m.months[0].cash) + ' → ' + E.f2(m.months[m.months.length - 1].cash), m.months[m.months.length - 1].date)]));
+        const okAl = m.cashAvail != null && m.shortfall <= 0;
+        result.appendChild(el('div', { class: 'jst-alert' + (okAl ? ' ok' : '') , role: 'alert' }, [el('b', { text: T('Cash-flow alert', 'تنبيه التدفق النقدي') }), ' ', T('If all ' + m.emp.length + ' employees leave in ', 'إذا غادر جميع ' + m.emp.length + ' موظفًا في '), sm, T(', the company needs ', '، تحتاج الشركة إلى '), el('b', { text: E.f2(s.cash) }), T(' in cash within 7 to 14 days (Art 88): end-of-service ' + E.f2(s.eos) + ', leave ' + E.f2(s.leave) + ', pending payroll ' + E.f2(s.pending + s.other) + ', notice and compensation ' + E.f2(s.notice + s.comp) + '.', ' نقدًا خلال 7 إلى 14 يومًا (م88): مكافآت ' + E.f2(s.eos) + '، إجازات ' + E.f2(s.leave) + '، مستحقات معلقة ' + E.f2(s.pending + s.other) + '، إشعار وتعويض ' + E.f2(s.notice + s.comp) + '.'),
+          m.cashAvail != null ? el('div', { class: okAl ? 'jst-ok' : 'jst-bad', text: okAl ? T('Cash available ' + E.f2(m.cashAvail) + ': covered.', 'النقد المتاح ' + E.f2(m.cashAvail) + ': مغطّى.') : T('Cash available ' + E.f2(m.cashAvail) + ': shortfall ' + E.f2(m.shortfall) + '.', 'النقد المتاح ' + E.f2(m.cashAvail) + ': العجز ' + E.f2(m.shortfall) + '.') }) : el('div', { class: 'jbo-muted', text: T('Type the cash available above to see whether it is enough.', 'اكتب النقد المتاح أعلاه لترى إن كان كافيًا.') })]));
+        const tr = (cells, cls) => el('tr', { class: cls || '' }, cells);
+        result.appendChild(el('h4', { text: T('Totals by leaving date', 'الإجماليات حسب تاريخ المغادرة') }));
+        result.appendChild(wiTable([T('Leaving on', 'المغادرة في'), T('Pending', 'معلقة'), T('End-of-service', 'نهاية الخدمة'), T('Leave', 'الإجازة'), T('Notice, comp.', 'إشعار وتعويض'), T('Deductions', 'خصومات'), T('Cash required', 'النقد المطلوب')], m.months.map((x, i) => tr([el('td', { text: x.date }), numCell(x.pending + x.other), numCell(x.eos), numCell(x.leave), numCell(x.notice + x.comp), numCell(x.ded), numCell(x.cash)], i === m.stressIdx ? 'on' : ''))));
+        result.appendChild(el('h4', { text: T('Departments by leaving date (net payable)', 'الأقسام حسب تاريخ المغادرة (الصافي)') }));
+        result.appendChild(wiTable([T('Department', 'القسم'), T('Staff', 'العدد')].concat(m.labels.map((l) => l.slice(2))), m.depts.map((x) => tr([el('td', { text: x.name }), el('td', { class: 'num', text: String(x.n) })].concat(x.net.map((v, i) => numCell(v, i === m.stressIdx ? 'jst-hl' : '')))))));
+        result.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12px' }, text: PROJ_NOTE() }));
+      }
+      closeB.addEventListener('click', fin); bd.addEventListener('mousedown', (e) => { if (e.target === bd) fin(); });
+      xB.addEventListener('click', () => { try { msg.textContent = T('Saved: ', 'حُفظ: ') + downloadForecast_(model, S.set); try { jboActReport_(MODULE_ID, 'forecast-excel', 'ok', model.emp.length + ' employees'); } catch (e) { /* ignore */ } } catch (e) { msg.textContent = String(e.message || e); } });
+      hB.addEventListener('click', () => { try { msg.textContent = T('Saved: ', 'حُفظ: ') + downloadForecastHtml_(model) + T(' (open it, then Print or Save as PDF)', ' (افتحه ثم اطبع أو احفظ PDF)'); try { jboActReport_(MODULE_ID, 'forecast-pdf', 'ok', model.emp.length + ' employees'); } catch (e) { /* ignore */ } } catch (e) { msg.textContent = String(e.message || e); } });
+      goB.addEventListener('click', async () => {
+        if (!E.parseDate(O.start)) { msg.textContent = T('Choose a start date.', 'اختر تاريخ البداية.'); return; }
+        goB.disabled = true; S.busy = true; S.stop = false; stopD.style.display = ''; msg.textContent = T('Reading from Jisr…', 'جارٍ القراءة من جسر…');
+        try { const rd = await readRows(pool, true); render(); paint(); msg.textContent = (S.stop ? T('Stopped. ', 'أُوقف. ') : '') + (rd.bad ? rd.bad + T(' employee(s) could not be read from Jisr and are left out.', ' موظف تعذّرت قراءتهم من جسر وتم استبعادهم.') : T('Forecast ready.', 'التوقع جاهز.')); try { jboActReport_(MODULE_ID, 'forecast', rd.bad ? 'failed' : 'ok', pool.length + ' employees'); } catch (e) { /* ignore */ } }
+        catch (e) { msg.textContent = String(e.message || e).slice(0, 220); }
+        finally { S.busy = false; goB.disabled = false; stopD.style.display = 'none'; setProg(0, 0); }
+      });
+      document.body.appendChild(bd);
+    }
     function renderDetail(wrap) {
       const r = S.rows.find((x) => x.id === S.open); if (!r) return; const q = r.res && r.res.ok ? r.res : null; const c = E.caseByKey(r.in.caseKey);
       const box = el('div', { class: 'jst-det' }); wrap.appendChild(box);
@@ -58123,13 +58421,22 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       if (!r.data) { box.appendChild(el('p', { class: 'jbo-muted', text: T('Click Calculate to read this employee from Jisr first.', 'اضغط احسب لقراءة هذا الموظف من جسر أولًا.') })); return; }
       const grid = el('div', { class: 'jst-grid' }); box.appendChild(grid); const left = el('div'), right = el('div'); grid.appendChild(left); grid.appendChild(right);
       const fl = (...kids) => el('div', { class: 'jst-fld' }, kids);
+      { const ld = el('input', { type: 'date', value: r.in.lwd, 'aria-label': T('Last working day', 'آخر يوم عمل') }); ld.addEventListener('change', () => { r.in.lwd = ld.value; calc_(r, S.set); render(); });
+        left.appendChild(el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Last working day', 'آخر يوم عمل') }), ld, S.tab === 'stmt' ? quickBtns((v) => { r.in.lwd = v; calc_(r, S.set); render(); }) : null])); }
       if (c && c.needsEvent) { const i = el('input', { type: 'date', value: r.in.eventDate, 'aria-label': T('Event date', 'تاريخ الواقعة') }); i.addEventListener('change', () => { r.in.eventDate = i.value; calc_(r, S.set); render(); }); left.appendChild(fl(el('span', { text: c.needsEvent === 'marriage' ? T('Marriage date', 'تاريخ الزواج') : T('Date of birth of the child', 'تاريخ الولادة') }), i)); }
       if (c && c.award === 'custom') left.appendChild(fl(...fieldNum(r, 'customPct', T('Share of the full award (%)', 'نسبة المكافأة من الكاملة (%)'), '100')));
       if (c && c.notice) left.appendChild(fl(...fieldNum(r, 'noticeDays', c.notice === 'employer' ? T('Notice days the employer did not give (paid to the employee)', 'أيام الإشعار التي لم يمنحها صاحب العمل (تُدفع للعامل)') : T('Notice days the employee did not serve (deducted)', 'أيام الإشعار التي لم يلتزم بها العامل (تُخصم)'), '0', '1')));
       if (c && c.comp77) { const i = el('input', { type: 'checkbox' }); i.checked = r.in.art77 !== false; i.addEventListener('change', () => { r.in.art77 = i.checked; calc_(r, S.set); render(); }); left.appendChild(fl(el('span', { text: T('Include the Art 77 compensation', 'احتساب تعويض المادة 77') }), i)); }
       left.appendChild(fl(...fieldNum(r, 'additions', T('Other additions', 'إضافات أخرى'), '0')));
       left.appendChild(fl(...fieldNum(r, 'deductions', T('Other deductions', 'خصومات أخرى'), '0')));
-      left.appendChild(fl(...fieldNum(r, 'loans', T('Loans and advances to deduct', 'القروض والسلف للخصم'), '0')));
+      left.appendChild(fl(...fieldNum(r, 'loans', T('Loans and advances to deduct', 'القروض والسلف للخصم'), r.data.loansPending ? String(r.data.loansPending) : '0')));
+      if (r.data.loansPending) left.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', margin: '-2px 0 6px' }, text: T('Jisr: pending ', 'جسر: متبقٍ ') + (r.data.loansList || []).join('; ') + T(' (deducted unless you type an amount; type 0 to skip)', ' (يُخصم ما لم تكتب مبلغًا؛ اكتب 0 للتجاهل)') }));
+      left.appendChild(el('div', { class: 'jst-sub', text: T('Pending payroll items and offsets', 'مستحقات معلقة ومقاصة') }));
+      left.appendChild(fl(...fieldNum(r, 'unpaidMonths', T('Earlier months of salary not yet paid', 'أشهر رواتب سابقة غير مدفوعة'), '0', '1')));
+      left.appendChild(fl(...fieldNum(r, 'claims', T('Pending expense claims', 'مطالبات مصاريف معلقة'), '0')));
+      left.appendChild(fl(...fieldNum(r, 'bonusAnnual', T('Annual bonus (paid pro rata to the date)', 'المكافأة السنوية (تُدفع بالتناسب حتى التاريخ)'), '0')));
+      left.appendChild(fl(...fieldNum(r, 'assets', T('Unreturned or damaged assets (value)', 'أصول غير مرتجعة أو تالفة (القيمة)'), '0')));
+      if (r.data.assetsOut && r.data.assetsOut.length) left.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '11.5px', margin: '-2px 0 6px' }, text: T('Jisr: not returned: ', 'جسر: غير مرتجع: ') + r.data.assetsOut.slice(0, 5).join(', ') + T(' (Jisr holds no price: enter the value)', ' (لا يحتفظ جسر بسعر: أدخل القيمة)') }));
       const mv = el('button', { class: 'jbo-btn', type: 'button', text: S.more ? T('Fewer options', 'خيارات أقل') : T('More options (leave days, wage, service)', 'خيارات أكثر (أيام الإجازة، الأجر، الخدمة)') }); mv.addEventListener('click', () => { S.more = !S.more; render(); }); left.appendChild(el('div', { style: { margin: '8px 0' } }, [mv]));
       if (S.more) {
         left.appendChild(fl(...fieldNum(r, 'annualDays', T('Annual leave days a year', 'أيام الإجازة السنوية'), r.data.annual != null ? String(r.data.annual) : '21')));
@@ -58140,9 +58447,11 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
         left.appendChild(wb('eosBase', T('Wage for the award (this employee)', 'الأجر للمكافأة (لهذا الموظف)'))); left.appendChild(wb('leaveBase', T('Wage for leave pay (this employee)', 'الأجر لبدل الإجازة (لهذا الموظف)')));
       }
       left.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px', marginTop: '8px' }, text: T('From Jisr: basic ', 'من جسر: الأساسي ') + E.f2(r.data.basic) + T(', housing ', '، السكن ') + E.f2(r.data.housing) + T(', full package ', '، الإجمالي ') + E.f2(r.data.pack) + (r.data.contractType ? ' · ' + (r.data.contractType === 'fixed' ? T('fixed-term contract', 'عقد محدد المدة') : T('open-ended contract', 'عقد غير محدد المدة')) : '') + (r.data.contractEnd ? ' (' + r.data.contractEnd + ')' : '') }));
+      right.appendChild(tabsBar()); if (S.tab !== 'stmt') { ({ month: tabMonth, compare: tabCompare, notice: tabNotice })[S.tab](right, r); return; }
       if (!q) { right.appendChild(el('p', { class: 'jst-warn', text: r.msg || (r.res && r.res.flags[0] ? T(r.res.flags[0].en, r.res.flags[0].ar) : '') })); return; }
-      const tb = el('table', { class: 'jst-stmt' }); q.lines.forEach((l) => tb.appendChild(el('tr', {}, [el('td', {}, [el('div', { dir: 'auto', text: T(l.en, l.ar) }), l.formula ? el('div', { class: 'fx', text: l.formula }) : null]), el('td', { class: 'num' + (l.amount < 0 ? ' jst-bad' : ''), text: E.f2(l.amount) })])));
-      tb.appendChild(el('tr', { class: 'tot' }, [el('td', { text: T('Net payout', 'صافي المبلغ المستحق') }), el('td', { class: 'num', text: E.f2(q.totals.net) })])); right.appendChild(tb);
+      const tb = el('table', { class: 'jst-stmt' });
+      stmtRows_(q).forEach((x) => { const lab = el('div', { dir: 'auto', text: T(x.en, x.ar) }); tb.appendChild(el('tr', { class: x.kind === 'n' ? 'tot' : x.kind === 't' ? 'sub' : x.kind === 'h' ? 'gh' : 'ln' }, [el('td', {}, [lab, x.formula ? el('div', { class: 'fx', text: x.formula }) : null]), el('td', { class: 'num' + (x.amount < 0 ? ' jst-bad' : ''), text: x.amount == null ? '' : E.f2(x.amount) })])); });
+      right.appendChild(tb);
       right.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('Pay by ', 'يُصرف قبل ') + q.payBy + T(' (Art 88: ' + q.payByDays + ' days after the end of the contract). Service ', ' (م88: ' + q.payByDays + ' يومًا من انتهاء العقد). الخدمة ') + svText_(q.service) + ' = ' + E.r2(q.service.T).toFixed(4) + T(' years. ', ' سنة. ') + (c ? T(c.noteEn, c.noteAr) : '') }));
       const lv = q.leave; right.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('Leave from ', 'الإجازة من ') + E.iso(lv.from) + T(' to ', ' إلى ') + E.iso(lv.to) + ' (' + lv.daysIn + T(' days): ', ' يومًا): ') + lv.annual + T(' days a year gives ', ' يوم سنويًا تعطي ') + E.f2(lv.accrued) + (lv.carry ? ' + ' + E.f2(lv.carry) + T(' brought forward', ' مرحّلة') : '') + (lv.adjustment ? (lv.adjustment > 0 ? ' + ' : ' − ') + E.f2(Math.abs(lv.adjustment)) + T(' adjustments', ' تسويات') : '') + (lv.unpaidDeduction ? ' − ' + E.f2(lv.unpaidDeduction) + T(' unpaid', ' غير مدفوعة') : '') + ' − ' + E.f2(lv.used) + T(' taken', ' مستخدمة') + ' = ' + E.f2(lv.net) + T(' days', ' يوم') }));
       q.flags.forEach((f) => right.appendChild(el('div', { class: 'jst-flag ' + f.level, dir: 'auto', text: T(f.en, f.ar) })));
@@ -58153,16 +58462,20 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
         if (d && d.any) right.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('A difference is not always a mistake: Jisr may use a different wage, leave balance or case. Check the wage setting, the leave period and the case first.', 'الفرق ليس دائمًا خطأ: قد يستخدم جسر أجرًا أو رصيد إجازة أو حالة مختلفة. افحص إعداد الأجر وفترة الإجازة والحالة أولًا.') }));
       }
     }
-    function render() {
-      body.textContent = '';
-      body.appendChild(el('div', { class: 'jst-note', text: T('For each employee, enter the last working day, the termination case (it carries its Labor Law article) and, if needed, the leave period. The tool reads the joining date, salary and leave from Jisr and works out the end-of-service award, leave pay, notice, Art 77 compensation and the net payout. It only reads: nothing is written to Jisr or saved here. Saudi Labor Law; guidance, not legal advice.', 'لكل موظف أدخل آخر يوم عمل وحالة إنهاء الخدمة (وفيها مادة نظام العمل) وعند الحاجة فترة الإجازة. تقرأ الأداة تاريخ الالتحاق والراتب والإجازات من جسر وتحسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وتعويض المادة 77 وصافي المبلغ. تقرأ فقط: لا شيء يُكتب في جسر ولا يُحفظ هنا. نظام العمل السعودي؛ للإرشاد وليس استشارة قانونية.') }));
-      body.appendChild(settingsBar());
+    // The top part (note, settings, add buttons, status) is built once; only the table and detail below it are rebuilt, so a click on a button is not lost
+    // when the change event of a field you just edited re-renders the table.
+    const top = el('div'); const dyn = el('div'); body.appendChild(top); body.appendChild(dyn);
+    top.appendChild(el('div', { class: 'jst-note', text: T('For each employee, enter the last working day, the termination case (it carries its Labor Law article) and, if needed, the leave period. The tool reads the joining date, salary and leave from Jisr and works out the end-of-service award, leave pay, notice, Art 77 compensation and the net payout. It only reads: nothing is written to Jisr or saved here. Saudi Labor Law; guidance, not legal advice.', 'لكل موظف أدخل آخر يوم عمل وحالة إنهاء الخدمة (وفيها مادة نظام العمل) وعند الحاجة فترة الإجازة. تقرأ الأداة تاريخ الالتحاق والراتب والإجازات من جسر وتحسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وتعويض المادة 77 وصافي المبلغ. تقرأ فقط: لا شيء يُكتب في جسر ولا يُحفظ هنا. نظام العمل السعودي؛ للإرشاد وليس استشارة قانونية.') }));
+    top.appendChild(settingsBar());
       const fileIn = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', style: { display: 'none' } }); fileIn.addEventListener('change', () => { if (fileIn.files[0]) importExcel(fileIn.files[0]); fileIn.value = ''; });
-      const b = (t, f, title) => { const x = el('button', { class: 'jbo-btn', type: 'button', text: t, title: title || null }); x.disabled = S.busy; x.addEventListener('click', f); return x; };
-      body.appendChild(el('div', { class: 'jst-add' }, [b(T('Add employees…', 'إضافة موظفين…'), pickEmployees), b(T('Load from Jisr final settlements', 'تحميل من التسويات النهائية في جسر'), loadFromJisr, T('Adds every employee that already has a final settlement, with the last working day and reason Jisr holds', 'يضيف كل موظف لديه تسوية نهائية مع آخر يوم عمل والسبب المسجلين في جسر')), b(T('Import Excel', 'استيراد Excel'), () => fileIn.click(), T('Columns: employee code, last working day, case or article, leave period from…', 'الأعمدة: رقم الموظف، آخر يوم عمل، الحالة أو المادة، بداية فترة الإجازة…')), b(T('Excel template', 'نموذج Excel'), () => { try { setNote(T('Saved: ', 'حُفظ: ') + downloadTemplate_()); } catch (e) { setNote(String(e.message || e), true); } }), fileIn]));
-      body.appendChild(noteEl); body.appendChild(progEl);
-      if (S.rows.length) { body.appendChild(bulkBar()); const holder = el('div', { class: 'jst-scroll' }); body.appendChild(holder); renderTable(holder); const dw = el('div'); body.appendChild(dw); renderDetail(dw); }
-      else body.appendChild(el('div', { class: 'jbo-muted', style: { padding: '14px 4px' }, text: T('No employees yet. Add employees, load the ones that already have a final settlement in Jisr, or import an Excel file.', 'لا موظفين بعد. أضف موظفين أو حمّل من لديهم تسوية نهائية في جسر أو استورد ملف Excel.') }));
+      const b = (t, f, title) => { const x = el('button', { class: 'jbo-btn', type: 'button', text: t, title: title || null }); x.addEventListener('click', f); return x; };
+      const addBar = el('div', { class: 'jst-add' }, [b(T('Add employees…', 'إضافة موظفين…'), pickEmployees), b(T('Load from Jisr final settlements', 'تحميل من التسويات النهائية في جسر'), loadFromJisr, T('Adds every employee that already has a final settlement, with the last working day and reason Jisr holds', 'يضيف كل موظف لديه تسوية نهائية مع آخر يوم عمل والسبب المسجلين في جسر')), b(T('Import Excel', 'استيراد Excel'), () => fileIn.click(), T('Columns: employee code, last working day, case or article, leave period from…', 'الأعمدة: رقم الموظف، آخر يوم عمل، الحالة أو المادة، بداية فترة الإجازة…')), b(T('Add all employees', 'إضافة كل الموظفين'), addAllEmployees, T('Adds every employee in the company: use it with the forecast report', 'يضيف كل موظفي الشركة: استخدمه مع تقرير التوقع')), b(T('Forecast report…', 'تقرير التوقع…'), forecastDialog, T('What would the company owe if employees left on a date or month by month? Excel and printable report with a cash-flow alert', 'كم ستدفع الشركة إذا غادر الموظفون في تاريخ أو شهرًا بشهر؟ ملف Excel وتقرير للطباعة مع تنبيه التدفق النقدي')), b(T('Excel template', 'نموذج Excel'), () => { try { setNote(T('Saved: ', 'حُفظ: ') + downloadTemplate_()); } catch (e) { setNote(String(e.message || e), true); } }), fileIn]);
+    top.appendChild(addBar); top.appendChild(noteEl); top.appendChild(progEl);
+    function render() {
+      dyn.textContent = '';
+      addBar.querySelectorAll('button').forEach((x) => { x.disabled = S.busy; });
+      if (S.rows.length) { dyn.appendChild(bulkBar()); const holder = el('div', { class: 'jst-scroll' }); dyn.appendChild(holder); renderTable(holder); const dw = el('div'); dyn.appendChild(dw); renderDetail(dw); }
+      else dyn.appendChild(el('div', { class: 'jbo-muted', style: { padding: '14px 4px' }, text: T('No employees yet. Add employees, load the ones that already have a final settlement in Jisr, or import an Excel file.', 'لا موظفين بعد. أضف موظفين أو حمّل من لديهم تسوية نهائية في جسر أو استورد ملف Excel.') }));
       const ready = done().length; const pending = targets().some((r) => !r.res || !r.res.ok);
       mainB.textContent = ready && !pending && !S.busy ? T('Download Excel', 'نزّل ملف Excel') : T('Calculate', 'احسب'); stmtB.style.display = ready ? '' : 'none'; stmtB.disabled = S.busy;
     }
@@ -58179,7 +58492,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'End-of-Service & Leave Settlement', open: openTool_, version: SECTION_VERSION };
-    W.__jisrSettlement = { E, readEmployee_, engineInput_, calc_, blankIn_, workbook_, statementsHtml_, parseSheet_, listSettlements_, readJisrAmounts_, cfg };
+    W.__jisrSettlement = { E, readEmployee_, engineInput_, calc_, compute_, forecastModel_, forecastWorkbook_, forecastHtml_, stmtRows_, blankIn_, workbook_, statementsHtml_, parseSheet_, listSettlements_, readJisrAmounts_, cfg };
     if (g._rerender) g._rerender();
   }
   register_();
