@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.115.0
+// @version      4.116.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -187,6 +187,7 @@ function jboActFlush_() {
   let settled = false;
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
   // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
+  // v4.116.0: The final settlement PDF follows Jisr's own PDF more closely. The company name, country - city, address and logo are now read from the company profile in Jisr (what Jisr prints with "Export as PDF + company details"); "PDF options…" lets you choose that, a custom header, or no company details, set the page size (A4, A3, A5, Letter, Legal), orientation and margins, and pick the layout: like Jisr (signatures on their own last page) or all details on one page per employee (shrinks to fit). The page uses Jisr's font (Noto Sans Arabic), values sit next to the colon in the direction of the page, and the wording is Jisr's ("Created by Jisr system").
   // v4.115.0: Settlements are clearer and match Jisr. The ambiguous Other column is gone: the table now reads Salary & pending, Award, Leave, Compensation & notice, Additions, Deductions and Net payable, and the columns add up to the net (the legend says how). Leave follows Jisr's own rule (its opening balance minus leave taken), so 8.41 days = 5,606.67 matches the native page; Art 77 compensation is a visible switch (off by default, as Jisr leaves it to the contract) with its estimate shown apart. The leave card shows the active balance in days on the chosen date and lets you include it, edit the days or exclude leave pay, each with a live preview. Forecast keeps the presets and adds a single date and a custom end date. Final settlement (PDF) now follows the native Jisr layout, with an editable company header; Excel gets leave status and Art 77 columns.
   // v4.114.0: Settlements now forecast. Pick any last working day (today, tomorrow, end of this or next month, or any date) and see what the company would owe; the Month by month tab shows the entitlement growing across 3 to 24 months; Compare reasons puts resignation, termination, contract end and the Art 77 / Art 80 cases side by side for the same date; Notice impact compares serving the notice, partly serving it and paying in lieu, with a Use this button. None of it is saved or written. The statement is now Gross entitlement (pending payroll items, award, leave, notice, compensation) minus Deductions and offsets (loans still pending in Jisr, unreturned assets, advance leave) = Net payable. New inputs: earlier unpaid months, expense claims, annual bonus (pro rata), asset value. New Add all employees and Forecast report: Excel and printable report of the net payable if everyone left on a date or at each month end, by department and by employee, with a cash-flow alert (cash needed if all leave in one month, against the cash you have). Reads loans, assets and department from Jisr (GET only).
   // v4.113.0: End-of-Service & Leave Settlement (new tool, Payroll & GOSI). For each employee you set the last working day, the termination case (with its Labor Law article) and the leave period; the tool reads the joining date, salary and leave from Jisr and works out the end-of-service award (Art 84, 85, 87), salary of the last month, accrued leave pay (Art 111), notice pay (Art 76), the Art 77 compensation, your additions / deductions / loans, the net payout and the date to pay by (Art 88). It compares with the final settlement Jisr already made, exports one Excel for one or many employees and prints one statement page per employee. Read only. The arithmetic matches 10 real Jisr settlements (test/settlement-engine.test.js).
@@ -4436,7 +4437,7 @@ function JBOSettlementEngine_() {
     'leave-edit-bulk': ['Change dates, leave type or comment of leaves that were imported in bulk: a new approved leave request (with an attachment) replaces each one', 'تغيير التواريخ أو نوع الإجازة أو التعليق للإجازات المستوردة جماعيًا: طلب إجازة جديد معتمد (مع مرفق) يحل محل كل واحدة'],
     'leave-create-bulk': ['Create leave requests from a sheet in Jisr\'s import format, with an attachment per employee (File name Attachment), approved at once', 'إنشاء طلبات إجازة من ملف بصيغة استيراد جسر، مع مرفق لكل موظف (File name Attachment) واعتماد فوري'],
     'business-trip-requests': ['Create business trip requests for many employees from Excel: the destination is checked against each employee\'s own policy; approved at once or left in the approval workflow', 'إنشاء طلبات رحلات عمل لعدة موظفين من إكسل: تُفحص الوجهة مقابل سياسة كل موظف؛ تُعتمد فورًا أو تُترك في مسار الاعتماد'],
-    'settlement-calculator': ['Work out each leaver\'s end-of-service award, leave pay, notice and net payout, or forecast what the company would owe for any date, month by month, by reason, with a cash-flow alert (Saudi Labor Law); compare with Jisr; leave balance control, Art 77 switch, Jisr-style final settlement PDF; Excel and printable reports', 'احسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وصافي المستحقات لكل موظف، أو توقّع ما ستدفعه الشركة لأي تاريخ وشهرًا بشهر وحسب السبب مع تنبيه التدفق النقدي (نظام العمل السعودي)، وقارنها بجسر، مع ملفات Excel وتقارير للطباعة'],
+    'settlement-calculator': ['Work out each leaver\'s end-of-service award, leave pay, notice and net payout, or forecast what the company would owe for any date, month by month, by reason, with a cash-flow alert (Saudi Labor Law); compare with Jisr; leave balance control, Art 77 switch, Jisr-style final settlement PDF with company details from Jisr, page size, margins and one-page layout; Excel and printable reports', 'احسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وصافي المستحقات لكل موظف، أو توقّع ما ستدفعه الشركة لأي تاريخ وشهرًا بشهر وحسب السبب مع تنبيه التدفق النقدي (نظام العمل السعودي)، وقارنها بجسر، مع ملفات Excel وتقارير للطباعة'],
     'access-report': ['One Excel report of every employee: main data, who was invited, who accepted, who is still waiting, who never logged in, and when each person was last active; invite the ones who have not signed in', 'تقرير Excel واحد لكل موظف: البيانات الأساسية ومن دُعي ومن قبل ومن ما زال ينتظر ومن لم يسجّل الدخول ومتى كان كل شخص نشطًا آخر مرة'],
     'automations': ['When a custom request is approved, do the next step by itself: assign the day off or shift in the scheduler, or add a payroll transaction', 'عند اعتماد طلب مخصص، نفّذ الخطوة التالية تلقائيًا: تحديد يوم إجازة أو وردية في الجدول أو إضافة معاملة رواتب'],
     'requests-manage': ['Find the requests in the employees\' files (any type, by date range, status, leave type), export them, and cancel, delete forever or edit them: with the approval workflow or bypassing it', 'إيجاد الطلبات في ملفات الموظفين (أي نوع، بنطاق تاريخ والحالة ونوع الإجازة)، وتصديرها، وإلغاؤها أو حذفها نهائيًا أو تعديلها: مع مسار الاعتماد أو بتجاوزه'],
@@ -57675,12 +57676,12 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
 
 
 // ###########################################################################
-// ##### SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast (any date, month by month, what-if reasons and notice; bulk report with cash-flow alert)  v4.115.0
+// ##### SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast (any date, month by month, what-if reasons and notice; bulk report with cash-flow alert)  v4.116.0
 // ###########################################################################
 
 /*
  * ===========================================================================
- * SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast  v4.115.0
+ * SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast  v4.116.0
  * ---------------------------------------------------------------------------
  * For each employee you choose: last working day, the termination case (with its Labor Law article) and the leave period. The tool reads the employee's
  * joining date, salary, annual-leave policy / balance and leave history from Jisr (GET only), then works out the salary for the last month, the end-of-service
@@ -57699,7 +57700,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.115.0';
+  const SECTION_VERSION = '4.116.0';
   const MODULE_ID = 'settlement-calculator';
   const W = unsafeWindow;
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
@@ -58034,24 +58035,67 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     return saveBlob_(new Blob([out], { type: 'application/octet-stream' }), 'settlements_' + (slug_() || 'jisr') + '_' + nowStamp_(at) + '.xlsx');
   }
 
-  // ----- the header of the printed statement (company name, place, logo) is kept on this computer; Jisr gives no endpoint to read it
-  const HDR_KEY = 'jisrBulkOps_settleHeader';
+  // ----- the printed final settlement: where the company details come from (Jisr's company profile, a custom header or none), the page size and margins, and the layout.
+  // Jisr's own PDF has two exports, "Export as PDF" and "Export as PDF + company details"; the second one reads the company profile (name, country - city, address, logo). Here the same profile is read (GET /v2/organizations).
+  const HDR_KEY = 'jisrBulkOps_settleHeader'; // the custom header (company, place, logo) from v4.115
+  const PDF_KEY = 'jisrBulkOps_settlePdf';
   const header_ = () => { try { const v = GM_getValue(HDR_KEY, null); return v && typeof v === 'object' ? v : {}; } catch (e) { return {}; } };
   const saveHeader_ = (v) => { try { GM_setValue(HDR_KEY, v); } catch (e) { /* ignore */ } };
+  const PAGES = { A4: [210, 297], A3: [297, 420], A5: [148, 210], Letter: [215.9, 279.4], Legal: [215.9, 355.6] };
+  const MARGIN_PRESETS = { jisr: [15, 13.5, 15, 13.5], narrow: [8, 8, 8, 8], normal: [12, 12, 12, 12], wide: [20, 20, 20, 20] }; // top, right, bottom, left (mm)
+  const pdfDefaults_ = () => ({ source: 'jisr', size: 'A4', orient: 'portrait', preset: 'jisr', m: MARGIN_PRESETS.jisr.slice(), layout: 'jisr' });
+  const pdfOpts_ = () => {
+    const o = pdfDefaults_(); let v = null; try { v = GM_getValue(PDF_KEY, null); } catch (e) { v = null; }
+    if (!v || typeof v !== 'object') return o;
+    if (['jisr', 'custom', 'none'].includes(v.source)) o.source = v.source;
+    if (PAGES[v.size]) o.size = v.size;
+    if (v.orient === 'landscape') o.orient = 'landscape';
+    if (v.layout === 'one') o.layout = 'one';
+    if (v.preset === 'custom' || MARGIN_PRESETS[v.preset]) o.preset = v.preset;
+    if (Array.isArray(v.m) && v.m.length === 4) { const m = v.m.map((x) => Number(x)); if (m.every((x) => isFinite(x))) o.m = m.map((x) => Math.min(40, Math.max(0, x))); }
+    return o;
+  };
+  const savePdfOpts_ = (v) => { try { GM_setValue(PDF_KEY, v); } catch (e) { /* ignore */ } };
+  let ORG_ = null;
+  const junk_ = (s) => !/[\p{L}\p{N}]/u.test(String(s || ''));
+  /** The company profile Jisr prints in "Export as PDF + company details": name, country - city, address and logo. GET only. */
+  async function readOrg_(force) {
+    if (ORG_ && !force) return ORG_;
+    const r = await get_('/v2/organizations', []); const o = r.ok && r.json && r.json.data && r.json.data.organization;
+    if (!o) throw new Error(T('Could not read the company profile from Jisr (HTTP ', 'تعذّرت قراءة ملف الشركة من جسر (HTTP ') + r.status + ')');
+    const nm = (x) => (x && typeof x === 'object') ? { en: String(x.name_en || x.name_i18n || ''), ar: String(x.name_ar || '') } : { en: '', ar: '' };
+    ORG_ = { name: String(o.name || o.name_i18n || ''), nameAr: String(o.name_ar || ''), country: nm(o.country), city: nm(o.city), addr: String(o.address1 || o.address1_i18n || ''), addrAr: String(o.address1_ar || ''), logo: o.logo && o.logo.file_path ? String(o.logo.file_path) : '' };
+    return ORG_;
+  }
+  /** The three header lines in the language of the page (Arabic first when the page is Arabic); a field Jisr keeps blank or as dots falls back to the other language. */
+  const orgHeader_ = (org, ar) => {
+    if (!org) return null;
+    const pick = (a, b) => { const x = ar ? a : b, y = ar ? b : a; return !junk_(x) ? String(x).trim() : (!junk_(y) ? String(y).trim() : ''); };
+    return { name: pick(org.nameAr, org.name), l2: [pick(org.country.ar, org.country.en), pick(org.city.ar, org.city.en)].filter(Boolean).join(' - '), l3: pick(org.addrAr, org.addr), logo: org.logo || '' };
+  };
+  const headerFor_ = (P, org, ar) => {
+    if (P.source === 'none') return { none: true };
+    if (P.source === 'jisr') { const h = orgHeader_(org, ar); if (h && h.name) return h; }
+    const H = header_(); return { name: H.name || '', l2: H.l2 || '', l3: H.l3 || '', logo: H.logo || '' };
+  };
+  const FONT_LINK = '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Arabic:wght@300;400;500;700&amp;family=Noto+Sans:wght@400;600;700&amp;display=swap">';
   /**
-   * The printed statement, laid out like the final settlement Jisr exports as a PDF: company block and "created by" date, the title,
-   * employee details as label : value, the salary table, Additions, Deductions, the net row, and a last page with the two signature headings.
+   * The printed statement, laid out like the final settlement Jisr exports as a PDF (same font, Noto Sans Arabic; same directions): company block and "created by" date, the title,
+   * employee details as label : value, the salary table, Additions, Deductions, the net row, and a last page with the two signature headings (or, with the one-page layout, everything on one page that shrinks to fit).
    * Arabic (right to left) when the interface is Arabic, English (left to right) otherwise. Open it, then Print or Save as PDF.
    */
-  function statementsHtml_(rows, set, at, autoPrint) {
-    const ok = rowsOk_(rows); const ar = I.isAr(); const H = header_(); const company = H.name || slug_();
-    const css = '@page{size:A4;margin:12mm 12mm}*{box-sizing:border-box}body{margin:0;background:#e9eaec;color:#333;font:10.5pt/1.55 "Noto Sans Arabic","Segoe UI",Tahoma,Arial,sans-serif}.pg{width:210mm;min-height:297mm;margin:10px auto;background:#fff;padding:14mm 14mm 12mm}.pg+.pg{page-break-before:always}'
-      + '.hd{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.co{display:flex;gap:8px;align-items:flex-start;font-size:9.5pt;line-height:1.35}.co img{width:14mm;height:14mm;object-fit:cover;border-radius:2px}.by{font-weight:700;font-size:9.5pt;line-height:1.6}'
-      + 'h1{font-weight:400;font-size:24pt;text-align:center;margin:8mm 0 6mm}h3{font-size:12pt;margin:7mm 0 1mm}h4{font-size:11pt;margin:2mm 0 2mm}'
-      + '.kv{border-collapse:collapse}.kv td{padding:0 0 .2mm;font-size:9.5pt;vertical-align:top}.kv td.k{width:46mm}.kv td.c{width:3mm}'
-      + 'table.t{width:100%;border-collapse:collapse;margin:0 0 7mm;font-size:9.5pt;page-break-inside:avoid}.t th{background:#2d3e50;color:#fff;font-weight:400;text-align:start;padding:2mm 3mm;border:1px solid #2d3e50}.t td{padding:2mm 3mm;border:1px solid #d3d6da;vertical-align:top}.t tr:nth-child(even) td{background:#f7f7f8}.t td.n{white-space:nowrap}.t tr.tot td{font-weight:700;background:#f4f4f5}.t .f{color:#777;font-size:8pt;direction:ltr;text-align:start}'
-      + 'table.net{width:100%;border-collapse:collapse;margin:0}.net td{padding:2.4mm 3mm;border:1px solid #d3d6da;background:#f9f9fa;font-weight:700;font-size:9.5pt}.sg{display:flex;justify-content:space-between;font-weight:700;font-size:10pt}.pre{margin-top:150mm;color:#8a8d91;font-size:8pt;font-weight:400}'
-      + '@media print{body{background:#fff}.pg{margin:0;width:auto;min-height:0;padding:0}}';
+  function statementsHtml_(rows, set, at, autoPrint, P0, org0) {
+    const ok = rowsOk_(rows); const ar = I.isAr(); const P = P0 || pdfOpts_(); const org = org0 === undefined ? ORG_ : org0; const hd = headerFor_(P, org, ar); const company = hd.none ? '' : (hd.name || slug_());
+    const land = P.orient === 'landscape'; const pw = land ? PAGES[P.size][1] : PAGES[P.size][0], ph = land ? PAGES[P.size][0] : PAGES[P.size][1]; const [mt, mr, mb, ml] = P.m; const one = P.layout === 'one';
+    const px = (mm) => Math.round(mm * 96 / 25.4 * 10) / 10; const avail = px(ph - mt - mb) - 6;
+    const css = '@page{size:' + pw + 'mm ' + ph + 'mm;margin:' + mt + 'mm ' + mr + 'mm ' + mb + 'mm ' + ml + 'mm}*{box-sizing:border-box}html{-webkit-print-color-adjust:exact;print-color-adjust:exact}body{margin:0;background:#e9eaec;color:#333;font:10.5pt/1.55 "Noto Sans Arabic","Noto Sans","Segoe UI",Tahoma,Arial,sans-serif}'
+      + '.pg{width:' + pw + 'mm;min-height:' + ph + 'mm;margin:10px auto;background:#fff;padding:' + mt + 'mm ' + mr + 'mm ' + mb + 'mm ' + ml + 'mm}.pg+.pg{page-break-before:always}.fitw{overflow:hidden}.fit{width:100%}'
+      + '.hd{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.co{display:flex;gap:8px;align-items:flex-start;font-size:9.5pt;line-height:1.4}.co img{width:11mm;height:11mm;object-fit:cover;border-radius:2px}.by{font-weight:700;font-size:9.5pt;line-height:1.6;text-align:' + (ar ? 'left' : 'right') + '}'
+      + 'h1{font-weight:300;font-size:22pt;text-align:center;margin:8mm 0 6mm}h3{font-size:12pt;font-weight:500;margin:7mm 0 1mm}h4{font-size:11pt;font-weight:500;margin:2mm 0 2mm}'
+      + '.kv{border-collapse:collapse}.kv td{padding:0 0 .2mm;font-size:9.5pt;vertical-align:top;text-align:start}.kv td.k{width:' + (ar ? 38 : 50) + 'mm}.kv td.c{width:3mm}'
+      + 'table.t{width:100%;border-collapse:collapse;margin:0 0 7mm;font-size:9.5pt;page-break-inside:avoid}.t th{background:#2d3e50;color:#fff;font-weight:400;text-align:start;padding:2mm 3mm;border:1px solid #2d3e50}.t td{padding:2mm 3mm;border:1px solid #d3d6da;vertical-align:top;text-align:start}.t tr:nth-child(even) td{background:#f7f7f8}.t td.n{white-space:nowrap}.t tr.tot td{font-weight:700;background:#f4f4f5}.t .f{color:#777;font-size:8pt;direction:ltr;unicode-bidi:plaintext;text-align:start}'
+      + 'table.net{width:100%;border-collapse:collapse;margin:0}.net td{padding:2.4mm 3mm;border:1px solid #d3d6da;background:#f9f9fa;font-weight:700;font-size:9.5pt;text-align:start}.sg{display:flex;justify-content:space-between;font-weight:700;font-size:10pt}.sg.one{margin-top:12mm;padding-bottom:18mm}'
+      + '@media print{body{background:#fff}.pg{margin:0;width:auto;min-height:0;padding:0}}' + (one ? '.pg{page-break-inside:avoid}' : '');
     const cur = (q) => (ar ? 'ر . س' : (q.cur || 'SAR'));
     const pages = ok.map((r) => {
       const q = r.res, d = r.data || {}, sv = q.service, c = q.case, ls = q.leaveSettle; const money = (v) => esc_(E.f2(Math.abs(v)));
@@ -58059,7 +58103,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       const info = [[T('Employee number', 'رقم الموظف'), r.code], [T('Employee name', 'اسم الموظف'), r.name], [T('Job title', 'المسمى الوظيفي'), d.job], [T('Department', 'القسم'), d.dept], [T('Location', 'الموقع'), d.loc], [T('Joining date', 'تاريخ الالتحاق'), E.iso(q.join)], [T('Last working day', 'آخر يوم عمل'), E.iso(q.lwd)], [T('ID number', 'رقم الهوية'), r.nid || ''],
         [T('Experience', 'الخبرة'), exp], [T('Termination reason', 'سبب إنهاء الخدمة'), T(c.en, c.ar) + (c.art ? ' (' + T('Art ', 'المادة ') + c.art + ')' : '')], [T('Secondary termination reason', 'سبب ثانوي لإنهاء الخدمة'), ''], [T('Other termination reasons', 'أسباب أخرى لإنهاء الخدمة'), ''],
         [T('Leave balance', 'رصيد الإجازات'), E.f2(ls.days)], [T('Working days', 'أيام العمل'), String(q.salaryDays)], [T('Transfer method', 'طريقة التحويل'), ''], [T('Bank name', 'اسم البنك'), ''], [T('IBAN', 'رقم الآيبان'), ''], [T('Payment type', 'نوع الدفع'), ''], [T('Approval chain', 'سلسلة الموافقات'), '']];
-      const kv = info.map(([k, v]) => '<tr><td class="k">' + esc_(k) + '</td><td class="c">:</td><td dir="auto">' + esc_(v == null ? '' : v) + '</td></tr>').join('');
+      const kv = info.map(([k, v]) => '<tr><td class="k">' + esc_(k) + '</td><td class="c">:</td><td><bdi>' + esc_(v == null ? '' : v) + '</bdi></td></tr>').join('');
       const sal = q.sal || {}; const pack = q.base.full; const oth = E.r2(pack - E.num(sal.basic) - E.num(sal.housing));
       const salRows = [[T('Basic salary', 'الراتب الاساسي'), E.num(sal.basic) || pack]]; if (E.num(sal.housing) > 0) salRows.push([T('Housing allowance', 'بدل السكن'), E.num(sal.housing)]); if (E.num(sal.basic) && oth > 0.004) salRows.push([T('Other allowances', 'بدلات أخرى'), oth]);
       const salHtml = salRows.map(([k, v]) => '<tr><td>' + esc_(k) + '</td><td class="n">' + money(v) + '</td></tr>').join('') + '<tr><td>' + esc_(T('Total', 'الاجمالي')) + '</td><td class="n">' + money(pack) + ' ' + esc_(cur(q)) + '</td></tr>';
@@ -58075,31 +58119,39 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       const DL = { loans: T('Loan settlement', 'تسوية القروض'), assets: T('Unreturned assets', 'أصول غير مرتجعة'), ded: T('Other deductions', 'خصومات أخرى'), notice: T('Notice not served', 'إشعار لم يُخدم'), leave: T('Leave taken in advance', 'إجازة مأخوذة مقدمًا') };
       const dedRows = []; ['loans', 'assets', 'ded', 'notice', 'leave'].forEach((k) => { const l = q.lines.find((x) => x.key === k && x.amount < 0); if (l) dedRows.push([DL[k], -l.amount, l.formula || '']); else if (k === 'loans') dedRows.push([DL[k], 0, '']); });
       const dedHtml = dedRows.map(([k, v, f]) => '<tr><td>' + esc_(k) + '</td><td class="n">' + money(v) + '</td><td><span class="f">' + esc_(f) + '</span></td></tr>').join('') + '<tr class="tot"><td>' + esc_(T('Total deductions', 'مجموع الخصومات')) + '</td><td colspan="2" class="n">' + money(q.totals.deductions) + '</td></tr>';
-      const logo = H.logo ? '<img src="' + esc_(H.logo) + '" alt="">' : '';
-      return '<section class="pg"><div class="hd"><div class="co">' + logo + '<div><div>' + esc_(company) + '</div>' + (H.l2 ? '<div>' + esc_(H.l2) + '</div>' : '') + (H.l3 || d.loc ? '<div>' + esc_(H.l3 || d.loc) + '</div>' : '') + '</div></div>'
-        + '<div class="by"><div>' + esc_(T('Created with Jisr tools', 'أنشئ بواسطة أدوات جسر')) + '</div><div dir="ltr" style="text-align:' + (ar ? 'left' : 'right') + '">' + esc_(nowStamp_(at)) + '</div></div></div>'
+      const logo = hd.logo ? '<img src="' + esc_(hd.logo) + '" alt="" referrerpolicy="no-referrer">' : '';
+      const l3line = hd.l3 || (P.source === 'custom' ? d.loc : '');
+      const co = hd.none ? '<div class="co"></div>' : '<div class="co">' + logo + '<div><div>' + esc_(company) + '</div>' + (hd.l2 ? '<div>' + esc_(hd.l2) + '</div>' : '') + (l3line ? '<div>' + esc_(l3line) + '</div>' : '') + '</div></div>';
+      const sig = (cls) => '<div class="sg' + cls + '"><div>' + esc_(T('Signature and date - Responsible', 'التوقيع والتاريخ - المسؤول')) + '</div><div>' + esc_(T('Signature and date - Employee', 'التوقيع والتاريخ - الموظف')) + '</div></div>';
+      const main = '<div class="hd">' + co + '<div class="by"><div>' + esc_(T('Created by Jisr system', 'أنشئ بواسطة نظام جسر')) + '</div><div dir="ltr">' + esc_(nowStamp_(at)) + '</div></div></div>'
         + '<h1>' + esc_(T('Final settlement', 'التسوية النهائية')) + '</h1><table class="kv">' + kv + '</table>'
         + '<h3>' + esc_(T('Salary information', 'معلومات الراتب')) + '</h3><h4>' + esc_(T('Salary information', 'معلومات الراتب')) + '</h4>'
         + '<table class="t"><tr><th style="width:55%">' + esc_(T('Item', 'عنصر')) + '</th><th>' + esc_(T('Value', 'القيمة')) + '</th></tr>' + salHtml + '</table>'
         + '<table class="t"><tr><th style="width:38%">' + esc_(T('Additions', 'الإضافات')) + '</th><th style="width:22%">' + esc_(T('Value', 'القيمة')) + '</th><th>' + esc_(T('Description', 'الوصف')) + '</th></tr>' + addHtml + '</table>'
         + '<table class="t"><tr><th style="width:38%">' + esc_(T('Deductions', 'الخصومات')) + '</th><th style="width:22%">' + esc_(T('Value', 'القيمة')) + '</th><th>' + esc_(T('Description', 'الوصف')) + '</th></tr>' + dedHtml + '</table>'
-        + '<table class="net"><tr><td style="width:55%">' + esc_(T('Net end of service settlement', 'صافي تسوية نهاية الخدمة')) + '</td><td>' + (q.totals.net < 0 ? '−' : '') + money(q.totals.net) + ' ' + esc_(cur(q)) + '</td></tr></table></section>'
-        + '<section class="pg"><div class="sg"><div>' + esc_(T('Signature and date - Responsible', 'التوقيع والتاريخ - المسؤول')) + '</div><div>' + esc_(T('Signature and date - Employee', 'التوقيع والتاريخ - الموظف')) + '</div></div></section>';
+        + '<table class="net"><tr><td style="width:55%">' + esc_(T('Net end of service settlement', 'صافي تسوية نهاية الخدمة')) + '</td><td>' + (q.totals.net < 0 ? '−' : '') + money(q.totals.net) + ' ' + esc_(cur(q)) + '</td></tr></table>';
+      return one ? '<section class="pg"><div class="fitw"><div class="fit">' + main + sig(' one') + '</div></div></section>' : '<section class="pg">' + main + '</section><section class="pg">' + sig('') + '</section>';
     }).join('');
-    const scr = autoPrint ? '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.print()}catch(e){}},600)})</script>' : '';
-    return '<!doctype html><html lang="' + (ar ? 'ar' : 'en') + '" dir="' + (ar ? 'rtl' : 'ltr') + '"><head><meta charset="utf-8"><title>' + esc_(T('Final settlement', 'التسوية النهائية') + ' ' + company + ' ' + nowStamp_(at)) + '</title><style>' + css + '</style></head><body>' + pages + scr + '</body></html>';
+    // the one-page layout shrinks each statement until it fits the page (no script needed for the normal layout)
+    const fit = one ? '<script>(function(){var AV=' + avail + ',O="' + (ar ? 'top right' : 'top left') + '";function fit(){var ws=document.querySelectorAll(".fitw");for(var i=0;i<ws.length;i++){var w=ws[i],f=w.firstChild;f.style.transform="";f.style.width="";w.style.height="";var W=w.clientWidth,z=1;for(var k=0;k<8;k++){f.style.width=(W/z)+"px";var h=f.offsetHeight;var zn=Math.min(1,AV/h);if(Math.abs(zn-z)<.004){z=zn;break}z=zn}f.style.transformOrigin=O;f.style.transform=z<1?"scale("+z+")":"";w.style.height=(f.offsetHeight*z)+"px"}}window.addEventListener("load",fit);window.addEventListener("beforeprint",fit);if(document.fonts&&document.fonts.ready)document.fonts.ready.then(fit)})()</script>' : '';
+    const scr = autoPrint ? '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.print()}catch(e){}},900)})</script>' : '';
+    return '<!doctype html><html lang="' + (ar ? 'ar' : 'en') + '" dir="' + (ar ? 'rtl' : 'ltr') + '"><head><meta charset="utf-8"><title>' + esc_(T('Final settlement', 'التسوية النهائية') + ' ' + company + ' ' + nowStamp_(at)) + '</title>' + FONT_LINK + '<style>' + css + '</style></head><body>' + pages + fit + scr + '</body></html>';
   }
   function downloadStatements_(rows, set) {
     const at = new Date(); const html = statementsHtml_(rows, set, at, false);
     return saveBlob_(new Blob([html], { type: 'text/html;charset=utf-8' }), 'final-settlement_' + (slug_() || 'jisr') + '_' + nowStamp_(at) + '.html');
   }
-  /** Opens the statement in a new tab and starts the print dialog (choose "Save as PDF"); when the browser blocks the tab, the file is saved instead. */
+  /**
+   * Opens the statement in a new tab and starts the print dialog (choose "Save as PDF"); when the browser blocks the tab, the file is saved instead. Returns a promise of { opened, name, note }.
+   * The company profile is read from Jisr first when it has not been read yet; the tab is opened inside the click so the browser does not block it.
+   */
   function printStatements_(rows, set) {
-    const at = new Date(); const html = statementsHtml_(rows, set, at, true); const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
-    let w = null; try { w = window.open(url, '_blank'); } catch (e) { w = null; }
-    setTimeout(() => URL.revokeObjectURL(url), 120000);
-    if (!w) return { opened: false, name: downloadStatements_(rows, set) };
-    return { opened: true };
+    const P = pdfOpts_(); const at = new Date(); const needOrg = P.source === 'jisr' && !ORG_;
+    let w = null; if (needOrg) { try { w = window.open('about:blank', '_blank'); } catch (e) { w = null; } }
+    const show = (html) => { const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' })); setTimeout(() => URL.revokeObjectURL(url), 120000); if (w) { try { w.location.href = url; return true; } catch (e) { return false; } } try { return !!window.open(url, '_blank'); } catch (e) { return false; } };
+    const go = (org, note) => { const html = statementsHtml_(rows, set, at, true, P, org); if (show(html)) return { opened: true, note }; if (w) { try { w.close(); } catch (e) { /* ignore */ } } return { opened: false, name: downloadStatements_(rows, set), note }; };
+    if (!needOrg) return Promise.resolve(go(ORG_, ''));
+    return readOrg_().then((org) => go(org, ''), (e) => go(null, String((e && e.message) || e)));
   }
 
   // ======================================================================= Excel in (last working day, case, period per employee)
@@ -58164,6 +58216,8 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       .jst-fld.wide { grid-template-columns: 1fr; }
       .jst-stmt { width: 100%; border-collapse: collapse; font-size: 12.5px; } .jst-stmt td { padding: 5px 6px; border-bottom: 1px solid #f1f3f4; vertical-align: top; } .jst-stmt td.num { text-align: end; white-space: nowrap; font-variant-numeric: tabular-nums; }
       .jst-stmt tr.tot td { font-weight: 700; border-top: 2px solid #1f2328; border-bottom: 0; } .jst-stmt .fx { color: #5f6368; font-size: 11.5px; direction: ltr; text-align: start; }
+      .jst-sec { margin: 14px 0 4px; font-weight: 700; font-size: 13px; } .jst-opt { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border: 1px solid #e1e5ea; border-radius: 10px; margin: 6px 0; cursor: pointer; background: #fff; } .jst-opt.on { border-color: #1a5d57; background: #e9f4f2; } .jst-opt input { margin-top: 3px; } .jst-opt small { display: block; color: #6b7280; font-size: 11.5px; margin-top: 1px; }
+      .jst-org { display: flex; gap: 10px; align-items: center; margin: 2px 0 6px; padding: 8px 10px; border: 1px dashed #cfd6dd; border-radius: 10px; font-size: 12.5px; } .jst-org img { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; } .jst-org .jbo-btn { margin-inline-start: auto; } .jst-bad { color: #b3261e; } .jst-sub { margin: 2px 0 6px; padding: 0 4px; } .jst-g3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; } .jst-g4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; } .jst-g3 .jst-fld, .jst-g4 .jst-fld { margin: 2px 0; }
       .jst-flag { margin: 4px 0; padding: 5px 8px; border-radius: 6px; background: #fff7e0; font-size: 12.5px; } .jst-flag.error { background: #fdecea; } .jst-flag.info { background: #e9f4f2; }
       .jst-dlg p { margin: 6px 0; font-size: 13px; } .jst-pick { max-height: 46vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; margin-top: 8px; } .jst-pick label { display: flex; gap: 8px; padding: 5px 8px; border-bottom: 1px solid #f1f3f4; font-size: 13px; cursor: pointer; } .jst-pick label[data-off="1"] { opacity: .5; cursor: default; }
       .jst-stmt tr.gh td { font-weight: 600; background: #f8f9fa; padding-top: 6px; } .jst-stmt tr.ln td:first-child { padding-inline-start: 16px; } .jst-stmt tr.sub td { font-weight: 600; border-top: 1px solid #1f2328; }
@@ -58319,28 +58373,70 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     }
 
     // ---------------------------------------------------------------- rendering
-    function headerDialog() {
-      const H = Object.assign({}, header_()); const dlg = el('div', { class: 'jbo-modal jst-dlg', style: { width: 'min(520px, 96vw)' } }); const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); dlg.__jboRun = true;
-      const fin = () => bd.remove(); const inp = (key, ph) => { const i = el('input', { type: 'text', value: H[key] || '', placeholder: ph, style: { width: '100%' } }); i.addEventListener('input', () => { H[key] = i.value; }); return i; };
+    function pdfDialog() {
+      const P = pdfOpts_(); const H = Object.assign({}, header_()); const ar = I.isAr();
+      const dlg = el('div', { class: 'jbo-modal jst-dlg', style: { width: 'min(620px, 96vw)' } }); const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); dlg.__jboRun = true;
+      const fin = () => bd.remove(); let orgState = ORG_ ? 'ok' : 'idle', orgErr = '', msg = ''; const body = el('div', { class: 'jbo-modal-body' });
+      const loadOrg = (force) => { orgState = 'loading'; paint(); readOrg_(force).then(() => { orgState = 'ok'; paint(); }, (e) => { orgState = 'err'; orgErr = String((e && e.message) || e); paint(); }); };
+      const opt = (grp, val, cur, label, hint, set_) => { const i = el('input', { type: 'radio', name: 'jst-' + grp, value: val }); i.checked = cur === val; i.addEventListener('change', () => { set_(val); paint(); }); return el('label', { class: 'jst-opt' + (cur === val ? ' on' : '') }, [i, el('span', {}, [el('b', { text: label }), hint ? el('small', { text: hint }) : null])]); };
+      const sel = (label, val, items, onCh) => { const s2 = el('select', { 'aria-label': label }); items.forEach(([k, t]) => s2.appendChild(el('option', { value: k, text: t }))); s2.value = val; s2.addEventListener('change', () => onCh(s2.value)); return el('label', { class: 'jst-fld wide' }, [el('span', { text: label }), s2]); };
+      const inp = (key, ph) => { const i = el('input', { type: 'text', value: H[key] || '', placeholder: ph, style: { width: '100%' } }); i.addEventListener('input', () => { H[key] = i.value; }); return i; };
       const prev = el('div', { class: 'jbo-muted', style: { fontSize: '12px', minHeight: '16px' } });
-      const file = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp' });
-      file.addEventListener('change', () => { const f = file.files[0]; if (!f) return; if (f.size > 4e6) { prev.textContent = T('The image is too large (4 MB at most).', 'الصورة كبيرة (4 ميغابايت كحد أقصى).'); return; }
-        const fr = new FileReader(); fr.onload = () => { const im = new Image(); im.onload = () => { const k = Math.min(1, 180 / Math.max(im.width, im.height)); const cv = document.createElement('canvas'); cv.width = Math.max(1, Math.round(im.width * k)); cv.height = Math.max(1, Math.round(im.height * k)); cv.getContext('2d').drawImage(im, 0, 0, cv.width, cv.height); H.logo = cv.toDataURL('image/png'); prev.textContent = T('Logo ready (', 'الشعار جاهز (') + cv.width + '×' + cv.height + ')'; }; im.onerror = () => { prev.textContent = T('This file is not a readable image.', 'هذا الملف ليس صورة مقروءة.'); }; im.src = String(fr.result); }; fr.readAsDataURL(f); });
-      const clr = el('button', { class: 'jbo-btn', type: 'button', text: T('Remove the logo', 'إزالة الشعار') }); clr.addEventListener('click', () => { H.logo = ''; prev.textContent = T('Logo removed (press Save).', 'أُزيل الشعار (اضغط حفظ).'); });
-      const sv = el('button', { class: 'jbo-btn jbo-btn-primary', type: 'button', text: T('Save', 'حفظ') }); sv.addEventListener('click', () => { saveHeader_({ name: (H.name || '').trim(), l2: (H.l2 || '').trim(), l3: (H.l3 || '').trim(), logo: H.logo || '' }); fin(); setNote(T('PDF header saved on this computer.', 'حُفظت ترويسة PDF على هذا الجهاز.')); });
+      function paint() {
+        body.textContent = '';
+        body.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('How the printed final settlement looks. Saved on this computer and used by "Final settlement (PDF)".', 'شكل التسوية النهائية المطبوعة. تُحفظ على هذا الجهاز وتُستخدم في «التسوية النهائية (PDF)».') }));
+        body.appendChild(el('div', { class: 'jst-sec', text: T('Company details at the top', 'بيانات الشركة في الأعلى') }));
+        body.appendChild(opt('src', 'jisr', P.source, T('From Jisr (company profile and logo)', 'من جسر (ملف الشركة والشعار)'), T('The same details Jisr prints with "Export as PDF + company details".', 'نفس البيانات التي يطبعها جسر مع «تصدير كـ PDF + معلومات الشركة».'), (v) => { P.source = v; }));
+        if (P.source === 'jisr') {
+          if (orgState === 'idle') setTimeout(() => loadOrg(false), 0);
+          const hd = orgState === 'ok' ? orgHeader_(ORG_, ar) : null; const card = el('div', { class: 'jst-org' });
+          if (orgState === 'loading' || orgState === 'idle') card.appendChild(el('span', { class: 'jbo-muted', text: T('Reading the company profile from Jisr…', 'جارٍ قراءة ملف الشركة من جسر…') }));
+          else if (orgState === 'err') { card.appendChild(el('span', { class: 'jst-bad', text: orgErr + ' ' + T('The custom header is used instead.', 'سيُستخدم الرأس المخصص بدلًا منه.') })); }
+          else if (hd) { if (hd.logo) card.appendChild(el('img', { src: hd.logo, alt: '', referrerpolicy: 'no-referrer' })); card.appendChild(el('div', {}, [el('b', { dir: 'auto', text: hd.name || '—' }), el('div', { dir: 'auto', text: hd.l2 }), el('div', { dir: 'auto', text: hd.l3 })])); }
+          const rf = el('button', { class: 'jbo-btn', type: 'button', text: T('Read again', 'إعادة القراءة') }); rf.addEventListener('click', () => loadOrg(true)); card.appendChild(rf); body.appendChild(card);
+        }
+        body.appendChild(opt('src', 'custom', P.source, T('Custom', 'مخصص'), T('Type the company name and place and add a logo.', 'اكتب اسم الشركة والمكان وأضف شعارًا.'), (v) => { P.source = v; }));
+        if (P.source === 'custom') {
+          const file = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp' });
+          file.addEventListener('change', () => { const f = file.files[0]; if (!f) return; if (f.size > 4e6) { prev.textContent = T('The image is too large (4 MB at most).', 'الصورة كبيرة (4 ميغابايت كحد أقصى).'); return; }
+            const fr = new FileReader(); fr.onload = () => { const im = new Image(); im.onload = () => { const k = Math.min(1, 180 / Math.max(im.width, im.height)); const cv = document.createElement('canvas'); cv.width = Math.max(1, Math.round(im.width * k)); cv.height = Math.max(1, Math.round(im.height * k)); cv.getContext('2d').drawImage(im, 0, 0, cv.width, cv.height); H.logo = cv.toDataURL('image/png'); prev.textContent = T('Logo ready (', 'الشعار جاهز (') + cv.width + '×' + cv.height + ')'; }; im.onerror = () => { prev.textContent = T('This image could not be read.', 'تعذّرت قراءة هذه الصورة.'); }; im.src = String(fr.result); }; fr.readAsDataURL(f); });
+          const clr = el('button', { class: 'jbo-btn', type: 'button', text: T('Remove the logo', 'إزالة الشعار') }); clr.addEventListener('click', () => { H.logo = ''; prev.textContent = T('Logo removed (press Save).', 'أُزيل الشعار (اضغط حفظ).'); });
+          body.appendChild(el('div', { class: 'jst-sub' }, [
+            el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Company name', 'اسم الشركة') }), inp('name', slug_())]), el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Country - city', 'الدولة - المدينة') }), inp('l2', T('Saudi Arabia - Riyadh', 'المملكة العربية السعودية - الرياض'))]),
+            el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Address or location (default: the employee\'s location in Jisr)', 'العنوان أو الموقع (الافتراضي: موقع الموظف في جسر)') }), inp('l3', '')]),
+            el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Logo (PNG or JPG)', 'الشعار (PNG أو JPG)') }), file, el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, [clr, prev])])]));
+        }
+        body.appendChild(opt('src', 'none', P.source, T('No company details', 'بدون بيانات الشركة'), T('Like Jisr\'s plain "Export as PDF".', 'مثل «تصدير كـ PDF» العادي في جسر.'), (v) => { P.source = v; }));
+        body.appendChild(el('div', { class: 'jst-sec', text: T('Page', 'الصفحة') }));
+        body.appendChild(el('div', { class: 'jst-g3' }, [
+          sel(T('Page size', 'حجم الصفحة'), P.size, [['A4', 'A4'], ['A3', 'A3'], ['A5', 'A5'], ['Letter', 'Letter'], ['Legal', 'Legal']], (v) => { P.size = v; }),
+          sel(T('Orientation', 'الاتجاه'), P.orient, [['portrait', T('Portrait', 'طولي')], ['landscape', T('Landscape', 'عرضي')]], (v) => { P.orient = v; }),
+          sel(T('Margins', 'الهوامش'), P.preset, [['jisr', T('Like Jisr', 'مثل جسر')], ['narrow', T('Narrow (8 mm)', 'ضيقة (8 مم)')], ['normal', T('Normal (12 mm)', 'عادية (12 مم)')], ['wide', T('Wide (20 mm)', 'واسعة (20 مم)')], ['custom', T('Custom…', 'مخصصة…')]], (v) => { P.preset = v; if (MARGIN_PRESETS[v]) P.m = MARGIN_PRESETS[v].slice(); paint(); })]));
+        if (P.preset === 'custom') {
+          const names = [T('Top (mm)', 'أعلى (مم)'), T('Right (mm)', 'يمين (مم)'), T('Bottom (mm)', 'أسفل (مم)'), T('Left (mm)', 'يسار (مم)')];
+          body.appendChild(el('div', { class: 'jst-g4 jst-sub' }, names.map((nm, i) => { const n = el('input', { type: 'number', min: '0', max: '40', step: '0.5', value: String(P.m[i]), 'aria-label': nm }); n.addEventListener('change', () => { const x = Number(n.value); P.m[i] = isFinite(x) ? Math.min(40, Math.max(0, x)) : P.m[i]; n.value = String(P.m[i]); }); return el('label', { class: 'jst-fld wide' }, [el('span', { text: nm }), n]); })));
+        }
+        body.appendChild(el('div', { class: 'jst-sec', text: T('Layout', 'التخطيط') }));
+        body.appendChild(opt('lay', 'jisr', P.layout, T('Like Jisr: the signatures on their own last page', 'مثل جسر: التواقيع في صفحة أخيرة مستقلة'), T('The details flow over the pages they need.', 'تتوزع التفاصيل على الصفحات التي تحتاجها.'), (v) => { P.layout = v; }));
+        body.appendChild(opt('lay', 'one', P.layout, T('All details on one page per employee', 'كل التفاصيل في صفحة واحدة لكل موظف'), T('Shrinks to fit the page and keeps the signatures at the bottom.', 'يصغّر المحتوى ليناسب الصفحة ويُبقي التواقيع في الأسفل.'), (v) => { P.layout = v; }));
+        if (msg) body.appendChild(el('div', { class: 'jst-flag error', text: msg }));
+      }
+      const sv = el('button', { class: 'jbo-btn jbo-btn-primary', type: 'button', text: T('Save', 'حفظ') });
+      sv.addEventListener('click', () => {
+        const [pw0, ph0] = PAGES[P.size]; const w = P.orient === 'landscape' ? ph0 : pw0, h = P.orient === 'landscape' ? pw0 : ph0;
+        if (P.m[1] + P.m[3] > w - 80 || P.m[0] + P.m[2] > h - 80) { msg = T('The margins leave too little room on this page. Make them smaller.', 'الهوامش تترك مساحة قليلة جدًا في هذه الصفحة. صغّرها.'); paint(); return; }
+        savePdfOpts_({ source: P.source, size: P.size, orient: P.orient, preset: P.preset, m: P.m.slice(), layout: P.layout }); saveHeader_({ name: (H.name || '').trim(), l2: (H.l2 || '').trim(), l3: (H.l3 || '').trim(), logo: H.logo || '' }); fin(); setNote(T('PDF options saved on this computer.', 'حُفظت خيارات PDF على هذا الجهاز.'));
+      });
       const cl = el('button', { class: 'jbo-btn', type: 'button', text: T('Close', 'إغلاق') }); cl.addEventListener('click', fin);
-      const bodyH = el('div', { class: 'jbo-modal-body' }, [el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('Shown at the top of the printed final settlement, like the header of Jisr\'s own PDF. Jisr gives this tool no way to read it, so type it once; it is saved on this computer only.', 'يظهر أعلى التسوية النهائية المطبوعة كترويسة ملف PDF الخاص بجسر. لا يتيح جسر قراءته، فاكتبه مرة واحدة؛ يُحفظ على هذا الجهاز فقط.') }),
-        el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Company name', 'اسم الشركة') }), inp('name', slug_())]), el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Country - city', 'الدولة - المدينة') }), inp('l2', T('Saudi Arabia - Riyadh', 'المملكة العربية السعودية - الرياض'))]), el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Branch or location (default: the employee\'s location in Jisr)', 'الفرع أو الموقع (الافتراضي: موقع الموظف في جسر)') }), inp('l3', '')]),
-        el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Logo (PNG or JPG)', 'الشعار (PNG أو JPG)') }), file, el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, [clr, prev])])]);
-      dlg.appendChild(el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('Header of the printed final settlement', 'ترويسة التسوية النهائية المطبوعة') })])); dlg.appendChild(bodyH); dlg.appendChild(el('div', { class: 'jbo-modal-foot' }, [cl, sv]));
-      bd.addEventListener('mousedown', (e) => { if (e.target === bd) fin(); }); document.body.appendChild(bd);
+      dlg.appendChild(el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('PDF options: final settlement', 'خيارات PDF: التسوية النهائية') })])); dlg.appendChild(body); dlg.appendChild(el('div', { class: 'jbo-modal-foot' }, [cl, sv]));
+      bd.addEventListener('mousedown', (e) => { if (e.target === bd) fin(); }); document.body.appendChild(bd); paint();
     }
     function settingsBar() {
       const bs = (key, label) => { const s = el('select', { 'aria-label': label }); E.BASES.forEach((b) => s.appendChild(el('option', { value: b.key, text: T(b.en, b.ar) }))); s.value = S.set[key]; s.addEventListener('change', () => { S.set[key] = s.value; recalcAll(); render(); }); return el('label', {}, [label, s]); };
       const adv = el('input', { type: 'checkbox' }); adv.checked = !!S.set.deductAdvanceLeave; adv.addEventListener('change', () => { S.set.deductAdvanceLeave = adv.checked; recalcAll(); render(); });
       const ln = el('input', { type: 'checkbox' }); ln.checked = S.set.loansFromJisr !== false; ln.addEventListener('change', () => { S.set.loansFromJisr = ln.checked; recalcAll(); render(); });
       const a77 = el('input', { type: 'checkbox' }); a77.checked = !!S.set.art77All; a77.addEventListener('change', () => { S.set.art77All = a77.checked; recalcAll(); render(); });
-      const hb = el('button', { class: 'jbo-btn', type: 'button', text: T('PDF header…', 'ترويسة PDF…'), title: T('Company name, place and logo printed at the top of the final settlement', 'اسم الشركة والمكان والشعار في أعلى التسوية النهائية') }); hb.addEventListener('click', headerDialog);
+      const hb = el('button', { class: 'jbo-btn', type: 'button', text: T('PDF options…', 'خيارات PDF…'), title: T('Company details and logo (from Jisr or custom), page size, margins and layout of the final settlement', 'بيانات الشركة والشعار (من جسر أو مخصصة) وحجم الصفحة والهوامش وتخطيط التسوية النهائية') }); hb.addEventListener('click', pdfDialog);
       return el('div', { class: 'jst-set' }, [bs('eosBase', T('Wage for the end-of-service award', 'الأجر لمكافأة نهاية الخدمة')), bs('leaveBase', T('Wage for leave pay', 'الأجر لبدل الإجازة')), el('label', { class: 'jst-ck' }, [adv, T('Deduct leave taken in advance', 'خصم الإجازة المأخوذة مقدمًا')]), el('label', { class: 'jst-ck' }, [ln, T('Deduct loans still pending in Jisr', 'خصم القروض المتبقية في جسر')]), el('label', { class: 'jst-ck', title: T('Jisr leaves the Art 77 compensation to the contract (0.00). Tick to add the law-based estimate for everyone; or switch it per employee.', 'يترك جسر تعويض المادة 77 للعقد (0.00). فعّله لإضافة التقدير حسب النظام للجميع، أو بدّله لكل موظف.') }, [a77, T('Include the Art 77 estimate for everyone', 'احتساب تقدير المادة 77 للجميع')]), hb]);
     }
     function bulkBar() {
@@ -58670,14 +58766,14 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       if (ready && !pending && !S.busy) { try { const rows = exportRows(); const name = downloadExcel_(rows, S.set); setNote(T('Saved: ', 'حُفظ: ') + name + ' (' + rows.length + T(' employees)', ' موظف)')); try { jboActReport_(MODULE_ID, 'excel', 'ok', rows.length + ' employees'); } catch (e) { /* ignore */ } } catch (e) { setNote(String(e.message || e), true); } return; }
       calculateNow();
     });
-    stmtB.addEventListener('click', () => { try { const rows = exportRows(); const res = printStatements_(rows, S.set); setNote(res.opened ? T('Opened the final settlement (' + rows.length + '): in the print window choose "Save as PDF".', 'فُتحت التسوية النهائية (' + rows.length + '): في نافذة الطباعة اختر "حفظ بصيغة PDF".') : T('The browser blocked the new tab, so the file was saved: ', 'منع المتصفح التبويب الجديد فحُفظ الملف: ') + res.name + T(' (open it, then Print or Save as PDF)', ' (افتحه ثم اطبع أو احفظ PDF)')); try { jboActReport_(MODULE_ID, 'statements', 'ok', rows.length + ' statements'); } catch (e) { /* ignore */ } } catch (e) { setNote(String(e.message || e), true); } });
+    stmtB.addEventListener('click', () => { try { const rows = exportRows(); printStatements_(rows, S.set).then((res) => { const nt = res.note ? ' ' + T('(Jisr company details could not be read: ', '(تعذّرت قراءة بيانات الشركة من جسر: ') + res.note + T('; the custom header was used.)', '؛ استُخدم الرأس المخصص.)') : ''; setNote((res.opened ? T('Opened the final settlement (' + rows.length + '): in the print window choose "Save as PDF".', 'فُتحت التسوية النهائية (' + rows.length + '): في نافذة الطباعة اختر "حفظ بصيغة PDF".') : T('The browser blocked the new tab, so the file was saved: ', 'منع المتصفح التبويب الجديد فحُفظ الملف: ') + res.name + T(' (open it, then Print or Save as PDF)', ' (افتحه ثم اطبع أو احفظ PDF)')) + nt); try { jboActReport_(MODULE_ID, 'statements', 'ok', rows.length + ' statements'); } catch (e) { /* ignore */ } }).catch((e) => setNote(String(e.message || e), true)); } catch (e) { setNote(String(e.message || e), true); } });
     render();
   }
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'End-of-Service & Leave Settlement', open: openTool_, version: SECTION_VERSION };
-    W.__jisrSettlement = { printStatements_, scheduleDates_, header_, E, readEmployee_, engineInput_, calc_, compute_, forecastModel_, forecastWorkbook_, forecastHtml_, stmtRows_, blankIn_, workbook_, statementsHtml_, parseSheet_, listSettlements_, readJisrAmounts_, cfg };
+    W.__jisrSettlement = { printStatements_, pdfOpts_, readOrg_, statementsHtml_, scheduleDates_, header_, E, readEmployee_, engineInput_, calc_, compute_, forecastModel_, forecastWorkbook_, forecastHtml_, stmtRows_, blankIn_, workbook_, statementsHtml_, parseSheet_, listSettlements_, readJisrAmounts_, cfg };
     if (g._rerender) g._rerender();
   }
   register_();
