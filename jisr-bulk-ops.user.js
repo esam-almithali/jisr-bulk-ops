@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.114.0
+// @version      4.115.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -187,6 +187,7 @@ function jboActFlush_() {
   let settled = false;
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
   // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
+  // v4.115.0: Settlements are clearer and match Jisr. The ambiguous Other column is gone: the table now reads Salary & pending, Award, Leave, Compensation & notice, Additions, Deductions and Net payable, and the columns add up to the net (the legend says how). Leave follows Jisr's own rule (its opening balance minus leave taken), so 8.41 days = 5,606.67 matches the native page; Art 77 compensation is a visible switch (off by default, as Jisr leaves it to the contract) with its estimate shown apart. The leave card shows the active balance in days on the chosen date and lets you include it, edit the days or exclude leave pay, each with a live preview. Forecast keeps the presets and adds a single date and a custom end date. Final settlement (PDF) now follows the native Jisr layout, with an editable company header; Excel gets leave status and Art 77 columns.
   // v4.114.0: Settlements now forecast. Pick any last working day (today, tomorrow, end of this or next month, or any date) and see what the company would owe; the Month by month tab shows the entitlement growing across 3 to 24 months; Compare reasons puts resignation, termination, contract end and the Art 77 / Art 80 cases side by side for the same date; Notice impact compares serving the notice, partly serving it and paying in lieu, with a Use this button. None of it is saved or written. The statement is now Gross entitlement (pending payroll items, award, leave, notice, compensation) minus Deductions and offsets (loans still pending in Jisr, unreturned assets, advance leave) = Net payable. New inputs: earlier unpaid months, expense claims, annual bonus (pro rata), asset value. New Add all employees and Forecast report: Excel and printable report of the net payable if everyone left on a date or at each month end, by department and by employee, with a cash-flow alert (cash needed if all leave in one month, against the cash you have). Reads loans, assets and department from Jisr (GET only).
   // v4.113.0: End-of-Service & Leave Settlement (new tool, Payroll & GOSI). For each employee you set the last working day, the termination case (with its Labor Law article) and the leave period; the tool reads the joining date, salary and leave from Jisr and works out the end-of-service award (Art 84, 85, 87), salary of the last month, accrued leave pay (Art 111), notice pay (Art 76), the Art 77 compensation, your additions / deductions / loans, the net payout and the date to pay by (Art 88). It compares with the final settlement Jisr already made, exports one Excel for one or many employees and prints one statement page per employee. Read only. The arithmetic matches 10 real Jisr settlements (test/settlement-engine.test.js).
   // v4.112.0: Fixed Working Hours: when Jisr answers "another request is in progress for the same resource, please retry later", the row is no longer marked failed. It shows "Jisr is still busy, trying again in Ns (try n)", the panel says "waiting for Jisr", and the same change is sent again automatically until Jisr accepts it (up to about 12 minutes, or Stop). Works for create, edit and delete. New button "Retry failed (n)" puts failed rows back in the queue and sends them again.
@@ -2086,11 +2087,21 @@ function JBOSettlementEngine_() {
     if (join != null && from < join) from = join;
     const daysIn = to >= from ? diffDays(from, to) + 1 : 0;
     const annual = num(o.annualDays, 21);
-    const accrued = annual * daysIn / 365;
-    const carry = from <= yearStart(to) ? num(o.prevBalance) : 0;
-    const adj = num(o.adjustment), unp = num(o.unpaidDeduction), used = num(o.usedDays);
+    let accrued = annual * daysIn / 365;
+    let carry = from <= yearStart(to) ? num(o.prevBalance) : 0;
+    let adj = num(o.adjustment);
+    const unp = num(o.unpaidDeduction), used = num(o.usedDays);
+    // Jisr's own opening balance (leave summary: opening_balance + opening_balance_effective_date). It stands for everything earned up to that
+    // date (accrual, balance brought forward and adjustments), so the days after it are added on top and the earlier parts are not counted twice.
+    let opening = null;
+    const od = o.openingDate != null && o.openingDate !== '' ? (typeof o.openingDate === 'number' ? o.openingDate : parseDate(o.openingDate)) : null;
+    if (o.openingBalance != null && o.openingBalance !== '' && num(o.openingBalance) > 0 && od != null && od <= to) {
+      const after = Math.max(0, diffDays(od, to));
+      opening = { days: r2(num(o.openingBalance)), date: od, afterDays: after, accruedAfter: r2(annual * after / 365) };
+      accrued = num(o.openingBalance) + annual * after / 365; carry = 0; adj = 0;
+    }
     const net = accrued + carry + adj - unp - used;
-    return { from, to, daysIn, annual, accrued: r2(accrued), carry: r2(carry), adjustment: r2(adj), unpaidDeduction: r2(unp), used: r2(used), net: r2(net) };
+    return { from, to, daysIn, annual, accrued: r2(accrued), carry: r2(carry), adjustment: r2(adj), unpaidDeduction: r2(unp), used: r2(used), net: r2(net), opening };
   }
   /** Annual-leave days taken inside [from, to], from Jisr's leave history. Partly overlapping leaves are counted in proportion. */
   function usedInPeriod(history, annualNames, from, to) {
@@ -2170,16 +2181,22 @@ function JBOSettlementEngine_() {
     lines.push({ sec: 'earn', key: 'eosb', en: 'End-of-service award (Art ' + (c.award === 'resign' ? '84, 85' : '84') + ')', ar: 'مكافأة نهاية الخدمة (المادة ' + (c.award === 'resign' ? '84، 85' : '84') + ')', amount: eosAmt, formula: awardFormula });
 
     // ---- leave
-    const ent = leaveEntitlement({ to: lwd, join, from: inp.periodFrom != null ? (typeof inp.periodFrom === 'number' ? inp.periodFrom : parseDate(inp.periodFrom)) : null, annualDays: inp.annualDays != null && inp.annualDays !== '' ? inp.annualDays : (T >= 5 ? 30 : 21), prevBalance: inp.prevBalance, adjustment: inp.adjustment, unpaidDeduction: inp.unpaidDeduction, usedDays: inp.usedDays });
+    const ent = leaveEntitlement({ to: lwd, join, from: inp.periodFrom != null ? (typeof inp.periodFrom === 'number' ? inp.periodFrom : parseDate(inp.periodFrom)) : null, annualDays: inp.annualDays != null && inp.annualDays !== '' ? inp.annualDays : (T >= 5 ? 30 : 21), prevBalance: inp.prevBalance, adjustment: inp.adjustment, unpaidDeduction: inp.unpaidDeduction, usedDays: inp.usedDays, openingBalance: inp.openingBalance, openingDate: inp.openingDate });
     out.leave = ent;
-    let days = ent.net, source = 'calculated';
-    if (inp.leaveOverride !== null && inp.leaveOverride !== undefined && inp.leaveOverride !== '') { days = num(inp.leaveOverride); source = 'override'; }
+    // leave mode: 'include' (the balance Jisr and the dates give), 'edit' (the days typed in), 'exclude' (no leave pay at all)
+    const hasOv = inp.leaveOverride !== null && inp.leaveOverride !== undefined && inp.leaveOverride !== '';
+    const mode = inp.leaveMode === 'exclude' ? 'exclude' : (inp.leaveMode === 'edit' || (!inp.leaveMode && hasOv)) && hasOv ? 'edit' : 'include';
+    const calcDays = r2(ent.net);
+    let days = calcDays, source = 'calculated';
+    if (mode === 'edit') { days = num(inp.leaveOverride); source = 'override'; }
+    if (mode === 'exclude') { days = 0; source = 'excluded'; }
     days = r2(days);
     let leaveAmt = 0, advance = 0;
-    if (days < 0) { advance = -days; if (set.deductAdvanceLeave) leaveAmt = r2(days * Lw / 30); flag('info', 'Leave taken in advance: ' + f2(advance) + ' day(s)' + (set.deductAdvanceLeave ? ' (deducted).' : ' (not deducted).'), 'إجازة مأخوذة مقدمًا: ' + f2(advance) + ' يوم' + (set.deductAdvanceLeave ? ' (تُخصم).' : ' (لا تُخصم).')); }
+    if (mode === 'exclude') { /* nothing is paid or deducted for leave */ }
+    else if (days < 0) { advance = -days; if (set.deductAdvanceLeave) leaveAmt = r2(days * Lw / 30); flag('info', 'Leave taken in advance: ' + f2(advance) + ' day(s)' + (set.deductAdvanceLeave ? ' (deducted).' : ' (not deducted).'), 'إجازة مأخوذة مقدمًا: ' + f2(advance) + ' يوم' + (set.deductAdvanceLeave ? ' (تُخصم).' : ' (لا تُخصم).')); }
     else leaveAmt = r2(days * Lw / 30);
-    out.leaveSettle = { days, source, daily: r2(Lw / 30), amount: leaveAmt };
-    lines.push({ sec: leaveAmt < 0 ? 'ded' : 'earn', key: 'leave', en: 'Accrued leave pay (Art 111): ' + f2(days) + ' day(s)', ar: 'بدل الإجازة المستحقة (المادة 111): ' + f2(days) + ' يوم', amount: leaveAmt, formula: f2(days) + ' x ' + f2(Lw) + ' / 30' });
+    out.leaveSettle = { days, source, mode, daily: r2(Lw / 30), amount: leaveAmt, calcDays, calcAmount: r2(Math.max(0, calcDays) * Lw / 30), remaining: calcDays };
+    if (mode !== 'exclude') lines.push({ sec: leaveAmt < 0 ? 'ded' : 'earn', key: 'leave', en: 'Accrued leave pay (Art 111): ' + f2(days) + ' day(s)', ar: 'بدل الإجازة المستحقة (المادة 111): ' + f2(days) + ' يوم', amount: leaveAmt, formula: f2(days) + ' x ' + f2(Lw) + ' / 30' });
 
     // ---- notice (Art 76)
     const nd = Math.max(0, num(inp.noticeDays));
@@ -2189,13 +2206,15 @@ function JBOSettlementEngine_() {
       else lines.push({ sec: 'ded', key: 'notice', en: 'Notice not served by the employee (Art 76): ' + nd + ' day(s)', ar: 'إشعار لم يلتزم به العامل (المادة 76): ' + nd + ' يوم', amount: -amt, formula: f2(full) + ' / 30 x ' + nd });
     } else if (nd > 0) flag('info', 'Notice days were entered, but this case has no notice pay.', 'أُدخلت أيام إشعار لكن هذه الحالة لا تتضمن بدل إشعار.');
     // ---- Art 77 compensation
-    if (c.comp77 && inp.art77 !== false) {
+    if (c.comp77) {
       const ct = inp.contractType || ''; const cend = typeof inp.contractEnd === 'number' ? inp.contractEnd : parseDate(inp.contractEnd);
       const minC = 2 * full; let comp = 0, f = '';
       if (ct === 'fixed' && cend != null) { const rem = Math.max(0, diffDays(lwd, cend)); comp = full / 30 * rem; f = f2(full) + ' / 30 x ' + rem + ' remaining day(s)'; if (rem === 0) flag('warn', 'The fixed term ended before the last working day: the 2-month minimum applies.', 'انتهت مدة العقد قبل آخر يوم عمل: يُطبّق الحد الأدنى (أجر شهرين).'); }
       else { comp = full / 30 * 15 * T; f = f2(full) + ' / 30 x 15 x ' + f4(T) + ' year(s)'; if (ct === 'fixed') flag('warn', 'Fixed-term contract without an end date: the open-ended formula is used.', 'عقد محدد المدة بلا تاريخ انتهاء: طُبّقت صيغة العقد غير المحدد.'); else if (!ct) flag('info', 'Contract type unknown: treated as open-ended.', 'نوع العقد غير معروف: عوملت كغير محددة المدة.'); }
       if (comp < minC) { f += ' (minimum 2 months = ' + f2(minC) + ')'; comp = minC; }
-      lines.push({ sec: 'earn', key: 'art77', en: 'Compensation for termination without a valid reason (Art 77)', ar: 'تعويض الإنهاء دون سبب مشروع (المادة 77)', amount: r2(comp), formula: f });
+      const incl = inp.art77 !== false;
+      out.art77 = { applies: true, included: incl, estimate: r2(comp), formula: f };
+      if (incl) lines.push({ sec: 'earn', key: 'art77', en: 'Compensation for termination without a valid reason (Art 77)', ar: 'تعويض الإنهاء دون سبب مشروع (المادة 77)', amount: r2(comp), formula: f });
     }
     // ---- manual lines
     // pending payroll items: earlier months not paid yet, expense claims, the bonus earned so far this year (pro rata)
@@ -4417,7 +4436,7 @@ function JBOSettlementEngine_() {
     'leave-edit-bulk': ['Change dates, leave type or comment of leaves that were imported in bulk: a new approved leave request (with an attachment) replaces each one', 'تغيير التواريخ أو نوع الإجازة أو التعليق للإجازات المستوردة جماعيًا: طلب إجازة جديد معتمد (مع مرفق) يحل محل كل واحدة'],
     'leave-create-bulk': ['Create leave requests from a sheet in Jisr\'s import format, with an attachment per employee (File name Attachment), approved at once', 'إنشاء طلبات إجازة من ملف بصيغة استيراد جسر، مع مرفق لكل موظف (File name Attachment) واعتماد فوري'],
     'business-trip-requests': ['Create business trip requests for many employees from Excel: the destination is checked against each employee\'s own policy; approved at once or left in the approval workflow', 'إنشاء طلبات رحلات عمل لعدة موظفين من إكسل: تُفحص الوجهة مقابل سياسة كل موظف؛ تُعتمد فورًا أو تُترك في مسار الاعتماد'],
-    'settlement-calculator': ['Work out each leaver\'s end-of-service award, leave pay, notice and net payout, or forecast what the company would owe for any date, month by month, by reason, with a cash-flow alert (Saudi Labor Law); compare with Jisr; Excel and printable reports', 'احسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وصافي المستحقات لكل موظف، أو توقّع ما ستدفعه الشركة لأي تاريخ وشهرًا بشهر وحسب السبب مع تنبيه التدفق النقدي (نظام العمل السعودي)، وقارنها بجسر، مع ملفات Excel وتقارير للطباعة'],
+    'settlement-calculator': ['Work out each leaver\'s end-of-service award, leave pay, notice and net payout, or forecast what the company would owe for any date, month by month, by reason, with a cash-flow alert (Saudi Labor Law); compare with Jisr; leave balance control, Art 77 switch, Jisr-style final settlement PDF; Excel and printable reports', 'احسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وصافي المستحقات لكل موظف، أو توقّع ما ستدفعه الشركة لأي تاريخ وشهرًا بشهر وحسب السبب مع تنبيه التدفق النقدي (نظام العمل السعودي)، وقارنها بجسر، مع ملفات Excel وتقارير للطباعة'],
     'access-report': ['One Excel report of every employee: main data, who was invited, who accepted, who is still waiting, who never logged in, and when each person was last active; invite the ones who have not signed in', 'تقرير Excel واحد لكل موظف: البيانات الأساسية ومن دُعي ومن قبل ومن ما زال ينتظر ومن لم يسجّل الدخول ومتى كان كل شخص نشطًا آخر مرة'],
     'automations': ['When a custom request is approved, do the next step by itself: assign the day off or shift in the scheduler, or add a payroll transaction', 'عند اعتماد طلب مخصص، نفّذ الخطوة التالية تلقائيًا: تحديد يوم إجازة أو وردية في الجدول أو إضافة معاملة رواتب'],
     'requests-manage': ['Find the requests in the employees\' files (any type, by date range, status, leave type), export them, and cancel, delete forever or edit them: with the approval workflow or bypassing it', 'إيجاد الطلبات في ملفات الموظفين (أي نوع، بنطاق تاريخ والحالة ونوع الإجازة)، وتصديرها، وإلغاؤها أو حذفها نهائيًا أو تعديلها: مع مسار الاعتماد أو بتجاوزه'],
@@ -57656,12 +57675,12 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
 
 
 // ###########################################################################
-// ##### SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast (any date, month by month, what-if reasons and notice; bulk report with cash-flow alert)  v4.114.0
+// ##### SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast (any date, month by month, what-if reasons and notice; bulk report with cash-flow alert)  v4.115.0
 // ###########################################################################
 
 /*
  * ===========================================================================
- * SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast  v4.114.0
+ * SECTION 54 — End-of-Service & Leave Settlement Calculator and Forecast  v4.115.0
  * ---------------------------------------------------------------------------
  * For each employee you choose: last working day, the termination case (with its Labor Law article) and the leave period. The tool reads the employee's
  * joining date, salary, annual-leave policy / balance and leave history from Jisr (GET only), then works out the salary for the last month, the end-of-service
@@ -57680,7 +57699,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.114.0';
+  const SECTION_VERSION = '4.115.0';
   const MODULE_ID = 'settlement-calculator';
   const W = unsafeWindow;
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
@@ -57728,13 +57747,15 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     const soft = (e) => { if (e && e.auth) throw e; return null; };
     const [hdr, sum, loan, ast] = await Promise.all([get_('/v2/employees/' + encodeURIComponent(id), [['template', 'offboarding_header_info']]).catch(() => null), get_('/v2/employees/' + encodeURIComponent(id) + '/leaves/summary', []).catch(soft),
       get_('/v2/finance/employees/' + encodeURIComponent(id) + '/loans/', []).catch(soft), get_('/v2/employees/' + encodeURIComponent(id) + '/employee_assets', [['page', '1'], ['rpp', '50']]).catch(soft)]);
-    const he = hdr && hdr.ok && hdr.json && hdr.json.data && hdr.json.data.employee; d.dept = he ? txt_(he.department_i18n) : ''; d.job = he ? txt_(he.job_title_i18n) : '';
+    const he = hdr && hdr.ok && hdr.json && hdr.json.data && hdr.json.data.employee; d.dept = he ? txt_(he.department_i18n) : ''; d.job = he ? txt_(he.job_title_i18n) : ''; d.loc = he ? txt_(he.location_i18n) : '';
     const ec = he && he.employee_contract;
     if (ec) { d.contractEnd = String(ec.end_date || ''); if (ec.contract_type && !d.contractType) d.contractType = /fixed/i.test(String(ec.contract_type)) ? 'fixed' : 'indefinite'; }
     const al = sum && sum.ok && sum.json && sum.json.data && sum.json.data.annual_leave;
     if (al) {
       d.annual = n_(al.annual_leave_days); d.prev = n_(al.previous_year_balance) || 0; d.adj = n_(al.manual_balance_adjustment) || 0; d.unpaid = n_(al.unpaid_leave_deduction) || 0; d.summaryUsed = n_(al.used) || 0;
       d.summaryFrom = String(al.from || ''); d.annualName = al.leave_type && (al.leave_type.name || al.leave_type.label) || '';
+      // Jisr's own balance: opening_balance is what the employee holds on opening_balance_effective_date (it already includes accrual, brought-forward days and adjustments up to then)
+      d.openBal = n_(al.opening_balance) || 0; d.openDate = isoOf_(al.opening_balance_effective_date); d.yearEndBal = n_(al.year_end_balance);
     } else d.leaveErr = true;
     const LN = loan && loan.ok && loan.json && loan.json.data && loan.json.data.loans;
     if (Array.isArray(LN)) { const act = LN.filter((l) => String(l.status || '').toLowerCase() !== 'cancelled' && (n_(l.pending_amount) || 0) > 0); d.loansPending = E.r2(act.reduce((a, l) => a + (n_(l.pending_amount) || 0), 0)); d.loansList = act.map((l) => txt_(l.loan_type && l.loan_type.name) + ' ' + E.f2(n_(l.pending_amount) || 0)); } else d.loansErr = true;
@@ -57777,7 +57798,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   }
 
   // ======================================================================= one row -> engine input -> result
-  const blankIn_ = () => ({ lwd: '', caseKey: '', eventDate: '', periodFrom: '', noticeDays: '', additions: '', deductions: '', loans: '', leaveOverride: '', adjustment: '', annualDays: '', serviceDeduct: '', art77: true, eosBase: '', leaveBase: '', unpaidMonths: '', claims: '', bonusAnnual: '', assets: '' });
+  const blankIn_ = () => ({ lwd: '', caseKey: '', eventDate: '', periodFrom: '', noticeDays: '', additions: '', deductions: '', loans: '', leaveOverride: '', adjustment: '', annualDays: '', serviceDeduct: '', art77: false, leaveMode: 'include', eosBase: '', leaveBase: '', unpaidMonths: '', claims: '', bonusAnnual: '', assets: '' });
   function engineInput_(row, set) {
     const d = row.data, x = row.in; const flags = [];
     const join = E.parseDate(d.join), lwd = E.parseDate(x.lwd);
@@ -57802,10 +57823,13 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     const loansIn = x.loans !== '' && x.loans != null ? x.loans : (set && set.loansFromJisr !== false && d.loansPending ? d.loansPending : '');
     if ((x.loans === '' || x.loans == null) && loansIn) flags.push({ level: 'info', en: 'Loans still pending in Jisr (' + E.f2(loansIn) + ') are deducted. Enter 0 in the loans field to leave them out.', ar: 'القروض المتبقية في جسر (' + E.f2(loansIn) + ') تُخصم. أدخل 0 في حقل القروض لاستبعادها.' });
     if (d.assetsOut && d.assetsOut.length && !E.num(x.assets)) flags.push({ level: 'info', en: 'Jisr shows ' + d.assetsOut.length + ' asset(s) not returned (' + d.assetsOut.slice(0, 4).join(', ') + '): enter their value under unreturned assets if it should be deducted.', ar: 'يعرض جسر ' + d.assetsOut.length + ' أصل غير مرتجع (' + d.assetsOut.slice(0, 4).join('، ') + '): أدخل قيمتها في الأصول غير المرتجعة إن كانت ستُخصم.' });
+    let opening = null;
+    if (lwd != null && d.openBal > 0 && d.openDate) { const od = E.parseDate(d.openDate); if (od != null && od <= lwd) opening = { days: d.openBal, date: d.openDate }; }
+    if (opening) flags.push({ level: 'info', en: 'Jisr holds a leave balance of ' + E.f2(opening.days) + ' days on ' + opening.date + ': it replaces the accrual, the balance brought forward and the adjustments up to that date; days after it are added.', ar: 'يحتفظ جسر برصيد إجازة ' + E.f2(opening.days) + ' يومًا في ' + opening.date + ': يحل محل الاستحقاق والرصيد المرحّل والتسويات حتى ذلك التاريخ، وتُضاف الأيام بعده.' });
     const inp = {
       join: d.join, lwd: x.lwd, caseKey: x.caseKey, sal: { basic: d.basic, housing: d.housing, pack: d.pack },
       annualDays: x.annualDays !== '' ? E.num(x.annualDays) : (d.annual != null ? d.annual : ''), prevBalance: prev, adjustment: adj + E.num(x.adjustment), unpaidDeduction: unpaid, usedDays: used, periodFrom: x.periodFrom || null,
-      contractType: d.contractType, contractEnd: d.contractEnd, art77: x.art77 !== false, customPct: x.customPct, eventDate: x.eventDate, noticeDays: x.noticeDays, unpaidServiceDays: x.serviceDeduct,
+      contractType: d.contractType, contractEnd: d.contractEnd, art77: x.art77 === true || !!(set && set.art77All), openingBalance: opening ? opening.days : '', openingDate: opening ? opening.date : '', leaveMode: x.leaveMode || 'include', customPct: x.customPct, eventDate: x.eventDate, noticeDays: x.noticeDays, unpaidServiceDays: x.serviceDeduct,
       additions: x.additions, deductions: x.deductions, loans: loansIn, unpaidMonths: x.unpaidMonths, claims: x.claims, bonusAnnual: x.bonusAnnual, assets: x.assets, leaveOverride: x.leaveOverride === '' ? null : x.leaveOverride, eosBase: x.eosBase || '', leaveBase: x.leaveBase || '',
     };
     return { inp, usedItems, flags };
@@ -57832,7 +57856,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   function compute_(row, set, ov) {
     const x = Object.assign({}, row.in, ov || {});
     const g = engineInput_({ data: row.data, in: x }, set); const r = E.compute(g.inp, set);
-    r.flags = g.flags.concat(r.flags); r.usedItems = g.usedItems; return r;
+    r.flags = g.flags.concat(r.flags); r.usedItems = g.usedItems; r.sal = { basic: row.data.basic, housing: row.data.housing, pack: row.data.pack }; r.cur = row.data.currency || 'SAR'; return r;
   }
   /** Leave balance (days) a person still holds at the end of the year of Jisr's summary: used to estimate what carries into next year. */
   function carryOver_(d, set, year) {
@@ -57856,21 +57880,26 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
 
   const KEY_REASONS = ['resignation', 'employer_notice', 'expiry', 'employer_invalid'];
   /** The start date, then every month end from that month on. */
-  function scheduleDates_(startIso, count) {
+  function scheduleDates_(startIso, count, endIso) {
     const s = E.parseDate(startIso); if (s == null) return [];
+    const e = endIso ? E.parseDate(endIso) : null;
+    if (e != null && e >= s) { const out = [s]; E.monthEnds(s, 121).forEach((t) => { if (t > out[out.length - 1] && t <= e) out.push(t); }); if (e > out[out.length - 1]) out.push(e); return out; }
+    if (!count) return [s];
     const out = [s]; E.monthEnds(s, count).forEach((t) => { if (t > out[out.length - 1]) out.push(t); }); return out;
   }
+  /** "single date", "to 2027-03-31" or "+ 12 months", for headings and reports */
+  const periodText_ = (o) => (o.end && E.parseDate(o.end) != null && E.parseDate(o.end) >= E.parseDate(o.start) ? T('to ', 'إلى ') + o.end : (o.months ? '+ ' + o.months + T(' months', ' شهرًا') : T('single date', 'تاريخ واحد')));
   const noticeFor_ = (ck, mode) => (mode === 'lieu' ? E.noticeDefault(E.caseByKey(ck)) : 0);
   /**
    * Forecast: for every row with its data read, the full settlement if the employee left on each date, under one case.
    * o = { start, months, caseKey (used when the row has no case or useOwn is false), useOwn, notice: 'none' | 'lieu', cash (available, optional), stress (month index, -1 = the peak) }
    */
   function forecastModel_(rows, set, o) {
-    const dates = scheduleDates_(o.start, o.months); const labels = dates.map((t) => E.iso(t)); const emp = [];
+    const dates = scheduleDates_(o.start, o.months, o.end); const labels = dates.map((t) => E.iso(t)); const emp = [];
     rows.filter((r) => r.data).forEach((r) => {
       const ck = (o.useOwn && r.in.caseKey) ? r.in.caseKey : o.caseKey;
       const cells = labels.map((lw) => { const x = compute_(r, set, { lwd: lw, caseKey: ck, noticeDays: noticeFor_(ck, o.notice) }); return x.ok ? x : null; });
-      const reasons = {}; KEY_REASONS.forEach((k) => { const x = compute_(r, set, { lwd: labels[0], caseKey: k, noticeDays: noticeFor_(k, o.notice) }); reasons[k] = x.ok ? x.totals.net : null; });
+      const reasons = {}; KEY_REASONS.forEach((k) => { const x = compute_(r, set, { lwd: labels[0], caseKey: k, noticeDays: noticeFor_(k, o.notice), art77: true }); reasons[k] = x.ok ? x.totals.net : null; });
       emp.push({ row: r, caseKey: ck, cells, reasons, dept: r.data.dept || '' });
     });
     const used = emp.filter((e) => e.cells.some(Boolean)); const failed = emp.filter((e) => !e.cells.some(Boolean)).map((e) => e.row);
@@ -57892,7 +57921,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   function forecastSummary_(m) {
     const o = m.o; const s = m.stress; const rows = [
       [T('End-of-service forecast', 'توقع نهاية الخدمة')], [T('Company', 'الشركة'), slug_()], [T('Prepared', 'تاريخ الإعداد'), todayIso_()], [],
-      [T('Start date', 'تاريخ البداية'), o.start], [T('Months ahead', 'عدد الأشهر'), o.months], [T('Case', 'الحالة'), (o.useOwn ? T('Each row\'s own case; otherwise ', 'حالة كل صف؛ وإلا ') : '') + caseName_(o.caseKey)],
+      [T('Start date', 'تاريخ البداية'), o.start], [T('Period', 'الفترة'), periodText_(o)], [T('Case', 'الحالة'), (o.useOwn ? T('Each row\'s own case; otherwise ', 'حالة كل صف؛ وإلا ') : '') + caseName_(o.caseKey)],
       [T('Notice', 'الإشعار'), o.notice === 'lieu' ? T('Paid in lieu (60 days employer, 30 days employee)', 'بدل إشعار (60 يومًا صاحب العمل، 30 يومًا العامل)') : T('Not counted', 'غير محتسب')],
       [T('Employees included', 'الموظفون المشمولون'), m.emp.length], [T('Could not be calculated', 'تعذّر حسابهم'), m.failed.length], []];
     if (m.months.length) {
@@ -57928,7 +57957,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     const alert = s ? '<div class="al' + (m.cashAvail != null && m.shortfall <= 0 ? ' ok' : '') + '"><b>' + L('Cash-flow alert', 'تنبيه التدفق النقدي') + '</b> ' + esc_(T('If all ', 'إذا غادر جميع ') + m.emp.length + T(' employees leave on ', ' موظفًا في ') + s.date + T(', the company needs ', '، تحتاج الشركة إلى ') + E.f2(s.cash) + T(' in cash (end-of-service ', ' نقدًا (مكافآت ') + E.f2(s.eos) + T(', leave ', '، إجازات ') + E.f2(s.leave) + T(', pending payroll ', '، مستحقات معلقة ') + E.f2(s.pending) + T(', notice and compensation ', '، إشعار وتعويض ') + E.f2(s.notice + s.comp) + ').')
       + (m.cashAvail != null ? ' ' + esc_(m.shortfall > 0 ? T('Cash available ', 'النقد المتاح ') + E.f2(m.cashAvail) + T(': shortfall ', ': العجز ') + E.f2(m.shortfall) + '.' : T('Cash available ', 'النقد المتاح ') + E.f2(m.cashAvail) + T(': covered.', ': مغطّى.')) : '') + '</div>' : '';
     const o = m.o;
-    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>' + esc_('EOSB forecast ' + slug_() + ' ' + todayIso_()) + '</title><style>' + css + '</style></head><body><div class="pg"><h1>' + L('End-of-service forecast', 'توقع نهاية الخدمة') + '</h1><div class="sub">' + esc_(slug_()) + ' · ' + esc_(todayIso_()) + ' · ' + esc_(o.start) + ' + ' + o.months + T(' months', ' شهرًا') + ' · ' + esc_(caseName_(o.caseKey)) + '</div>'
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>' + esc_('EOSB forecast ' + slug_() + ' ' + todayIso_()) + '</title><style>' + css + '</style></head><body><div class="pg"><h1>' + L('End-of-service forecast', 'توقع نهاية الخدمة') + '</h1><div class="sub">' + esc_(slug_()) + ' · ' + esc_(todayIso_()) + ' · ' + esc_(o.start) + ' ' + esc_(periodText_(o)) + ' · ' + esc_(caseName_(o.caseKey)) + '</div>'
       + '<div class="k"><div class="c">' + L('Employees included', 'الموظفون المشمولون') + '<b>' + m.emp.length + '</b></div><div class="c">' + L('Cash if everyone leaves on the start date', 'النقد إذا غادر الجميع في البداية') + '<b>' + f(m.months[0] ? m.months[0].cash : 0) + '</b></div><div class="c">' + L('Highest month', 'أعلى شهر') + '<b>' + f(m.peak ? m.peak.cash : 0) + '</b>' + esc_(m.peak ? m.peak.date : '') + '</div></div>' + alert
       + '<h2>' + L('Totals by leaving date', 'الإجماليات حسب تاريخ المغادرة') + '</h2>' + tbl([L('Leave on', 'المغادرة في'), L('Pending items', 'معلقة'), L('End-of-service', 'نهاية الخدمة'), L('Leave pay', 'الإجازة'), L('Notice and comp.', 'إشعار وتعويض'), L('Deductions', 'خصومات'), L('Cash required', 'النقد المطلوب')], m.months.map((x, i) => '<tr' + (i === m.peakIdx ? ' class="pk"' : '') + '><td>' + esc_(x.date) + '</td><td>' + f(x.pending + x.other) + '</td><td>' + f(x.eos) + '</td><td>' + f(x.leave) + '</td><td>' + f(x.notice + x.comp) + '</td><td>' + f(x.ded) + '</td><td>' + f(x.cash) + '</td></tr>'))
       + '<h2>' + L('Departments by leaving date (net payable)', 'الأقسام حسب تاريخ المغادرة (الصافي)') + '</h2>' + tbl([L('Department', 'القسم'), L('Staff', 'العدد')].concat(m.labels.map((x) => esc_(x.slice(2)))), m.depts.map((d) => '<tr><td>' + esc_(d.name) + '</td><td>' + d.n + '</td>' + d.net.map((v, i) => '<td' + (i === m.peakIdx ? ' class="pk"' : '') + '>' + f(v) + '</td>').join('') + '</tr>'))
@@ -57977,14 +58006,17 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       T('Unpaid earlier months', 'أشهر سابقة غير مدفوعة'), T('Expense claims', 'مطالبات مصاريف'), T('Bonus (pro rata)', 'مكافأة (بالتناسب)'), T('Notice', 'الإشعار'), T('Art 77 compensation', 'تعويض م77'), T('Additions', 'إضافات'),
       T('Gross entitlement', 'إجمالي الاستحقاق'), T('Other deductions', 'خصومات أخرى'), T('Loans', 'قروض'), T('Unreturned assets', 'أصول غير مرتجعة'), T('Total deductions', 'إجمالي الخصومات'), T('Net payable', 'صافي المستحق'), T('Pay by', 'آخر موعد للصرف'),
       T('Jisr: salary', 'جسر: الراتب'), T('Jisr: award', 'جسر: المكافأة'), T('Jisr: leave', 'جسر: الإجازة'), T('Jisr: net', 'جسر: الصافي'), T('Difference vs Jisr', 'الفرق عن جسر'), T('Notes', 'ملاحظات')];
-    const body = ok.map((r) => {
+    const body0 = ok.map((r) => {
       const q = r.res, sv = q.service, e = q.eos, lv = q.leave, c = q.case; const j = r.jisr; const d = r.cmp;
       const flags = q.flags.map((f) => T(f.en, f.ar)).join(' | ');
       return [r.code, r.name, (r.data && r.data.dept) || '', E.iso(q.join), E.iso(q.lwd), caseLabel_(c), c.art, sv.y, sv.m, sv.d, E.r2(sv.T), q.base.eos, e.fraction, e.payable, q.salaryDays, lineAmt_(q, 'salary'), E.iso(lv.from), lv.annual, lv.accrued, lv.carry, lv.adjustment, lv.unpaidDeduction, lv.used, q.leaveSettle.days, q.leaveSettle.daily, lineAmt_(q, 'leave'),
         lineAmt_(q, 'unpaid'), lineAmt_(q, 'claims'), lineAmt_(q, 'bonus'), lineAmt_(q, 'notice'), lineAmt_(q, 'art77'), lineAmt_(q, 'add'), q.totals.gross, lineAmt_(q, 'ded'), lineAmt_(q, 'loans'), lineAmt_(q, 'assets'), q.totals.deductions, q.totals.net, q.payBy,
         j ? j.salary : '', j ? j.eos : '', j ? j.leave : '', j && j.net != null ? j.net : '', d ? (d.any ? T('Differs', 'يختلف') : T('Matches', 'مطابق')) : '', flags];
     });
-    add(T('Settlements', 'التسويات'), [head].concat(body), [10, 26, 22, 12, 12, 40, 10, 7, 7, 7, 10, 12, 9, 14, 8, 14, 12, 9, 10, 10, 10, 10, 10, 10, 10, 12, 12, 12, 12, 10, 12, 10, 14, 12, 10, 12, 14, 14, 12, 12, 12, 12, 12, 14, 60], true);
+    const jx = head.indexOf(T('Jisr: salary', 'جسر: الراتب'));
+    head.splice(jx, 0, T('Leave pay status', 'حالة بدل الإجازة'), T('Leave balance on the date (days)', 'رصيد الإجازة في التاريخ (أيام)'), T('Art 77 estimate by law', 'تقدير م77 حسب النظام'), T('Art 77 included', 'م77 مشمولة'), T('Salary and pending', 'الراتب والمعلّق'));
+    const body = body0.map((row, i) => { const q = ok[i].res; const st = q.leaveSettle.mode === 'exclude' ? T('Excluded', 'مستبعدة') : q.leaveSettle.mode === 'edit' ? T('Edited', 'معدّلة') : T('Included', 'مشمولة'); row.splice(jx, 0, st, q.leaveSettle.calcDays, q.art77 ? q.art77.estimate : '', q.art77 ? (q.art77.included ? T('Yes', 'نعم') : T('No', 'لا')) : '', q.totals.byGrp.pending || 0); return row; });
+    add(T('Settlements', 'التسويات'), [head].concat(body), (() => { const w = [10, 26, 22, 12, 12, 40, 10, 7, 7, 7, 10, 12, 9, 14, 8, 14, 12, 9, 10, 10, 10, 10, 10, 10, 10, 12, 12, 12, 12, 10, 12, 10, 14, 12, 10, 12, 14, 14, 12, 12, 12, 12, 12, 14, 60]; w.splice(jx, 0, 16, 16, 16, 12, 16); return w; })(), true);
     const lines = [[T('Code', 'الرقم'), T('Name', 'الاسم'), T('Group', 'المجموعة'), T('Item', 'البند'), T('Basis', 'طريقة الحساب'), T('Amount', 'المبلغ')]];
     ok.forEach((r) => { r.res.lines.forEach((l) => lines.push([r.code, r.name, grpLabel_(l.grp), T(l.en, l.ar), l.formula, l.amount])); lines.push([r.code, r.name, '', T('Gross entitlement', 'إجمالي الاستحقاق'), '', r.res.totals.gross], [r.code, r.name, '', T('Total deductions', 'إجمالي الخصومات'), '', r.res.totals.deductions], [r.code, r.name, '', T('Net payable = gross entitlement − total deductions', 'صافي المستحق = إجمالي الاستحقاق − إجمالي الخصومات'), '', r.res.totals.net]); });
     add(T('Statement lines', 'بنود التسوية'), lines, [10, 26, 26, 56, 60, 14], true);
@@ -58002,33 +58034,72 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     return saveBlob_(new Blob([out], { type: 'application/octet-stream' }), 'settlements_' + (slug_() || 'jisr') + '_' + nowStamp_(at) + '.xlsx');
   }
 
-  /** One printable page per employee: open the file, then Print / Save as PDF. Both languages on every line. */
-  function statementsHtml_(rows, set, at) {
-    const ok = rowsOk_(rows); const company = slug_();
-    const css = 'body{font:13px/1.5 "Segoe UI",Tahoma,Arial,sans-serif;color:#111;margin:0;background:#f3f4f6}.pg{width:210mm;min-height:297mm;margin:12px auto;background:#fff;padding:16mm 15mm;box-sizing:border-box;page-break-after:always}h1{font-size:18px;margin:0 0 2px}h2{font-size:13px;margin:16px 0 6px}.sub{color:#555;margin-bottom:10px}'
-      + 'table{width:100%;border-collapse:collapse}td,th{padding:5px 7px;border-bottom:1px solid #e3e5e8;vertical-align:top}th{background:#f6f7f8;text-align:start;font-weight:600}.num{text-align:end;white-space:nowrap;font-variant-numeric:tabular-nums}.ar{direction:rtl;text-align:right;color:#444;display:block}.f{color:#666;font-size:11.5px;direction:ltr;text-align:left}'
-      + '.tot td{font-weight:700;border-top:2px solid #111;border-bottom:0}.gh td{background:#f6f7f8;font-weight:600}.ln td:first-child{padding-inline-start:16px}.sub td{font-weight:600;border-top:1px solid #111}.kv td:first-child{width:34%;color:#555}.flag{margin:2px 0;padding:4px 8px;border-radius:5px;background:#fff7e0;font-size:12px}.sig{display:flex;gap:24px;margin-top:34px}.sig div{flex:1;border-top:1px solid #111;padding-top:4px;font-size:12px;color:#444}.dis{margin-top:14px;font-size:11px;color:#666}'
-      + '@media print{body{background:#fff}.pg{margin:0;box-shadow:none}}';
-    const L = (en, ar) => '<span>' + esc_(en) + '</span><span class="ar">' + esc_(ar) + '</span>';
+  // ----- the header of the printed statement (company name, place, logo) is kept on this computer; Jisr gives no endpoint to read it
+  const HDR_KEY = 'jisrBulkOps_settleHeader';
+  const header_ = () => { try { const v = GM_getValue(HDR_KEY, null); return v && typeof v === 'object' ? v : {}; } catch (e) { return {}; } };
+  const saveHeader_ = (v) => { try { GM_setValue(HDR_KEY, v); } catch (e) { /* ignore */ } };
+  /**
+   * The printed statement, laid out like the final settlement Jisr exports as a PDF: company block and "created by" date, the title,
+   * employee details as label : value, the salary table, Additions, Deductions, the net row, and a last page with the two signature headings.
+   * Arabic (right to left) when the interface is Arabic, English (left to right) otherwise. Open it, then Print or Save as PDF.
+   */
+  function statementsHtml_(rows, set, at, autoPrint) {
+    const ok = rowsOk_(rows); const ar = I.isAr(); const H = header_(); const company = H.name || slug_();
+    const css = '@page{size:A4;margin:12mm 12mm}*{box-sizing:border-box}body{margin:0;background:#e9eaec;color:#333;font:10.5pt/1.55 "Noto Sans Arabic","Segoe UI",Tahoma,Arial,sans-serif}.pg{width:210mm;min-height:297mm;margin:10px auto;background:#fff;padding:14mm 14mm 12mm}.pg+.pg{page-break-before:always}'
+      + '.hd{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.co{display:flex;gap:8px;align-items:flex-start;font-size:9.5pt;line-height:1.35}.co img{width:14mm;height:14mm;object-fit:cover;border-radius:2px}.by{font-weight:700;font-size:9.5pt;line-height:1.6}'
+      + 'h1{font-weight:400;font-size:24pt;text-align:center;margin:8mm 0 6mm}h3{font-size:12pt;margin:7mm 0 1mm}h4{font-size:11pt;margin:2mm 0 2mm}'
+      + '.kv{border-collapse:collapse}.kv td{padding:0 0 .2mm;font-size:9.5pt;vertical-align:top}.kv td.k{width:46mm}.kv td.c{width:3mm}'
+      + 'table.t{width:100%;border-collapse:collapse;margin:0 0 7mm;font-size:9.5pt;page-break-inside:avoid}.t th{background:#2d3e50;color:#fff;font-weight:400;text-align:start;padding:2mm 3mm;border:1px solid #2d3e50}.t td{padding:2mm 3mm;border:1px solid #d3d6da;vertical-align:top}.t tr:nth-child(even) td{background:#f7f7f8}.t td.n{white-space:nowrap}.t tr.tot td{font-weight:700;background:#f4f4f5}.t .f{color:#777;font-size:8pt;direction:ltr;text-align:start}'
+      + 'table.net{width:100%;border-collapse:collapse;margin:0}.net td{padding:2.4mm 3mm;border:1px solid #d3d6da;background:#f9f9fa;font-weight:700;font-size:9.5pt}.sg{display:flex;justify-content:space-between;font-weight:700;font-size:10pt}.pre{margin-top:150mm;color:#8a8d91;font-size:8pt;font-weight:400}'
+      + '@media print{body{background:#fff}.pg{margin:0;width:auto;min-height:0;padding:0}}';
+    const cur = (q) => (ar ? 'ر . س' : (q.cur || 'SAR'));
     const pages = ok.map((r) => {
-      const q = r.res; const sv = q.service; const c = q.case; const lv = q.leave;
-      const kv = (en, ar, v) => '<tr><td>' + L(en, ar) + '</td><td dir="auto">' + esc_(v) + '</td></tr>';
-      const lines = stmtRows_(q).map((x) => '<tr class="' + (x.kind === 'n' ? 'tot' : x.kind === 't' ? 'sub' : x.kind === 'h' ? 'gh' : 'ln') + '"><td>' + L(x.en, x.ar) + (x.formula ? '<div class="f">' + esc_(x.formula) + '</div>' : '') + '</td><td class="num">' + (x.amount == null ? '' : esc_(E.f2(x.amount))) + '</td></tr>').join('');
-      const flags = q.flags.map((f) => '<div class="flag">' + L(f.en, f.ar) + '</div>').join('');
-      return '<div class="pg"><h1>' + L('End-of-service and leave settlement', 'تسوية نهاية الخدمة والإجازات') + '</h1><div class="sub">' + esc_(company) + ' · ' + esc_(nowStamp_(at)) + '</div>'
-        + '<table class="kv">' + kv('Employee', 'الموظف', r.name + (r.code ? ' (' + r.code + ')' : '')) + (r.nid ? kv('ID / Iqama', 'الهوية / الإقامة', r.nid) : '') + kv('Joining date', 'تاريخ الالتحاق', E.iso(q.join)) + kv('Last working day', 'آخر يوم عمل', E.iso(q.lwd))
-        + kv('Termination case', 'حالة إنهاء الخدمة', c.en + ' — ' + c.ar + (c.art ? ' (Art ' + c.art + ')' : '')) + kv('Length of service', 'مدة الخدمة', sv.y + ' y ' + sv.m + ' m ' + sv.d + ' d  =  ' + E.r2(sv.T).toFixed(4) + ' years')
-        + kv('Wage used for the award', 'الأجر المعتمد للمكافأة', E.f2(q.base.eos)) + kv('Leave period', 'فترة الإجازة', E.iso(lv.from) + ' → ' + E.iso(lv.to) + '  (' + lv.annual + ' days a year)') + '</table>'
-        + '<h2>' + L('Settlement', 'التسوية') + '</h2><table>' + lines + '</table>'
-        + '<p>' + L('To be paid by', 'يُصرف قبل تاريخ') + ' <b>' + esc_(q.payBy) + '</b> (' + L('Art 88', 'المادة 88') + ')</p>' + (flags ? '<h2>' + L('Notes', 'ملاحظات') + '</h2>' + flags : '')
-        + '<div class="sig"><div>' + L('Employee', 'الموظف') + '</div><div>' + L('HR', 'الموارد البشرية') + '</div><div>' + L('Finance', 'المالية') + '</div></div>'
-        + '<div class="dis">' + L('Prepared with Jisr Bulk Ops from the data in Jisr. Guidance only: check against the contract and the Saudi Labor Law before payment.', 'أُعدّ بواسطة Jisr Bulk Ops من بيانات جسر. للإرشاد فقط: راجعه مع العقد ونظام العمل السعودي قبل الصرف.') + '</div></div>';
+      const q = r.res, d = r.data || {}, sv = q.service, c = q.case, ls = q.leaveSettle; const money = (v) => esc_(E.f2(Math.abs(v)));
+      const exp = ar ? sv.y + ' عام/أعوام و ' + sv.m + ' شهر/أشهر و ' + sv.d + ' يوم/ أيام' : sv.y + ' year(s) and ' + sv.m + ' month(s) and ' + sv.d + ' day(s)';
+      const info = [[T('Employee number', 'رقم الموظف'), r.code], [T('Employee name', 'اسم الموظف'), r.name], [T('Job title', 'المسمى الوظيفي'), d.job], [T('Department', 'القسم'), d.dept], [T('Location', 'الموقع'), d.loc], [T('Joining date', 'تاريخ الالتحاق'), E.iso(q.join)], [T('Last working day', 'آخر يوم عمل'), E.iso(q.lwd)], [T('ID number', 'رقم الهوية'), r.nid || ''],
+        [T('Experience', 'الخبرة'), exp], [T('Termination reason', 'سبب إنهاء الخدمة'), T(c.en, c.ar) + (c.art ? ' (' + T('Art ', 'المادة ') + c.art + ')' : '')], [T('Secondary termination reason', 'سبب ثانوي لإنهاء الخدمة'), ''], [T('Other termination reasons', 'أسباب أخرى لإنهاء الخدمة'), ''],
+        [T('Leave balance', 'رصيد الإجازات'), E.f2(ls.days)], [T('Working days', 'أيام العمل'), String(q.salaryDays)], [T('Transfer method', 'طريقة التحويل'), ''], [T('Bank name', 'اسم البنك'), ''], [T('IBAN', 'رقم الآيبان'), ''], [T('Payment type', 'نوع الدفع'), ''], [T('Approval chain', 'سلسلة الموافقات'), '']];
+      const kv = info.map(([k, v]) => '<tr><td class="k">' + esc_(k) + '</td><td class="c">:</td><td dir="auto">' + esc_(v == null ? '' : v) + '</td></tr>').join('');
+      const sal = q.sal || {}; const pack = q.base.full; const oth = E.r2(pack - E.num(sal.basic) - E.num(sal.housing));
+      const salRows = [[T('Basic salary', 'الراتب الاساسي'), E.num(sal.basic) || pack]]; if (E.num(sal.housing) > 0) salRows.push([T('Housing allowance', 'بدل السكن'), E.num(sal.housing)]); if (E.num(sal.basic) && oth > 0.004) salRows.push([T('Other allowances', 'بدلات أخرى'), oth]);
+      const salHtml = salRows.map(([k, v]) => '<tr><td>' + esc_(k) + '</td><td class="n">' + money(v) + '</td></tr>').join('') + '<tr><td>' + esc_(T('Total', 'الاجمالي')) + '</td><td class="n">' + money(pack) + ' ' + esc_(cur(q)) + '</td></tr>';
+      const LBL = { salary: [T('Basic salary', 'الراتب الأساسي')], eosb: [T('End of service settlement', 'تسوية نهاية الخدمة')], leave: [T('Leave settlement', 'تسوية الإجازات')], unpaid: [T('Unpaid earlier salary', 'رواتب سابقة غير مدفوعة')], claims: [T('Expense claims', 'مطالبات مصاريف')], bonus: [T('Bonus', 'مكافأة')], notice: [T('Notice pay', 'بدل الإشعار')], art77: [T('Article 77 compensation', 'تعويض المادة 77')], add: [T('Other additions', 'إضافات أخرى')] };
+      const get = (k) => q.lines.find((l) => l.key === k && l.amount > 0);
+      const addRows = []; ['salary', 'eosb', 'leave', 'unpaid', 'claims', 'bonus', 'notice', 'art77', 'add'].forEach((k) => {
+        const l = get(k); const always = k === 'salary' || k === 'eosb' || k === 'leave';
+        if (l) addRows.push([LBL[k][0], l.amount, l.formula || '']);
+        else if (always) addRows.push([LBL[k][0], 0, '']);
+        else if (k === 'art77' && q.art77 && q.art77.applies && !q.art77.included) addRows.push([LBL[k][0], 0, T('Per the employee\'s contract terms', 'حسب شروط عقد الموظف')]);
+      });
+      const addHtml = addRows.map(([k, v, f]) => '<tr><td>' + esc_(k) + '</td><td class="n">' + money(v) + '</td><td><span class="f">' + esc_(f) + '</span></td></tr>').join('') + '<tr class="tot"><td>' + esc_(T('Total earnings', 'مجموع الإيرادات')) + '</td><td colspan="2" class="n">' + money(q.totals.gross) + '</td></tr>';
+      const DL = { loans: T('Loan settlement', 'تسوية القروض'), assets: T('Unreturned assets', 'أصول غير مرتجعة'), ded: T('Other deductions', 'خصومات أخرى'), notice: T('Notice not served', 'إشعار لم يُخدم'), leave: T('Leave taken in advance', 'إجازة مأخوذة مقدمًا') };
+      const dedRows = []; ['loans', 'assets', 'ded', 'notice', 'leave'].forEach((k) => { const l = q.lines.find((x) => x.key === k && x.amount < 0); if (l) dedRows.push([DL[k], -l.amount, l.formula || '']); else if (k === 'loans') dedRows.push([DL[k], 0, '']); });
+      const dedHtml = dedRows.map(([k, v, f]) => '<tr><td>' + esc_(k) + '</td><td class="n">' + money(v) + '</td><td><span class="f">' + esc_(f) + '</span></td></tr>').join('') + '<tr class="tot"><td>' + esc_(T('Total deductions', 'مجموع الخصومات')) + '</td><td colspan="2" class="n">' + money(q.totals.deductions) + '</td></tr>';
+      const logo = H.logo ? '<img src="' + esc_(H.logo) + '" alt="">' : '';
+      return '<section class="pg"><div class="hd"><div class="co">' + logo + '<div><div>' + esc_(company) + '</div>' + (H.l2 ? '<div>' + esc_(H.l2) + '</div>' : '') + (H.l3 || d.loc ? '<div>' + esc_(H.l3 || d.loc) + '</div>' : '') + '</div></div>'
+        + '<div class="by"><div>' + esc_(T('Created with Jisr tools', 'أنشئ بواسطة أدوات جسر')) + '</div><div dir="ltr" style="text-align:' + (ar ? 'left' : 'right') + '">' + esc_(nowStamp_(at)) + '</div></div></div>'
+        + '<h1>' + esc_(T('Final settlement', 'التسوية النهائية')) + '</h1><table class="kv">' + kv + '</table>'
+        + '<h3>' + esc_(T('Salary information', 'معلومات الراتب')) + '</h3><h4>' + esc_(T('Salary information', 'معلومات الراتب')) + '</h4>'
+        + '<table class="t"><tr><th style="width:55%">' + esc_(T('Item', 'عنصر')) + '</th><th>' + esc_(T('Value', 'القيمة')) + '</th></tr>' + salHtml + '</table>'
+        + '<table class="t"><tr><th style="width:38%">' + esc_(T('Additions', 'الإضافات')) + '</th><th style="width:22%">' + esc_(T('Value', 'القيمة')) + '</th><th>' + esc_(T('Description', 'الوصف')) + '</th></tr>' + addHtml + '</table>'
+        + '<table class="t"><tr><th style="width:38%">' + esc_(T('Deductions', 'الخصومات')) + '</th><th style="width:22%">' + esc_(T('Value', 'القيمة')) + '</th><th>' + esc_(T('Description', 'الوصف')) + '</th></tr>' + dedHtml + '</table>'
+        + '<table class="net"><tr><td style="width:55%">' + esc_(T('Net end of service settlement', 'صافي تسوية نهاية الخدمة')) + '</td><td>' + (q.totals.net < 0 ? '−' : '') + money(q.totals.net) + ' ' + esc_(cur(q)) + '</td></tr></table></section>'
+        + '<section class="pg"><div class="sg"><div>' + esc_(T('Signature and date - Responsible', 'التوقيع والتاريخ - المسؤول')) + '</div><div>' + esc_(T('Signature and date - Employee', 'التوقيع والتاريخ - الموظف')) + '</div></div></section>';
     }).join('');
-    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>' + esc_('Settlements ' + company + ' ' + nowStamp_(at)) + '</title><style>' + css + '</style></head><body>' + pages + '</body></html>';
+    const scr = autoPrint ? '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.print()}catch(e){}},600)})</script>' : '';
+    return '<!doctype html><html lang="' + (ar ? 'ar' : 'en') + '" dir="' + (ar ? 'rtl' : 'ltr') + '"><head><meta charset="utf-8"><title>' + esc_(T('Final settlement', 'التسوية النهائية') + ' ' + company + ' ' + nowStamp_(at)) + '</title><style>' + css + '</style></head><body>' + pages + scr + '</body></html>';
   }
   function downloadStatements_(rows, set) {
-    const at = new Date(); const html = statementsHtml_(rows, set, at);
-    return saveBlob_(new Blob([html], { type: 'text/html;charset=utf-8' }), 'settlement-statements_' + (slug_() || 'jisr') + '_' + nowStamp_(at) + '.html');
+    const at = new Date(); const html = statementsHtml_(rows, set, at, false);
+    return saveBlob_(new Blob([html], { type: 'text/html;charset=utf-8' }), 'final-settlement_' + (slug_() || 'jisr') + '_' + nowStamp_(at) + '.html');
+  }
+  /** Opens the statement in a new tab and starts the print dialog (choose "Save as PDF"); when the browser blocks the tab, the file is saved instead. */
+  function printStatements_(rows, set) {
+    const at = new Date(); const html = statementsHtml_(rows, set, at, true); const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+    let w = null; try { w = window.open(url, '_blank'); } catch (e) { w = null; }
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
+    if (!w) return { opened: false, name: downloadStatements_(rows, set) };
+    return { opened: true };
   }
 
   // ======================================================================= Excel in (last working day, case, period per employee)
@@ -58069,7 +58140,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   function injectCss_() {
     if (document.getElementById('jbo-st-css')) return;
     document.head.appendChild(el('style', { id: 'jbo-st-css', text: `
-      .jst-note { font-size: 12.5px; background: #eef4ff; border: 1px solid #cfe0fb; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
+      .jst-note { font-size: 12.5px; background: #e9f4f2; border: 1px solid #c6e0dc; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
       .jst-set { display: flex; gap: 14px 18px; align-items: end; flex-wrap: wrap; margin: 6px 0 10px; font-size: 13px; }
       .jst-set label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #5f6368; }
       .jst-set label.jst-ck { flex-direction: row; align-items: center; gap: 6px; color: inherit; font-size: 13px; }
@@ -58081,30 +58152,49 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       .jst-tbl th { text-align: start; padding: 6px 8px; background: #f8f9fa; border-bottom: 1px solid #e8eaed; font-weight: 600; position: sticky; top: 0; white-space: nowrap; z-index: 1; }
       .jst-tbl td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: middle; }
       .jst-tbl td.num, .jst-tbl th.num { text-align: end; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      .jst-tbl tr.on td { background: #eef4ff; }
+      .jst-tbl tr.on td { background: #e9f4f2; }
       .jst-tbl td small { display: block; color: #5f6368; font-size: 11.5px; }
       .jst-tbl .jst-name { background: none; border: 0; padding: 0; font: inherit; font-weight: 600; cursor: pointer; text-align: start; color: inherit; text-decoration: underline dotted; }
       .jst-tbl input[type=date] { width: 132px; direction: ltr; } .jst-tbl select { width: 250px; } .jst-tbl td.jst-sv { white-space: nowrap; }
       .jst-ok { color: #137333; } .jst-bad { color: #a50e0e; } .jst-warn { color: #8a5a00; }
-      .jst-prog { height: 36px; } .jst-bar { height: 6px; border-radius: 3px; background: #e8eaed; overflow: hidden; margin-top: 4px; } .jst-bar i { display: block; height: 100%; background: #1a73e8; width: 0; transition: width .2s ease; }
+      .jst-prog { height: 36px; } .jst-bar { height: 6px; border-radius: 3px; background: #e8eaed; overflow: hidden; margin-top: 4px; } .jst-bar i { display: block; height: 100%; background: #1a5d57; width: 0; transition: width .2s ease; }
       .jst-det { margin-top: 12px; border: 1px solid #d0d7de; border-radius: 10px; padding: 12px 14px; }
       .jst-det h3 { margin: 0 0 6px; font-size: 14px; } .jst-grid { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 16px; } @media (max-width: 820px) { .jst-grid { grid-template-columns: 1fr; } }
       .jst-fld { display: grid; grid-template-columns: 1fr 120px; gap: 6px 10px; align-items: center; font-size: 12.5px; margin: 6px 0; } .jst-fld input[type=number], .jst-fld input[type=date], .jst-fld select { width: 100%; direction: ltr; }
       .jst-fld.wide { grid-template-columns: 1fr; }
       .jst-stmt { width: 100%; border-collapse: collapse; font-size: 12.5px; } .jst-stmt td { padding: 5px 6px; border-bottom: 1px solid #f1f3f4; vertical-align: top; } .jst-stmt td.num { text-align: end; white-space: nowrap; font-variant-numeric: tabular-nums; }
       .jst-stmt tr.tot td { font-weight: 700; border-top: 2px solid #1f2328; border-bottom: 0; } .jst-stmt .fx { color: #5f6368; font-size: 11.5px; direction: ltr; text-align: start; }
-      .jst-flag { margin: 4px 0; padding: 5px 8px; border-radius: 6px; background: #fff7e0; font-size: 12.5px; } .jst-flag.error { background: #fdecea; } .jst-flag.info { background: #eef4ff; }
+      .jst-flag { margin: 4px 0; padding: 5px 8px; border-radius: 6px; background: #fff7e0; font-size: 12.5px; } .jst-flag.error { background: #fdecea; } .jst-flag.info { background: #e9f4f2; }
       .jst-dlg p { margin: 6px 0; font-size: 13px; } .jst-pick { max-height: 46vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; margin-top: 8px; } .jst-pick label { display: flex; gap: 8px; padding: 5px 8px; border-bottom: 1px solid #f1f3f4; font-size: 13px; cursor: pointer; } .jst-pick label[data-off="1"] { opacity: .5; cursor: default; }
       .jst-stmt tr.gh td { font-weight: 600; background: #f8f9fa; padding-top: 6px; } .jst-stmt tr.ln td:first-child { padding-inline-start: 16px; } .jst-stmt tr.sub td { font-weight: 600; border-top: 1px solid #1f2328; }
       .jst-sub { font-weight: 600; font-size: 12.5px; margin: 12px 0 2px; padding-top: 8px; border-top: 1px solid #e8eaed; }
-      .jst-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 8px; border-bottom: 1px solid #e8eaed; } .jst-tab { font: inherit; font-size: 12.5px; padding: 6px 12px; border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer; color: #5f6368; } .jst-tab.on { color: #1a73e8; border-bottom-color: #1a73e8; font-weight: 600; }
+      .jst-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 8px; border-bottom: 1px solid #e8eaed; } .jst-tab { font: inherit; font-size: 12.5px; padding: 6px 12px; border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer; color: #5f6368; } .jst-tab.on { color: #1a5d57; border-bottom-color: #1a5d57; font-weight: 600; }
       .jst-quick { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 8px; } .jst-quick .jbo-btn { padding: 3px 9px; font-size: 12px; }
       .jst-wi { display: flex; gap: 10px 14px; flex-wrap: wrap; align-items: end; margin: 4px 0; } .jst-wl { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #5f6368; } .jst-wl select, .jst-wl input { font: inherit; font-size: 12.5px; padding: 4px 6px; border: 1px solid #c9cdd2; border-radius: 6px; background: #fff; color: inherit; max-width: 330px; }
-      .jst-scroll2 { overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; margin: 6px 0; max-height: 44vh; } .jst-tbl2 td small { display: block; color: #5f6368; font-size: 11.5px; white-space: normal; max-width: 300px; } .jst-tbl2 .jst-netc { min-width: 130px; } .jst-bar2 { display: block; height: 4px; background: #e8eaed; border-radius: 2px; margin-top: 3px; overflow: hidden; } .jst-bar2 i { display: block; height: 100%; background: #1a73e8; }
-      .jst-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; } .jst-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid #c9cdd2; border-radius: 14px; font-size: 12px; cursor: pointer; max-width: 360px; } .jst-chip.on { background: #eef4ff; border-color: #1a73e8; } .jst-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .jst-scroll2 { overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; margin: 6px 0; max-height: 44vh; } .jst-tbl2 td small { display: block; color: #5f6368; font-size: 11.5px; white-space: normal; max-width: 300px; } .jst-tbl2 .jst-netc { min-width: 130px; } .jst-bar2 { display: block; height: 4px; background: #e8eaed; border-radius: 2px; margin-top: 3px; overflow: hidden; } .jst-bar2 i { display: block; height: 100%; background: #1a5d57; }
+      .jst-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; } .jst-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid #c9cdd2; border-radius: 14px; font-size: 12px; cursor: pointer; max-width: 360px; } .jst-chip.on { background: #e9f4f2; border-color: #1a5d57; } .jst-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .jst-kpis { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; } .jst-kpi { flex: 1; min-width: 170px; border: 1px solid #d0d7de; border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; font-size: 12px; color: #5f6368; } .jst-kpi b { font-size: 17px; color: #1f2328; } .jst-kpi small { color: #5f6368; }
       .jst-alert { border: 2px solid #c5221f; background: #fdecea; border-radius: 8px; padding: 9px 12px; margin: 8px 0; font-size: 13px; } .jst-alert.ok { border-color: #137333; background: #e6f4ea; } .jst-alert select { font: inherit; font-size: 12.5px; padding: 2px 4px; } .jst-hl { background: #fff1d6; font-weight: 700; }
       .jst-cmp { margin-top: 8px; font-size: 12.5px; } .jst-cmp table { border-collapse: collapse; } .jst-cmp td, .jst-cmp th { padding: 3px 10px; border-bottom: 1px solid #f1f3f4; text-align: end; } .jst-cmp th:first-child, .jst-cmp td:first-child { text-align: start; }
+
+      .jst-tbl td.jst-cc { min-width: 118px; } .jst-tbl td.jst-cc > div { line-height: 1.25; } .jst-tbl td.jst-netv { font-weight: 700; font-size: 13px; } .jst-tbl th[title] { cursor: help; text-decoration: underline dotted #9aa0a6; text-underline-offset: 3px; }
+      .jst-pill { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 11px; line-height: 1.2; padding: 2px 8px; margin-top: 3px; border-radius: 999px; border: 1px solid #c9cdd2; background: #f6f7f8; color: #3c4043; cursor: pointer; white-space: nowrap; }
+      .jst-pill:hover:not(:disabled) { border-color: #1a5d57; } .jst-pill:disabled { cursor: default; opacity: .75; }
+      .jst-pill.in { background: #e3f3ee; border-color: #a9d6cb; color: #0f5a47; } .jst-pill.ed { background: #fff4d6; border-color: #f0d58a; color: #7a5200; } .jst-pill.ex { background: #f1f1f2; border-color: #cfd1d4; color: #555; text-decoration: line-through; } .jst-pill.nb { background: #fdecea; border-color: #f2b8b5; color: #a50e0e; } .jst-pill.off { background: #fff4d6; border-color: #f0d58a; color: #7a5200; }
+      .jst-pill.sel { margin-top: 0; padding: 4px 12px; font-size: 12.5px; } .jst-pill.sel.on { background: #1a5d57; border-color: #1a5d57; color: #fff; font-weight: 600; }
+      .jst-legend { margin: 6px 0 2px; padding: 7px 10px; font-size: 12.5px; background: #f3f8f7; border: 1px solid #dbe9e6; border-radius: 8px; }
+      .jst-eq { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; margin: 6px 0 12px; padding: 10px; background: #f3f8f7; border: 1px solid #dbe9e6; border-radius: 14px; }
+      .jst-eq .op { align-self: center; font-style: normal; font-size: 22px; color: #6b7a77; } .jst-eqb { flex: 1; min-width: 150px; padding: 8px 12px; border-radius: 10px; background: #fff; border: 1px solid #e3ebe9; display: flex; flex-direction: column; gap: 2px; }
+      .jst-eqb span { font-size: 11.5px; color: #5f6368; } .jst-eqb b { font-size: 20px; font-variant-numeric: tabular-nums; } .jst-eqb b.neg { color: #a50e0e; } .jst-eqb.hero { background: #1a5d57; border-color: #1a5d57; } .jst-eqb.hero span { color: #cfe8e3; } .jst-eqb.hero b { color: #fff; font-size: 24px; }
+      .jst-leave, .jst-a77 { margin: 10px 0; padding: 12px; border: 1px solid #dbe9e6; border-radius: 14px; background: #fff; } .jst-lvh { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; } .jst-lvh .jst-pill { margin: 0; }
+      .jst-lvbig { padding: 8px 12px; border-radius: 10px; background: #f3f8f7; font-size: 13px; } .jst-lvbig .n { font-size: 26px; font-weight: 700; color: #1a5d57; font-variant-numeric: tabular-nums; } .jst-lvbig .n.bad { color: #a50e0e; }
+      .jst-lvst { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; } .jst-lvst > div { flex: 1; min-width: 74px; padding: 4px 8px; border: 1px solid #e3ebe9; border-radius: 8px; display: flex; flex-direction: column; font-size: 11px; color: #5f6368; } .jst-lvst b { font-size: 12.5px; color: #1f2328; font-variant-numeric: tabular-nums; }
+      .jst-lvopts { display: grid; gap: 6px; margin-top: 6px; } .jst-lvo { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 1px solid #d5dbd9; border-radius: 10px; background: #fff; font: inherit; font-size: 12.5px; cursor: pointer; text-align: start; color: inherit; }
+      .jst-lvo:hover { border-color: #1a5d57; } .jst-lvo.on { border-color: #1a5d57; background: #e9f4f2; } .jst-lvo .dot { flex: none; width: 14px; height: 14px; border-radius: 50%; border: 2px solid #9aa6a3; background: #fff; } .jst-lvo.on .dot { border-color: #1a5d57; background: #1a5d57; box-shadow: inset 0 0 0 2px #fff; }
+      .jst-lvo .lab { flex: 1; } .jst-lvo .amt { font-variant-numeric: tabular-nums; } .jst-lved { display: grid; grid-template-columns: 1fr 110px; gap: 8px; align-items: center; margin-top: 8px; font-size: 12.5px; } .jst-lved input { direction: ltr; }
+      .jst-hint { font-size: 11.5px; margin-top: 8px; line-height: 1.45; }
+      .jst-per { margin: 4px 0 8px; } .jst-chiprow { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 6px; } .jst-inl { display: inline-flex; gap: 4px; align-items: center; }
+      .jst-tab.on { color: #1a5d57; border-bottom-color: #1a5d57; }
     ` }));
   }
   const CASE_GROUPS = () => [['employer', T('Employer ends the contract', 'إنهاء من صاحب العمل')], ['employee', T('Employee ends the contract', 'إنهاء من العامل')], ['contract', T('Contract ends', 'انتهاء العقد')], ['other', T('Other', 'أخرى')]];
@@ -58117,7 +58207,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
 
   function openTool_() {
     injectCss_(); try { jboActOpen_(MODULE_ID); } catch (e) { /* ignore */ }
-    const S = { rows: [], set: { eosBase: 'full', leaveBase: 'full', deductAdvanceLeave: false, loansFromJisr: true }, tab: 'stmt', fc: null, busy: false, stop: false, sel: new Set(), open: null, jisrList: null, more: false };
+    const S = { rows: [], set: { eosBase: 'full', leaveBase: 'full', deductAdvanceLeave: false, loansFromJisr: true, art77All: false }, tab: 'stmt', fc: null, busy: false, stop: false, sel: new Set(), open: null, jisrList: null, more: false };
     const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
     const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': T('Close', 'إغلاق') });
     const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1320px, 98vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('End-of-service and leave settlement', 'تسوية نهاية الخدمة والإجازات') }), closeBtn]), body, foot]);
@@ -58129,7 +58219,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     const barFill = el('i'); const progEl = el('div', { class: 'jst-prog', 'aria-hidden': 'true', style: { visibility: 'hidden' } }, [el('div', { class: 'jst-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, [barFill])]);
     const setNote = (t, err) => { noteEl.textContent = t; noteEl.style.color = err ? '#a50e0e' : ''; };
     const setProg = (done, total) => { if (!total) { progEl.style.visibility = 'hidden'; return; } const p = Math.round(done / total * 100); progEl.style.visibility = 'visible'; barFill.style.width = p + '%'; progEl.firstChild.setAttribute('aria-valuenow', String(p)); };
-    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') }); const stmtB = el('button', { class: 'jbo-btn', text: T('Printable statements', 'كشوف للطباعة') }); const mainB = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('Calculate', 'احسب') });
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') }); const stmtB = el('button', { class: 'jbo-btn', text: T('Final settlement (PDF)', 'التسوية النهائية (PDF)') }); const mainB = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('Calculate', 'احسب') });
     foot.appendChild(stopB); foot.appendChild(stmtB); foot.appendChild(mainB); stopB.style.display = 'none';
     stopB.addEventListener('click', () => { S.stop = true; setNote(T('Stopping…', 'جارٍ الإيقاف…')); });
 
@@ -58229,11 +58319,29 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     }
 
     // ---------------------------------------------------------------- rendering
+    function headerDialog() {
+      const H = Object.assign({}, header_()); const dlg = el('div', { class: 'jbo-modal jst-dlg', style: { width: 'min(520px, 96vw)' } }); const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); dlg.__jboRun = true;
+      const fin = () => bd.remove(); const inp = (key, ph) => { const i = el('input', { type: 'text', value: H[key] || '', placeholder: ph, style: { width: '100%' } }); i.addEventListener('input', () => { H[key] = i.value; }); return i; };
+      const prev = el('div', { class: 'jbo-muted', style: { fontSize: '12px', minHeight: '16px' } });
+      const file = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp' });
+      file.addEventListener('change', () => { const f = file.files[0]; if (!f) return; if (f.size > 4e6) { prev.textContent = T('The image is too large (4 MB at most).', 'الصورة كبيرة (4 ميغابايت كحد أقصى).'); return; }
+        const fr = new FileReader(); fr.onload = () => { const im = new Image(); im.onload = () => { const k = Math.min(1, 180 / Math.max(im.width, im.height)); const cv = document.createElement('canvas'); cv.width = Math.max(1, Math.round(im.width * k)); cv.height = Math.max(1, Math.round(im.height * k)); cv.getContext('2d').drawImage(im, 0, 0, cv.width, cv.height); H.logo = cv.toDataURL('image/png'); prev.textContent = T('Logo ready (', 'الشعار جاهز (') + cv.width + '×' + cv.height + ')'; }; im.onerror = () => { prev.textContent = T('This file is not a readable image.', 'هذا الملف ليس صورة مقروءة.'); }; im.src = String(fr.result); }; fr.readAsDataURL(f); });
+      const clr = el('button', { class: 'jbo-btn', type: 'button', text: T('Remove the logo', 'إزالة الشعار') }); clr.addEventListener('click', () => { H.logo = ''; prev.textContent = T('Logo removed (press Save).', 'أُزيل الشعار (اضغط حفظ).'); });
+      const sv = el('button', { class: 'jbo-btn jbo-btn-primary', type: 'button', text: T('Save', 'حفظ') }); sv.addEventListener('click', () => { saveHeader_({ name: (H.name || '').trim(), l2: (H.l2 || '').trim(), l3: (H.l3 || '').trim(), logo: H.logo || '' }); fin(); setNote(T('PDF header saved on this computer.', 'حُفظت ترويسة PDF على هذا الجهاز.')); });
+      const cl = el('button', { class: 'jbo-btn', type: 'button', text: T('Close', 'إغلاق') }); cl.addEventListener('click', fin);
+      const bodyH = el('div', { class: 'jbo-modal-body' }, [el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('Shown at the top of the printed final settlement, like the header of Jisr\'s own PDF. Jisr gives this tool no way to read it, so type it once; it is saved on this computer only.', 'يظهر أعلى التسوية النهائية المطبوعة كترويسة ملف PDF الخاص بجسر. لا يتيح جسر قراءته، فاكتبه مرة واحدة؛ يُحفظ على هذا الجهاز فقط.') }),
+        el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Company name', 'اسم الشركة') }), inp('name', slug_())]), el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Country - city', 'الدولة - المدينة') }), inp('l2', T('Saudi Arabia - Riyadh', 'المملكة العربية السعودية - الرياض'))]), el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Branch or location (default: the employee\'s location in Jisr)', 'الفرع أو الموقع (الافتراضي: موقع الموظف في جسر)') }), inp('l3', '')]),
+        el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Logo (PNG or JPG)', 'الشعار (PNG أو JPG)') }), file, el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, [clr, prev])])]);
+      dlg.appendChild(el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('Header of the printed final settlement', 'ترويسة التسوية النهائية المطبوعة') })])); dlg.appendChild(bodyH); dlg.appendChild(el('div', { class: 'jbo-modal-foot' }, [cl, sv]));
+      bd.addEventListener('mousedown', (e) => { if (e.target === bd) fin(); }); document.body.appendChild(bd);
+    }
     function settingsBar() {
       const bs = (key, label) => { const s = el('select', { 'aria-label': label }); E.BASES.forEach((b) => s.appendChild(el('option', { value: b.key, text: T(b.en, b.ar) }))); s.value = S.set[key]; s.addEventListener('change', () => { S.set[key] = s.value; recalcAll(); render(); }); return el('label', {}, [label, s]); };
       const adv = el('input', { type: 'checkbox' }); adv.checked = !!S.set.deductAdvanceLeave; adv.addEventListener('change', () => { S.set.deductAdvanceLeave = adv.checked; recalcAll(); render(); });
       const ln = el('input', { type: 'checkbox' }); ln.checked = S.set.loansFromJisr !== false; ln.addEventListener('change', () => { S.set.loansFromJisr = ln.checked; recalcAll(); render(); });
-      return el('div', { class: 'jst-set' }, [bs('eosBase', T('Wage for the end-of-service award', 'الأجر لمكافأة نهاية الخدمة')), bs('leaveBase', T('Wage for leave pay', 'الأجر لبدل الإجازة')), el('label', { class: 'jst-ck' }, [adv, T('Deduct leave taken in advance', 'خصم الإجازة المأخوذة مقدمًا')]), el('label', { class: 'jst-ck' }, [ln, T('Deduct loans still pending in Jisr', 'خصم القروض المتبقية في جسر')])]);
+      const a77 = el('input', { type: 'checkbox' }); a77.checked = !!S.set.art77All; a77.addEventListener('change', () => { S.set.art77All = a77.checked; recalcAll(); render(); });
+      const hb = el('button', { class: 'jbo-btn', type: 'button', text: T('PDF header…', 'ترويسة PDF…'), title: T('Company name, place and logo printed at the top of the final settlement', 'اسم الشركة والمكان والشعار في أعلى التسوية النهائية') }); hb.addEventListener('click', headerDialog);
+      return el('div', { class: 'jst-set' }, [bs('eosBase', T('Wage for the end-of-service award', 'الأجر لمكافأة نهاية الخدمة')), bs('leaveBase', T('Wage for leave pay', 'الأجر لبدل الإجازة')), el('label', { class: 'jst-ck' }, [adv, T('Deduct leave taken in advance', 'خصم الإجازة المأخوذة مقدمًا')]), el('label', { class: 'jst-ck' }, [ln, T('Deduct loans still pending in Jisr', 'خصم القروض المتبقية في جسر')]), el('label', { class: 'jst-ck', title: T('Jisr leaves the Art 77 compensation to the contract (0.00). Tick to add the law-based estimate for everyone; or switch it per employee.', 'يترك جسر تعويض المادة 77 للعقد (0.00). فعّله لإضافة التقدير حسب النظام للجميع، أو بدّله لكل موظف.') }, [a77, T('Include the Art 77 estimate for everyone', 'احتساب تقدير المادة 77 للجميع')]), hb]);
     }
     function bulkBar() {
       const n = S.sel.size; const d = el('input', { type: 'date', 'aria-label': T('Last working day', 'آخر يوم عمل') }); const c = caseSelect_('', () => {}, T('Case: keep', 'الحالة: بدون تغيير')); const p = el('input', { type: 'date', 'aria-label': T('Leave period from', 'بداية فترة الإجازة') });
@@ -58248,29 +58356,54 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       const w = r.res.flags.filter((f) => f.level !== 'info').length; const j = r.cmp ? (r.cmp.any ? el('span', { class: 'jst-warn', text: T('Differs from Jisr', 'يختلف عن جسر') }) : el('span', { class: 'jst-ok', text: T('Matches Jisr', 'مطابق لجسر') })) : null;
       return el('span', {}, [j, j && w ? ' · ' : null, w ? el('span', { class: 'jst-warn', text: w + T(' note(s)', ' ملاحظة') }) : (!j ? el('span', { class: 'jst-ok', text: T('Ready', 'جاهز') }) : null)]);
     };
+    // ---------------------------------------------------------------- the table: every column is one group of the statement, so the columns add up to the net
+    const grpOf_ = (q, k) => (q && q.totals.byGrp[k]) || 0;
+    const leaveStatus_ = (q) => { const ls = q.leaveSettle; if (ls.mode === 'exclude') return [T('Excluded', 'مستبعدة'), 'ex']; if (ls.mode === 'edit') return [T('Edited', 'معدّلة'), 'ed']; if (ls.calcDays <= 0) return [T('No balance', 'لا رصيد'), 'nb']; return [T('Included', 'مشمولة'), 'in']; };
+    function openLeaveCard_(r) { S.open = r.id; S.tab = 'stmt'; render(); setTimeout(() => { try { const t = document.querySelector('.jst-leave'); if (t && t.scrollIntoView) t.scrollIntoView({ block: 'nearest' }); } catch (e) { /* ignore */ } }, 30); }
     function renderTable(holder) {
       holder.textContent = ''; const hdr = el('input', { type: 'checkbox', 'aria-label': T('Tick all', 'تحديد الكل') }); hdr.checked = !!S.rows.length && S.rows.every((r) => S.sel.has(r.id));
       hdr.addEventListener('change', () => { S.rows.forEach((r) => { if (hdr.checked) S.sel.add(r.id); else S.sel.delete(r.id); }); render(); });
-      const th = (t, c) => el('th', { class: c || '', text: t });
-      const tb = el('table', { class: 'jst-tbl' }, [el('tr', {}, [el('th', {}, [hdr]), th(T('Employee', 'الموظف')), th(T('Last working day', 'آخر يوم عمل')), th(T('Termination case', 'حالة إنهاء الخدمة')), th(T('Leave period from', 'فترة الإجازة من')), th(T('Service', 'الخدمة')), th(T('Salary', 'الراتب'), 'num'), th(T('Award', 'المكافأة'), 'num'), th(T('Leave', 'الإجازة'), 'num'), th(T('Other', 'أخرى'), 'num'), th(T('Net payout', 'الصافي'), 'num'), th(T('Check', 'الفحص'))])]);
+      const th = (t, c, tip) => el('th', { class: c || '', text: t, title: tip || null });
+      const tb = el('table', { class: 'jst-tbl' }, [el('tr', {}, [el('th', {}, [hdr]), th(T('Employee', 'الموظف')), th(T('Last working day', 'آخر يوم عمل')), th(T('Termination case', 'حالة إنهاء الخدمة')), th(T('Leave period from', 'فترة الإجازة من')), th(T('Service', 'الخدمة')),
+        th(T('Salary & pending', 'الراتب والمعلّق'), 'num', T('Salary for the days worked in the last month + unpaid earlier months + expense claims + bonus earned so far', 'راتب أيام الشهر الأخير + رواتب سابقة غير مدفوعة + مطالبات المصاريف + المكافأة المكتسبة')),
+        th(T('Award', 'المكافأة'), 'num', T('End-of-service award (Art 84, 85, 87)', 'مكافأة نهاية الخدمة (م84، 85، 87)')),
+        th(T('Leave', 'الإجازة'), 'num', T('Leave days still held on the last working day x daily wage. Use the tag to include, edit or exclude it.', 'أيام الإجازة المتبقية في آخر يوم عمل × الأجر اليومي. استخدم الوسم لتضمينها أو تعديلها أو استبعادها.')),
+        th(T('Compensation & notice', 'التعويض والإشعار'), 'num', T('Art 77 compensation (only when included) + notice pay', 'تعويض المادة 77 (عند تضمينه فقط) + بدل الإشعار')),
+        th(T('Additions', 'إضافات'), 'num', T('Other additions you typed in', 'إضافات أخرى أدخلتها')),
+        th(T('Deductions', 'خصومات'), 'num', T('Loans, unreturned assets, other deductions, notice the employee did not serve', 'القروض والأصول غير المرتجعة وخصومات أخرى وإشعار لم يلتزم به العامل')),
+        th(T('Net payable', 'الصافي'), 'num', T('Everything to the left added up: what the employee receives (negative = the employee owes)', 'مجموع الأعمدة السابقة: ما يتسلمه الموظف (سالب = على الموظف مبلغ)')), th(T('Check', 'الفحص'))])]);
       S.rows.slice(0, 500).forEach((r) => {
         const cb = el('input', { type: 'checkbox', 'aria-label': r.name }); cb.checked = S.sel.has(r.id); cb.addEventListener('change', () => { if (cb.checked) S.sel.add(r.id); else S.sel.delete(r.id); render(); });
         const d = el('input', { type: 'date', value: r.in.lwd, 'aria-label': T('Last working day', 'آخر يوم عمل') }); d.addEventListener('change', () => { r.in.lwd = d.value; calc_(r, S.set); render(); });
         const c = caseSelect_(r.in.caseKey, (v) => { r.in.caseKey = v; calc_(r, S.set); render(); });
         const p = el('input', { type: 'date', value: r.in.periodFrom, 'aria-label': T('Leave period from', 'بداية فترة الإجازة'), title: T('Empty = start of the year of the last working day (or the joining date)', 'فارغ = بداية سنة آخر يوم عمل (أو تاريخ الالتحاق)') }); p.addEventListener('change', () => { r.in.periodFrom = p.value; calc_(r, S.set); render(); });
         const q = r.res && r.res.ok ? r.res : null; const nm = el('button', { class: 'jst-name', type: 'button', text: r.name || String(r.id), dir: 'auto' }); nm.addEventListener('click', () => { S.open = S.open === r.id ? null : r.id; render(); });
-        const other0 = q ? E.r2(q.totals.net - lineAmt_(q, 'salary') - lineAmt_(q, 'eosb') - lineAmt_(q, 'leave')) : null; const other = other0 != null && Math.abs(other0) < 0.005 ? 0 : other0; const cell = (v, c2) => el('td', { class: 'num' + (c2 ? ' ' + c2 : ''), text: v == null ? '' : fmt_(v) });
+        const cell = (v, c2) => el('td', { class: 'num' + (c2 ? ' ' + c2 : ''), text: v == null ? '' : fmt_(v) });
+        let lvTd = el('td', { class: 'num' }), cmTd = el('td', { class: 'num' });
+        if (q) {
+          const [lt, lc] = leaveStatus_(q); const chip = el('button', { type: 'button', class: 'jst-pill ' + lc, text: lt, title: T('Balance on this date: ', 'الرصيد في هذا التاريخ: ') + E.f2(q.leaveSettle.calcDays) + T(' days. Click to include, edit or exclude the leave pay.', ' يوم. اضغط لتضمين بدل الإجازة أو تعديله أو استبعاده.') }); chip.addEventListener('click', () => openLeaveCard_(r));
+          lvTd = el('td', { class: 'num jst-cc' }, [el('div', { text: E.f2(q.leaveSettle.days) + T(' d · ', ' ي · ') + fmt_(grpOf_(q, 'leave')) }), chip]);
+          const kids = [el('div', { text: fmt_(grpOf_(q, 'comp') + grpOf_(q, 'notice')) })];
+          if (q.art77 && q.art77.applies) {
+            const inc = q.art77.included; const all = !!S.set.art77All;
+            const b = el('button', { type: 'button', class: 'jst-pill ' + (inc ? 'in' : 'off'), text: inc ? T('Art 77 included', 'م77 مشمولة') : T('Art 77 est. ', 'تقدير م77 ') + E.f2(q.art77.estimate) + T(' · not included', ' · غير مشمول'), title: all ? T('Included for everyone (setting above)', 'مشمول للجميع (الإعداد أعلاه)') : T('Jisr leaves this compensation to the contract terms (0.00). Click to ' + (inc ? 'leave it out' : 'include the estimate') + '.', 'يترك جسر هذا التعويض لشروط العقد (0.00). اضغط ل' + (inc ? 'استبعاده' : 'تضمين التقدير') + '.') }); b.disabled = all;
+            b.addEventListener('click', () => { r.in.art77 = !inc; calc_(r, S.set); render(); }); kids.push(b);
+          }
+          cmTd = el('td', { class: 'num jst-cc' }, kids);
+        }
+        const ded = q ? grpOf_(q, 'ded') : null;
         tb.appendChild(el('tr', { class: S.open === r.id ? 'on' : '' }, [el('td', {}, [cb]), el('td', {}, [nm, el('small', { text: (r.code || '') + (r.data && r.data.join ? ' · ' + T('joined ', 'التحاق ') + r.data.join : '') })]), el('td', {}, [d]), el('td', {}, [c]), el('td', {}, [p]),
-          el('td', { class: 'jst-sv', text: q ? svText_(q.service) : '' }), cell(q ? lineAmt_(q, 'salary') : null), cell(q ? lineAmt_(q, 'eosb') : null), el('td', { class: 'num', text: q ? E.f2(q.leaveSettle.days) + T(' d · ', ' ي · ') + E.f2(lineAmt_(q, 'leave')) : '' }), cell(other), cell(q ? q.totals.net : null, q && q.totals.net < 0 ? 'jst-bad' : ''), el('td', {}, [statusCell(r)])]));
+          el('td', { class: 'jst-sv', text: q ? svText_(q.service) : '' }), cell(q ? grpOf_(q, 'pending') : null), cell(q ? grpOf_(q, 'eos') : null), lvTd, cmTd, cell(q ? grpOf_(q, 'other') : null), cell(ded, ded < 0 ? 'jst-bad' : ''), cell(q ? q.totals.net : null, 'jst-netv' + (q && q.totals.net < 0 ? ' jst-bad' : '')), el('td', {}, [statusCell(r)])]));
       });
       holder.appendChild(tb); if (S.rows.length > 500) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px 8px' }, text: T('Showing the first 500 of ', 'يعرض أول 500 من ') + S.rows.length + T('. The Excel file has everyone calculated.', '. ملف Excel يحتوي كل المحسوبين.') }));
+      if (S.rows.some((r) => r.res && r.res.ok)) holder.parentNode && holder.parentNode.insertBefore(el('div', { class: 'jst-legend' }, [el('b', { text: T('How the net is built: ', 'كيف يُحسب الصافي: ') }), T('Net payable = Salary & pending + Award + Leave + Compensation & notice + Additions − Deductions. Hover a column title for what it includes.', 'الصافي = الراتب والمعلّق + المكافأة + الإجازة + التعويض والإشعار + الإضافات − الخصومات. مرّر على عنوان العمود لمعرفة ما يشمله.')]), holder.nextSibling);
     }
     function fieldNum(r, key, label, hint, step) {
       const i = el('input', { type: 'number', step: step || 'any', value: r.in[key] === '' || r.in[key] == null ? '' : String(r.in[key]), placeholder: hint || '', 'aria-label': label }); i.addEventListener('change', () => { r.in[key] = i.value === '' ? '' : Number(i.value); calc_(r, S.set); render(); });
       return [el('span', { text: label }), i];
     }
     // ---------------------------------------------------------------- what-if tabs (the row is never changed by them, unless you press "Use this")
-    const FC = () => (S.fc = S.fc || { start: '', months: 12, caseKey: '', notice: 'none', cmpDate: '', cmp: new Set(['resignation', 'employer_notice', 'expiry', 'employer_invalid', 'employer_art80']), nDate: '', nCase: '', nDays: '', nServed: '', chipsOpen: false });
+    const FC = () => (S.fc = S.fc || { start: '', months: 12, end: '', caseKey: '', notice: 'none', cmpDate: '', cmp: new Set(['resignation', 'employer_notice', 'expiry', 'employer_invalid', 'employer_art80']), nDate: '', nCase: '', nDays: '', nServed: '', chipsOpen: false });
     function quickBtns(setter) {
       const t = todayIso_(); const me = (k) => E.iso(E.monthEnds(E.parseDate(t), 2)[k]);
       const items = [[T('Today', 'اليوم'), t], [T('Tomorrow', 'غدًا'), addDaysIso_(t, 1)], [T('End of this month', 'نهاية هذا الشهر'), me(0)], [T('End of next month', 'نهاية الشهر القادم'), me(1)]];
@@ -58286,14 +58419,32 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     const numCell = (v, cls) => el('td', { class: 'num' + (cls ? ' ' + cls : ''), text: v == null ? '' : E.f2(v) });
     const wiTable = (head, rows) => el('div', { class: 'jst-scroll2' }, [el('table', { class: 'jst-tbl jst-tbl2' }, [el('tr', {}, head.map((h, i) => el('th', { class: i ? 'num' : '', text: h })))].concat(rows))]);
 
+    /** Presets (single date, 3, 6, 12, 24 months) and any exact dates: start date and an optional end date. O = { start, months, end }. */
+    function periodCtl(O, fallbackStart, onChange) {
+      const wrap = el('div', { class: 'jst-per' });
+      const paint = () => {
+        wrap.textContent = ''; const start = O.start || fallbackStart || todayIso_(); const hasEnd = !!O.end;
+        const chips = el('div', { class: 'jst-chiprow', role: 'group', 'aria-label': T('Period', 'الفترة') });
+        [[0, T('Single date', 'تاريخ واحد')], [3, T('3 months', '3 أشهر')], [6, T('6 months', '6 أشهر')], [12, T('12 months', '12 شهرًا')], [24, T('24 months', '24 شهرًا')]].forEach(([n, lab]) => {
+          const on = !hasEnd && O.months === n; const b = el('button', { type: 'button', class: 'jst-pill sel' + (on ? ' on' : ''), 'aria-pressed': on ? 'true' : 'false', text: lab }); b.addEventListener('click', () => { O.months = n; O.end = ''; paint(); onChange(); }); chips.appendChild(b);
+        });
+        const sd = el('input', { type: 'date', value: start, 'aria-label': T('Start date', 'تاريخ البداية') }); sd.addEventListener('change', () => { O.start = sd.value; paint(); onChange(); });
+        const ed = el('input', { type: 'date', value: O.end || '', min: start, 'aria-label': T('End date (optional)', 'تاريخ النهاية (اختياري)') }); ed.addEventListener('change', () => { O.end = ed.value; paint(); onChange(); });
+        const clr = el('button', { type: 'button', class: 'jbo-btn', text: '×', title: T('Clear the end date', 'مسح تاريخ النهاية'), 'aria-label': T('Clear the end date', 'مسح تاريخ النهاية') }); clr.style.display = hasEnd ? '' : 'none'; clr.addEventListener('click', () => { O.end = ''; paint(); onChange(); });
+        const ds = scheduleDates_(start, O.months, O.end); const sum = ds.length ? (ds.length === 1 ? T('One date: ', 'تاريخ واحد: ') + E.iso(ds[0]) : ds.length + T(' dates: ', ' تواريخ: ') + E.iso(ds[0]) + ' → ' + E.iso(ds[ds.length - 1])) : T('Choose a start date', 'اختر تاريخ البداية');
+        wrap.appendChild(chips);
+        wrap.appendChild(el('div', { class: 'jst-wi' }, [lbl(T('Start date (any date)', 'تاريخ البداية (أي تاريخ)'), sd), lbl(T('End date (optional)', 'تاريخ النهاية (اختياري)'), el('span', { class: 'jst-inl' }, [ed, clr]))]));
+        wrap.appendChild(el('div', { class: 'jbo-muted', style: { fontSize: '12px' }, text: sum }));
+      };
+      paint(); return wrap;
+    }
     function tabMonth(host, r) {
       const F = FC(); const start = F.start || r.in.lwd || todayIso_(); const ck = F.caseKey || r.in.caseKey || 'employer_notice';
       host.appendChild(whatIfNote());
-      const d = el('input', { type: 'date', value: start, 'aria-label': T('Start date', 'تاريخ البداية') }); d.addEventListener('change', () => { F.start = d.value; render(); });
-      const ms = el('select', { 'aria-label': T('Months', 'الأشهر') }); [3, 6, 12, 18, 24].forEach((n) => ms.appendChild(el('option', { value: String(n), text: n + T(' months', ' شهرًا') }))); ms.value = String(F.months); ms.addEventListener('change', () => { F.months = Number(ms.value); render(); });
-      host.appendChild(el('div', { class: 'jst-wi' }, [lbl(T('From', 'من'), d), lbl(T('For', 'لمدة'), ms), lbl(T('If the case is', 'حالة الإنهاء'), caseSelect_(ck, (v) => { F.caseKey = v; render(); }, false)), lbl(T('Notice', 'الإشعار'), noticeSel(F))]));
+      host.appendChild(periodCtl(F, r.in.lwd || todayIso_(), render));
+      host.appendChild(el('div', { class: 'jst-wi' }, [lbl(T('If the case is', 'حالة الإنهاء'), caseSelect_(ck, (v) => { F.caseKey = v; render(); }, false)), lbl(T('Notice', 'الإشعار'), noticeSel(F))]));
       host.appendChild(quickBtns((v) => { F.start = v; render(); }));
-      const m = forecastModel_([r], S.set, { start, months: F.months, caseKey: ck, useOwn: false, notice: F.notice });
+      const m = forecastModel_([r], S.set, { start, months: F.months, end: F.end, caseKey: ck, useOwn: false, notice: F.notice });
       const e = m.emp[0]; if (!e) { host.appendChild(el('p', { class: 'jst-warn', text: T('This employee could not be calculated (check the joining date and salary).', 'تعذّر حساب هذا الموظف (تحقق من تاريخ الالتحاق والراتب).') })); return; }
       const maxNet = Math.max(1, ...e.cells.map((c) => (c ? c.totals.net : 0)));
       const rows = e.cells.map((c, i) => {
@@ -58317,7 +58468,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       const tog = el('button', { class: 'jbo-btn', type: 'button', text: F.chipsOpen ? T('Hide the list of cases', 'إخفاء قائمة الحالات') : T('Cases compared: ', 'الحالات المقارنة: ') + F.cmp.size + ' · ' + T('change', 'تغيير') }); tog.addEventListener('click', () => { F.chipsOpen = !F.chipsOpen; render(); });
       host.appendChild(el('div', { class: 'jst-quick' }, [tog])); if (F.chipsOpen) host.appendChild(chips);
       const keys = E.CASES.map((c) => c.key).filter((k) => F.cmp.has(k)); if (!keys.length) { host.appendChild(el('p', { class: 'jbo-muted', text: T('Tick at least one case above.', 'اختر حالة واحدة على الأقل أعلاه.') })); return; }
-      const res = keys.map((k) => ({ k, x: compute_(r, S.set, { lwd: date, caseKey: k, noticeDays: noticeFor_(k, F.notice) }) }));
+      const res = keys.map((k) => ({ k, x: compute_(r, S.set, { lwd: date, caseKey: k, noticeDays: noticeFor_(k, F.notice), art77: true }) }));
       const okR = res.filter((y) => y.x.ok); const nets = okR.map((y) => y.x.totals.net); const lo = Math.min(...nets), hi = Math.max(...nets); const cur = r.in.caseKey ? okR.find((y) => y.k === r.in.caseKey) : null; const ref = cur || okR[0];
       const rows = res.map((y) => {
         const c = E.caseByKey(y.k);
@@ -58327,7 +58478,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
           el('td', { class: 'num' }, [el('b', { text: E.f2(t.net) }), t.net === lo && lo !== hi ? el('small', { text: T('lowest', 'الأقل') }) : t.net === hi && lo !== hi ? el('small', { text: T('highest', 'الأعلى') }) : null]), el('td', { class: 'num ' + (diff > 0 ? 'jst-warn' : ''), text: y.k === ref.k ? T('reference', 'مرجع') : (diff > 0 ? '+' : '') + E.f2(diff) })]);
       });
       host.appendChild(wiTable([T('Case', 'الحالة'), T('Award', 'المكافأة'), T('Leave', 'الإجازة'), T('Pending', 'معلقة'), T('Notice, comp.', 'إشعار وتعويض'), T('Deductions', 'خصومات'), T('Net payable', 'الصافي'), T('Versus ', 'مقابل ') + (ref ? caseLabel_(ref.x.case).slice(0, 28) : '')], rows));
-      host.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Same date, same pay and leave: only the termination reason changes. Choose the reason that applies to see its exact statement.', 'نفس التاريخ والراتب والإجازة: يتغير سبب الإنهاء فقط. اختر السبب المطابق لعرض كشفه الدقيق.') }));
+      host.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12px' }, text: T('Same date, same pay and leave: only the termination reason changes. Art 77 is shown with its law-based compensation estimate (Jisr itself leaves that amount to the contract). Choose the reason that applies to see its exact statement.', 'نفس التاريخ والراتب والإجازة: يتغير سبب الإنهاء فقط. تُعرض المادة 77 مع تقدير التعويض حسب النظام (ويترك جسر هذا المبلغ لشروط العقد). اختر السبب المطابق لعرض كشفه الدقيق.') }));
     }
     function tabNotice(host, r) {
       const F = FC(); const date = F.nDate || r.in.lwd || todayIso_(); host.appendChild(whatIfNote());
@@ -58366,7 +58517,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     async function forecastDialog() {
       if (S.busy) return; const pool = S.sel.size ? S.rows.filter((r) => S.sel.has(r.id)) : S.rows;
       if (!pool.length) { setNote(T('Add employees first (or use "Add all employees").', 'أضف موظفين أولًا (أو استخدم "إضافة كل الموظفين").'), true); return; }
-      const O = { start: todayIso_(), months: 12, caseKey: 'employer_notice', useOwn: true, notice: 'none', cash: '', stress: -1 }; let model = null;
+      const O = { start: todayIso_(), months: 12, end: '', caseKey: 'employer_notice', useOwn: true, notice: 'none', cash: '', stress: -1 }; let model = null;
       const dlg = el('div', { class: 'jbo-modal jst-dlg', style: { width: 'min(1100px, 98vw)' } }); const bd = el('div', { class: 'jbo-backdrop jbo-i18n-root', style: { zIndex: '2147483647' } }, [dlg]); dlg.__jboRun = true;
       const fin = () => { bd.remove(); }; const head = el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [el('div', { class: 'jbo-modal-title', text: T('Forecast report: what would the company owe?', 'تقرير التوقع: كم ستدفع الشركة؟') })]);
       const bodyD = el('div', { class: 'jbo-modal-body' }); const footD = el('div', { class: 'jbo-modal-foot' });
@@ -58374,14 +58525,13 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       const closeB = el('button', { class: 'jbo-btn', type: 'button', text: T('Close', 'إغلاق') }); const stopD = el('button', { class: 'jbo-btn', type: 'button', text: T('Stop', 'إيقاف') }); stopD.style.display = 'none'; stopD.addEventListener('click', () => { S.stop = true; msg.textContent = T('Stopping…', 'جارٍ الإيقاف…'); }); const goB = el('button', { class: 'jbo-btn jbo-btn-primary', type: 'button', text: T('Build forecast', 'ابنِ التوقع') });
       const xB = el('button', { class: 'jbo-btn', type: 'button', text: T('Excel', 'Excel') }); const hB = el('button', { class: 'jbo-btn', type: 'button', text: T('Printable report (PDF)', 'تقرير للطباعة (PDF)') }); xB.style.display = hB.style.display = 'none';
       footD.appendChild(stopD); footD.appendChild(closeB); footD.appendChild(hB); footD.appendChild(xB); footD.appendChild(goB); dlg.appendChild(head); dlg.appendChild(bodyD); dlg.appendChild(footD);
-      const d = el('input', { type: 'date', value: O.start }); d.addEventListener('change', () => { O.start = d.value; });
-      const ms = el('select'); [3, 6, 12, 18, 24].forEach((n) => ms.appendChild(el('option', { value: String(n), text: n + T(' months', ' شهرًا') }))); ms.value = '12'; ms.addEventListener('change', () => { O.months = Number(ms.value); });
       const cs = caseSelect_(O.caseKey, (v) => { O.caseKey = v || 'employer_notice'; }, false);
       const own = el('input', { type: 'checkbox' }); own.checked = true; own.addEventListener('change', () => { O.useOwn = own.checked; });
       const ns = el('select'); [['none', T('Notice not counted', 'الإشعار غير محتسب')], ['lieu', T('Notice paid in lieu', 'بدل إشعار')]].forEach(([v, t]) => ns.appendChild(el('option', { value: v, text: t }))); ns.addEventListener('change', () => { O.notice = ns.value; });
       const cash = el('input', { type: 'number', min: '0', step: 'any', placeholder: T('optional', 'اختياري'), style: { width: '150px' } }); cash.addEventListener('change', () => { O.cash = cash.value === '' ? '' : Number(cash.value); if (model) paint(); });
       bodyD.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('For ', 'ل') + pool.length + T(S.sel.size ? ' ticked employee(s)' : ' employee(s) in the table', S.sel.size ? ' موظف محدد' : ' موظف في الجدول') + T(': the total the company would owe if they all left on the start date or at the end of each following month. Reads each employee\'s salary, leave, loans and assets from Jisr (read only).', ': إجمالي ما ستدفعه الشركة إذا غادروا جميعًا في تاريخ البداية أو نهاية كل شهر لاحق. تقرأ راتب كل موظف وإجازاته وقروضه وأصوله من جسر (قراءة فقط).') }));
-      bodyD.appendChild(el('div', { class: 'jst-wi' }, [lbl(T('Start date', 'تاريخ البداية'), d), lbl(T('Months ahead', 'الأشهر القادمة'), ms), lbl(T('Case for everyone', 'الحالة للجميع'), cs), lbl(T('Notice', 'الإشعار'), ns), lbl(T('Cash available (for the alert)', 'النقد المتاح (للتنبيه)'), cash)]));
+      bodyD.appendChild(periodCtl(O, todayIso_(), () => {}));
+      bodyD.appendChild(el('div', { class: 'jst-wi' }, [lbl(T('Case for everyone', 'الحالة للجميع'), cs), lbl(T('Notice', 'الإشعار'), ns), lbl(T('Cash available (for the alert)', 'النقد المتاح (للتنبيه)'), cash)]));
       bodyD.appendChild(el('label', { class: 'jst-ck', style: { display: 'flex', gap: '6px', alignItems: 'center', fontSize: '13px', margin: '4px 0' } }, [own, T('Use the case already chosen for an employee in the table; the case above is for the rest', 'استخدم الحالة المختارة للموظف في الجدول؛ والحالة أعلاه لبقية الموظفين')]));
       bodyD.appendChild(msg); bodyD.appendChild(result);
       const card = (label, value, sub, cls) => el('div', { class: 'jst-kpi ' + (cls || '') }, [el('span', { text: label }), el('b', { text: value }), sub ? el('small', { text: sub }) : null]);
@@ -58406,12 +58556,46 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       hB.addEventListener('click', () => { try { msg.textContent = T('Saved: ', 'حُفظ: ') + downloadForecastHtml_(model) + T(' (open it, then Print or Save as PDF)', ' (افتحه ثم اطبع أو احفظ PDF)'); try { jboActReport_(MODULE_ID, 'forecast-pdf', 'ok', model.emp.length + ' employees'); } catch (e) { /* ignore */ } } catch (e) { msg.textContent = String(e.message || e); } });
       goB.addEventListener('click', async () => {
         if (!E.parseDate(O.start)) { msg.textContent = T('Choose a start date.', 'اختر تاريخ البداية.'); return; }
+        if (O.end && E.parseDate(O.end) < E.parseDate(O.start)) { msg.textContent = T('The end date is before the start date.', 'تاريخ النهاية قبل تاريخ البداية.'); return; }
         goB.disabled = true; S.busy = true; S.stop = false; stopD.style.display = ''; msg.textContent = T('Reading from Jisr…', 'جارٍ القراءة من جسر…');
         try { const rd = await readRows(pool, true); render(); paint(); msg.textContent = (S.stop ? T('Stopped. ', 'أُوقف. ') : '') + (rd.bad ? rd.bad + T(' employee(s) could not be read from Jisr and are left out.', ' موظف تعذّرت قراءتهم من جسر وتم استبعادهم.') : T('Forecast ready.', 'التوقع جاهز.')); try { jboActReport_(MODULE_ID, 'forecast', rd.bad ? 'failed' : 'ok', pool.length + ' employees'); } catch (e) { /* ignore */ } }
         catch (e) { msg.textContent = String(e.message || e).slice(0, 220); }
-        finally { S.busy = false; goB.disabled = false; stopD.style.display = 'none'; setProg(0, 0); }
+        finally { S.busy = false; goB.disabled = false; stopD.style.display = 'none'; setProg(0, 0); render(); }
       });
       document.body.appendChild(bd);
+    }
+    // ---------------------------------------------------------------- the equation strip, the leave card and the Art 77 card
+    function eqStrip_(q) {
+      const box = (lab, v, hero) => el('div', { class: 'jst-eqb' + (hero ? ' hero' : '') }, [el('span', { text: lab }), el('b', { class: v < 0 ? 'neg' : '', text: E.f2(v) })]);
+      return el('div', { class: 'jst-eq', role: 'group', 'aria-label': T('Net payable = gross entitlement − total deductions', 'صافي المستحق = إجمالي الاستحقاق − إجمالي الخصومات') }, [box(T('Gross entitlement', 'إجمالي الاستحقاق'), q.totals.gross), el('i', { class: 'op', text: '−' }), box(T('Total deductions', 'إجمالي الخصومات'), Math.abs(q.totals.deductions)), el('i', { class: 'op', text: '=' }), box(T('Net payable', 'صافي المستحق'), q.totals.net, true)]);
+    }
+    function leaveCard_(r, q) {
+      const ls = q.leaveSettle, lv = q.leave, rem = ls.calcDays, daily = ls.daily; const [st, sc] = leaveStatus_(q); const box = el('div', { class: 'jst-leave' });
+      box.appendChild(el('div', { class: 'jst-lvh' }, [el('b', { text: T('Leave balance', 'رصيد الإجازة') }), el('span', { class: 'jst-pill ' + sc, text: st })]));
+      const msg = rem > 0 ? T(' days remaining on ', ' يوم متبقٍ في ') + E.iso(q.lwd) : rem === 0 ? T(' days: no active leave balance on ', ' يوم: لا رصيد إجازة فعّال في ') + E.iso(q.lwd) : T(' days: leave taken in advance up to ', ' يوم: إجازة مأخوذة مقدمًا حتى ') + E.iso(q.lwd);
+      box.appendChild(el('div', { class: 'jst-lvbig' }, [el('span', { class: 'n' + (rem <= 0 ? ' bad' : ''), text: E.f2(rem) }), el('span', { text: msg })]));
+      const st1 = lv.opening ? [[T('Jisr balance', 'رصيد جسر'), E.f2(lv.opening.days)], [T('Earned after ' + E.iso(lv.opening.date).slice(5), 'بعد ' + E.iso(lv.opening.date).slice(5)), E.f2(lv.opening.accruedAfter)]] : [[T('Policy', 'السياسة'), lv.annual + T(' d/yr', ' ي/سنة')], [T('Accrued', 'المستحق'), E.f2(lv.accrued)], [T('Brought fwd', 'مرحّل'), E.f2(lv.carry)]];
+      if (lv.adjustment) st1.push([T('Adjusted', 'تسويات'), (lv.adjustment > 0 ? '+' : '−') + E.f2(Math.abs(lv.adjustment))]);
+      st1.push([T('Taken', 'مستخدم'), '−' + E.f2(lv.used)], [T('Unpaid', 'غير مدفوع'), lv.unpaidDeduction ? '−' + E.f2(lv.unpaidDeduction) : '0.00']);
+      box.appendChild(el('div', { class: 'jst-lvst' }, st1.map(([k, v]) => el('div', {}, [el('span', { text: k }), el('b', { text: v })]))));
+      const editDays = r.in.leaveOverride !== '' && r.in.leaveOverride != null ? E.num(r.in.leaveOverride) : Math.max(0, rem);
+      const opts = [['include', T('Include the accrued balance', 'تضمين الرصيد المستحق'), Math.max(0, rem) * q.base.leave / 30], ['edit', T('Edit the days', 'تعديل الأيام'), editDays * q.base.leave / 30], ['exclude', T('Exclude leave pay', 'استبعاد بدل الإجازة'), 0]];
+      const grp = el('div', { class: 'jst-lvopts', role: 'radiogroup', 'aria-label': T('Leave pay', 'بدل الإجازة') });
+      opts.forEach(([k, lab, amt]) => {
+        const on = ls.mode === k; const b = el('button', { type: 'button', role: 'radio', 'aria-checked': on ? 'true' : 'false', class: 'jst-lvo' + (on ? ' on' : '') }, [el('span', { class: 'dot' }), el('span', { class: 'lab', text: lab }), el('b', { class: 'amt', text: E.f2(E.r2(amt)) })]);
+        b.addEventListener('click', () => { r.in.leaveMode = k; if (k === 'edit' && (r.in.leaveOverride === '' || r.in.leaveOverride == null)) r.in.leaveOverride = Math.max(0, rem); calc_(r, S.set); render(); }); grp.appendChild(b);
+      });
+      box.appendChild(grp);
+      if (ls.mode === 'edit') { const i = el('input', { type: 'number', step: 'any', min: '0', value: String(r.in.leaveOverride), 'aria-label': T('Leave days to pay', 'أيام الإجازة للدفع') }); i.addEventListener('change', () => { r.in.leaveOverride = i.value === '' ? '' : Number(i.value); calc_(r, S.set); render(); }); box.appendChild(el('label', { class: 'jst-lved' }, [el('span', { text: T('Days to pay (calculated: ', 'أيام للدفع (المحسوب: ') + E.f2(rem) + ')' }), i])); }
+      box.appendChild(el('div', { class: 'jbo-muted jst-hint', text: ls.mode === 'exclude' ? T('Leave pay is left out: the end-of-service award and everything else stay as they are.', 'بدل الإجازة مستبعد: تبقى المكافأة وكل بند آخر كما هي.') : T('Wage for leave pay ' + E.f2(q.base.leave) + ' / 30 = ' + E.f2(daily) + ' a day. Excluding leave pay does not change the end-of-service award.', 'أجر بدل الإجازة ' + E.f2(q.base.leave) + ' ÷ 30 = ' + E.f2(daily) + ' في اليوم. استبعاد بدل الإجازة لا يغيّر مكافأة نهاية الخدمة.') }));
+      return box;
+    }
+    function art77Card_(r, q) {
+      const a = q.art77; if (!a) return null; const all = !!S.set.art77All; const box = el('div', { class: 'jst-a77' });
+      const on = a.included; const b = el('button', { type: 'button', class: 'jst-pill sel' + (on ? ' on' : ''), 'aria-pressed': on ? 'true' : 'false', text: on ? T('Included', 'مشمول') : T('Not included', 'غير مشمول') }); b.disabled = all; b.addEventListener('click', () => { r.in.art77 = !on; calc_(r, S.set); render(); });
+      box.appendChild(el('div', { class: 'jst-lvh' }, [el('b', { text: T('Art 77 compensation', 'تعويض المادة 77') }), b]));
+      box.appendChild(el('div', { class: 'jbo-muted jst-hint', text: T('Jisr leaves this compensation to the terms of the contract and shows 0.00 until you enter it. The estimate by law is ', 'يترك جسر هذا التعويض لشروط العقد ويعرض 0.00 حتى تدخله. التقدير حسب النظام هو ') + E.f2(a.estimate) + ' (' + a.formula + ')' + (all ? T('. Included for everyone (setting above).', '. مشمول للجميع (الإعداد أعلاه).') : T('. If the contract states an amount, type it under "Other additions" and keep this off.', '. إن حدّد العقد مبلغًا فاكتبه في "إضافات أخرى" وأبقِ هذا غير مشمول.')) }));
+      return box;
     }
     function renderDetail(wrap) {
       const r = S.rows.find((x) => x.id === S.open); if (!r) return; const q = r.res && r.res.ok ? r.res : null; const c = E.caseByKey(r.in.caseKey);
@@ -58419,14 +58603,16 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       const closeD = el('button', { class: 'jbo-btn', type: 'button', text: T('Close', 'إغلاق') }); closeD.addEventListener('click', () => { S.open = null; render(); });
       box.appendChild(el('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'start' } }, [el('h3', { dir: 'auto', text: (r.name || r.id) + (r.code ? ' · ' + r.code : '') }), closeD]));
       if (!r.data) { box.appendChild(el('p', { class: 'jbo-muted', text: T('Click Calculate to read this employee from Jisr first.', 'اضغط احسب لقراءة هذا الموظف من جسر أولًا.') })); return; }
+      if (q) box.appendChild(eqStrip_(q));
       const grid = el('div', { class: 'jst-grid' }); box.appendChild(grid); const left = el('div'), right = el('div'); grid.appendChild(left); grid.appendChild(right);
       const fl = (...kids) => el('div', { class: 'jst-fld' }, kids);
       { const ld = el('input', { type: 'date', value: r.in.lwd, 'aria-label': T('Last working day', 'آخر يوم عمل') }); ld.addEventListener('change', () => { r.in.lwd = ld.value; calc_(r, S.set); render(); });
         left.appendChild(el('div', { class: 'jst-fld wide' }, [el('span', { text: T('Last working day', 'آخر يوم عمل') }), ld, S.tab === 'stmt' ? quickBtns((v) => { r.in.lwd = v; calc_(r, S.set); render(); }) : null])); }
+      if (q) left.appendChild(leaveCard_(r, q));
       if (c && c.needsEvent) { const i = el('input', { type: 'date', value: r.in.eventDate, 'aria-label': T('Event date', 'تاريخ الواقعة') }); i.addEventListener('change', () => { r.in.eventDate = i.value; calc_(r, S.set); render(); }); left.appendChild(fl(el('span', { text: c.needsEvent === 'marriage' ? T('Marriage date', 'تاريخ الزواج') : T('Date of birth of the child', 'تاريخ الولادة') }), i)); }
       if (c && c.award === 'custom') left.appendChild(fl(...fieldNum(r, 'customPct', T('Share of the full award (%)', 'نسبة المكافأة من الكاملة (%)'), '100')));
       if (c && c.notice) left.appendChild(fl(...fieldNum(r, 'noticeDays', c.notice === 'employer' ? T('Notice days the employer did not give (paid to the employee)', 'أيام الإشعار التي لم يمنحها صاحب العمل (تُدفع للعامل)') : T('Notice days the employee did not serve (deducted)', 'أيام الإشعار التي لم يلتزم بها العامل (تُخصم)'), '0', '1')));
-      if (c && c.comp77) { const i = el('input', { type: 'checkbox' }); i.checked = r.in.art77 !== false; i.addEventListener('change', () => { r.in.art77 = i.checked; calc_(r, S.set); render(); }); left.appendChild(fl(el('span', { text: T('Include the Art 77 compensation', 'احتساب تعويض المادة 77') }), i)); }
+      if (c && c.comp77 && q) { const a7 = art77Card_(r, q); if (a7) left.appendChild(a7); }
       left.appendChild(fl(...fieldNum(r, 'additions', T('Other additions', 'إضافات أخرى'), '0')));
       left.appendChild(fl(...fieldNum(r, 'deductions', T('Other deductions', 'خصومات أخرى'), '0')));
       left.appendChild(fl(...fieldNum(r, 'loans', T('Loans and advances to deduct', 'القروض والسلف للخصم'), r.data.loansPending ? String(r.data.loansPending) : '0')));
@@ -58441,7 +58627,6 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       if (S.more) {
         left.appendChild(fl(...fieldNum(r, 'annualDays', T('Annual leave days a year', 'أيام الإجازة السنوية'), r.data.annual != null ? String(r.data.annual) : '21')));
         left.appendChild(fl(...fieldNum(r, 'adjustment', T('Leave adjustment (days, + or −)', 'تسوية الإجازة (أيام، + أو −)'), '0')));
-        left.appendChild(fl(...fieldNum(r, 'leaveOverride', T('Leave days to pay (replaces the calculation)', 'أيام الإجازة للدفع (تحل محل الحساب)'), q ? String(q.leave.net) : '')));
         left.appendChild(fl(...fieldNum(r, 'serviceDeduct', T('Days to take off the service (unpaid leave)', 'أيام تُخصم من الخدمة (إجازة غير مدفوعة)'), '0', '1')));
         const wb = (key, label) => { const s = el('select', { 'aria-label': label }); s.appendChild(el('option', { value: '', text: T('Same as the setting above', 'مثل الإعداد أعلاه') })); E.BASES.forEach((b) => s.appendChild(el('option', { value: b.key, text: T(b.en, b.ar) }))); s.value = r.in[key] || ''; s.addEventListener('change', () => { r.in[key] = s.value; calc_(r, S.set); render(); }); return fl(el('span', { text: label }), s); };
         left.appendChild(wb('eosBase', T('Wage for the award (this employee)', 'الأجر للمكافأة (لهذا الموظف)'))); left.appendChild(wb('leaveBase', T('Wage for leave pay (this employee)', 'الأجر لبدل الإجازة (لهذا الموظف)')));
@@ -58453,7 +58638,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       stmtRows_(q).forEach((x) => { const lab = el('div', { dir: 'auto', text: T(x.en, x.ar) }); tb.appendChild(el('tr', { class: x.kind === 'n' ? 'tot' : x.kind === 't' ? 'sub' : x.kind === 'h' ? 'gh' : 'ln' }, [el('td', {}, [lab, x.formula ? el('div', { class: 'fx', text: x.formula }) : null]), el('td', { class: 'num' + (x.amount < 0 ? ' jst-bad' : ''), text: x.amount == null ? '' : E.f2(x.amount) })])); });
       right.appendChild(tb);
       right.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('Pay by ', 'يُصرف قبل ') + q.payBy + T(' (Art 88: ' + q.payByDays + ' days after the end of the contract). Service ', ' (م88: ' + q.payByDays + ' يومًا من انتهاء العقد). الخدمة ') + svText_(q.service) + ' = ' + E.r2(q.service.T).toFixed(4) + T(' years. ', ' سنة. ') + (c ? T(c.noteEn, c.noteAr) : '') }));
-      const lv = q.leave; right.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('Leave from ', 'الإجازة من ') + E.iso(lv.from) + T(' to ', ' إلى ') + E.iso(lv.to) + ' (' + lv.daysIn + T(' days): ', ' يومًا): ') + lv.annual + T(' days a year gives ', ' يوم سنويًا تعطي ') + E.f2(lv.accrued) + (lv.carry ? ' + ' + E.f2(lv.carry) + T(' brought forward', ' مرحّلة') : '') + (lv.adjustment ? (lv.adjustment > 0 ? ' + ' : ' − ') + E.f2(Math.abs(lv.adjustment)) + T(' adjustments', ' تسويات') : '') + (lv.unpaidDeduction ? ' − ' + E.f2(lv.unpaidDeduction) + T(' unpaid', ' غير مدفوعة') : '') + ' − ' + E.f2(lv.used) + T(' taken', ' مستخدمة') + ' = ' + E.f2(lv.net) + T(' days', ' يوم') }));
+      const lv = q.leave; right.appendChild(el('p', { class: 'jbo-muted', style: { fontSize: '12.5px' }, text: T('Leave from ', 'الإجازة من ') + E.iso(lv.from) + T(' to ', ' إلى ') + E.iso(lv.to) + ' (' + lv.daysIn + T(' days): ', ' يومًا): ') + (lv.opening ? T('Jisr balance ' + E.f2(lv.opening.days) + ' on ' + lv.opening.date + (lv.opening.afterDays ? ' + ' + E.f2(lv.opening.accruedAfter) + ' earned after it' : ''), 'رصيد جسر ' + E.f2(lv.opening.days) + ' في ' + lv.opening.date + (lv.opening.afterDays ? ' + ' + E.f2(lv.opening.accruedAfter) + ' مكتسب بعده' : '')) + ' − ' + E.f2(lv.used) + T(' taken', ' مستخدمة') + ' = ' + E.f2(lv.net) + T(' days', ' يوم') : lv.annual + T(' days a year gives ', ' يوم سنويًا تعطي ') + E.f2(lv.accrued) + (lv.carry ? ' + ' + E.f2(lv.carry) + T(' brought forward', ' مرحّلة') : '') + (lv.adjustment ? (lv.adjustment > 0 ? ' + ' : ' − ') + E.f2(Math.abs(lv.adjustment)) + T(' adjustments', ' تسويات') : '') + (lv.unpaidDeduction ? ' − ' + E.f2(lv.unpaidDeduction) + T(' unpaid', ' غير مدفوعة') : '') + ' − ' + E.f2(lv.used) + T(' taken', ' مستخدمة') + ' = ' + E.f2(lv.net) + T(' days', ' يوم')) }));
       q.flags.forEach((f) => right.appendChild(el('div', { class: 'jst-flag ' + f.level, dir: 'auto', text: T(f.en, f.ar) })));
       if (r.jisr) {
         const j = r.jisr, d = r.cmp; const row = (lab, mine, theirs) => el('tr', {}, [el('td', { text: lab }), el('td', { text: E.f2(mine) }), el('td', { text: E.f2(theirs) }), el('td', { class: Math.abs(mine - theirs) > 0.05 ? 'jst-warn' : 'jst-ok', text: Math.abs(mine - theirs) > 0.05 ? E.f2(E.r2(mine - theirs)) : '✓' })]);
@@ -58485,14 +58670,14 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       if (ready && !pending && !S.busy) { try { const rows = exportRows(); const name = downloadExcel_(rows, S.set); setNote(T('Saved: ', 'حُفظ: ') + name + ' (' + rows.length + T(' employees)', ' موظف)')); try { jboActReport_(MODULE_ID, 'excel', 'ok', rows.length + ' employees'); } catch (e) { /* ignore */ } } catch (e) { setNote(String(e.message || e), true); } return; }
       calculateNow();
     });
-    stmtB.addEventListener('click', () => { try { const rows = exportRows(); const name = downloadStatements_(rows, S.set); setNote(T('Saved: ', 'حُفظ: ') + name + T(' (open it, then Print or Save as PDF)', ' (افتحه ثم اطبع أو احفظ PDF)')); try { jboActReport_(MODULE_ID, 'statements', 'ok', rows.length + ' statements'); } catch (e) { /* ignore */ } } catch (e) { setNote(String(e.message || e), true); } });
+    stmtB.addEventListener('click', () => { try { const rows = exportRows(); const res = printStatements_(rows, S.set); setNote(res.opened ? T('Opened the final settlement (' + rows.length + '): in the print window choose "Save as PDF".', 'فُتحت التسوية النهائية (' + rows.length + '): في نافذة الطباعة اختر "حفظ بصيغة PDF".') : T('The browser blocked the new tab, so the file was saved: ', 'منع المتصفح التبويب الجديد فحُفظ الملف: ') + res.name + T(' (open it, then Print or Save as PDF)', ' (افتحه ثم اطبع أو احفظ PDF)')); try { jboActReport_(MODULE_ID, 'statements', 'ok', rows.length + ' statements'); } catch (e) { /* ignore */ } } catch (e) { setNote(String(e.message || e), true); } });
     render();
   }
 
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'End-of-Service & Leave Settlement', open: openTool_, version: SECTION_VERSION };
-    W.__jisrSettlement = { E, readEmployee_, engineInput_, calc_, compute_, forecastModel_, forecastWorkbook_, forecastHtml_, stmtRows_, blankIn_, workbook_, statementsHtml_, parseSheet_, listSettlements_, readJisrAmounts_, cfg };
+    W.__jisrSettlement = { printStatements_, scheduleDates_, header_, E, readEmployee_, engineInput_, calc_, compute_, forecastModel_, forecastWorkbook_, forecastHtml_, stmtRows_, blankIn_, workbook_, statementsHtml_, parseSheet_, listSettlements_, readJisrAmounts_, cfg };
     if (g._rerender) g._rerender();
   }
   register_();
