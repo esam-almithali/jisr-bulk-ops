@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.120.1
+// @version      4.122.0
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -42,7 +42,7 @@ if (/^jisr\.jisr\.net$/i.test(location.hostname)) { throw new Error('Jisr Bulk O
 // it in the same form the older tools use (/api/log: one row per write: status, short redacted message, delay). It never changes a request,
 // never reads a request body, and fails open: no backend set, or any error, means nothing happens.
 const JBO_TRACKED_TOOLS = ['payroll-transactions-bulk', 'leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'business-trip-requests', 'shifts-bulk', 'fixed-hours-bulk', 'flight-tickets-bulk', 'shifts-clear', 'family-details-bulk', 'letter-templates', 'approval-cycles', 'performance-templates', 'performance-drafts', 'employee-assets-cleanup', 'company-assets-bulk', 'delete-employees', 'business-trip-cities', 'final-settlement-bulk', 'locations-onboarding', 'probation-bulk', 'employee-photos', 'company-documents'];
-const JBO_OPEN_ONLY_TOOLS = ['payroll-reconciliation', 'data-validation', 'data-cleanser', 'activation-checklist', 'letter-converter', 'core-hr-flow']; // read-only: the dashboard shows that they were used
+const JBO_OPEN_ONLY_TOOLS = ['payroll-reconciliation', 'data-validation', 'data-cleanser', 'activation-checklist', 'letter-converter', 'core-hr-flow', 'employee-data-export']; // read-only: the dashboard shows that they were used
 // v4.83: tools that check the result themselves (read it back from Jisr) report ONE row per employee / leave with its real outcome stage, so the
 // wrapper below leaves them alone: "HTTP 200" is not the outcome for them (Jisr can answer OK and not apply the change).
 const JBO_SELF_REPORT_TOOLS = ['settlement-calculator', 'access-report', 'automations', 'employee-photos', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'business-trip-requests', 'company-documents'];
@@ -173,6 +173,56 @@ function jboLaws_(modal, tool, T) {
 const jboAct_ = { tool: '', at: 0, buf: [], timer: null, sent: 0, failed: 0, lastError: '', lastOk: 0, warned: false };
 function jboActCfg_() { let u = null, k = null; try { u = jboSecureGet_('backendUrl'); k = jboSecureGet_('backendWriteKey'); } catch (e) { /* ignore */ } return { url: u, key: k }; }
 function jboActSlug_() { try { return location.hostname.split('.')[0]; } catch (e) { return ''; } }
+// v4.122.0: new tool Employee Data & Documents Export (Section 56, id employee-data-export): every employee's profile data and every document on the profile (name, type, details, dates, status, a link to open each file) in one Excel file. Read only.
+// ======================================================================= v4.121.0: roles and permissions (which tools this key may open)
+// The owner of the dashboard can limit a personal key to some tools. POST <dashboard>/api/access answers { tools: null | [tool ids], requests: [...] }; null = every
+// tool, which is how every key worked before. The answer is kept in this browser, so a locked tool stays locked offline. When the dashboard has never answered (no address, the
+// shared key, no network) nothing is locked: a network hiccup must not lock a whole team out. This is an access-control layer, not a vault: the same signed script goes to every valid key.
+const JBO_VERSION_ = '4.122.0';   // keep equal to @version: the dashboard accepts the tool list only from the published version
+const JBO_ALWAYS_ = ['activation-checklist'];
+const jboAccess_ = { tools: null, requests: [], at: 0, busy: false, sentCatalog: false, catalogFn: null, told: null, listeners: [], loaded: false, name: '' };
+function jboFp_(s) { let h = 5381; s = String(s || ''); for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return String(h >>> 0); }
+function jboAccessLoad_() {
+  if (jboAccess_.loaded) return; jboAccess_.loaded = true;
+  try {
+    const cfg = jboActCfg_(); const raw = GM_getValue('jisrBulkOps_accessCache', ''); if (!raw || !cfg.key) return;
+    const c = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (c && c.fp === jboFp_(cfg.url + '|' + cfg.key) && (c.tools === null || Array.isArray(c.tools))) { jboAccess_.tools = c.tools; jboAccess_.requests = Array.isArray(c.requests) ? c.requests : []; }
+  } catch (e) { /* ignore */ }
+}
+function jboAccessSave_() { try { const cfg = jboActCfg_(); GM_setValue('jisrBulkOps_accessCache', JSON.stringify({ fp: jboFp_(cfg.url + '|' + cfg.key), tools: jboAccess_.tools, requests: jboAccess_.requests.slice(0, 40) })); } catch (e) { /* ignore */ } }
+function jboCan_(id) { jboAccessLoad_(); return jboAccess_.tools === null || JBO_ALWAYS_.includes(id) || jboAccess_.tools.includes(id); }
+function jboAccessReq_(id) { return jboAccess_.requests.find((r) => r.tool === id) || null; }   // newest first
+function jboAccessSync_(done, force) {
+  jboAccessLoad_();
+  const cfg = jboActCfg_();
+  if (!cfg.url || !cfg.key || typeof GM_xmlhttpRequest !== 'function') { if (done) done(false); return; }
+  if (jboAccess_.busy || (!force && Date.now() - jboAccess_.at < 120000)) { if (done) done(false); return; }
+  jboAccess_.busy = true;
+  let catalog = null; if (!jboAccess_.sentCatalog && jboAccess_.catalogFn) { try { catalog = jboAccess_.catalogFn(); } catch (e) { catalog = null; } }
+  const finish = (ok) => { jboAccess_.busy = false; if (done) { try { done(ok); } catch (e) { /* ignore */ } } };
+  try {
+    GM_xmlhttpRequest({ method: 'POST', url: cfg.url + '/api/access', timeout: 15000, headers: { 'Content-Type': 'application/json', 'X-Write-Key': cfg.key }, data: JSON.stringify(catalog ? { catalog } : {}),
+      onload: (r) => {
+        let j = null; try { j = JSON.parse(r.responseText); } catch (e) { /* ignore */ }
+        if (r.status >= 200 && r.status < 300 && j && j.ok) {
+          const was = jboAccess_.requests, prev = JSON.stringify(jboAccess_.tools);
+          jboAccess_.at = Date.now(); if (catalog) jboAccess_.sentCatalog = true;
+          jboAccess_.tools = j.tools === null || Array.isArray(j.tools) ? j.tools : null; jboAccess_.requests = Array.isArray(j.requests) ? j.requests : []; jboAccess_.name = j.name || '';
+          jboAccessSave_();
+          jboAccess_.requests.forEach((q) => { const old = was.find((x) => x.id === q.id); if (old && old.status === 'pending' && q.status !== 'pending') { try { if (jboAccess_.told) jboAccess_.told(q); } catch (e) { /* ignore */ } } });   // a waiting request that was decided: say so once
+          const changed = prev !== JSON.stringify(jboAccess_.tools);
+          jboAccess_.listeners = jboAccess_.listeners.filter((f) => { try { return f(changed) !== 'off'; } catch (e) { return true; } });
+          finish(true);
+        } else finish(false);
+      }, onerror: () => finish(false), ontimeout: () => finish(false) });
+  } catch (e) { finish(false); }
+}
+function jboAccessStart_() {
+  jboAccessLoad_();
+  setTimeout(() => jboAccessSync_(null, true), 1500);
+  setInterval(() => jboAccessSync_(null, true), 10 * 60 * 1000);
+}
 function jboActToast_(text) {
   try { const d = document.createElement('div'); d.textContent = text; d.setAttribute('style', 'position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:2147483647;background:#202124;color:#fff;padding:10px 16px;border-radius:10px;font:13px system-ui,sans-serif;max-width:min(560px,92vw);box-shadow:0 6px 24px rgba(0,0,0,.3)'); document.body.appendChild(d); setTimeout(() => d.remove(), 9000); } catch (e) { /* ignore */ }
 }
@@ -188,6 +238,7 @@ function jboActFlush_() {
   // v4.85.0: a batch that could not be sent is tried again (no answer, 429, 5xx) instead of being dropped, and a batch that is finally lost is said out loud
   // v4.86.1: Create Leave Requests: optional fallback for requests Jisr refuses as too far back (e.g. "not before 60 days"): the leave is added with Jisr's import instead (no attachment possible), read back, and reported.
   // v4.120.0: Core HR Activation Flow (new tool, Guides): an interactive build-order guide for onboarding a client on Leaves, Attendance and Payroll, from the Core HR Activation Guideline. Eleven scope switches (attendance, leave basis, weekend pattern, payroll, history, return confirmation, vacation / final settlement, company assets, letter requests, violations) switch steps on or off; the phases run organization, people, payroll groups, time, leave rules then balances, attendance, requests / roles / settlements, go live; each test session is a gate; a map shows done / next / skipped. Added beyond the guideline: company assets and letter templates are set up before request types (so asset and letter requests can be explained with real data), violation policies come before the violation admin role, and Go live ends with a recommended window and steps for inviting employees. Ticks are saved per client in the script storage (client name and ticks only). Nothing is sent to or read from Jisr.
+  // v4.121.0: roles and permissions. The owner of the dashboard can limit a personal access key to some tools (Operators tab > Tools). In Bulk Ops a tool the key may not open shows a small "Request access" tag; clicking it opens a short request (tool + an optional reason) that goes to the dashboard's Access requests tab, like the Send feedback button. When the owner approves, the tool unlocks by itself (checked at start, every 10 minutes and whenever the J panel opens) and a message says so; a decline shows the owner's note. No limit is the default: every existing key keeps every tool. The limit is an access-control layer in the browser, not a vault (the same signed script goes to every valid key, and Jisr's own account permissions still decide what a person can change in Jisr); the shared legacy key cannot be limited. Needs the Worker with migration 0004 (it also creates its tables on first use).
   // v4.120.1: Letters (both the Letter Templates tool and the Letter Converter): (1) the Preview lists the company's real employees from Jisr (read only) instead of two sample names; the employee's own values fill the variables, a value Jisr does not have shows as a dash, a worked-out one in orange; (2) a picture bar: click a picture (body, header or footer) for Wrap text (in line, top and bottom, square left / right, behind text, in front of text), size (W × H, keep shape, full width), turn (90°, any angle, flip), position X / Y, drag handles, Alt + arrows, Replace, Delete, plus a Pictures list and Alt + click for a picture with text over it. Built from what Jisr keeps (P, IMG, TABLE, margins, zero-height paragraph); turn / flip are baked into the pixels.
   // v4.119.0: Letters Tools (Letter Templates in Bulk Ops AND the standalone Letter Converter): (1) Full screen: the editor opens full screen (a Full screen button on the command row, Esc leaves, the choice is remembered); the page you type on is large and the toolbars are tighter. (2) A clear Preview button, first on its own command row with Check, Variables and the page counter. (3) The variable list always sits beside the page (Templates) and a Variables button jumps to it. (4) Tables: row, column and whole-table handles on the table edge (click, drag, Shift / Ctrl to choose several) plus a Select menu (all rows, all columns, header, odd / even, first / last column) feeding the existing cell colour / alignment / border tools. (5) Word import now brings the page colour (shown in editor, Preview and Print / PDF), fonts (including fonts embedded in the .docx), text and highlight colours, paragraph shading and borders and table shading; the import wizard has a Page colour and fonts block (use the page colour, map a missing font to another or upload it). (6) A very tall header / footer / body picture is reduced when it comes in (a 300 mm header picture used to make a 20-page letter). No new writes to Jisr; the one new read is GET /v2/roles (v4.118).
   // v4.118.0: Letters Tool: upload a full letter and it comes in exactly as it is or as an editable template. One import wizard for Word, PDF and pictures: "Exactly as uploaded" draws every page of a PDF or picture as a page picture (Jisr cannot show Word exactly, so a Word file always becomes an editable template and its page size and margins are read from the file); "Editable template" reads the real text and finds the variables for you (dates, names, job title, ID, IBAN, email, {{x}} / [x] / «x» placeholders, label: value lines and table rows) with a confidence mark and a quick text edit; then choose where it goes: a new letter, an existing letter, or replace what is open. Page setup: paper (A4, A3, A5, Letter, Legal or custom), portrait or landscape, margins, one page or many, and rules for the header and footer (every page, first, last, all but first, or a page range) and for pinned or repeating bands such as a sign-off block; the editor shows real pages with a live page count and an overflow meter, with one-click fixes (remove empty lines, fit on one page, page break, keep together, tighter margins). Preview and Print show the same pages. Also new: drag a variable from a floating list onto the letter (the old list could not be dragged: its mouse-down cancelled the drag), align and direction now work on every selected line, block or table cell, select several table cells or whole rows and columns (drag, Shift-click, row, column, all) and set fill colour, alignment, borders and vertical alignment together, upload company fonts (.ttf, .otf, .woff, .woff2, up to 3 MB each; used in the editor, Preview and Print; Jisr keeps font names only when its new editor is on), version history with word-level compare and restore (a version is saved before an import, a restore and after each save), locked clauses that cannot be edited or deleted by mistake, a bilingual Arabic and English two-column layout, automatic direction fix for every line, and a who-can-see-and-edit list (roles read from Jisr, read only). Jisr has no field for page setup, locks or access rights, so they are remembered per letter in this browser, apply to this tool's Preview and PDF, and locks and bands also travel inside the letter as comment markers; access rights are enforced only where the tool knows who is signed in. Nothing new is written to Jisr: saving a letter is the same confirmed, read-back save as before.
@@ -4549,7 +4600,8 @@ function JBOSettlementEngine_() {
 "Approval Cycles: Duplicate & Bulk Edit": "سلاسل الموافقات: نسخ وتعديل جماعي",
 "Shifts & Day Offs: assign or clear, up to one year": "الورديات وأيام الراحة: إسناد أو مسح حتى سنة",
 "Family Members (Bulk)": "أفراد العائلة (جماعي)",
-"Letter Templates: edit in Jisr": "قوالب الخطابات: تعديل في جسر"
+"Letter Templates: edit in Jisr": "قوالب الخطابات: تعديل في جسر",
+"Employee Data & Documents Export": "تصدير بيانات الموظفين ومستنداتهم"
 };
 
   // ---------------------------------------------------------------- language detection
@@ -5112,16 +5164,27 @@ function JBOSettlementEngine_() {
     if (!g || !g.modules) return;
     Object.keys(g.modules).forEach((id) => {
       const m = g.modules[id];
-      if (!m || m.__authWrapped) return;
-      const orig = m.open;
-      m.open = function () {
-        if (enabled() && !current()) {
-          alert(T('Please sign in with your company Google account first: click the J button.', 'يرجى تسجيل الدخول بحساب Google الخاص بالشركة أولًا: اضغط زر J.'));
-          return undefined;
-        }
-        return orig.apply(this, arguments);
-      };
-      m.__authWrapped = true;
+      if (!m) return;
+      if (!m.__authWrapped) {
+        const orig = m.open;
+        m.open = function () {
+          if (enabled() && !current()) {
+            alert(T('Please sign in with your company Google account first: click the J button.', 'يرجى تسجيل الدخول بحساب Google الخاص بالشركة أولًا: اضغط زر J.'));
+            return undefined;
+          }
+          return orig.apply(this, arguments);
+        };
+        m.__authWrapped = true;
+      }
+      if (!m.__accessWrapped) {   // v4.121.0: a tool this key may not open asks to request access instead (outermost wrapper)
+        const inner = m.open;
+        m.open = function () {
+          const A = W.__jisrBulkOpsAccess;
+          if (A && A.locked(id)) { A.request(id); return undefined; }
+          return inner.apply(this, arguments);
+        };
+        m.__accessWrapped = true;
+      }
     });
   }
 
@@ -5753,7 +5816,7 @@ function JBOSettlementEngine_() {
 
   // ======================================================================= hub menu
   const CATEGORIES = [
-    ['employees', 'Employees', 'الموظفون', ['data-validation', 'data-cleanser', 'access-report', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'employee-assets-cleanup', 'delete-employees']],
+    ['employees', 'Employees', 'الموظفون', ['data-validation', 'data-cleanser', 'access-report', 'employee-data-export', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'employee-assets-cleanup', 'delete-employees']],
     ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'salary-compare', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'gosi-compliance', 'payroll-reconciliation', 'flight-tickets-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk', 'settlement-calculator']],
     ['org', 'Organization', 'الهيكل التنظيمي', ['departments-bulk', 'job-titles-bulk', 'locations-bulk', 'locations-onboarding', 'org-groups-business-units', 'company-documents', 'company-assets-bulk']],
     ['attendance', 'Leaves & Attendance', 'الإجازات والحضور', ['leave-cancel-bulk', 'leave-edit-bulk', 'leave-create-bulk', 'requests-manage', 'business-trip-requests', 'fixed-hours-bulk', 'shifts-bulk', 'shifts-clear', 'attendance-log-converter']],
@@ -5764,7 +5827,7 @@ function JBOSettlementEngine_() {
   // v4.20: the J panel opens on three choices; Tools is split into two colour-coded sections
   const SECTIONS = [
     { key: 'bulk', en: 'Bulk actions', ar: 'العمليات الجماعية', icon: 'layers', color: '#8FA8F7', groups: [
-      ['employees', 'Employees', 'الموظفون', ['access-report', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'employee-assets-cleanup', 'delete-employees']],
+      ['employees', 'Employees', 'الموظفون', ['access-report', 'employee-data-export', 'employee-id-bulk', 'roles-permissions-bulk', 'employee-contracts-bulk', 'employee-documents', 'employee-photos', 'family-details-bulk', 'offboarding-bulk', 'probation-bulk', 'employee-assets-cleanup', 'delete-employees']],
       ['payroll', 'Payroll & GOSI', 'الرواتب والتأمينات', ['salary-increment-bulk', 'salary-compare', 'suspend-payrun-bulk', 'gosi-applicable-amount-bulk', 'payroll-transactions-bulk', 'loans-transactions-cancel', 'final-settlement-bulk', 'settlement-calculator']],
       ['policies', 'Policies & benefits', 'السياسات والمزايا', ['business-trip-cities', 'flight-tickets-bulk']],
       ['performance', 'Performance', 'الأداء', ['performance-templates', 'performance-drafts']],
@@ -5816,6 +5879,7 @@ function JBOSettlementEngine_() {
     back: '<path d="M15 6l-6 6 6 6"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
     close: '<path d="M6 6l12 12M18 6L6 18"/>',
+    lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
     ext: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
   };
   const DESC = {
@@ -5857,6 +5921,7 @@ function JBOSettlementEngine_() {
     'business-trip-requests': ['Create business trip requests for many employees from Excel: the destination is checked against each employee\'s own policy; approved at once or left in the approval workflow', 'إنشاء طلبات رحلات عمل لعدة موظفين من إكسل: تُفحص الوجهة مقابل سياسة كل موظف؛ تُعتمد فورًا أو تُترك في مسار الاعتماد'],
     'settlement-calculator': ['Work out each leaver\'s end-of-service award, leave pay, notice and net payout, or forecast what the company would owe for any date, month by month, by reason, with a cash-flow alert (Saudi Labor Law); compare with Jisr; leave balance control, Art 77 switch, Jisr-style final settlement PDF with company details from Jisr, page size, margins and one-page layout; export every employee to Excel, edit it and upload it to be checked; select all / clear the list with undo; Excel and printable reports', 'احسب مكافأة نهاية الخدمة وبدل الإجازة والإشعار وصافي المستحقات لكل موظف، أو توقّع ما ستدفعه الشركة لأي تاريخ وشهرًا بشهر وحسب السبب مع تنبيه التدفق النقدي (نظام العمل السعودي)، وقارنها بجسر، مع تصدير كل الموظفين إلى Excel وتعديله ورفعه للفحص، وتحديد الكل ومسح القائمة مع تراجع، وملفات Excel وتقارير للطباعة'],
     'access-report': ['One Excel report of every employee: main data, who was invited, who accepted, who is still waiting, who never logged in, and when each person was last active; invite the ones who have not signed in', 'تقرير Excel واحد لكل موظف: البيانات الأساسية ومن دُعي ومن قبل ومن ما زال ينتظر ومن لم يسجّل الدخول ومتى كان كل شخص نشطًا آخر مرة'],
+    'employee-data-export': ['One Excel file with every employee\'s profile data and every document on the profile: name, type, details, dates, status and a link to open each file (the links are temporary); personal, organization and salary details; read only', 'ملف Excel واحد ببيانات ملف كل موظف وكل مستند فيه: الاسم والنوع والتفاصيل والتواريخ والحالة ورابط لفتح كل ملف (الروابط مؤقتة)؛ مع البيانات الشخصية والتنظيمية والراتب؛ للقراءة فقط'],
     'automations': ['When a custom request is approved, do the next step by itself: assign the day off or shift in the scheduler, or add a payroll transaction', 'عند اعتماد طلب مخصص، نفّذ الخطوة التالية تلقائيًا: تحديد يوم إجازة أو وردية في الجدول أو إضافة معاملة رواتب'],
     'requests-manage': ['Find the requests in the employees\' files (any type, by date range, status, leave type), export them, and cancel, delete forever or edit them: with the approval workflow or bypassing it', 'إيجاد الطلبات في ملفات الموظفين (أي نوع، بنطاق تاريخ والحالة ونوع الإجازة)، وتصديرها، وإلغاؤها أو حذفها نهائيًا أو تعديلها: مع مسار الاعتماد أو بتجاوزه'],
     'fixed-hours-bulk': ['Weekly schedules and assignments', 'الجداول الأسبوعية والتعيينات'],
@@ -5870,7 +5935,7 @@ function JBOSettlementEngine_() {
     'letter-templates': ['Open, edit and save Jisr\'s letter templates in full screen: import a Word / PDF / picture, page setup, variables, versions, locked clauses', 'فتح قوالب خطابات جسر وتعديلها وحفظها: استيراد Word / PDF / صورة، إعداد الصفحة، المتغيرات، النسخ، البنود المقفلة'],
     'letter-converter': ['Word letters to Jisr templates', 'تحويل خطابات Word إلى قوالب جسر'],
   };
-  const NEW_IDS = ['core-hr-flow', 'settlement-calculator', 'access-report', 'automations', 'business-trip-requests', 'requests-manage', 'company-assets-bulk', 'employee-assets-cleanup', 'performance-drafts', 'salary-compare', 'data-cleanser', 'leave-create-bulk', 'company-documents', 'leave-edit-bulk', 'employee-photos', 'probation-bulk', 'locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
+  const NEW_IDS = ['employee-data-export', 'core-hr-flow', 'settlement-calculator', 'access-report', 'automations', 'business-trip-requests', 'requests-manage', 'company-assets-bulk', 'employee-assets-cleanup', 'performance-drafts', 'salary-compare', 'data-cleanser', 'leave-create-bulk', 'company-documents', 'leave-edit-bulk', 'employee-photos', 'probation-bulk', 'locations-onboarding', 'letter-templates', 'family-details-bulk', 'shifts-clear', 'shifts-bulk', 'flight-tickets-bulk', 'business-trip-cities', 'data-validation', 'delete-employees', 'performance-templates', 'approval-cycles'];
   const svg_ = (k, size) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('width', size || 16); s.setAttribute('height', size || 16); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.8'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round'); s.innerHTML = ICONS[k] || ICONS.other; return s; };
   const normQ_ = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[ً-ٰٟـ]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
   function highlight_(text, q) {
@@ -5988,6 +6053,9 @@ function JBOSettlementEngine_() {
       .jbo-ast-tool .x { flex: 1; min-width: 0; }
       .jbo-ast-tool .x div { font-size: 13px; font-weight: 500; color: #fff; }
       .jbo-ast-tool .x small { display: block; color: #8A8A8E; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .jbo-ast-tool.locked .jbo-ast-ic, .jbo-ast-tool.locked .x { opacity: .55; }
+      .jbo-ast-lk { display: inline-flex; flex: none; align-items: center; gap: 4px; font-size: 11px; line-height: 1; color: #7A7A80 !important; border: 1px solid rgba(122,122,128,.6) !important; border-radius: 999px; padding: 4px 8px; white-space: nowrap; }
+      .jbo-ast-lk svg { width: 11px; height: 11px; }
       .jbo-ast-new { font-size: 10px; color: #9DB4F0; background: rgba(30,58,138,.4); border-radius: 6px; padding: 1px 6px; margin-inline-start: 6px; font-weight: 500; }
       .jbo-ast-ch { color: #5E5E64; }
       [dir=rtl] .jbo-ast-ch { transform: scaleX(-1); }
@@ -7184,9 +7252,7 @@ function JBOSettlementEngine_() {
     return (start ? '…' : '') + t.slice(start, start + 220) + (t.length > start + 220 ? '…' : '');
   }
 
-  // ---- v4.90: feedback / enhancement requests go to the dashboard (Feedback tab); the sender is the signed-in person, nothing else is attached
-  function openFeedback_(g, presetTool) {
-    try { const old = document.getElementById('jbo-fb-root'); if (old) old.remove(); } catch (e) { /* ignore */ }
+  function fbStyles_() {
     if (!document.getElementById('jisr-bulk-ops-style-feedback')) {
       const st = document.createElement('style'); st.id = 'jisr-bulk-ops-style-feedback';
       st.textContent = '#jbo-fb-root{position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;background:rgba(20,22,26,.45);font:13px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}'
@@ -7201,6 +7267,11 @@ function JBOSettlementEngine_() {
         + '#jbo-fb-root .b.p{background:#1f2328;color:#fff;border-color:#1f2328}#jbo-fb-root .b[disabled]{opacity:.55;cursor:default}';
       document.head.appendChild(st);
     }
+  }
+  // ---- v4.90: feedback / enhancement requests go to the dashboard (Feedback tab); the sender is the signed-in person, nothing else is attached
+  function openFeedback_(g, presetTool) {
+    try { const old = document.getElementById('jbo-fb-root'); if (old) old.remove(); } catch (e) { /* ignore */ }
+    fbStyles_();
     const ar = I.isAr(); const cfg = jboActCfg_(); const kinds = [['idea', T('Idea or enhancement', 'فكرة أو تحسين')], ['problem', T('Problem', 'مشكلة')], ['other', T('Other', 'أخرى')]];
     let kind = 'idea';
     const root = el('div', { id: 'jbo-fb-root', dir: ar ? 'rtl' : 'ltr' });
@@ -7237,13 +7308,89 @@ function JBOSettlementEngine_() {
     document.body.appendChild(root); setTimeout(() => { try { text.focus(); } catch (e) { /* ignore */ } }, 0);
   }
 
+  // ---- v4.121.0: roles and permissions. A tool this key may not open can be requested here; the request goes to the dashboard (Access requests tab) like the feedback does.
+  function openAccessRequest_(g, presetTool) {
+    try { const old = document.getElementById('jbo-fb-root'); if (old) old.remove(); } catch (e) { /* ignore */ }
+    fbStyles_();
+    const ar = I.isAr(); const cfg = jboActCfg_();
+    const lockedIds = Object.keys(g.modules).filter((id) => !NOT_A_TOOL.includes(id) && !jboCan_(id));
+    const root = el('div', { id: 'jbo-fb-root', dir: ar ? 'rtl' : 'ltr' });
+    const close = () => { try { root.remove(); } catch (e) { /* ignore */ } document.removeEventListener('keydown', onKey, true); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    root.addEventListener('mousedown', (e) => { if (e.target === root) close(); });
+    const cancel = el('button', { type: 'button', class: 'b', text: T('Close', 'إغلاق') }); cancel.addEventListener('click', close);
+    if (!lockedIds.length) {
+      root.appendChild(el('div', { class: 'fb', role: 'dialog', 'aria-modal': 'true' }, [el('h3', { text: T('Request access', 'طلب الوصول') }), el('div', { class: 'sub', text: T('Every tool is enabled for your key.', 'كل الأدوات مفعّلة لمفتاحك.') }), el('div', { class: 'row' }, [el('span', { class: 'msg' }), cancel])]));
+      document.body.appendChild(root); return;
+    }
+    const toolSel = el('select', { 'aria-label': T('Tool', 'الأداة') }, lockedIds.map((id) => el('option', { value: id, text: title_(g, id) })));
+    toolSel.value = presetTool && lockedIds.includes(presetTool) ? presetTool : lockedIds[0];
+    const state = el('div', { class: 'sub' });
+    const text = el('textarea', { maxlength: '500', placeholder: T('Why do you need it? (optional) Please do not paste employee IDs, IBANs or other personal data.', 'لماذا تحتاجها؟ (اختياري) يرجى عدم لصق أرقام هوية أو آيبان أو بيانات شخصية.'), 'aria-label': T('Why you need this tool', 'سبب حاجتك للأداة') });
+    text.style.minHeight = '70px';
+    const msg = el('span', { class: 'msg' }); const send = el('button', { type: 'button', class: 'b p', text: T('Send request', 'إرسال الطلب') });
+    const say = (t, cls) => { msg.textContent = t; msg.className = 'msg' + (cls ? ' ' + cls : ''); };
+    const paint = () => {
+      const q = jboAccessReq_(toolSel.value);
+      const when = q && q.created_at ? String(q.created_at).slice(0, 10) : '';
+      state.textContent = q && q.status === 'pending' ? T('Request sent' + (when ? ' on ' + when : '') + '. Waiting for a decision.', 'تم إرسال الطلب' + (when ? ' بتاريخ ' + when : '') + '. بانتظار القرار.')
+        : q && q.status === 'declined' ? T('Declined' + (q.note ? ': ' + q.note : '') + '. You can ask again.', 'تم الرفض' + (q.note ? ': ' + q.note : '') + '. يمكنك الطلب مرة أخرى.')
+        : T('This tool is not enabled for your key. Ask the team that manages Bulk Ops to turn it on.', 'هذه الأداة غير مفعّلة لمفتاحك. اطلب من الفريق المسؤول عن Bulk Ops تفعيلها.');
+      const pending = !!(q && q.status === 'pending'); send.disabled = pending; text.disabled = pending; send.textContent = pending ? T('Request sent', 'تم الإرسال') : T('Send request', 'إرسال الطلب');
+    };
+    toolSel.addEventListener('change', () => { say(''); paint(); });
+    send.addEventListener('click', () => {
+      if (!cfg.url) { say(T('The dashboard is not connected in this browser, so this cannot be sent. Tell the team which tool you need.', 'لوحة المتابعة غير متصلة في هذا المتصفح، لذا لا يمكن الإرسال. أخبر الفريق بالأداة التي تحتاجها.'), 'err'); return; }
+      send.disabled = true; say(T('Sending…', 'جارٍ الإرسال…'));
+      let done = false; const fail = (why) => { if (done) return; done = true; send.disabled = false; say(why, 'err'); };
+      try {
+        GM_xmlhttpRequest({ method: 'POST', url: cfg.url + '/api/tool-requests', timeout: 15000, headers: { 'Content-Type': 'application/json', 'X-Write-Key': cfg.key || '' },
+          data: JSON.stringify({ tool: toolSel.value, reason: text.value.trim(), tenant: jboActSlug_(), script_version: JBO_VERSION_ }),
+          onload: (r) => {
+            if (done) return;
+            let j = null; try { j = JSON.parse(r.responseText); } catch (e) { /* ignore */ }
+            if (r.status >= 200 && r.status < 300 && j && j.ok) {
+              done = true;
+              if (j.already) { say(T('You already have access. Updating…', 'لديك الوصول بالفعل. جارٍ التحديث…'), 'ok'); jboAccessSync_(() => { close(); }, true); return; }
+              if (!jboAccess_.requests.some((x) => x.id === j.id)) { jboAccess_.requests.unshift({ id: j.id || 'local', tool: toolSel.value, status: 'pending', note: null, created_at: new Date().toISOString(), decided_at: null }); jboAccessSave_(); }
+              say(T('Sent. You will get a message here when it is decided.', 'تم الإرسال. ستصلك رسالة هنا عند اتخاذ القرار.'), 'ok'); paint(); send.disabled = true; setTimeout(close, 1600);
+            } else fail(r.status === 403 ? T('A personal access key is needed to send a request.', 'يلزم مفتاح وصول شخصي لإرسال الطلب.') : r.status === 401 ? T('The dashboard did not accept your sign-in key.', 'لم تقبل لوحة المتابعة مفتاح الدخول.') : r.status === 429 ? T('Too many requests, try again in a minute.', 'طلبات كثيرة، حاول بعد دقيقة.') : T('Could not send (HTTP ', 'تعذّر الإرسال (HTTP ') + r.status + ').');
+          },
+          onerror: () => fail(T('No answer from the dashboard. Try again later.', 'لا رد من لوحة المتابعة. حاول لاحقًا.')), ontimeout: () => fail(T('The dashboard timed out.', 'انتهت مهلة لوحة المتابعة.')) });
+      } catch (e) { fail(T('Could not send.', 'تعذّر الإرسال.')); }
+    });
+    paint();
+    root.appendChild(el('div', { class: 'fb', role: 'dialog', 'aria-modal': 'true' }, [el('h3', { text: T('Request access', 'طلب الوصول') }), toolSel, state, text, el('div', { class: 'row' }, [msg, cancel, send])]));
+    document.body.appendChild(root); setTimeout(() => { try { text.focus(); } catch (e) { /* ignore */ } }, 0);
+  }
+  unsafeWindow.__jisrBulkOpsAccess = {
+    can: (id) => jboCan_(id), locked: (id) => !jboCan_(id),
+    request: (id) => { const g = unsafeWindow.__jisrBulkOps; if (g && g.modules) openAccessRequest_(g, id); },
+    state: () => ({ tools: jboAccess_.tools, requests: jboAccess_.requests.slice() }), sync: (cb) => jboAccessSync_(cb, true),
+  };
+  jboAccess_.told = (q) => {
+    const g = unsafeWindow.__jisrBulkOps; const name = g && g.modules && g.modules[q.tool] ? title_(g, q.tool) : q.tool;
+    jboActToast_(q.status === 'approved' ? T('Access granted: ', 'تم منح الوصول: ') + name : T('Access request declined: ', 'تم رفض طلب الوصول: ') + name + (q.note ? ' (' + q.note + ')' : ''));
+  };
+  // the tool list the dashboard shows in its tick list: this script reports it once per version
+  jboAccess_.catalogFn = () => {
+    const g = unsafeWindow.__jisrBulkOps; if (!g || !g.modules) return null;
+    const seen = new Set(), tools = [];
+    SECTIONS.forEach((sc) => sc.groups.forEach(([k, en, ar, list]) => list.forEach((id) => { if (g.modules[id] && !seen.has(id) && !NOT_A_TOOL.includes(id)) { seen.add(id); tools.push({ id, title: String(g.modules[id].title || id), section: sc.en, group: en }); } })));
+    Object.keys(g.modules).forEach((id) => { if (!seen.has(id) && !NOT_A_TOOL.includes(id)) { seen.add(id); tools.push({ id, title: String(g.modules[id].title || id), section: 'Other', group: 'Other' }); } });
+    return { v: JBO_VERSION_, tools };
+  };
+
   function render(g, menuEl) {
     injectStyles_(); paintFab_();
     if (!menuEl.__astSeen) { menuEl.__astSeen = true; UIS.query = ''; UIS.sel = 0; UIS.tab = 'home'; const rs = unsafeWindow.__jboRestore; if (rs && Date.now() - rs.at < 4000) { UIS.tab = rs.tab || 'home'; UIS.cat = rs.cat || 'all'; UIS.query = rs.q || ''; } unsafeWindow.__jboRestore = null; } // a freshly opened panel starts on the three choices (or where you were, after Back)
     menuEl.classList.add('jbo-ast'); menuEl.setAttribute('dir', I.isAr() ? 'rtl' : 'ltr');
     const ids = Object.keys(g.modules);
-    const open = (id) => { pushRecent_(id); try { unsafeWindow.__jboBack = { id, at: Date.now(), tab: UIS.tab, cat: UIS.cat, q: UIS.query }; } catch (e) { /* ignore */ } g._closeMenu(); g.modules[id].open(); };
+    const open = (id) => { if (!jboCan_(id)) { openAccessRequest_(g, id); return; } pushRecent_(id); try { unsafeWindow.__jboBack = { id, at: Date.now(), tab: UIS.tab, cat: UIS.cat, q: UIS.query }; } catch (e) { /* ignore */ } g._closeMenu(); g.modules[id].open(); };
     const rerender_ = () => { if (!menuEl.isConnected) return; menuEl.innerHTML = ''; render(g, menuEl); };
+    if (!menuEl.__accessL) { menuEl.__accessL = true; jboAccess_.listeners.push((changed) => { if (!menuEl.isConnected) return 'off'; if (changed) rerender_(); return undefined; }); }   // v4.121.0: a change of access repaints the open panel
+    jboAccessSync_();
     const closeB = el('button', { class: 'jbo-ast-ib', title: T('Close', 'إغلاق'), type: 'button' }, [svg_('close')]);
     closeB.addEventListener('click', (e) => { e.stopPropagation(); g._closeMenu(); });
     menuEl.appendChild(el('div', { class: 'jbo-ast-hd' }, [
@@ -7389,7 +7536,8 @@ function JBOSettlementEngine_() {
     function toolRow(id, q, selected) {
       const d = DESC[id] ? T(DESC[id][0], DESC[id][1]) : '';
       const t = el('div', {}, [highlight_(title_(g, id), q)]); if (NEW_IDS.includes(id) && !opened_().includes(id)) t.appendChild(el('span', { class: 'jbo-ast-new', text: T('new', 'جديد') }));
-      const row = el('div', { class: 'jbo-ast-tool' + (selected ? ' sel' : ''), tabindex: '0', 'data-id': id, style: '--c:' + colorOf(id) }, [el('span', { class: 'jbo-ast-ic' }, [svg_(iconOf(id))]), el('span', { class: 'x' }, [t, el('small', {}, [highlight_(d, q)])]), el('span', { class: 'jbo-ast-ch', text: '›' })]);
+      const locked = !jboCan_(id);   // v4.121.0: not enabled for this key: shown, dimmed, with a way to ask for it
+      const row = el('div', { class: 'jbo-ast-tool' + (selected ? ' sel' : '') + (locked ? ' locked' : ''), tabindex: '0', 'data-id': id, style: '--c:' + colorOf(id), title: locked ? T('Not enabled for your key. Click to request access.', 'غير مفعّلة لمفتاحك. اضغط لطلب الوصول.') : null }, [el('span', { class: 'jbo-ast-ic' }, [svg_(iconOf(id))]), el('span', { class: 'x' }, [t, el('small', {}, [highlight_(d, q)])]), locked ? el('span', { class: 'jbo-ast-lk' }, [svg_('lock', 11), T('Request', 'اطلب')]) : el('span', { class: 'jbo-ast-ch', text: '›' })]);
       row.addEventListener('click', (e) => { e.stopPropagation(); open(id); });
       row.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(id); });
       return row;
@@ -7445,11 +7593,11 @@ function JBOSettlementEngine_() {
       ].concat(g.modules['activation-checklist'] && ckOn_() ? [tile('check', 'check', COL.check, T('Activation checklist', 'قائمة التفعيل'), '', checklistCard_())] : []).concat([tile('feedback', 'chat', COL.fb, T('Send feedback', 'أرسل ملاحظاتك'), T('Ideas and problems', 'أفكار ومشاكل'))]));
       body.appendChild(home);
       const aurora = glassOn_() && auroraOn_();
-      const rec = recent_().filter((id) => g.modules[id] && !NOT_A_TOOL.includes(id));
+      const rec = recent_().filter((id) => g.modules[id] && !NOT_A_TOOL.includes(id) && jboCan_(id));
       if (aurora) {
         // v4.74: Aurora shows the tools people open most as cards: recent ones first, then the usual starting points
         const QS_DEFAULT = ['employee-contracts-bulk', 'salary-increment-bulk', 'payroll-reconciliation', 'payroll-transactions-bulk', 'employee-id-bulk', 'data-validation'];
-        const qsIds = rec.concat(QS_DEFAULT.filter((id) => g.modules[id] && !rec.includes(id))).slice(0, 4);
+        const qsIds = rec.concat(QS_DEFAULT.filter((id) => g.modules[id] && !rec.includes(id) && jboCan_(id))).slice(0, 4);
         if (qsIds.length) {
           body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: rec.length ? T('Recent and suggested', 'الأخيرة والمقترحة') : T('Quick start', 'بداية سريعة') })]));
           body.appendChild(el('div', { class: 'jbo-au-qs' }, qsIds.map((id) => {
@@ -7472,12 +7620,13 @@ function JBOSettlementEngine_() {
       results = [];
       if (!['all'].concat(secs.map((x) => x.key)).includes(UIS.cat)) UIS.cat = 'all';
       { // v4.104: the 3 tools used last come first (recognition over recall): the list below is 35 long
-        const rec = recent_().filter((id) => g.modules[id] && !NOT_A_TOOL.includes(id));
+        const rec = recent_().filter((id) => g.modules[id] && !NOT_A_TOOL.includes(id) && jboCan_(id));
         if (rec.length) {
           body.appendChild(el('div', { class: 'jbo-ast-lbl' }, [el('span', { text: T('Recent', 'الأخيرة') })]));
           body.appendChild(el('div', { class: 'jbo-ast-chips jbo-ast-recent' }, rec.map((id) => { const c = el('button', { class: 'jbo-ast-chip', type: 'button', text: title_(g, id) }); c.addEventListener('click', (e) => { e.stopPropagation(); open(id); }); return c; })));
         }
       }
+      if (jboAccess_.tools !== null) { const nOk = order.filter((id) => jboCan_(id)).length; body.appendChild(el('div', { class: 'jbo-ast-lbl jbo-ast-acc' }, [el('span', { text: I.isAr() ? 'مفتاحك يفتح ' + nOk + ' من ' + order.length + ' أداة. يمكن طلب الأدوات المقفلة.' : 'Your key can open ' + nOk + ' of ' + order.length + ' tools. Locked ones can be requested.' })])); }   // v4.121.0
       const chipBox = el('div', { class: 'jbo-ast-chips jbo-ast-cats' });
       [['all', T('All', 'الكل'), order, null]].concat(secs.map((sc) => [sc.key, sc.name, sc.ids, sc.color])).forEach(([k, name, list, c]) => {
         const b = el('button', { class: 'jbo-ast-chip' + (UIS.cat === k ? ' on' : ''), type: 'button', 'data-cat': k, 'data-n': String(list.length), style: c ? '--c:' + c : null }, [c ? el('span', { class: 'dot' }) : null, name]);
@@ -60566,7 +60715,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
 // ##### FINAL — lock every registered tool behind Google sign-in (section 0c)
 // ###########################################################################
 
-(function () { try { if (unsafeWindow.__jisrBulkOpsAuth) unsafeWindow.__jisrBulkOpsAuth.wrapModules(); } catch (e) { /* ignore */ } })();
+(function () { try { if (unsafeWindow.__jisrBulkOpsAuth) unsafeWindow.__jisrBulkOpsAuth.wrapModules(); } catch (e) { /* ignore */ } try { jboAccessStart_(); } catch (e) { /* ignore */ } })();
 // v4.72: the tool that is open is the one its writes are credited to on the Ops dashboard
 (function () {
   const W = unsafeWindow;
@@ -61119,10 +61268,488 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
 })();
 
 
+// ###########################################################################
+// ##### SECTION 56 — Employee Data & Documents Export (every employee's profile data + every document, with its link)  v4.122.0
+// ###########################################################################
+
+/*
+ * ===========================================================================
+ * SECTION 56 — Employee Data & Documents Export  v4.122.0
+ * ---------------------------------------------------------------------------
+ * One Excel file: a row per employee with everything Jisr shows on the profile, and a Documents sheet with one row per file (name, type, details,
+ * dates, status, size and a clickable link to open it). READ ONLY: every call is a GET; nothing is saved in the browser or sent anywhere else.
+ * Reads (per employee, 3 employees at a time, Stop button, one failed read never stops the rest):
+ *   GET /v2/employees/list?page&rpp=100&columns[]=…                       (CONFIRMED, see Section 53)
+ *   GET /v2/employees/{id}                                               main profile
+ *   GET /v2/employees/{id}?profile_tab=personal_and_organization         (CONFIRMED tab name)
+ *   GET /v2/employees/{id}?profile_tab=salary_and_financial              (CONFIRMED tab name; optional, off with the tick box)
+ *   GET /v2/employees/{id}?profile_tab=documents                         (CONFIRMED: data…attachments[{ id, file_name, file_url, category, category_i18n, description, status }]
+ *                                                                          and the identification details document_number / iqama_* / passport_* )
+ *   GET /v2/employees/{id}/employment_files/                             (CONFIRMED path; record = { id, files[{ id, name, url (S3), content_type, size }], description,
+ *                                                                          file_type{ name, name_ar, name_i18n }, expiry_date })
+ * NOT captured live: the full field list of each profile tab. So the profile data is FLATTENED generically (every field found, with its path as the
+ *   column name); nothing is guessed, and the Fields sheet lists every field exactly as Jisr sent it.
+ * LINKS: the file links Jisr gives are signed storage links and normally stop working after a while. The tool reads the expiry from the link itself
+ *   (X-Amz-Date + X-Amz-Expires, or Expires) and writes it in "Link valid until"; when the link carries none, the column says so. Run the export again for fresh links.
+ *   The files themselves are NOT downloaded (that would need a ZIP writer and storage access this script does not have).
+ * Not included: company-wide documents (Organization > Company Documents tool), only what is on each employee's own profile.
+ * ===========================================================================
+ */
+(function () {
+  'use strict';
+  const SECTION_VERSION = '4.122.0';
+  const MODULE_ID = 'employee-data-export';
+  const W = unsafeWindow;
+  const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
+  const T = (en, ar) => I.t(en, ar);
+  const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
+  const cfg = { rpp: 100, workers: 3, maxPages: 120, cellMax: 32000, linkMax: 2000, fieldsMax: 900, wideMax: 300, filePages: 10 };
+  let LOCALE = 'en';
+
+  // ======================================================================= network (GET only)
+  function slug_() { const p = location.hostname.split('.'); return p.length >= 3 ? p[0] : ''; }
+  function apiBase_() {
+    const h = location.hostname;
+    if (/(^|\.)jisr\.net\.sa$/i.test(h)) return 'https://api.jisr.net.sa/api';
+    if (/(^|\.)jisr\.net$/i.test(h)) return 'https://apis.jisr.net/api';
+    throw new Error('Unrecognized Jisr domain (' + h + ')');
+  }
+  /** pairs: [[key, value], …] so a key can repeat (columns[]). -> { status, ok, json }. Throws on 401 / 403 / after retries. */
+  async function get_(path, pairs) {
+    const qs = new URLSearchParams(); (pairs || []).forEach(([k, v]) => qs.append(k, v)); qs.append('slug', slug_());
+    const url = apiBase_() + path + '?' + qs.toString();
+    for (let a = 0; a < 4; a++) {
+      let res;
+      try { res = await fetch(url, { method: 'GET', credentials: 'include', headers: { accept: 'application/json', slug: slug_(), locale: LOCALE } }); }
+      catch (e) { await sleep_(700 * (a + 1)); continue; }
+      if (res.status === 401) { const err = new Error(T('Not logged in to Jisr in this tab (HTTP 401). Refresh the page and log in again.', 'غير مسجّل الدخول إلى جسر في هذا التبويب (HTTP 401). حدّث الصفحة وسجّل الدخول.')); err.auth = true; throw err; }
+      if (res.status === 429 || res.status >= 500) { const ra = parseFloat(res.headers.get('Retry-After')); await sleep_((isNaN(ra) ? a + 1 : ra) * 1000); continue; }
+      const json = await res.json().catch(() => null);
+      if (res.status === 403) { const err = new Error(T('Jisr refused (HTTP 403): your account may not be allowed to read this', 'رفض جسر الطلب (HTTP 403): قد لا يملك حسابك صلاحية القراءة')); err.status = 403; throw err; }
+      return { status: res.status, ok: res.ok && !(json && json.success === false), json };
+    }
+    throw new Error(T('No answer from Jisr', 'لا رد من جسر'));
+  }
+
+  // ======================================================================= the employee list (same confirmed columns as the Access Report)
+  const COLS = ['full_name', 'status', 'id_iqama_number', 'email', 'telephone', 'job_title', 'department', 'location', 'joining_date', 'line_manager', 'employment_type', 'nationality', 'gender'];
+  const txt_ = (v) => { if (v == null) return ''; if (Array.isArray(v)) return v.map(txt_).filter(Boolean).join(', '); if (typeof v === 'object') return String(v.full_name_i18n || v.name_i18n || v.name || v.main_status_i18n || v.label || ''); return String(v).trim(); };
+  function empOf_(it) {
+    const f = (it && it.full_name) || {}; const s = (it && it.status && typeof it.status === 'object') ? it.status : {};
+    return { id: f.id, code: String(f.code == null ? '' : f.code), name: txt_(f.full_name_i18n || f), state: String(f.main_status || s.main_status || ''), statusText: txt_(s.main_status_i18n || s.main_status || f.main_status),
+      nid: txt_(it.id_iqama_number), email: txt_(it.email), phone: txt_(it.telephone), job: txt_(it.job_title), dept: txt_(it.department), loc: txt_(it.location), joined: txt_(s.joining_date || it.joining_date),
+      manager: txt_(it.line_manager), empType: txt_(it.employment_type), nationality: txt_(it.nationality), gender: txt_(it.gender) };
+  }
+  const isOff_ = (st) => /inactive|offboard|terminat|resign/i.test(String(st || ''));
+  async function listEmployees_(onProgress, stopped) {
+    const out = []; const seen = new Set();
+    for (let page = 1; page <= cfg.maxPages; page++) {
+      if (stopped()) break;
+      const r = await get_('/v2/employees/list', [['page', String(page)], ['rpp', String(cfg.rpp)]].concat(COLS.map((c) => ['columns[]', c])));
+      if (!r.ok) throw new Error(T('Could not read the employee list (HTTP ', 'تعذّرت قراءة قائمة الموظفين (HTTP ') + r.status + ')');
+      const d = (r.json && r.json.data) || {}; (d.employees || []).forEach((it) => { const e = empOf_(it); if (e.id != null && !seen.has(e.id)) { seen.add(e.id); out.push(e); } });
+      if (onProgress) onProgress(out.length, (d.pagination && d.pagination.total_entries) || 0);
+      if (!d.pagination || !d.pagination.next_page) break;
+    }
+    return out;
+  }
+
+  // ======================================================================= flattening a profile response into fields
+  const META = new Set(['id', 'name', 'name_ar', 'name_en', 'name_i18n', 'full_name_i18n', 'label', 'code', 'slug', 'is_default', 'status', 'key', 'value', 'title', 'title_i18n']);
+  /** The one display value of a small "reference" object like { id, name, name_ar, name_i18n }, or '' when the object holds anything else. */
+  function refText_(o) {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return '';
+    const keys = Object.keys(o); if (!keys.length || !keys.every((k) => META.has(k))) return '';
+    const v = o.name_i18n || o.full_name_i18n || o.title_i18n || o.label || o.name || o.title || o.value || '';
+    return typeof v === 'string' || typeof v === 'number' ? String(v) : '';
+  }
+  /** Keys that carry the document files: they go to the Documents sheet, not to the fields. */
+  const DOCKEYS = new Set(['attachments', 'files', 'identification_info_attachments', 'employment_files']);
+  const NUMTEXT = /(^|_)(id|number|phone|mobile|tel|telephone|iban|code|account|zip|postal|iqama|passport|card)(_|$)/i;
+  const cap_ = (s) => { s = String(s); return s.length > cfg.cellMax ? s.slice(0, cfg.cellMax) + '…' : s; };
+  /** value -> a cell value: a real number only when it is safe (no leading zero, not an id-like key, below a billion) */
+  function cell_(v, key) {
+    if (typeof v === 'boolean') return v ? T('Yes', 'نعم') : T('No', 'لا');
+    if (typeof v === 'number') return (Math.abs(v) < 1e9 && !NUMTEXT.test(String(key || ''))) ? v : String(v);
+    return cap_(String(v).replace(/\r\n?/g, '\n').trim());
+  }
+  /** Walks a JSON value; fn(path, value, lastKey) for each scalar (arrays of scalars are joined). Reference objects collapse to their display value. */
+  function walk_(v, path, key, fn, st, depth) {
+    if (st.n >= cfg.fieldsMax || depth > 8 || v == null) return;
+    if (typeof v === 'string') { const s = v.trim(); if (!s || /^data:/i.test(s)) return; st.n++; fn(path, s, key); return; }
+    if (typeof v === 'number' || typeof v === 'boolean') { st.n++; fn(path, v, key); return; }
+    if (Array.isArray(v)) {
+      if (!v.length) return;
+      if (v.every((x) => x == null || typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean')) { const j = v.filter((x) => x != null && String(x).trim() !== '').map((x) => String(x).trim()).join(', '); if (j) { st.n++; fn(path, j, key); } return; }
+      v.forEach((x, i) => walk_(x, path + '[' + (i + 1) + ']', key, fn, st, depth + 1)); return;
+    }
+    if (typeof v === 'object') {
+      const ref = refText_(v); if (ref) { st.n++; fn(path, ref, key); return; }
+      Object.keys(v).forEach((k) => { if (DOCKEYS.has(k)) return; walk_(v[k], path ? path + '.' + k : k, k, fn, st, depth + 1); });
+    }
+  }
+  const human_ = (s) => { s = String(s).replace(/_i18n$/i, '').replace(/_/g, ' ').trim(); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; };
+  /** 'personal_info.date_of_birth' -> 'Personal info › Date of birth'; 'benefits[2].name' -> 'Benefits 2 › Name' */
+  function label_(path) { return String(path).split('.').map((p) => { const m = /^(.*?)\[(\d+)\]$/.exec(p); return m ? human_(m[1]) + ' ' + m[2] : human_(p); }).join(' › '); }
+  /** The part of a response to read: data.employee when it is there, else data, else the whole thing. */
+  const rootOf_ = (json) => { const d = json && json.data; return d && typeof d === 'object' ? (d.employee && typeof d.employee === 'object' ? d.employee : d) : (json || {}); };
+  /** -> [{ path, label, value }] for one tab response (documents' files excluded) */
+  function fieldsOf_(json) {
+    const out = []; const st = { n: 0 };
+    walk_(rootOf_(json), '', '', (p, v, k) => { out.push({ path: p, label: label_(p), value: cell_(v, k) }); }, st, 0);
+    return out;
+  }
+
+  // ======================================================================= documents
+  function findAttachments_(json) {
+    let out = null;
+    (function walk(v, d) {
+      if (out || !v || typeof v !== 'object' || d > 6) return;
+      if (Array.isArray(v.attachments) && v.attachments.every((a) => a && typeof a === 'object')) { out = v.attachments; return; }
+      Object.keys(v).forEach((k) => walk(v[k], d + 1));
+    })(json, 0);
+    return out;
+  }
+  function findIdent_(json) {
+    let out = null;
+    (function walk(v, d) {
+      if (out || !v || typeof v !== 'object' || Array.isArray(v) || d > 6) return;
+      if ('document_number' in v || 'passport_number' in v) { out = v; return; }
+      Object.keys(v).forEach((k) => walk(v[k], d + 1));
+    })(json, 0);
+    return out;
+  }
+  function findFileRecords_(json) {
+    const out = []; const seen = new Set();
+    (function walk(v, d) {
+      if (!v || typeof v !== 'object' || d > 7) return;
+      if (!Array.isArray(v) && v.id != null && (v.file_type || v.employment_file_type_id != null || v.employment_file_type) && Array.isArray(v.files)) { if (!seen.has(String(v.id))) { seen.add(String(v.id)); out.push(v); } return; }
+      (Array.isArray(v) ? v : Object.values(v)).forEach((x) => walk(x, d + 1));
+    })(json, 0);
+    return out;
+  }
+  const pad_ = (n) => String(n).padStart(2, '0');
+  const stamp_ = (d) => d.getFullYear() + '-' + pad_(d.getMonth() + 1) + '-' + pad_(d.getDate()) + ' ' + pad_(d.getHours()) + ':' + pad_(d.getMinutes());
+  /** A file link: absolute, and when it is a signed link, the time it stops working. -> { url, until, signed } */
+  function linkInfo_(raw) {
+    let url = String(raw == null ? '' : raw).trim(); if (!url) return { url: '', until: '', signed: false };
+    if (/^\/\//.test(url)) url = location.protocol + url; else if (/^\//.test(url)) url = location.origin + url;
+    let until = '', signed = false;
+    try {
+      const u = new URL(url); const q = u.searchParams;
+      const dt = q.get('X-Amz-Date') || q.get('x-amz-date'), ex = q.get('X-Amz-Expires') || q.get('x-amz-expires');
+      const m = dt && /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(dt);
+      if (m && ex && !isNaN(Number(ex))) { signed = true; const t = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) + Number(ex) * 1000; until = stamp_(new Date(t)); }
+      else if (q.get('Expires') && /^\d{9,11}$/.test(q.get('Expires'))) { signed = true; until = stamp_(new Date(Number(q.get('Expires')) * 1000)); }
+      else if (q.get('X-Amz-Signature') || q.get('Signature')) signed = true;
+    } catch (e) { /* keep the link as it is */ }
+    return { url, until, signed };
+  }
+  const dateOf_ = (v) => String(v == null ? '' : v).trim();
+  const kb_ = (n) => { n = Number(n); return isFinite(n) && n > 0 ? Math.max(1, Math.round(n / 1024)) : ''; };
+  /** One document row. */
+  function docRow_(e, o) {
+    const li = linkInfo_(o.url);
+    return { code: e.code, name: e.name, nid: e.nid, source: o.source || '', type: o.type || '', file: o.file || '', details: o.details || '', number: o.number || '', issue: dateOf_(o.issue), expiry: dateOf_(o.expiry), status: o.status || '',
+      size: o.size === '' || o.size == null ? '' : o.size, ctype: o.ctype || '', added: dateOf_(o.added), url: li.url, until: li.until, signed: li.signed, hasFile: !!li.url };
+  }
+  const IDENT = {
+    id_iqama: { number: 'document_number', issue: 'iqama_issue_date', expiry: 'iqama_expiry_date', place: 'iqama_issue_place' },
+    passport: { number: 'passport_number', issue: 'passport_issue_date', expiry: 'passport_expiry_date', place: 'passport_issue_place' },
+  };
+  /** The documents tab -> rows: every identification attachment, plus the ID / Iqama and Passport details even when no file was uploaded; any other link found there. */
+  function docsFromTab_(e, json) {
+    const rows = []; const used = new Set(); const atts = findAttachments_(json) || []; const ident = findIdent_(json) || {};
+    const hasCat = new Set();
+    atts.forEach((a) => {
+      if (!a || typeof a !== 'object') return;
+      const cat = String(a.category || ''); const m = IDENT[cat]; hasCat.add(cat);
+      const url = a.file_url || a.url || ''; if (url) used.add(url);
+      rows.push(docRow_(e, { source: T('Identification', 'الهوية'), type: txt_(a.category_i18n) || human_(cat), file: String(a.file_name || a.name || ''), details: String(a.description || '').trim() + (m && ident[m.place] ? ((a.description ? ' · ' : '') + T('Place: ', 'مكان الإصدار: ') + ident[m.place]) : ''),
+        number: m ? String(ident[m.number] == null ? '' : ident[m.number]) : '', issue: m ? ident[m.issue] : '', expiry: m ? ident[m.expiry] : '', status: txt_(a.status_i18n) || String(a.status || ''), size: kb_(a.size || a.file_size), ctype: String(a.content_type || ''), added: a.created_at || '', url }));
+    });
+    Object.keys(IDENT).forEach((cat) => {
+      if (hasCat.has(cat)) return; const m = IDENT[cat];
+      if (ident[m.number] || ident[m.expiry]) rows.push(docRow_(e, { source: T('Identification', 'الهوية'), type: cat === 'passport' ? T('Passport', 'جواز السفر') : T('Id/Iqama', 'الهوية / الإقامة'), file: '', details: T('Details only, no file uploaded', 'بيانات فقط، لم يُرفع ملف') + (ident[m.place] ? ' · ' + T('Place: ', 'مكان الإصدار: ') + ident[m.place] : ''),
+        number: String(ident[m.number] == null ? '' : ident[m.number]), issue: ident[m.issue], expiry: ident[m.expiry], status: '', url: '' }));
+    });
+    // any other file link on the tab (a document type this tool does not know yet): found by its key, never guessed
+    const extra = [];
+    (function walk(v, d, sib) {
+      if (!v || typeof v !== 'object' || d > 7) return;
+      if (Array.isArray(v)) { v.forEach((x) => walk(x, d + 1, sib)); return; }
+      Object.keys(v).forEach((k) => {
+        const x = v[k];
+        if (typeof x === 'string' && /^(file_url|download_url|document_url|url)$/i.test(k) && /^(https?:)?\/\/|^\//.test(x) && !used.has(x)) extra.push({ url: x, name: String(v.file_name || v.name || v.title || ''), type: txt_(v.category_i18n) || txt_(v.type) || String(v.category || '') });
+        else if (x && typeof x === 'object') walk(x, d + 1, v);
+      });
+    })(rootOf_(json), 0, null);
+    extra.forEach((x) => { if (used.has(x.url)) return; used.add(x.url); rows.push(docRow_(e, { source: T('Documents tab', 'تبويب المستندات'), type: x.type, file: x.name, url: x.url })); });
+    return rows;
+  }
+  /** employment files (the company's own document types) -> rows, one per file. */
+  function docsFromFiles_(e, json) {
+    const rows = [];
+    findFileRecords_(json).forEach((r) => {
+      const ft = r.file_type || r.employment_file_type || {}; const type = txt_(ft.name_i18n) || txt_(ft) || String(ft.name || '') || '';
+      const files = Array.isArray(r.files) && r.files.length ? r.files : [null];
+      files.forEach((f) => rows.push(docRow_(e, { source: T('Employee file', 'ملف الموظف'), type, file: f ? String(f.name || f.filename || f.file_name || '') : '', details: String(r.description || '').trim(), expiry: r.expiry_date,
+        status: txt_(r.status_i18n) || String(r.status || ''), size: f ? kb_(f.size) : '', ctype: f ? String(f.content_type || '') : '', added: r.created_at || r.uploaded_at || '', url: f ? (f.url || f.file_url || '') : '' })));
+    });
+    return rows;
+  }
+
+  // ======================================================================= reading everything
+  const TABS = () => [
+    { key: 'main', opt: 'main', pairs: [], title: T('Main profile', 'الملف الأساسي') },
+    { key: 'personal', opt: 'personal', pairs: [['profile_tab', 'personal_and_organization']], title: T('Personal and organization', 'البيانات الشخصية والتنظيمية') },
+    { key: 'salary', opt: 'salary', pairs: [['profile_tab', 'salary_and_financial']], title: T('Salary and financial', 'الراتب والبيانات المالية') },
+    { key: 'documents', opt: 'docs', pairs: [['profile_tab', 'documents']], title: T('Documents tab', 'تبويب المستندات') },
+  ];
+  /** Reads one employee. opts: { personal, salary, docs }; shared: { denied: {tab: n}, skip: {tab: true}, okSeen: {tab: true} }. -> { fields: [{section, label, path, value}], docs: [], problems: [] } */
+  async function readEmployee_(e, opts, shared) {
+    const out = { fields: [], docs: [], problems: [], tabs: {} }; const seen = new Set();
+    const id = encodeURIComponent(e.id);
+    for (const t of TABS()) {
+      if (t.opt !== 'main' && !opts[t.opt]) continue; if (shared.skip[t.key]) { out.tabs[t.key] = 'skipped'; continue; }
+      let r;
+      try { r = await get_('/v2/employees/' + id, t.pairs); }
+      catch (er) {
+        if (er.auth) throw er;
+        if (er.status === 403) { shared.denied[t.key] = (shared.denied[t.key] || 0) + 1; if (shared.denied[t.key] >= 3 && !shared.okSeen[t.key]) shared.skip[t.key] = true; out.problems.push(t.title + ': ' + T('not allowed (403)', 'غير مسموح (403)')); out.tabs[t.key] = 'denied'; continue; }
+        out.problems.push(t.title + ': ' + String(er.message || er).slice(0, 80)); out.tabs[t.key] = 'failed'; continue;
+      }
+      if (!r.ok) { out.problems.push(t.title + ': HTTP ' + r.status); out.tabs[t.key] = 'failed'; continue; }
+      shared.okSeen[t.key] = true; out.tabs[t.key] = 'ok';
+      fieldsOf_(r.json).forEach((f) => { const k = f.label + '\u0001' + f.value; if (seen.has(k)) return; seen.add(k); out.fields.push({ section: t.title, label: f.label, path: f.path, value: f.value }); });
+      if (t.key === 'documents') out.docs = out.docs.concat(docsFromTab_(e, r.json));
+    }
+    if (opts.docs) {
+      if (shared.skip.files) out.tabs.files = 'skipped';
+      else {
+        const ftitle = T('Employee files', 'ملفات الموظف'); let ok = true;
+        for (let page = 1; page <= cfg.filePages; page++) {
+          let r;
+          try { r = await get_('/v2/employees/' + id + '/employment_files/', page > 1 ? [['page', String(page)]] : []); }
+          catch (er) {
+            if (er.auth) throw er; ok = false;
+            if (er.status === 403) { shared.denied.files = (shared.denied.files || 0) + 1; if (shared.denied.files >= 3 && !shared.okSeen.files) shared.skip.files = true; out.problems.push(ftitle + ': ' + T('not allowed (403)', 'غير مسموح (403)')); out.tabs.files = 'denied'; }
+            else { out.problems.push(ftitle + ': ' + String(er.message || er).slice(0, 80)); out.tabs.files = 'failed'; }
+            break;
+          }
+          if (!r.ok) { ok = false; out.problems.push(ftitle + ': HTTP ' + r.status); out.tabs.files = 'failed'; break; }
+          shared.okSeen.files = true; out.docs = out.docs.concat(docsFromFiles_(e, r.json));
+          const pg = r.json && r.json.data && r.json.data.pagination; if (!pg || !pg.next_page) break;
+        }
+        if (ok) out.tabs.files = 'ok';
+      }
+    }
+    return out;
+  }
+  /** Builds the whole export. opts: { includeOffboarded, limit, personal, salary, docs }; hooks: { progress(text), stopped() } */
+  async function build_(opts, hooks) {
+    opts = opts || {}; hooks = hooks || {}; const say = hooks.progress || (() => {}); const stopped = hooks.stopped || (() => false);
+    say(T('Reading the employee list…', 'جارٍ قراءة قائمة الموظفين…'));
+    let emps = await listEmployees_((n, tot) => say(T('Reading the employee list… ', 'جارٍ قراءة قائمة الموظفين… ') + n + (tot ? ' / ' + tot : '')), stopped);
+    if (!opts.includeOffboarded) emps = emps.filter((e) => !isOff_(e.state));
+    if (opts.limit > 0) emps = emps.slice(0, opts.limit);
+    const total = emps.length; let next = 0, done = 0, authErr = null; const t0 = Date.now(); const shared = { denied: {}, skip: {}, okSeen: {} };
+    say(T('Reading each employee… ', 'جارٍ قراءة كل موظف… ') + '0 / ' + total);
+    const worker = async () => {
+      while (!stopped() && !authErr) {
+        const i = next++; if (i >= total) return; const e = emps[i];
+        try { e.data = await readEmployee_(e, opts, shared); }
+        catch (er) { if (er.auth) { authErr = er; return; } e.data = { fields: [], docs: [], problems: [String(er.message || er).slice(0, 100)], tabs: {} }; }
+        done++;
+        if (done % 3 === 0 || done === total) { const el = (Date.now() - t0) / 1000; const left = done ? Math.round(el / done * (total - done)) : 0; say(T('Reading each employee… ', 'جارٍ قراءة كل موظف… ') + done + ' / ' + total + (left > 5 ? T(' · about ', ' · نحو ') + (left >= 90 ? Math.round(left / 60) + T(' min left', ' دقيقة متبقية') : left + T(' s left', ' ثانية متبقية')) : '')); }
+      }
+    };
+    await Promise.all(Array.from({ length: cfg.workers }, worker));
+    if (authErr) throw authErr;
+    const read = emps.filter((e) => e.data);
+    read.forEach((e) => { e.docCount = e.data.docs.filter((d) => d.hasFile).length; });
+    return { emps: read, total, at: new Date(), opts, stoppedEarly: stopped() && read.length < total, skipped: Object.keys(shared.skip) };
+  }
+
+  // ======================================================================= the file
+  const ST = () => ({ main: T('Main profile', 'الملف الأساسي'), personal: T('Personal and organization', 'البيانات الشخصية والتنظيمية'), salary: T('Salary and financial', 'الراتب والبيانات المالية'), documents: T('Documents tab', 'تبويب المستندات'), files: T('Employee files', 'ملفات الموظف') });
+  const MAINHEAD = () => [T('Code', 'الرقم'), T('Full name', 'الاسم'), T('Employment status', 'حالة الموظف'), T('ID / Iqama number', 'رقم الهوية / الإقامة'), T('Email', 'البريد'), T('Phone', 'الجوال'), T('Job title', 'المسمى الوظيفي'), T('Department', 'القسم'), T('Location', 'الموقع'),
+    T('Line manager', 'المدير المباشر'), T('Employment type', 'نوع التوظيف'), T('Nationality', 'الجنسية'), T('Gender', 'الجنس'), T('Joining date', 'تاريخ الانضمام')];
+  const mainRow_ = (e) => [e.code, e.name, e.statusText || e.state, e.nid, e.email, e.phone, e.job, e.dept, e.loc, e.manager, e.empType, e.nationality, e.gender, e.joined];
+  /** The wide Employees sheet: the list columns, then Documents, Not read, then one column per field found (first-seen order, capped). */
+  function employeeRows_(rep) {
+    const cols = []; const colIx = new Map(); const labelSecs = new Map();
+    rep.emps.forEach((e) => e.data.fields.forEach((f) => { const k = f.section + '\u0001' + f.label; if (!colIx.has(k)) { colIx.set(k, cols.length); cols.push({ k, label: f.label, section: f.section }); const s = labelSecs.get(f.label) || new Set(); s.add(f.section); labelSecs.set(f.label, s); } }));
+    const cut = cols.length > cfg.wideMax; const use = cols.slice(0, cfg.wideMax);
+    const head = MAINHEAD().concat([T('Documents with a file', 'مستندات بملف'), T('Could not read', 'تعذّرت قراءته')]).concat(use.map((c) => (labelSecs.get(c.label).size > 1 ? c.label + ' (' + c.section + ')' : c.label)));
+    const rows = rep.emps.map((e) => {
+      const r = mainRow_(e).concat([e.docCount, e.data.problems.join('; ')]); const vals = new Array(use.length).fill('');
+      e.data.fields.forEach((f) => { const ix = colIx.get(f.section + '\u0001' + f.label); if (ix != null && ix < use.length) vals[ix] = f.value; });
+      return r.concat(vals);
+    });
+    return { head, rows, cut, total: cols.length };
+  }
+  const DOCHEAD = () => [T('Code', 'الرقم'), T('Employee', 'الموظف'), T('ID / Iqama number', 'رقم الهوية / الإقامة'), T('Source', 'المصدر'), T('Document type', 'نوع المستند'), T('Document name', 'اسم المستند'), T('Details', 'التفاصيل'), T('Document number', 'رقم المستند'),
+    T('Issue date', 'تاريخ الإصدار'), T('Expiry date', 'تاريخ الانتهاء'), T('Status', 'الحالة'), T('Size (KB)', 'الحجم (ك.ب)'), T('Added', 'تاريخ الإضافة'), T('Open', 'فتح'), T('Link valid until', 'الرابط صالح حتى'), T('Link', 'الرابط')];
+  const LINKCOL = 13;
+  function docRows_(rep) {
+    const rows = []; rep.emps.forEach((e) => e.data.docs.forEach((d) => rows.push(d)));
+    const aoa = rows.map((d) => [d.code, d.name, d.nid, d.source, d.type, d.file, d.details, d.number, d.issue, d.expiry, d.status, d.size, d.added, d.url ? T('Open', 'فتح') : '', d.until || (d.url ? (d.signed ? T('Signed link, expiry not shown', 'رابط موقّع، لا يظهر الانتهاء') : T('No expiry in the link', 'لا انتهاء في الرابط')) : ''), cap_(d.url)]);
+    return { head: DOCHEAD(), aoa, rows };
+  }
+  function fieldRows_(rep) {
+    const head = [T('Code', 'الرقم'), T('Employee', 'الموظف'), T('Section', 'القسم'), T('Field', 'الحقل'), T('Value', 'القيمة'), T('Jisr key', 'مفتاح جسر')]; const rows = [];
+    rep.emps.forEach((e) => e.data.fields.forEach((f) => rows.push([e.code, e.name, f.section, f.label, f.value, f.path])));
+    return { head, rows };
+  }
+  function summary_(rep) {
+    const a = []; const docs = []; rep.emps.forEach((e) => e.data.docs.forEach((d) => docs.push(d)));
+    const withFile = docs.filter((d) => d.hasFile); const empsWith = rep.emps.filter((e) => e.docCount > 0).length; const bad = rep.emps.filter((e) => e.data.problems.length);
+    const tooLong = withFile.filter((d) => d.url.length > cfg.linkMax).length; const er = employeeRows_(rep); const S = ST();
+    a.push([T('Employee data and documents', 'بيانات الموظفين ومستنداتهم')]); a.push([T('Company', 'الشركة'), slug_()]); a.push([T('Built on', 'أُعدّ في'), stamp_(rep.at)]);
+    a.push([T('Employees included', 'الموظفون المشمولون'), rep.opts.includeOffboarded ? T('Active and offboarded', 'على رأس العمل والمنتهية خدماتهم') : T('Active only', 'على رأس العمل فقط')]);
+    a.push([T('Parts read', 'الأجزاء المقروءة'), [T('Main profile', 'الملف الأساسي')].concat(rep.opts.personal ? [S.personal] : []).concat(rep.opts.salary ? [S.salary] : []).concat(rep.opts.docs ? [S.documents, S.files] : []).join(', ')]); a.push([]);
+    a.push([T('Employees', 'الموظفون'), rep.emps.length]); a.push([T('Employees with at least one document file', 'موظفون لديهم ملف مستند واحد على الأقل'), empsWith]); a.push([T('Document rows', 'صفوف المستندات'), docs.length]);
+    a.push([T('Document files with a link', 'ملفات المستندات التي لها رابط'), withFile.length]); a.push([T('Fields found', 'الحقول التي وُجدت'), rep.emps.reduce((n, e) => n + e.data.fields.length, 0)]); a.push([]);
+    a.push([T('About the links', 'عن الروابط'), T('Jisr gives temporary storage links. They usually stop working after a while ("Link valid until" shows when, if the link says). Build the file again to get fresh links. The files themselves are not downloaded.', 'يعطي جسر روابط تخزين مؤقتة، وتتوقف عادةً بعد فترة (يعرض عمود "الرابط صالح حتى" الموعد إن ذكره الرابط). أعد إعداد الملف للحصول على روابط جديدة. لا تُنزَّل الملفات نفسها.')]);
+    a.push([T('Not included', 'غير مشمول'), T('Company-wide documents (Organization > Company Documents) and anything Jisr does not show on the employee profile.', 'مستندات الشركة العامة (الهيكل التنظيمي > مستندات الشركة) وأي شيء لا يعرضه جسر في ملف الموظف.')]);
+    a.push([T('Privacy', 'الخصوصية'), T('This file holds personal data (ID numbers, contact details' + (rep.opts.salary ? ', salaries' : '') + '). Keep it safe and share it only with people allowed to see it.', 'يحوي هذا الملف بيانات شخصية (أرقام هوية وبيانات اتصال' + (rep.opts.salary ? ' ورواتب' : '') + '). احفظه بأمان وشاركه فقط مع من يحق له الاطلاع عليه.')]);
+    if (er.cut) a.push([T('Columns', 'الأعمدة'), T('Jisr returned ' + er.total + ' different fields; the Employees sheet shows the first ' + cfg.wideMax + '. The Fields sheet has all of them.', 'أعاد جسر ' + er.total + ' حقلًا مختلفًا؛ يعرض ورق الموظفين أول ' + cfg.wideMax + '. ورق الحقول فيه الكل.')]);
+    if (tooLong) a.push([T('Long links', 'روابط طويلة'), T(tooLong + ' link(s) are too long for an Excel hyperlink; they are in the Link column as text.', tooLong + ' رابط أطول من أن يكون رابطًا في Excel؛ هي في عمود الرابط كنص.')]);
+    if (rep.skipped.length) a.push([T('Not allowed', 'غير مسموح'), rep.skipped.map((k) => S[k]).join(', ') + T(': Jisr refused these for your account, so they are empty.', ': رفض جسر قراءتها لحسابك، لذا هي فارغة.')]);
+    if (bad.length) { a.push([T('Could not read', 'تعذّرت القراءة'), bad.length + T(' employee(s): see the "Could not read" column on the Employees sheet', ' موظف: انظر عمود "تعذّرت قراءته" في ورق الموظفين')]); }
+    if (rep.stoppedEarly) a.push([T('Stopped early', 'أُوقف مبكرًا'), T('Only the employees read so far are in the file.', 'الملف يحوي الموظفين الذين قُرئوا فقط.')]);
+    return a;
+  }
+  function workbook_(rep) {
+    const wb = XLSX.utils.book_new(); wb.__noRef = true;   // the suite's shared save hook moves / fills employee reference columns; this file is laid out on purpose
+    const add = (name, aoa, widths, filter) => {
+      const ws = XLSX.utils.aoa_to_sheet(aoa); if (widths) ws['!cols'] = widths.map((w) => ({ wch: w }));
+      if (filter && aoa.length > 1) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: Math.max(0, aoa[0].length - 1) } }) };
+      XLSX.utils.book_append_sheet(wb, ws, name); return ws;
+    };
+    add(T('Summary', 'الملخص'), summary_(rep), [44, 100]);
+    const er = employeeRows_(rep); add(T('Employees', 'الموظفون'), [er.head].concat(er.rows), [10, 26, 14, 18, 28, 16, 24, 20, 16, 22, 16, 14, 9, 13, 12, 30].concat(new Array(Math.max(0, er.head.length - 16)).fill(24)), true);
+    const dr = docRows_(rep); const ws = add(T('Documents', 'المستندات'), [dr.head].concat(dr.aoa), [10, 26, 18, 16, 22, 30, 34, 18, 13, 13, 12, 10, 18, 8, 20, 60], true);
+    dr.rows.forEach((d, i) => { if (d.url && d.url.length <= cfg.linkMax) { const a = XLSX.utils.encode_cell({ r: i + 1, c: LINKCOL }); if (ws[a]) ws[a].l = { Target: d.url, Tooltip: d.file || d.type || '' }; } });
+    const fr = fieldRows_(rep); add(T('Fields', 'الحقول'), [fr.head].concat(fr.rows), [10, 26, 26, 36, 50, 36], true);
+    return wb;
+  }
+  function download_(rep) {
+    const wb = workbook_(rep); const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const d = rep.at; const name = 'employee-data_' + (slug_() || 'jisr') + '_' + d.getFullYear() + '-' + pad_(d.getMonth() + 1) + '-' + pad_(d.getDate()) + '.xlsx';
+    const url = URL.createObjectURL(new Blob([out], { type: 'application/octet-stream' })); const a = el('a', { href: url, download: name, style: { display: 'none' } });
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000); return name;
+  }
+
+  // ======================================================================= window
+  function el(tag, attrs, children) {
+    const n = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === false) return;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v); else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach((c) => c != null && c !== false && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+    return n;
+  }
+  function injectCss_() {
+    if (document.getElementById('jbo-ede-css')) return;
+    document.head.appendChild(el('style', { id: 'jbo-ede-css', text: `
+      .jed-note { font-size: 12.5px; background: #fef7e0; border: 1px solid #f9e2a6; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; line-height: 1.45; }
+      .jed-opts { display: grid; gap: 6px; margin: 6px 0 10px; font-size: 13px; }
+      .jed-opts label { display: flex; gap: 8px; align-items: center; }
+      .jed-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+      .jed-row input[type=number] { width: 80px; font: inherit; padding: 4px 6px; border: 1px solid #dadce0; border-radius: 6px; }
+      .jed-row select { font: inherit; padding: 4px 6px; border: 1px solid #dadce0; border-radius: 6px; }
+      .jed-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin: 10px 0; }
+      .jed-card { border: 1px solid #e8eaed; border-radius: 10px; padding: 8px 10px; background: #fff; }
+      .jed-card b { display: block; font-size: 20px; } .jed-card span { font-size: 12px; color: #5f6368; }
+      .jed-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .jed-tbl th { text-align: start; padding: 6px 8px; background: #f8f9fa; border-bottom: 1px solid #e8eaed; font-weight: 600; position: sticky; top: 0; }
+      .jed-tbl td { padding: 5px 8px; border-bottom: 1px solid #f1f3f4; vertical-align: top; }
+      .jed-tbl td.jed-bad { color: #a50e0e; }
+      .jed-scroll { max-height: 38vh; overflow: auto; border: 1px solid #e8eaed; border-radius: 8px; }
+      .jed-bar { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+      .jed-bar input[type=text] { font: inherit; padding: 6px 8px; border: 1px solid #dadce0; border-radius: 6px; min-width: 240px; }
+    ` }));
+  }
+  function openTool_() {
+    injectCss_(); try { jboActOpen_(MODULE_ID); } catch (e) { /* ignore */ }
+    const S = { rep: null, busy: false, stop: false, q: '', includeOff: false, personal: true, salary: true, docs: true, limit: '', loc: I.isAr() ? 'ar' : 'en' };
+    const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
+    const titleEl = el('div', { class: 'jbo-modal-title', text: T('Employee data and documents export', 'تصدير بيانات الموظفين ومستنداتهم') }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': 'Close' });
+    const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1000px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
+    const backdrop = el('div', { class: 'jbo-backdrop jbo-i18n-root' }, [modal]);
+    const close = () => { S.stop = true; backdrop.remove(); };
+    closeBtn.addEventListener('click', close); backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+    const noteEl = el('div', { class: 'jbo-muted', style: { margin: '6px 0', minHeight: '16px', whiteSpace: 'pre-line' } });
+    const setNote = (t, err) => { noteEl.textContent = t; noteEl.style.color = err ? '#a50e0e' : ''; };
+    const stopB = el('button', { class: 'jbo-btn', text: T('Stop', 'إيقاف') }); const mainB = el('button', { class: 'jbo-btn jbo-btn-primary', text: T('Read the data', 'اقرأ البيانات') });
+    foot.appendChild(stopB); foot.appendChild(mainB); stopB.style.display = 'none';
+    stopB.addEventListener('click', () => { S.stop = true; setNote(T('Stopping…', 'جارٍ الإيقاف…')); });
+
+    function renderResult(wrap) {
+      const rep = S.rep; const docs = []; rep.emps.forEach((e) => e.data.docs.forEach((d) => docs.push(d)));
+      const withFile = docs.filter((d) => d.hasFile).length; const empsWith = rep.emps.filter((e) => e.docCount > 0).length; const bad = rep.emps.filter((e) => e.data.problems.length).length;
+      const cards = el('div', { class: 'jed-cards' }); const mk = (n, l) => cards.appendChild(el('div', { class: 'jed-card' }, [el('b', { text: String(n) }), el('span', { text: l })]));
+      mk(rep.emps.length, T('Employees read', 'موظفون قُرئوا')); mk(empsWith, T('With a document file', 'لديهم ملف مستند')); mk(withFile, T('Document files with a link', 'ملفات لها رابط')); mk(rep.emps.length - empsWith, T('Without any document file', 'بلا ملف مستند')); mk(bad, T('Could not read fully', 'تعذّرت قراءتهم كاملًا'));
+      wrap.appendChild(cards);
+      if (rep.skipped.length) wrap.appendChild(el('div', { class: 'jed-note', text: rep.skipped.map((k) => ST()[k]).join(', ') + T(': Jisr refused these for your account, so they are empty in the file.', ': رفض جسر قراءتها لحسابك، لذا هي فارغة في الملف.') }));
+      const q = el('input', { type: 'text', value: S.q, placeholder: T('Search name or code…', 'ابحث بالاسم أو الرقم…') }); q.addEventListener('input', () => { S.q = q.value; renderTable(); });
+      wrap.appendChild(el('div', { class: 'jed-bar' }, [q])); const holder = el('div', { class: 'jed-scroll' }); wrap.appendChild(holder);
+      function renderTable() {
+        holder.textContent = ''; const needle = S.q.trim().toLowerCase(); const list = rep.emps.filter((e) => !needle || (e.name + ' ' + e.code).toLowerCase().includes(needle));
+        const tb = el('table', { class: 'jed-tbl' }, [el('tr', {}, [T('Code', 'الرقم'), T('Name', 'الاسم'), T('Fields', 'الحقول'), T('Document files', 'ملفات المستندات'), T('Could not read', 'تعذّرت قراءته')].map((h) => el('th', { text: h })))]);
+        list.slice(0, 200).forEach((e) => tb.appendChild(el('tr', {}, [el('td', { text: e.code }), el('td', { text: e.name }), el('td', { text: String(e.data.fields.length) }), el('td', { text: String(e.docCount) }), el('td', { class: e.data.problems.length ? 'jed-bad' : '', text: e.data.problems.join('; ') })])));
+        holder.appendChild(tb); if (list.length > 200) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px 8px' }, text: T('Showing the first 200 of ', 'يعرض أول 200 من ') + list.length + T('. The Excel file has everyone.', '. ملف Excel فيه الجميع.') }));
+        if (!list.length) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '8px' }, text: T('Nobody matches.', 'لا أحد مطابق.') }));
+      }
+      renderTable();
+    }
+    function render() {
+      body.textContent = '';
+      body.appendChild(el('div', { class: 'jed-note', text: T('Reads every employee\'s profile data and every document on the profile (name, type, details, dates, status) with a link to open each file, and builds one Excel file. It only reads; nothing is changed in Jisr. The links are temporary Jisr links, so open them soon, or build the file again for fresh ones.', 'يقرأ بيانات ملف كل موظف وكل مستند في الملف (الاسم والنوع والتفاصيل والتواريخ والحالة) مع رابط لفتح كل ملف، ويبني ملف Excel واحدًا. يقرأ فقط ولا يغيّر شيئًا في جسر. الروابط مؤقتة من جسر، فافتحها قريبًا أو أعد بناء الملف للحصول على روابط جديدة.') }));
+      const cb = (key, text) => { const c = el('input', { type: 'checkbox' }); c.checked = !!S[key]; c.disabled = S.busy; c.addEventListener('change', () => { S[key] = c.checked; }); return el('label', {}, [c, ' ' + text]); };
+      const lim = el('input', { type: 'number', min: '1', value: S.limit, placeholder: T('all', 'الكل'), 'aria-label': T('Only the first employees', 'أول عدد من الموظفين فقط') }); lim.disabled = S.busy; lim.addEventListener('input', () => { S.limit = lim.value; });
+      const loc = el('select', {}, [el('option', { value: 'en', text: 'English' }), el('option', { value: 'ar', text: 'العربية' })]); loc.value = S.loc; loc.disabled = S.busy; loc.addEventListener('change', () => { S.loc = loc.value; });
+      body.appendChild(el('div', { class: 'jed-opts' }, [cb('docs', T('Documents (files with their links, ID / Iqama and passport details)', 'المستندات (الملفات مع روابطها وبيانات الهوية / الإقامة والجواز)')), cb('personal', T('Personal and organization details', 'البيانات الشخصية والتنظيمية')),
+        cb('salary', T('Salary and financial details', 'الراتب والبيانات المالية')), cb('includeOff', T('Include offboarded employees', 'تضمين الموظفين المنتهية خدماتهم')),
+        el('div', { class: 'jed-row' }, [el('label', {}, [T('Values in ', 'القيم بـ '), loc]), el('label', {}, [T('Only the first ', 'أول '), lim, T(' employees (to try it first)', ' موظفين فقط (للتجربة أولًا)')])])]));
+      body.appendChild(noteEl);
+      if (S.rep) { const wrap = el('div', {}); renderResult(wrap); body.appendChild(wrap); }
+      mainB.textContent = S.rep && !S.busy ? T('Download Excel', 'نزّل ملف Excel') : T('Read the data', 'اقرأ البيانات');
+    }
+    async function buildNow() {
+      if (S.busy) return; S.busy = true; S.stop = false; S.rep = null; mainB.disabled = true; stopB.style.display = ''; LOCALE = S.loc === 'ar' ? 'ar' : 'en'; render();
+      try {
+        const lim = parseInt(S.limit, 10); const rep = await build_({ includeOffboarded: S.includeOff, limit: lim > 0 ? lim : 0, personal: S.personal, salary: S.salary, docs: S.docs }, { progress: (t) => setNote(t), stopped: () => S.stop });
+        S.rep = rep; setNote(rep.stoppedEarly ? T('Stopped: the file has only the employees read so far.', 'أُوقف: الملف يحوي الموظفين الذين قُرئوا فقط.') : T('Done. Check the numbers, then download the Excel file.', 'تم. راجع الأرقام ثم نزّل ملف Excel.'));
+      } catch (e) { setNote(String(e.message || e).slice(0, 240), true); }
+      finally { S.busy = false; mainB.disabled = false; stopB.style.display = 'none'; render(); }
+    }
+    mainB.addEventListener('click', () => {
+      if (S.rep && !S.busy) { try { const name = download_(S.rep); setNote(T('Saved: ', 'حُفظ: ') + name); } catch (e) { setNote(String(e.message || e).slice(0, 200), true); } return; }
+      buildNow();
+    });
+    render();
+  }
+
+  function register_() {
+    const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
+    g.modules[MODULE_ID] = { title: 'Employee Data & Documents Export', open: openTool_, version: SECTION_VERSION };
+    W.__jisrEmpDataExport = { build_, workbook_, readEmployee_, fieldsOf_, docsFromTab_, docsFromFiles_, linkInfo_, flatten_: fieldsOf_, employeeRows_, docRows_, fieldRows_, summary_, empOf_, cfg, label_, refText_, cell_ };
+    if (g._rerender) g._rerender();
+  }
+  register_();
+})();
+
+
 // v4.37: opening any employee tool starts loading the shared employee list (with Iqama numbers) in the background,
 // so an uploaded file can use Employee ID, Iqama or name as the reference.
 (function () {
-  const W = unsafeWindow, SKIP = /^(activation-checklist|core-hr-flow|letter-converter|letter-templates|attendance-log-converter|performance-templates|performance-drafts|approval-cycles|job-titles-bulk|departments-bulk|locations-bulk|locations-onboarding)$/;
+  const W = unsafeWindow, SKIP = /^(activation-checklist|core-hr-flow|letter-converter|letter-templates|attendance-log-converter|performance-templates|performance-drafts|approval-cycles|job-titles-bulk|departments-bulk|locations-bulk|locations-onboarding|employee-data-export)$/;
   try {
     const mods = (W.__jisrBulkOps && W.__jisrBulkOps.modules) || {};
     Object.keys(mods).forEach((id) => {
