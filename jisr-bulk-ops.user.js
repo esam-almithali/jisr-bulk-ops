@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jisr Bulk Ops
 // @namespace    jisr-bulk-ops
-// @version      4.122.0
+// @version      4.122.1
 // @description  All Jisr bulk tools in one script behind one floating "J" button: Employee ID, Roles & Permissions, Salary Increment, Suspend Payrun, GOSI, Locations & Areas, Job Titles, Payroll Reconciliation, Employee Contracts, Departments, Employee Groups & Business Units, Attendance Log Converter, GOSI Compliance export & salary check, Cancel Transactions & Loans, Employee Documents, Bulk Offboarding, Bulk Final Settlement, Bulk Payroll Transactions, Bulk Cancel Leave Requests, Fixed Working Hours, Jisr Letter Converter, and Export Everything. The tools follow the Jisr page language (English/Arabic). Each tool supports an Excel template round trip and a one-by-one table, with Dry Run before any live write.
 // @match        https://*.jisr.net/*
 // @exclude      https://jisr.jisr.net/*
@@ -173,12 +173,12 @@ function jboLaws_(modal, tool, T) {
 const jboAct_ = { tool: '', at: 0, buf: [], timer: null, sent: 0, failed: 0, lastError: '', lastOk: 0, warned: false };
 function jboActCfg_() { let u = null, k = null; try { u = jboSecureGet_('backendUrl'); k = jboSecureGet_('backendWriteKey'); } catch (e) { /* ignore */ } return { url: u, key: k }; }
 function jboActSlug_() { try { return location.hostname.split('.')[0]; } catch (e) { return ''; } }
-// v4.122.0: new tool Employee Data & Documents Export (Section 56, id employee-data-export): every employee's profile data and every document on the profile (name, type, details, dates, status, a link to open each file) in one Excel file. Read only.
+// v4.122.1: new tool Employee Data & Documents Export (Section 56, id employee-data-export): every employee's profile data and every document on the profile (name, type, details, dates, status, a link to open each file) in one Excel file. Read only.
 // ======================================================================= v4.121.0: roles and permissions (which tools this key may open)
 // The owner of the dashboard can limit a personal key to some tools. POST <dashboard>/api/access answers { tools: null | [tool ids], requests: [...] }; null = every
 // tool, which is how every key worked before. The answer is kept in this browser, so a locked tool stays locked offline. When the dashboard has never answered (no address, the
 // shared key, no network) nothing is locked: a network hiccup must not lock a whole team out. This is an access-control layer, not a vault: the same signed script goes to every valid key.
-const JBO_VERSION_ = '4.122.0';   // keep equal to @version: the dashboard accepts the tool list only from the published version
+const JBO_VERSION_ = '4.122.1';   // keep equal to @version: the dashboard accepts the tool list only from the published version
 const JBO_ALWAYS_ = ['activation-checklist'];
 const jboAccess_ = { tools: null, requests: [], at: 0, busy: false, sentCatalog: false, catalogFn: null, told: null, listeners: [], loaded: false, name: '' };
 function jboFp_(s) { let h = 5381; s = String(s || ''); for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return String(h >>> 0); }
@@ -61269,12 +61269,12 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
 
 
 // ###########################################################################
-// ##### SECTION 56 — Employee Data & Documents Export (every employee's profile data + every document, with its link)  v4.122.0
+// ##### SECTION 56 — Employee Data & Documents Export (every employee's profile data + every document, with its link)  v4.122.1
 // ###########################################################################
 
 /*
  * ===========================================================================
- * SECTION 56 — Employee Data & Documents Export  v4.122.0
+ * SECTION 56 — Employee Data & Documents Export  v4.122.1
  * ---------------------------------------------------------------------------
  * One Excel file: a row per employee with everything Jisr shows on the profile, and a Documents sheet with one row per file (name, type, details,
  * dates, status, size and a clickable link to open it). READ ONLY: every call is a GET; nothing is saved in the browser or sent anywhere else.
@@ -61297,13 +61297,13 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
  */
 (function () {
   'use strict';
-  const SECTION_VERSION = '4.122.0';
+  const SECTION_VERSION = '4.122.1';
   const MODULE_ID = 'employee-data-export';
   const W = unsafeWindow;
   const I = W.__jisrBulkOpsI18n || { isAr: () => false, t: (en) => en, onChange: () => () => {} };
   const T = (en, ar) => I.t(en, ar);
   const sleep_ = (ms) => new Promise((r) => setTimeout(r, ms));
-  const cfg = { rpp: 100, workers: 3, maxPages: 120, cellMax: 32000, linkMax: 2000, fieldsMax: 900, wideMax: 300, filePages: 10 };
+  const cfg = { rpp: 100, workers: 3, maxPages: 120, cellMax: 32000, linkMax: 2000, fieldsMax: 900, wideMax: 1000, filePages: 10 };
   let LOCALE = 'en';
 
   // ======================================================================= network (GET only)
@@ -61401,12 +61401,16 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   }
 
   // ======================================================================= documents
-  function findAttachments_(json) {
-    let out = null;
+  /** Every `attachments` array in a response (the profile can hold more than one), each item once. */
+  function allAttachments_(json) {
+    const out = []; const seen = new Set();
     (function walk(v, d) {
-      if (out || !v || typeof v !== 'object' || d > 6) return;
-      if (Array.isArray(v.attachments) && v.attachments.every((a) => a && typeof a === 'object')) { out = v.attachments; return; }
-      Object.keys(v).forEach((k) => walk(v[k], d + 1));
+      if (!v || typeof v !== 'object' || d > 7) return;
+      Object.keys(v).forEach((k) => {
+        const x = v[k];
+        if (k === 'attachments' && Array.isArray(x)) x.forEach((a) => { if (!a || typeof a !== 'object') return; const key = a.id != null ? 'id' + a.id : JSON.stringify(a).slice(0, 200); if (!seen.has(key)) { seen.add(key); out.push(a); } });
+        else if (x && typeof x === 'object') walk(x, d + 1);
+      });
     })(json, 0);
     return out;
   }
@@ -61450,68 +61454,70 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   /** One document row. */
   function docRow_(e, o) {
     const li = linkInfo_(o.url);
-    return { code: e.code, name: e.name, nid: e.nid, source: o.source || '', type: o.type || '', file: o.file || '', details: o.details || '', number: o.number || '', issue: dateOf_(o.issue), expiry: dateOf_(o.expiry), status: o.status || '',
+    return { code: e.code, name: e.name, nid: e.nid, dept: e.dept, loc: e.loc, manager: e.manager, job: e.job, source: o.source || '', type: o.type || '', file: o.file || '', details: o.details || '', number: o.number || '', issue: dateOf_(o.issue), expiry: dateOf_(o.expiry), status: o.status || '',
       size: o.size === '' || o.size == null ? '' : o.size, ctype: o.ctype || '', added: dateOf_(o.added), url: li.url, until: li.until, signed: li.signed, hasFile: !!li.url };
   }
   const IDENT = {
     id_iqama: { number: 'document_number', issue: 'iqama_issue_date', expiry: 'iqama_expiry_date', place: 'iqama_issue_place' },
     passport: { number: 'passport_number', issue: 'passport_issue_date', expiry: 'passport_expiry_date', place: 'passport_issue_place' },
   };
-  /** The documents tab -> rows: every identification attachment, plus the ID / Iqama and Passport details even when no file was uploaded; any other link found there. */
-  function docsFromTab_(e, json) {
-    const rows = []; const used = new Set(); const atts = findAttachments_(json) || []; const ident = findIdent_(json) || {};
-    const hasCat = new Set();
-    atts.forEach((a) => {
-      if (!a || typeof a !== 'object') return;
-      const cat = String(a.category || ''); const m = IDENT[cat]; hasCat.add(cat);
-      const url = a.file_url || a.url || ''; if (url) used.add(url);
-      rows.push(docRow_(e, { source: T('Identification', 'الهوية'), type: txt_(a.category_i18n) || human_(cat), file: String(a.file_name || a.name || ''), details: String(a.description || '').trim() + (m && ident[m.place] ? ((a.description ? ' · ' : '') + T('Place: ', 'مكان الإصدار: ') + ident[m.place]) : ''),
-        number: m ? String(ident[m.number] == null ? '' : ident[m.number]) : '', issue: m ? ident[m.issue] : '', expiry: m ? ident[m.expiry] : '', status: txt_(a.status_i18n) || String(a.status || ''), size: kb_(a.size || a.file_size), ctype: String(a.content_type || ''), added: a.created_at || '', url }));
+  const LINKKEY = /^(file_url|download_url|document_url|attachment_url|file_link|link|url|href|file)$/i;
+  const NOTDOC = /avatar|photo|picture|logo|thumbnail/i;
+  /** A response -> document rows. Any `attachments` list (ID / Iqama, Passport, National Address, any other category), the ID / Iqama and Passport details even with no file
+   *  (documents tab only), and any other file link found anywhere in it (found by its key, never guessed). ctx: { used: Set of links already listed, docs: is this the documents tab, tab: its title } */
+  function docsFromTab_(e, json, ctx) {
+    ctx = ctx || { used: new Set(), docs: true, tab: T('Profile', 'الملف') };
+    const rows = []; const used = ctx.used; const ident = ctx.docs ? (findIdent_(json) || {}) : {}; const hasCat = new Set(); const src = T('Profile document', 'مستند الملف');
+    allAttachments_(json).forEach((a) => {
+      const cat = String(a.category || ''); const m = ctx.docs ? IDENT[cat] : null; hasCat.add(cat);
+      const url = a.file_url || a.url || ''; if (url) { if (used.has(url)) return; used.add(url); }
+      const place = m && ident[m.place] ? T('Place: ', 'مكان الإصدار: ') + ident[m.place] : '';
+      rows.push(docRow_(e, { source: src, type: txt_(a.category_i18n) || txt_(a.file_type) || (cat ? human_(cat) : ''), file: String(a.file_name || a.filename || a.name || ''), details: [String(a.description || '').trim(), place].filter(Boolean).join(' · '),
+        number: m ? String(ident[m.number] == null ? '' : ident[m.number]) : '', issue: m ? ident[m.issue] : (a.issue_date || ''), expiry: m ? ident[m.expiry] : (a.expiry_date || ''), status: txt_(a.status_i18n) || String(a.status || ''), size: kb_(a.size || a.file_size), ctype: String(a.content_type || ''), added: a.created_at || '', url }));
     });
-    Object.keys(IDENT).forEach((cat) => {
+    if (ctx.docs) Object.keys(IDENT).forEach((cat) => {
       if (hasCat.has(cat)) return; const m = IDENT[cat];
-      if (ident[m.number] || ident[m.expiry]) rows.push(docRow_(e, { source: T('Identification', 'الهوية'), type: cat === 'passport' ? T('Passport', 'جواز السفر') : T('Id/Iqama', 'الهوية / الإقامة'), file: '', details: T('Details only, no file uploaded', 'بيانات فقط، لم يُرفع ملف') + (ident[m.place] ? ' · ' + T('Place: ', 'مكان الإصدار: ') + ident[m.place] : ''),
+      if (ident[m.number] || ident[m.expiry]) rows.push(docRow_(e, { source: src, type: cat === 'passport' ? T('Passport', 'جواز السفر') : T('Id/Iqama', 'الهوية / الإقامة'), file: '', details: T('Details only, no file uploaded', 'بيانات فقط، لم يُرفع ملف') + (ident[m.place] ? ' · ' + T('Place: ', 'مكان الإصدار: ') + ident[m.place] : ''),
         number: String(ident[m.number] == null ? '' : ident[m.number]), issue: ident[m.issue], expiry: ident[m.expiry], status: '', url: '' }));
     });
-    // any other file link on the tab (a document type this tool does not know yet): found by its key, never guessed
     const extra = [];
-    (function walk(v, d, sib) {
-      if (!v || typeof v !== 'object' || d > 7) return;
-      if (Array.isArray(v)) { v.forEach((x) => walk(x, d + 1, sib)); return; }
+    (function walk(v, d, path) {
+      if (!v || typeof v !== 'object' || d > 8) return;
+      if (Array.isArray(v)) { v.forEach((x) => walk(x, d + 1, path)); return; }
       Object.keys(v).forEach((k) => {
         const x = v[k];
-        if (typeof x === 'string' && /^(file_url|download_url|document_url|url)$/i.test(k) && /^(https?:)?\/\/|^\//.test(x) && !used.has(x)) extra.push({ url: x, name: String(v.file_name || v.name || v.title || ''), type: txt_(v.category_i18n) || txt_(v.type) || String(v.category || '') });
-        else if (x && typeof x === 'object') walk(x, d + 1, v);
+        if (typeof x === 'string' && LINKKEY.test(k) && /^(https?:)?\/\/|^\/[^\s]/.test(x) && !NOTDOC.test(path + '.' + k)) extra.push({ url: x, name: String(v.file_name || v.filename || v.name || v.title || ''), type: txt_(v.category_i18n) || txt_(v.file_type) || txt_(v.type) || String(v.category || ''), details: String(v.description || '').trim(), expiry: v.expiry_date || v.expires_at || '', status: txt_(v.status_i18n) || (typeof v.status === 'string' ? v.status : ''), added: v.created_at || '' });
+        else if (x && typeof x === 'object') walk(x, d + 1, path + '.' + k);
       });
-    })(rootOf_(json), 0, null);
-    extra.forEach((x) => { if (used.has(x.url)) return; used.add(x.url); rows.push(docRow_(e, { source: T('Documents tab', 'تبويب المستندات'), type: x.type, file: x.name, url: x.url })); });
+    })(rootOf_(json), 0, '');
+    extra.forEach((x) => { if (used.has(x.url)) return; used.add(x.url); rows.push(docRow_(e, { source: ctx.tab, type: x.type, file: x.name, details: x.details, expiry: x.expiry, status: x.status, added: x.added, url: x.url })); });
     return rows;
   }
   /** employment files (the company's own document types) -> rows, one per file. */
-  function docsFromFiles_(e, json) {
-    const rows = [];
+  function docsFromFiles_(e, json, used) {
+    const rows = []; used = used || new Set();
     findFileRecords_(json).forEach((r) => {
       const ft = r.file_type || r.employment_file_type || {}; const type = txt_(ft.name_i18n) || txt_(ft) || String(ft.name || '') || '';
       const files = Array.isArray(r.files) && r.files.length ? r.files : [null];
-      files.forEach((f) => rows.push(docRow_(e, { source: T('Employee file', 'ملف الموظف'), type, file: f ? String(f.name || f.filename || f.file_name || '') : '', details: String(r.description || '').trim(), expiry: r.expiry_date,
-        status: txt_(r.status_i18n) || String(r.status || ''), size: f ? kb_(f.size) : '', ctype: f ? String(f.content_type || '') : '', added: r.created_at || r.uploaded_at || '', url: f ? (f.url || f.file_url || '') : '' })));
+      files.forEach((f) => { const u = f ? (f.url || f.file_url || '') : ''; if (u && used.has(u)) return; if (u) used.add(u); rows.push(docRow_(e, { source: T('Employee file', 'ملف الموظف'), type, file: f ? String(f.name || f.filename || f.file_name || '') : '', details: String(r.description || '').trim(), expiry: r.expiry_date,
+        status: txt_(r.status_i18n) || String(r.status || ''), size: f ? kb_(f.size) : '', ctype: f ? String(f.content_type || '') : '', added: r.created_at || r.uploaded_at || '', url: u })); });
     });
     return rows;
   }
 
   // ======================================================================= reading everything
   const TABS = () => [
-    { key: 'main', opt: 'main', pairs: [], title: T('Main profile', 'الملف الأساسي') },
-    { key: 'personal', opt: 'personal', pairs: [['profile_tab', 'personal_and_organization']], title: T('Personal and organization', 'البيانات الشخصية والتنظيمية') },
-    { key: 'salary', opt: 'salary', pairs: [['profile_tab', 'salary_and_financial']], title: T('Salary and financial', 'الراتب والبيانات المالية') },
-    { key: 'documents', opt: 'docs', pairs: [['profile_tab', 'documents']], title: T('Documents tab', 'تبويب المستندات') },
+    { key: 'main', want: (o) => o.allInfo, pairs: [], title: T('Main profile', 'الملف الأساسي') },
+    { key: 'personal', want: (o) => o.allInfo && o.personal, pairs: [['profile_tab', 'personal_and_organization']], title: T('Personal and organization', 'البيانات الشخصية والتنظيمية') },
+    { key: 'salary', want: (o) => o.allInfo && o.salary, pairs: [['profile_tab', 'salary_and_financial']], title: T('Salary and financial', 'الراتب والبيانات المالية') },
+    { key: 'documents', want: (o) => o.docs, pairs: [['profile_tab', 'documents']], title: T('Documents tab', 'تبويب المستندات') },
   ];
-  /** Reads one employee. opts: { personal, salary, docs }; shared: { denied: {tab: n}, skip: {tab: true}, okSeen: {tab: true} }. -> { fields: [{section, label, path, value}], docs: [], problems: [] } */
+  /** Reads one employee. opts: { docs, allInfo, personal, salary }; shared: { denied: {tab: n}, skip: {tab: true}, okSeen: {tab: true} }. -> { fields: [{section, label, path, value}], docs: [], problems: [] } */
   async function readEmployee_(e, opts, shared) {
-    const out = { fields: [], docs: [], problems: [], tabs: {} }; const seen = new Set();
+    const out = { fields: [], docs: [], problems: [], tabs: {} }; const seen = new Set(); const used = new Set();
     const id = encodeURIComponent(e.id);
     for (const t of TABS()) {
-      if (t.opt !== 'main' && !opts[t.opt]) continue; if (shared.skip[t.key]) { out.tabs[t.key] = 'skipped'; continue; }
+      if (!t.want(opts)) continue; if (shared.skip[t.key]) { out.tabs[t.key] = 'skipped'; continue; }
       let r;
       try { r = await get_('/v2/employees/' + id, t.pairs); }
       catch (er) {
@@ -61521,8 +61527,8 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       }
       if (!r.ok) { out.problems.push(t.title + ': HTTP ' + r.status); out.tabs[t.key] = 'failed'; continue; }
       shared.okSeen[t.key] = true; out.tabs[t.key] = 'ok';
-      fieldsOf_(r.json).forEach((f) => { const k = f.label + '\u0001' + f.value; if (seen.has(k)) return; seen.add(k); out.fields.push({ section: t.title, label: f.label, path: f.path, value: f.value }); });
-      if (t.key === 'documents') out.docs = out.docs.concat(docsFromTab_(e, r.json));
+      if (opts.allInfo) fieldsOf_(r.json).forEach((f) => { const k = f.label + '\u0001' + f.value; if (seen.has(k)) return; seen.add(k); out.fields.push({ section: t.title, label: f.label, path: f.path, value: f.value }); });
+      if (opts.docs || t.key !== 'documents') out.docs = out.docs.concat(docsFromTab_(e, r.json, { used, docs: t.key === 'documents', tab: t.title }));
     }
     if (opts.docs) {
       if (shared.skip.files) out.tabs.files = 'skipped';
@@ -61538,7 +61544,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
             break;
           }
           if (!r.ok) { ok = false; out.problems.push(ftitle + ': HTTP ' + r.status); out.tabs.files = 'failed'; break; }
-          shared.okSeen.files = true; out.docs = out.docs.concat(docsFromFiles_(e, r.json));
+          shared.okSeen.files = true; out.docs = out.docs.concat(docsFromFiles_(e, r.json, used));
           const pg = r.json && r.json.data && r.json.data.pagination; if (!pg || !pg.next_page) break;
         }
         if (ok) out.tabs.files = 'ok';
@@ -61567,57 +61573,67 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     await Promise.all(Array.from({ length: cfg.workers }, worker));
     if (authErr) throw authErr;
     const read = emps.filter((e) => e.data);
-    read.forEach((e) => { e.docCount = e.data.docs.filter((d) => d.hasFile).length; });
+    read.forEach((e) => { const fr = e.data.docs.filter((d) => d.hasFile); e.docCount = fr.length; e.docTypes = Array.from(new Set(fr.map((d) => d.type).filter(Boolean))).join(', '); });
     return { emps: read, total, at: new Date(), opts, stoppedEarly: stopped() && read.length < total, skipped: Object.keys(shared.skip) };
   }
 
   // ======================================================================= the file
   const ST = () => ({ main: T('Main profile', 'الملف الأساسي'), personal: T('Personal and organization', 'البيانات الشخصية والتنظيمية'), salary: T('Salary and financial', 'الراتب والبيانات المالية'), documents: T('Documents tab', 'تبويب المستندات'), files: T('Employee files', 'ملفات الموظف') });
-  const MAINHEAD = () => [T('Code', 'الرقم'), T('Full name', 'الاسم'), T('Employment status', 'حالة الموظف'), T('ID / Iqama number', 'رقم الهوية / الإقامة'), T('Email', 'البريد'), T('Phone', 'الجوال'), T('Job title', 'المسمى الوظيفي'), T('Department', 'القسم'), T('Location', 'الموقع'),
-    T('Line manager', 'المدير المباشر'), T('Employment type', 'نوع التوظيف'), T('Nationality', 'الجنسية'), T('Gender', 'الجنس'), T('Joining date', 'تاريخ الانضمام')];
-  const mainRow_ = (e) => [e.code, e.name, e.statusText || e.state, e.nid, e.email, e.phone, e.job, e.dept, e.loc, e.manager, e.empType, e.nationality, e.gender, e.joined];
-  /** The wide Employees sheet: the list columns, then Documents, Not read, then one column per field found (first-seen order, capped). */
+  /** The basic information, in the order people look for it. */
+  const MAINHEAD = () => [T('Code', 'الرقم'), T('Full name', 'الاسم'), T('ID / Iqama number', 'رقم الهوية / الإقامة'), T('Job title', 'المسمى الوظيفي'), T('Department', 'القسم'), T('Location', 'الموقع'), T('Line manager', 'المدير المباشر'), T('Employment status', 'حالة الموظف'),
+    T('Employment type', 'نوع التوظيف'), T('Nationality', 'الجنسية'), T('Gender', 'الجنس'), T('Joining date', 'تاريخ الانضمام'), T('Email', 'البريد'), T('Phone', 'الجوال')];
+  const mainRow_ = (e) => [e.code, e.name, e.nid, e.job, e.dept, e.loc, e.manager, e.statusText || e.state, e.empType, e.nationality, e.gender, e.joined, e.email, e.phone];
+  const EMPCOLS = 7;   // code, name, ID / Iqama, job title, department, location, line manager: repeated on every Documents row
+  /** Sheet 1: one row per employee, the basic information, and how many documents the employee has (and which kinds). */
   function employeeRows_(rep) {
-    const cols = []; const colIx = new Map(); const labelSecs = new Map();
-    rep.emps.forEach((e) => e.data.fields.forEach((f) => { const k = f.section + '\u0001' + f.label; if (!colIx.has(k)) { colIx.set(k, cols.length); cols.push({ k, label: f.label, section: f.section }); const s = labelSecs.get(f.label) || new Set(); s.add(f.section); labelSecs.set(f.label, s); } }));
-    const cut = cols.length > cfg.wideMax; const use = cols.slice(0, cfg.wideMax);
-    const head = MAINHEAD().concat([T('Documents with a file', 'مستندات بملف'), T('Could not read', 'تعذّرت قراءته')]).concat(use.map((c) => (labelSecs.get(c.label).size > 1 ? c.label + ' (' + c.section + ')' : c.label)));
-    const rows = rep.emps.map((e) => {
-      const r = mainRow_(e).concat([e.docCount, e.data.problems.join('; ')]); const vals = new Array(use.length).fill('');
-      e.data.fields.forEach((f) => { const ix = colIx.get(f.section + '\u0001' + f.label); if (ix != null && ix < use.length) vals[ix] = f.value; });
-      return r.concat(vals);
-    });
-    return { head, rows, cut, total: cols.length };
+    const withDocs = !!rep.opts.docs;
+    const head = MAINHEAD().concat(withDocs ? [T('Number of documents', 'عدد المستندات'), T('Document types', 'أنواع المستندات')] : []).concat([T('Could not read', 'تعذّرت قراءته')]);
+    const rows = rep.emps.map((e) => mainRow_(e).concat(withDocs ? [e.docCount, e.docTypes] : []).concat([e.data.problems.join('; ')]));
+    return { head, rows };
   }
-  const DOCHEAD = () => [T('Code', 'الرقم'), T('Employee', 'الموظف'), T('ID / Iqama number', 'رقم الهوية / الإقامة'), T('Source', 'المصدر'), T('Document type', 'نوع المستند'), T('Document name', 'اسم المستند'), T('Details', 'التفاصيل'), T('Document number', 'رقم المستند'),
-    T('Issue date', 'تاريخ الإصدار'), T('Expiry date', 'تاريخ الانتهاء'), T('Status', 'الحالة'), T('Size (KB)', 'الحجم (ك.ب)'), T('Added', 'تاريخ الإضافة'), T('Open', 'فتح'), T('Link valid until', 'الرابط صالح حتى'), T('Link', 'الرابط')];
-  const LINKCOL = 13;
+  const DOCHEAD = () => MAINHEAD().slice(0, EMPCOLS).concat([T('Source', 'المصدر'), T('Document type', 'نوع المستند'), T('Document name', 'اسم المستند'), T('Details', 'التفاصيل'), T('Document number', 'رقم المستند'),
+    T('Issue date', 'تاريخ الإصدار'), T('Expiry date', 'تاريخ الانتهاء'), T('Status', 'الحالة'), T('Size (KB)', 'الحجم (ك.ب)'), T('Added', 'تاريخ الإضافة'), T('Open', 'فتح'), T('Link valid until', 'الرابط صالح حتى'), T('Link', 'الرابط')]);
+  const linkCol_ = () => DOCHEAD().length - 3;   // the "Open" column
+  /** Sheet 2: one row per document, with the employee's details in front of it. */
   function docRows_(rep) {
     const rows = []; rep.emps.forEach((e) => e.data.docs.forEach((d) => rows.push(d)));
-    const aoa = rows.map((d) => [d.code, d.name, d.nid, d.source, d.type, d.file, d.details, d.number, d.issue, d.expiry, d.status, d.size, d.added, d.url ? T('Open', 'فتح') : '', d.until || (d.url ? (d.signed ? T('Signed link, expiry not shown', 'رابط موقّع، لا يظهر الانتهاء') : T('No expiry in the link', 'لا انتهاء في الرابط')) : ''), cap_(d.url)]);
+    const aoa = rows.map((d) => [d.code, d.name, d.nid, d.job, d.dept, d.loc, d.manager, d.source, d.type, d.file, d.details, d.number, d.issue, d.expiry, d.status, d.size, d.added, d.url ? T('Open', 'فتح') : '', d.until || (d.url ? (d.signed ? T('Signed link, expiry not shown', 'رابط موقّع، لا يظهر الانتهاء') : T('No expiry in the link', 'لا انتهاء في الرابط')) : ''), cap_(d.url)]);
     return { head: DOCHEAD(), aoa, rows };
   }
-  function fieldRows_(rep) {
-    const head = [T('Code', 'الرقم'), T('Employee', 'الموظف'), T('Section', 'القسم'), T('Field', 'الحقل'), T('Value', 'القيمة'), T('Jisr key', 'مفتاح جسر')]; const rows = [];
-    rep.emps.forEach((e) => e.data.fields.forEach((f) => rows.push([e.code, e.name, f.section, f.label, f.value, f.path])));
-    return { head, rows };
+  /** Optional sheet: every field Jisr returned, one column each (first-seen order), after the code and the name. */
+  function allInfoRows_(rep) {
+    const cols = []; const colIx = new Map(); const labelSecs = new Map();
+    rep.emps.forEach((e) => e.data.fields.forEach((f) => { const k = f.section + '\u0001' + f.label; if (!colIx.has(k)) { colIx.set(k, cols.length); cols.push({ k, label: f.label, section: f.section }); const x = labelSecs.get(f.label) || new Set(); x.add(f.section); labelSecs.set(f.label, x); } }));
+    const cut = cols.length > cfg.wideMax; const use = cols.slice(0, cfg.wideMax);
+    const head = [T('Code', 'الرقم'), T('Full name', 'الاسم')].concat(use.map((c) => (labelSecs.get(c.label).size > 1 ? c.label + ' (' + c.section + ')' : c.label)));
+    const rows = rep.emps.map((e) => { const vals = new Array(use.length).fill(''); e.data.fields.forEach((f) => { const ix = colIx.get(f.section + '\u0001' + f.label); if (ix != null && ix < use.length) vals[ix] = f.value; }); return [e.code, e.name].concat(vals); });
+    return { head, rows, cut, total: cols.length };
   }
   function summary_(rep) {
     const a = []; const docs = []; rep.emps.forEach((e) => e.data.docs.forEach((d) => docs.push(d)));
     const withFile = docs.filter((d) => d.hasFile); const empsWith = rep.emps.filter((e) => e.docCount > 0).length; const bad = rep.emps.filter((e) => e.data.problems.length);
-    const tooLong = withFile.filter((d) => d.url.length > cfg.linkMax).length; const er = employeeRows_(rep); const S = ST();
+    const tooLong = withFile.filter((d) => d.url.length > cfg.linkMax).length; const S = ST(); const o = rep.opts;
     a.push([T('Employee data and documents', 'بيانات الموظفين ومستنداتهم')]); a.push([T('Company', 'الشركة'), slug_()]); a.push([T('Built on', 'أُعدّ في'), stamp_(rep.at)]);
-    a.push([T('Employees included', 'الموظفون المشمولون'), rep.opts.includeOffboarded ? T('Active and offboarded', 'على رأس العمل والمنتهية خدماتهم') : T('Active only', 'على رأس العمل فقط')]);
-    a.push([T('Parts read', 'الأجزاء المقروءة'), [T('Main profile', 'الملف الأساسي')].concat(rep.opts.personal ? [S.personal] : []).concat(rep.opts.salary ? [S.salary] : []).concat(rep.opts.docs ? [S.documents, S.files] : []).join(', ')]); a.push([]);
-    a.push([T('Employees', 'الموظفون'), rep.emps.length]); a.push([T('Employees with at least one document file', 'موظفون لديهم ملف مستند واحد على الأقل'), empsWith]); a.push([T('Document rows', 'صفوف المستندات'), docs.length]);
-    a.push([T('Document files with a link', 'ملفات المستندات التي لها رابط'), withFile.length]); a.push([T('Fields found', 'الحقول التي وُجدت'), rep.emps.reduce((n, e) => n + e.data.fields.length, 0)]); a.push([]);
-    a.push([T('About the links', 'عن الروابط'), T('Jisr gives temporary storage links. They usually stop working after a while ("Link valid until" shows when, if the link says). Build the file again to get fresh links. The files themselves are not downloaded.', 'يعطي جسر روابط تخزين مؤقتة، وتتوقف عادةً بعد فترة (يعرض عمود "الرابط صالح حتى" الموعد إن ذكره الرابط). أعد إعداد الملف للحصول على روابط جديدة. لا تُنزَّل الملفات نفسها.')]);
-    a.push([T('Not included', 'غير مشمول'), T('Company-wide documents (Organization > Company Documents) and anything Jisr does not show on the employee profile.', 'مستندات الشركة العامة (الهيكل التنظيمي > مستندات الشركة) وأي شيء لا يعرضه جسر في ملف الموظف.')]);
-    a.push([T('Privacy', 'الخصوصية'), T('This file holds personal data (ID numbers, contact details' + (rep.opts.salary ? ', salaries' : '') + '). Keep it safe and share it only with people allowed to see it.', 'يحوي هذا الملف بيانات شخصية (أرقام هوية وبيانات اتصال' + (rep.opts.salary ? ' ورواتب' : '') + '). احفظه بأمان وشاركه فقط مع من يحق له الاطلاع عليه.')]);
-    if (er.cut) a.push([T('Columns', 'الأعمدة'), T('Jisr returned ' + er.total + ' different fields; the Employees sheet shows the first ' + cfg.wideMax + '. The Fields sheet has all of them.', 'أعاد جسر ' + er.total + ' حقلًا مختلفًا؛ يعرض ورق الموظفين أول ' + cfg.wideMax + '. ورق الحقول فيه الكل.')]);
+    a.push([T('Employees included', 'الموظفون المشمولون'), o.includeOffboarded ? T('Active and offboarded', 'على رأس العمل والمنتهية خدماتهم') : T('Active only', 'على رأس العمل فقط')]);
+    a.push([T('Parts read', 'الأجزاء المقروءة'), [T('Employee list', 'قائمة الموظفين')].concat(o.docs ? [S.documents, S.files] : []).concat(o.allInfo ? [S.main].concat(o.personal ? [S.personal] : []).concat(o.salary ? [S.salary] : []) : []).join(', ')]);
+    a.push([T('Sheets', 'الأوراق'), T('Employees (basic information and the number of documents), Documents (one row per document, with the employee details)', 'الموظفون (البيانات الأساسية وعدد المستندات)، المستندات (صف لكل مستند مع بيانات الموظف)') + (o.allInfo ? T(', All information (every field)', '، كل المعلومات (كل الحقول)') : '')]); a.push([]);
+    a.push([T('Employees', 'الموظفون'), rep.emps.length]);
+    if (o.docs) {
+      a.push([T('Employees with at least one document file', 'موظفون لديهم ملف مستند واحد على الأقل'), empsWith]); a.push([T('Employees without any document file', 'موظفون بلا أي ملف مستند'), rep.emps.length - empsWith]);
+      a.push([T('Document rows', 'صفوف المستندات'), docs.length]); a.push([T('Document files with a link', 'ملفات المستندات التي لها رابط'), withFile.length]);
+      const by = {}; withFile.forEach((d) => { const k = d.type || T('(no type)', '(بلا نوع)'); by[k] = (by[k] || 0) + 1; });
+      a.push([]); a.push([T('Document files by type', 'ملفات المستندات حسب النوع'), T('Files', 'الملفات')]); Object.keys(by).sort((x, y) => by[y] - by[x]).forEach((k) => a.push([k, by[k]]));
+    }
+    a.push([]);
+    if (o.docs) {
+      a.push([T('About the links', 'عن الروابط'), T('Jisr gives temporary storage links. They usually stop working after a while ("Link valid until" shows when, if the link says). Build the file again to get fresh links. The files themselves are not downloaded.', 'يعطي جسر روابط تخزين مؤقتة، وتتوقف عادةً بعد فترة (يعرض عمود "الرابط صالح حتى" الموعد إن ذكره الرابط). أعد إعداد الملف للحصول على روابط جديدة. لا تُنزَّل الملفات نفسها.')]);
+      a.push([T('Not included', 'غير مشمول'), T('Company-wide documents (Organization > Company Documents) and anything Jisr does not show on the employee profile.', 'مستندات الشركة العامة (الهيكل التنظيمي > مستندات الشركة) وأي شيء لا يعرضه جسر في ملف الموظف.')]);
+    }
+    a.push([T('Privacy', 'الخصوصية'), T('This file holds personal data (ID numbers, contact details' + (o.allInfo && o.salary ? ', salaries' : '') + '). Keep it safe and share it only with people allowed to see it.', 'يحوي هذا الملف بيانات شخصية (أرقام هوية وبيانات اتصال' + (o.allInfo && o.salary ? ' ورواتب' : '') + '). احفظه بأمان وشاركه فقط مع من يحق له الاطلاع عليه.')]);
+    if (o.allInfo) { const er = allInfoRows_(rep); if (er.cut) a.push([T('Columns', 'الأعمدة'), T('Jisr returned ' + er.total + ' different fields; the All information sheet shows the first ' + cfg.wideMax + '.', 'أعاد جسر ' + er.total + ' حقلًا مختلفًا؛ تعرض ورقة كل المعلومات أول ' + cfg.wideMax + '.')]); }
     if (tooLong) a.push([T('Long links', 'روابط طويلة'), T(tooLong + ' link(s) are too long for an Excel hyperlink; they are in the Link column as text.', tooLong + ' رابط أطول من أن يكون رابطًا في Excel؛ هي في عمود الرابط كنص.')]);
     if (rep.skipped.length) a.push([T('Not allowed', 'غير مسموح'), rep.skipped.map((k) => S[k]).join(', ') + T(': Jisr refused these for your account, so they are empty.', ': رفض جسر قراءتها لحسابك، لذا هي فارغة.')]);
-    if (bad.length) { a.push([T('Could not read', 'تعذّرت القراءة'), bad.length + T(' employee(s): see the "Could not read" column on the Employees sheet', ' موظف: انظر عمود "تعذّرت قراءته" في ورق الموظفين')]); }
+    if (bad.length) a.push([T('Could not read', 'تعذّرت القراءة'), bad.length + T(' employee(s): see the "Could not read" column on the Employees sheet', ' موظف: انظر عمود "تعذّرت قراءته" في ورقة الموظفين')]);
     if (rep.stoppedEarly) a.push([T('Stopped early', 'أُوقف مبكرًا'), T('Only the employees read so far are in the file.', 'الملف يحوي الموظفين الذين قُرئوا فقط.')]);
     return a;
   }
@@ -61628,11 +61644,13 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       if (filter && aoa.length > 1) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: Math.max(0, aoa[0].length - 1) } }) };
       XLSX.utils.book_append_sheet(wb, ws, name); return ws;
     };
+    const er = employeeRows_(rep); add(T('Employees', 'الموظفون'), [er.head].concat(er.rows), [10, 26, 18, 24, 20, 16, 22, 14, 16, 14, 9, 13, 28, 16, 12, 34, 30], true);
+    if (rep.opts.docs) {
+      const dr = docRows_(rep); const ws = add(T('Documents', 'المستندات'), [dr.head].concat(dr.aoa), [10, 26, 18, 24, 20, 16, 22, 16, 22, 30, 34, 18, 13, 13, 12, 10, 18, 8, 20, 60], true); const lc = linkCol_();
+      dr.rows.forEach((d, i) => { if (d.url && d.url.length <= cfg.linkMax) { const a = XLSX.utils.encode_cell({ r: i + 1, c: lc }); if (ws[a]) ws[a].l = { Target: d.url, Tooltip: d.file || d.type || '' }; } });
+    }
     add(T('Summary', 'الملخص'), summary_(rep), [44, 100]);
-    const er = employeeRows_(rep); add(T('Employees', 'الموظفون'), [er.head].concat(er.rows), [10, 26, 14, 18, 28, 16, 24, 20, 16, 22, 16, 14, 9, 13, 12, 30].concat(new Array(Math.max(0, er.head.length - 16)).fill(24)), true);
-    const dr = docRows_(rep); const ws = add(T('Documents', 'المستندات'), [dr.head].concat(dr.aoa), [10, 26, 18, 16, 22, 30, 34, 18, 13, 13, 12, 10, 18, 8, 20, 60], true);
-    dr.rows.forEach((d, i) => { if (d.url && d.url.length <= cfg.linkMax) { const a = XLSX.utils.encode_cell({ r: i + 1, c: LINKCOL }); if (ws[a]) ws[a].l = { Target: d.url, Tooltip: d.file || d.type || '' }; } });
-    const fr = fieldRows_(rep); add(T('Fields', 'الحقول'), [fr.head].concat(fr.rows), [10, 26, 26, 36, 50, 36], true);
+    if (rep.opts.allInfo) { const ar = allInfoRows_(rep); add(T('All information', 'كل المعلومات'), [ar.head].concat(ar.rows), [10, 26].concat(new Array(Math.max(0, ar.head.length - 2)).fill(24)), true); }
     return wb;
   }
   function download_(rep) {
@@ -61676,7 +61694,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   }
   function openTool_() {
     injectCss_(); try { jboActOpen_(MODULE_ID); } catch (e) { /* ignore */ }
-    const S = { rep: null, busy: false, stop: false, q: '', includeOff: false, personal: true, salary: true, docs: true, limit: '', loc: I.isAr() ? 'ar' : 'en' };
+    const S = { rep: null, busy: false, stop: false, q: '', includeOff: false, docs: true, allInfo: false, personal: true, salary: true, limit: '', loc: I.isAr() ? 'ar' : 'en' };
     const body = el('div', { class: 'jbo-modal-body' }); const foot = el('div', { class: 'jbo-modal-foot' });
     const titleEl = el('div', { class: 'jbo-modal-title', text: T('Employee data and documents export', 'تصدير بيانات الموظفين ومستنداتهم') }); const closeBtn = el('button', { class: 'jbo-icon-btn', text: '✕', 'aria-label': 'Close' });
     const modal = el('div', { class: 'jbo-modal', style: { width: 'min(1000px, 96vw)' } }, [el('div', { class: 'jbo-modal-head', style: { cursor: 'default' } }, [titleEl, closeBtn]), body, foot]);
@@ -61694,15 +61712,15 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
       const rep = S.rep; const docs = []; rep.emps.forEach((e) => e.data.docs.forEach((d) => docs.push(d)));
       const withFile = docs.filter((d) => d.hasFile).length; const empsWith = rep.emps.filter((e) => e.docCount > 0).length; const bad = rep.emps.filter((e) => e.data.problems.length).length;
       const cards = el('div', { class: 'jed-cards' }); const mk = (n, l) => cards.appendChild(el('div', { class: 'jed-card' }, [el('b', { text: String(n) }), el('span', { text: l })]));
-      mk(rep.emps.length, T('Employees read', 'موظفون قُرئوا')); mk(empsWith, T('With a document file', 'لديهم ملف مستند')); mk(withFile, T('Document files with a link', 'ملفات لها رابط')); mk(rep.emps.length - empsWith, T('Without any document file', 'بلا ملف مستند')); mk(bad, T('Could not read fully', 'تعذّرت قراءتهم كاملًا'));
+      mk(rep.emps.length, T('Employees read', 'موظفون قُرئوا')); if (rep.opts.docs) { mk(empsWith, T('With a document file', 'لديهم ملف مستند')); mk(withFile, T('Document files with a link', 'ملفات لها رابط')); mk(rep.emps.length - empsWith, T('Without any document file', 'بلا ملف مستند')); } mk(bad, T('Could not read fully', 'تعذّرت قراءتهم كاملًا'));
       wrap.appendChild(cards);
       if (rep.skipped.length) wrap.appendChild(el('div', { class: 'jed-note', text: rep.skipped.map((k) => ST()[k]).join(', ') + T(': Jisr refused these for your account, so they are empty in the file.', ': رفض جسر قراءتها لحسابك، لذا هي فارغة في الملف.') }));
       const q = el('input', { type: 'text', value: S.q, placeholder: T('Search name or code…', 'ابحث بالاسم أو الرقم…') }); q.addEventListener('input', () => { S.q = q.value; renderTable(); });
       wrap.appendChild(el('div', { class: 'jed-bar' }, [q])); const holder = el('div', { class: 'jed-scroll' }); wrap.appendChild(holder);
       function renderTable() {
         holder.textContent = ''; const needle = S.q.trim().toLowerCase(); const list = rep.emps.filter((e) => !needle || (e.name + ' ' + e.code).toLowerCase().includes(needle));
-        const tb = el('table', { class: 'jed-tbl' }, [el('tr', {}, [T('Code', 'الرقم'), T('Name', 'الاسم'), T('Fields', 'الحقول'), T('Document files', 'ملفات المستندات'), T('Could not read', 'تعذّرت قراءته')].map((h) => el('th', { text: h })))]);
-        list.slice(0, 200).forEach((e) => tb.appendChild(el('tr', {}, [el('td', { text: e.code }), el('td', { text: e.name }), el('td', { text: String(e.data.fields.length) }), el('td', { text: String(e.docCount) }), el('td', { class: e.data.problems.length ? 'jed-bad' : '', text: e.data.problems.join('; ') })])));
+        const tb = el('table', { class: 'jed-tbl' }, [el('tr', {}, [T('Code', 'الرقم'), T('Name', 'الاسم')].concat(rep.opts.docs ? [T('Documents', 'المستندات'), T('Document types', 'أنواع المستندات')] : []).concat([T('Could not read', 'تعذّرت قراءته')]).map((h) => el('th', { text: h })))]);
+        list.slice(0, 200).forEach((e) => tb.appendChild(el('tr', {}, [el('td', { text: e.code }), el('td', { text: e.name })].concat(rep.opts.docs ? [el('td', { text: String(e.docCount) }), el('td', { text: e.docTypes || '' })] : []).concat([el('td', { class: e.data.problems.length ? 'jed-bad' : '', text: e.data.problems.join('; ') })]))));
         holder.appendChild(tb); if (list.length > 200) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '6px 8px' }, text: T('Showing the first 200 of ', 'يعرض أول 200 من ') + list.length + T('. The Excel file has everyone.', '. ملف Excel فيه الجميع.') }));
         if (!list.length) holder.appendChild(el('div', { class: 'jbo-muted', style: { padding: '8px' }, text: T('Nobody matches.', 'لا أحد مطابق.') }));
       }
@@ -61710,12 +61728,14 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     }
     function render() {
       body.textContent = '';
-      body.appendChild(el('div', { class: 'jed-note', text: T('Reads every employee\'s profile data and every document on the profile (name, type, details, dates, status) with a link to open each file, and builds one Excel file. It only reads; nothing is changed in Jisr. The links are temporary Jisr links, so open them soon, or build the file again for fresh ones.', 'يقرأ بيانات ملف كل موظف وكل مستند في الملف (الاسم والنوع والتفاصيل والتواريخ والحالة) مع رابط لفتح كل ملف، ويبني ملف Excel واحدًا. يقرأ فقط ولا يغيّر شيئًا في جسر. الروابط مؤقتة من جسر، فافتحها قريبًا أو أعد بناء الملف للحصول على روابط جديدة.') }));
-      const cb = (key, text) => { const c = el('input', { type: 'checkbox' }); c.checked = !!S[key]; c.disabled = S.busy; c.addEventListener('change', () => { S[key] = c.checked; }); return el('label', {}, [c, ' ' + text]); };
+      body.appendChild(el('div', { class: 'jed-note', text: T('Builds one Excel file: a sheet with each employee\'s basic information and how many documents he or she has, a sheet with one row per document (the employee details, the document details and a link to open it), a summary, and, if you want it, a sheet with every field in the profile. It only reads; nothing is changed in Jisr. The links are temporary Jisr links, so open them soon, or build the file again for fresh ones.', 'يبني ملف Excel واحدًا: ورقة بالبيانات الأساسية لكل موظف وعدد مستنداته، وورقة بصف لكل مستند (بيانات الموظف وبيانات المستند ورابط لفتحه)، وملخصًا، وإن أردت ورقة بكل حقول الملف. يقرأ فقط ولا يغيّر شيئًا في جسر. الروابط مؤقتة من جسر، فافتحها قريبًا أو أعد بناء الملف للحصول على روابط جديدة.') }));
+      const cb = (key, text, after, off) => { const c = el('input', { type: 'checkbox' }); c.checked = !!S[key]; c.disabled = S.busy || !!off; c.addEventListener('change', () => { S[key] = c.checked; if (after) render(); }); return el('label', { style: off !== undefined ? { marginInlineStart: '24px', opacity: off ? '0.5' : '1' } : {} }, [c, ' ' + text]); };
       const lim = el('input', { type: 'number', min: '1', value: S.limit, placeholder: T('all', 'الكل'), 'aria-label': T('Only the first employees', 'أول عدد من الموظفين فقط') }); lim.disabled = S.busy; lim.addEventListener('input', () => { S.limit = lim.value; });
       const loc = el('select', {}, [el('option', { value: 'en', text: 'English' }), el('option', { value: 'ar', text: 'العربية' })]); loc.value = S.loc; loc.disabled = S.busy; loc.addEventListener('change', () => { S.loc = loc.value; });
-      body.appendChild(el('div', { class: 'jed-opts' }, [cb('docs', T('Documents (files with their links, ID / Iqama and passport details)', 'المستندات (الملفات مع روابطها وبيانات الهوية / الإقامة والجواز)')), cb('personal', T('Personal and organization details', 'البيانات الشخصية والتنظيمية')),
-        cb('salary', T('Salary and financial details', 'الراتب والبيانات المالية')), cb('includeOff', T('Include offboarded employees', 'تضمين الموظفين المنتهية خدماتهم')),
+      body.appendChild(el('div', { class: 'jed-opts' }, [cb('docs', T('Documents of every kind on the profile (ID / Iqama, passport, contracts, certificates, the company\'s own types…)', 'المستندات بكل أنواعها في الملف (الهوية / الإقامة، الجواز، العقود، الشهادات، أنواع الشركة…)')),
+        cb('allInfo', T('Also add a sheet with all the information in the profile (slower)', 'أضف أيضًا ورقة بكل المعلومات في الملف (أبطأ)'), true),
+        cb('personal', T('Personal and organization details', 'البيانات الشخصية والتنظيمية'), false, !S.allInfo), cb('salary', T('Salary and financial details', 'الراتب والبيانات المالية'), false, !S.allInfo),
+        cb('includeOff', T('Include offboarded employees', 'تضمين الموظفين المنتهية خدماتهم')),
         el('div', { class: 'jed-row' }, [el('label', {}, [T('Values in ', 'القيم بـ '), loc]), el('label', {}, [T('Only the first ', 'أول '), lim, T(' employees (to try it first)', ' موظفين فقط (للتجربة أولًا)')])])]));
       body.appendChild(noteEl);
       if (S.rep) { const wrap = el('div', {}); renderResult(wrap); body.appendChild(wrap); }
@@ -61724,7 +61744,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
     async function buildNow() {
       if (S.busy) return; S.busy = true; S.stop = false; S.rep = null; mainB.disabled = true; stopB.style.display = ''; LOCALE = S.loc === 'ar' ? 'ar' : 'en'; render();
       try {
-        const lim = parseInt(S.limit, 10); const rep = await build_({ includeOffboarded: S.includeOff, limit: lim > 0 ? lim : 0, personal: S.personal, salary: S.salary, docs: S.docs }, { progress: (t) => setNote(t), stopped: () => S.stop });
+        const lim = parseInt(S.limit, 10); const rep = await build_({ includeOffboarded: S.includeOff, limit: lim > 0 ? lim : 0, docs: S.docs, allInfo: S.allInfo, personal: S.personal, salary: S.salary }, { progress: (t) => setNote(t), stopped: () => S.stop });
         S.rep = rep; setNote(rep.stoppedEarly ? T('Stopped: the file has only the employees read so far.', 'أُوقف: الملف يحوي الموظفين الذين قُرئوا فقط.') : T('Done. Check the numbers, then download the Excel file.', 'تم. راجع الأرقام ثم نزّل ملف Excel.'));
       } catch (e) { setNote(String(e.message || e).slice(0, 240), true); }
       finally { S.busy = false; mainB.disabled = false; stopB.style.display = 'none'; render(); }
@@ -61739,7 +61759,7 @@ const JTPL_DATA = {"nat": [["Afghan", "الأفغاني"], ["Albanian", "الأ�
   function register_() {
     const g = (W.__jisrBulkOps = W.__jisrBulkOps || { modules: {}, ready: false });
     g.modules[MODULE_ID] = { title: 'Employee Data & Documents Export', open: openTool_, version: SECTION_VERSION };
-    W.__jisrEmpDataExport = { build_, workbook_, readEmployee_, fieldsOf_, docsFromTab_, docsFromFiles_, linkInfo_, flatten_: fieldsOf_, employeeRows_, docRows_, fieldRows_, summary_, empOf_, cfg, label_, refText_, cell_ };
+    W.__jisrEmpDataExport = { build_, workbook_, readEmployee_, fieldsOf_, docsFromTab_, docsFromFiles_, linkInfo_, flatten_: fieldsOf_, employeeRows_, docRows_, allInfoRows_, summary_, empOf_, cfg, label_, refText_, cell_ };
     if (g._rerender) g._rerender();
   }
   register_();
